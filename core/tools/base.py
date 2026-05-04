@@ -36,6 +36,9 @@ class Tool(ABC):
     def execute(self, **kwargs) -> str:
         ...
 
+    def cancel(self):
+        """Cancel any ongoing execution. Override in subclasses that support interruption."""
+
     def schema(self) -> dict:
         return {
             "type": "function",

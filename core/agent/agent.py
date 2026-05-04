@@ -5,11 +5,12 @@ The pattern:
                                       -> text reply? -> return to user
 
 Supports parallel tool execution, 3-layer context compression,
-sub-agent isolation, and dynamic system prompts.
+sub-agent isolation, dynamic system prompts, and Ctrl+C cancellation.
 """
 
 import asyncio
 import concurrent.futures
+import threading
 from typing import Callable
 
 from core import logger
@@ -40,6 +41,8 @@ class Agent:
         self.extra_instructions = extra_instructions
         self.persona = persona
         self.skills_prompt = skills_prompt
+        self._cancel_event = threading.Event()
+        self._was_cancelled = False  # True if previous chat() was interrupted
 
         # Wire up sub-agent capability
         from core.tools.agent_tool import AgentTool
@@ -72,17 +75,51 @@ class Agent:
         on_tool_start: Callable | None = None,
         on_tool_end: Callable | None = None,
     ) -> str:
-        """Process one user message. May involve multiple LLM/tool rounds."""
-        self.messages.append({"role": "user", "content": user_input})
+        """Process one user message. May involve multiple LLM/tool rounds.
+
+        Returns the final text response, or an interruption notice if Ctrl+C
+        was pressed during processing.
+        """
+        self._cancel_event.clear()
+
+        # If the previous run was interrupted, let the AI know before
+        # processing the new message so it can pick up context.
+        was_interrupted = self._was_cancelled
+        self._was_cancelled = False
+
+        if was_interrupted:
+            self.messages.append({
+                "role": "user",
+                "content": (
+                    "[System notice: Your previous task was interrupted by the user "
+                    "via Ctrl+C. The task you were working on was stopped mid-execution. "
+                    "Below is the user's new message — respond to it directly.]\n\n"
+                    + user_input
+                ),
+            })
+        else:
+            self.messages.append({"role": "user", "content": user_input})
+
         self.context.maybe_compress(self.messages, self.llm)
 
         for _ in range(self.max_rounds):
+            # Check for cancellation before each LLM call
+            if self._cancel_event.is_set():
+                self._was_cancelled = True
+                return "[Interrupted by user]"
+
             resp = self.llm.chat(
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
                 on_token=on_token,
                 on_thinking=on_thinking,
+                cancel_event=self._cancel_event,
             )
+
+            # LLM may have been interrupted mid-stream
+            if self._cancel_event.is_set():
+                self._was_cancelled = True
+                return resp.content or "[Interrupted by user]"
 
             if resp.reasoning_content and on_thinking_done:
                 on_thinking_done(resp.reasoning_content)
@@ -114,9 +151,27 @@ class Agent:
                         {"role": "tool", "tool_call_id": tc.id, "content": result}
                     )
 
+            # After tool execution, check for cancellation before next round
+            if self._cancel_event.is_set():
+                self._was_cancelled = True
+                return "[Interrupted by user]"
+
             self.context.maybe_compress(self.messages, self.llm)
 
         return "(reached maximum tool-call rounds)"
+
+    def cancel(self):
+        """Signal the agent to stop at the next safe point.
+
+        Also cancels any currently running tool (e.g. terminates a bash subprocess).
+        Thread-safe — may be called from the main thread while chat() runs in an executor.
+        """
+        self._cancel_event.set()
+        for tool in self.tools:
+            try:
+                tool.cancel()
+            except Exception:
+                pass
 
     async def chat_async(
         self,

@@ -262,6 +262,15 @@ export function useChat() {
     })
   }
 
+  async function cancelMessage() {
+    if (!sending.value) return
+    try {
+      await api.cancelChat(sessionId.value)
+    } catch {
+      // best-effort
+    }
+  }
+
   async function sendMessage(text) {
     if (!text.trim() || sending.value) return
     sending.value = true
@@ -285,7 +294,6 @@ export function useChat() {
       if (result.error) {
         addMessage('assistant', `Error: ${result.error}`, false)
       } else if (!streamingAssistantId && !messages.value.some((m) => m.role === 'assistant' && m.streaming === false && m.content === result.response)) {
-        // Give WS events a short window to arrive before falling back to HTTP response
         await new Promise(r => setTimeout(r, 120))
         if (!streamingAssistantId) {
           addMessage('assistant', result.response, true)
@@ -321,6 +329,7 @@ export function useChat() {
     resetMessages,
     loadTranscript,
     sendMessage,
+    cancelMessage,
   }
   return instance
 }

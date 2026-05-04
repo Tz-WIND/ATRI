@@ -43,6 +43,7 @@
         <ChatInput
           :sending="sending"
           @send="handleSend"
+          @cancel="handleCancel"
         />
       </div>
 
@@ -106,7 +107,7 @@ import { useProviders } from '@/composables/useProviders.js'
 
 const {
   messages, sending, thinkingBlock, toolCards,
-  handleWsEvent, sendMessage, clearThinking, clearToolCards,
+  handleWsEvent, sendMessage, cancelMessage, clearThinking, clearToolCards,
   loadTranscript, resetMessages,
 } = useChat()
 
@@ -200,6 +201,25 @@ async function handleSend(text) {
   if (panelOpen.value && sideTab.value === 'sessions') loadList()
 }
 
+function handleCancel() {
+  cancelMessage()
+}
+
+function onGlobalKeydown(e) {
+  if (e.key === 'Escape' && sending.value) {
+    e.preventDefault()
+    handleCancel()
+    return
+  }
+  if (e.key === 'c' && e.ctrlKey && sending.value) {
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed) {
+      e.preventDefault()
+      handleCancel()
+    }
+  }
+}
+
 async function processEvents() {
   if (processingEvents) return
   processingEvents = true
@@ -229,11 +249,13 @@ watch(currentId, async (newId, oldId) => {
 })
 
 onMounted(async () => {
+  window.addEventListener('keydown', onGlobalKeydown)
   await Promise.all([loadProviders(), loadStatus()])
   await loadChatSession(currentId.value)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
   stopResize()
 })
 </script>

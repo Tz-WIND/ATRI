@@ -100,8 +100,13 @@ class LLM:
         tools: list[dict] | None = None,
         on_token=None,
         on_thinking=None,
+        cancel_event=None,  # threading.Event | None — set to interrupt mid-stream
     ) -> LLMResponse:
-        """Send messages, stream response, handle tool calls."""
+        """Send messages, stream response, handle tool calls.
+
+        If cancel_event is set during streaming, the loop exits early and
+        returns whatever content has been accumulated so far.
+        """
         params: dict = {
             "model": self.model,
             "messages": messages,
@@ -110,6 +115,9 @@ class LLM:
         }
         if tools:
             params["tools"] = tools
+
+        if cancel_event and cancel_event.is_set():
+            return LLMResponse(content="[Interrupted by user]")
 
         try:
             params["stream_options"] = {"include_usage": True}
@@ -129,6 +137,10 @@ class LLM:
         logger.info(f"LLM stream started for {self.model}")
 
         for chunk in stream:
+            if cancel_event and cancel_event.is_set():
+                logger.info("LLM stream cancelled by user")
+                break
+
             if chunk_count == 0:
                 logger.info(f"LLM first chunk received after {time.time() - t0:.1f}s")
             chunk_count += 1

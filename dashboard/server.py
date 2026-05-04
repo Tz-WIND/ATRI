@@ -585,6 +585,17 @@ class Dashboard:
                 logger.exception(f"WebUI chat error: {e}")
                 return jsonify({"error": str(e)}), 500
 
+        # ── Cancel active chat ──
+        @app.route("/api/chat/cancel", methods=["POST"])
+        async def cancel_chat():
+            """Cancel the currently running agent operation for a session."""
+            data = await request.get_json(silent=True) or {}
+            session_id = data.get("session_id", "")
+            cancelled = self.lifecycle.cancel_operation(
+                session_id=session_id if session_id else None
+            )
+            return jsonify({"ok": cancelled})
+
         # ── Tools info ──
         @app.route("/api/tools")
         async def list_tools():

@@ -58,6 +58,8 @@ class ProcessStage(Stage):
         }
 
         self.broadcast_fn: Callable[[dict], Coroutine[Any, Any, None]] | None = None
+        # Track the currently active agent for Ctrl+C interruption
+        self._active_session_id: str | None = None
 
     def _build_skills_prompt(self) -> str:
         active_skills = self.skill_manager.list_skills(active_only=True)
@@ -192,6 +194,7 @@ class ProcessStage(Stage):
 
         try:
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
+            self._active_session_id = session_id
             response = await agent.chat_async(
                 event.message_str,
                 on_token=on_token,
@@ -227,8 +230,39 @@ class ProcessStage(Stage):
         except Exception as e:
             logger.exception(f"Agent error for {session_id}: {e}")
             event.set_result(f"Error: {e}")
+        finally:
+            self._active_session_id = None
 
         yield
+
+    def cancel_current(self):
+        """Cancel the currently running agent operation (thread-safe).
+
+        Called from the main thread on Ctrl+C to interrupt LLM streaming
+        and tool execution without shutting down the whole process.
+        """
+        sid = self._active_session_id
+        if sid and sid in self._agents:
+            self._agents[sid].cancel()
+            logger.info(f"Cancelled agent for session {sid}")
+            return True
+        return False
+
+    def cancel_session(self, session_id: str) -> bool:
+        """Cancel a specific session's agent (thread-safe).
+
+        Called from the dashboard HTTP handler when the frontend user
+        presses the stop/interrupt button.
+        """
+        # Convert display ID to internal key if needed (webchat:friend: prefix)
+        if ":" not in session_id:
+            session_id = f"webchat:friend:{session_id}"
+        if session_id in self._agents:
+            self._agents[session_id].cancel()
+            logger.info(f"Cancelled agent for session {session_id}")
+            return True
+        # Also try the currently active session as fallback
+        return self.cancel_current()
 
     def update_config(self, **kwargs):
         """Hot-reload configuration (called from WebUI/dashboard)."""

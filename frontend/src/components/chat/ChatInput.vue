@@ -21,8 +21,19 @@
             </svg>
           </button>
           <button
+            v-if="sending"
+            class="btn-stop"
+            @click="$emit('cancel')"
+            title="Stop (Escape)"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="7" y="7" width="10" height="10" rx="1.5"/>
+            </svg>
+          </button>
+          <button
+            v-else
             class="btn-send"
-            :disabled="!text.trim() || sending"
+            :disabled="!text.trim()"
             @click="send"
             title="Send"
           >
@@ -44,7 +55,7 @@ const props = defineProps({
   sending: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['send', 'attach'])
+const emit = defineEmits(['send', 'attach', 'cancel'])
 
 const text = ref('')
 const textarea = ref(null)
@@ -188,5 +199,36 @@ textarea:disabled {
 .btn-send svg {
   width: 16px;
   height: 16px;
+}
+
+.btn-stop {
+  width: 32px;
+  height: 32px;
+  background: #e53935;
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.12s;
+  animation: stop-pulse 1.8s ease-in-out infinite;
+}
+
+.btn-stop:hover {
+  background: #ff5252;
+  transform: translateY(-1px);
+}
+
+.btn-stop svg {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes stop-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(229, 57, 53, 0); }
 }
 </style>

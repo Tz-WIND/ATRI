@@ -194,6 +194,20 @@ class Lifecycle:
         logger.info("ATRI is running. Press Ctrl+C to stop.")
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
+    def cancel_operation(self, session_id: str | None = None) -> bool:
+        """Cancel the currently running agent operation (if any).
+
+        If session_id is given, cancels that specific session's agent.
+        Otherwise cancels whichever agent is currently active.
+
+        Returns True if an operation was cancelled, False if nothing was active.
+        """
+        if self.process_stage:
+            if session_id:
+                return self.process_stage.cancel_session(session_id)
+            return self.process_stage.cancel_current()
+        return False
+
     async def stop(self) -> None:
         logger.info("Shutting down...")
 

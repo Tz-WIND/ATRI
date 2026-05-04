@@ -6,11 +6,13 @@ Features:
 - Dangerous command pattern detection and blocking
 - Working directory tracking
 - Workspace-constrained execution
+- Cancellable via Ctrl+C (SIGINT)
 """
 
 import os
 import re
 import subprocess
+import threading
 from .base import Tool
 
 _DANGEROUS_PATTERNS = [
@@ -54,6 +56,8 @@ class BashTool(Tool):
         super().__init__(workspace)
         self._cwd: str = self._workspace
         self._pending_approval: dict | None = None
+        self._current_process: subprocess.Popen | None = None
+        self._proc_lock = threading.Lock()
 
     def execute(self, command: str, timeout: int = 120) -> str:
         warning = _check_dangerous(command)
@@ -67,23 +71,35 @@ class BashTool(Tool):
             )
 
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 command,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=timeout,
                 cwd=self._cwd,
             )
+            with self._proc_lock:
+                self._current_process = proc
+
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                return f"Error: timed out after {timeout}s"
+            finally:
+                with self._proc_lock:
+                    self._current_process = None
 
             if proc.returncode == 0:
                 self._update_cwd(command)
 
-            out = proc.stdout
-            if proc.stderr:
-                out += f"\n[stderr]\n{proc.stderr}"
+            out = stdout
+            if stderr:
+                out += f"\n[stderr]\n{stderr}"
             if proc.returncode != 0:
                 out += f"\n[exit code: {proc.returncode}]"
 
@@ -94,10 +110,20 @@ class BashTool(Tool):
                     + out[-3000:]
                 )
             return out.strip() or "(no output)"
-        except subprocess.TimeoutExpired:
-            return f"Error: timed out after {timeout}s"
         except Exception as e:
             return f"Error running command: {e}"
+
+    def cancel(self):
+        """Terminate the currently running subprocess, if any."""
+        with self._proc_lock:
+            proc = self._current_process
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
     def approve_pending(self) -> str | None:
         """Execute a previously blocked command after user approval."""
