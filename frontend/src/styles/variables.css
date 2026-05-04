@@ -1,0 +1,123 @@
+/* VS Code / Cursor dark theme variables */
+:root {
+  /* Backgrounds */
+  --bg0: #1e1e1e;
+  --bg1: #252526;
+  --bg2: #2d2d30;
+  --bg3: #3e3e42;
+
+  /* Borders */
+  --border: #3c3c3c;
+  --border-light: rgba(255, 255, 255, 0.08);
+  --border-input: rgba(255, 255, 255, 0.12);
+
+  /* Text */
+  --t1: #d4d4d4;
+  --t2: #cccccc;
+  --t3: #858585;
+
+  /* Accent */
+  --acc: #007acc;
+  --acc2: #3794ff;
+  --acc-bg: rgba(0, 122, 204, 0.15);
+
+  /* Semantic */
+  --green: #89d185;
+  --green-bg: rgba(137, 209, 133, 0.12);
+  --red: #f48771;
+  --red-bg: rgba(244, 135, 113, 0.12);
+  --orange: #cca700;
+  --purple: #c586c0;
+
+  /* Fonts */
+  --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+
+  /* Layout */
+  --activity-w: 48px;
+  --sidebar-w: 240px;
+  --status-h: 26px;
+  --header-h: 40px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg0);
+  color: var(--t1);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#app {
+  height: 100%;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg3);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Selection */
+::selection {
+  background: rgba(0, 122, 204, 0.3);
+  color: inherit;
+}
+
+/* Focus styles */
+:focus-visible {
+  outline: 1px solid var(--acc);
+  outline-offset: -1px;
+}
+
+/* Transitions */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-enter-active,
+.slide-leave-active {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.slide-enter-from {
+  transform: translateX(-10px);
+  opacity: 0;
+}
+.slide-leave-to {
+  transform: translateX(10px);
+  opacity: 0;
+}
+
+/* Utility */
+.mono {
+  font-family: var(--mono);
+}

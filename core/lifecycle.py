@@ -1,0 +1,242 @@
+"""ATRI core lifecycle manager.
+
+Orchestrates initialization, startup, and shutdown of all components:
+Platform adapters (OneBot11 + WebChat), Pipeline, EventBus, Plugin Manager, Dashboard.
+"""
+
+import asyncio
+import time
+import traceback
+import yaml
+from asyncio import Queue
+from pathlib import Path
+
+from core import logger
+from core.event_bus import EventBus
+from core.pipeline.scheduler import PipelineScheduler
+from core.pipeline.stages import *  # noqa: F401,F403 - registers stages
+from core.platform.onebot11 import OneBot11Adapter
+from core.platform.webchat import WebChatAdapter
+from core.plugin.manager import PluginManager
+
+
+DEFAULT_CONFIG_PATH = "config.yaml"
+
+DEFAULT_CONFIG = {
+    "model": "gpt-4o",
+    "api_key": "",
+    "base_url": None,
+    "max_tokens": 4096,
+    "temperature": 0.0,
+    "max_context_tokens": 128000,
+    "max_rounds": 50,
+    "workspace": "./workspace",
+    "sessions_dir": "data/sessions",
+    "wake_words": ["atri"],
+    "extra_instructions": "",
+    "persona": "",
+    "onebot11": {
+        "enabled": True,
+        "ws_reverse_host": "0.0.0.0",
+        "ws_reverse_port": 6199,
+        "ws_reverse_token": "",
+    },
+    "dashboard": {
+        "enabled": True,
+        "host": "0.0.0.0",
+        "port": 6185,
+    },
+    "plugins_dir": "plugins",
+    "skills": {},
+    "tavily_api_key": "",
+}
+
+
+SHUTDOWN_GRACE_PERIOD = 5.0  # seconds to wait for tasks to finish
+
+
+class Lifecycle:
+    def __init__(self, config_path: str = DEFAULT_CONFIG_PATH):
+        self.config_path = config_path
+        self.config = self._load_config()
+        self.start_time: float = 0
+        self.onebot11: OneBot11Adapter | None = None
+        self.webchat: WebChatAdapter | None = None
+        self.process_stage = None
+        self._tasks: list[asyncio.Task] = []
+        self._shutdown_event = asyncio.Event()
+
+    def _load_config(self) -> dict:
+        path = Path(self.config_path)
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                user_config = yaml.safe_load(f) or {}
+            config = {**DEFAULT_CONFIG, **user_config}
+        else:
+            config = dict(DEFAULT_CONFIG)
+            self.save_config(config)
+        from core.tools.web_search import set_tavily_key
+        set_tavily_key(config.get("tavily_api_key", "") or None)
+        return config
+
+    def save_config(self, config: dict | None = None):
+        if config is None:
+            config = self.config
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+    async def initialize(self) -> None:
+        logger.info("ATRI Agent Framework starting...")
+
+        ws_path = Path(self.config["workspace"])
+        ws_path.mkdir(parents=True, exist_ok=True)
+
+        self.event_queue: Queue = Queue()
+
+        # Plugin manager
+        self.plugin_manager = PluginManager(self.config.get("plugins_dir", "plugins"))
+        await self.plugin_manager.initialize(self.config)
+
+        # Platform adapters
+        platforms: dict = {}
+
+        # WebChat adapter (always enabled when dashboard is on)
+        self.webchat = WebChatAdapter(self.event_queue)
+        platforms["webchat"] = self.webchat
+
+        # OneBot11 adapter
+        ob_config = self.config.get("onebot11", {})
+        if ob_config.get("enabled", True):
+            self.onebot11 = OneBot11Adapter(ob_config, self.event_queue)
+            platforms["onebot11"] = self.onebot11
+        else:
+            self.onebot11 = None
+
+        self.platforms = platforms
+
+        # Pipeline context -- pass all platform adapters so RespondStage can route
+        pipeline_ctx = {
+            "workspace": str(ws_path.resolve()),
+            "model": self.config["model"],
+            "api_key": self.config["api_key"],
+            "base_url": self.config.get("base_url"),
+            "max_tokens": self.config.get("max_tokens", 4096),
+            "temperature": self.config.get("temperature", 0.0),
+            "max_context_tokens": self.config.get("max_context_tokens", 128000),
+            "max_rounds": self.config.get("max_rounds", 50),
+            "extra_instructions": self.config.get("extra_instructions", ""),
+            "persona": self.config.get("persona", ""),
+            "skills_root": self.config.get("skills_root", "skills"),
+            "skills_config": self.config.get("skills", {}),
+            "tavily_api_key": self.config.get("tavily_api_key", ""),
+            "sessions_dir": self.config.get("sessions_dir"),
+            "wake_words": self.config.get("wake_words", []),
+            "self_id": "",
+            "platforms": platforms,
+        }
+
+        # Pipeline scheduler
+        self.scheduler = PipelineScheduler(pipeline_ctx)
+        await self.scheduler.initialize()
+
+        # Grab reference to ProcessStage for dashboard direct access
+        from core.pipeline.stages.process import ProcessStage
+        for stage in self.scheduler.stages:
+            if isinstance(stage, ProcessStage):
+                self.process_stage = stage
+                break
+
+        # Event bus
+        self.event_bus = EventBus(self.event_queue, self.scheduler)
+
+        self.start_time = time.time()
+        logger.info("Initialization complete.")
+
+    async def start(self) -> None:
+        """Start all services."""
+        # Event bus
+        self._tasks.append(asyncio.create_task(
+            self._safe_task(self.event_bus.dispatch(), "EventBus")
+        ))
+
+        # WebChat adapter (idle loop, driven by dashboard HTTP)
+        if self.webchat:
+            self._tasks.append(asyncio.create_task(
+                self._safe_task(self.webchat.run(), "WebChat")
+            ))
+
+        # OneBot11 adapter
+        if self.onebot11:
+            self._tasks.append(asyncio.create_task(
+                self._safe_task(self.onebot11.run(), "OneBot11")
+            ))
+
+        # Dashboard
+        dashboard_cfg = self.config.get("dashboard", {})
+        if dashboard_cfg.get("enabled", True):
+            from dashboard.server import Dashboard
+            self.dashboard = Dashboard(
+                self,
+                host=dashboard_cfg.get("host", "0.0.0.0"),
+                port=dashboard_cfg.get("port", 6185),
+            )
+            self._tasks.append(asyncio.create_task(
+                self._safe_task(self.dashboard.run(), "Dashboard")
+            ))
+
+        # Plugin background tasks
+        for plugin in self.plugin_manager.plugins:
+            for task_func in plugin.get_background_tasks():
+                self._tasks.append(asyncio.create_task(
+                    self._safe_task(task_func(), f"Plugin-{plugin.metadata.name}")
+                ))
+
+        logger.info("ATRI is running. Press Ctrl+C to stop.")
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
+    async def stop(self) -> None:
+        logger.info("Shutting down...")
+
+        # 1. Signal all components to stop
+        self._shutdown_event.set()
+
+        # 2. Notify platform adapters first so they stop accepting new events
+        if self.onebot11:
+            await self.onebot11.terminate()
+        if self.webchat:
+            await self.webchat.terminate()
+
+        # 3. Cancel all running background tasks
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+
+        # 4. Wait for tasks to finish with a grace period
+        if self._tasks:
+            done, pending = await asyncio.wait(
+                self._tasks, timeout=SHUTDOWN_GRACE_PERIOD
+            )
+            if pending:
+                logger.warning(
+                    f"{len(pending)} task(s) did not finish within "
+                    f"{SHUTDOWN_GRACE_PERIOD}s grace period, forcing shutdown."
+                )
+                for task in pending:
+                    task.cancel()
+
+        # 5. Terminate plugins and dashboard last
+        await self.plugin_manager.terminate()
+        if hasattr(self, "dashboard"):
+            await self.dashboard.stop()
+
+        logger.info("ATRI stopped.")
+
+    @staticmethod
+    async def _safe_task(coro, name: str):
+        try:
+            await coro
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Task '{name}' crashed: {e}")
+            logger.error(traceback.format_exc())
