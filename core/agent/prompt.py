@@ -6,6 +6,7 @@ and user configuration.
 
 import os
 import platform
+from datetime import datetime, timezone
 
 
 def build_system_prompt(
@@ -31,6 +32,9 @@ def build_system_prompt(
     if skills_prompt:
         skills_block = f"\n{skills_prompt}\n"
 
+    now = datetime.now(timezone.utc).astimezone()
+    ts = now.strftime("%Y-%m-%d %H:%M:%S %Z (UTC%z)")
+
     return f"""\
 You are ATRI, an AI coding agent. You help with software engineering tasks:
 writing code, fixing bugs, refactoring, explaining code, running commands, etc.
@@ -39,6 +43,7 @@ writing code, fixing bugs, refactoring, explaining code, running commands, etc.
 - Workspace: {workspace}
 - OS: {uname.system} {uname.release} ({uname.machine})
 - Python: {platform.python_version()}
+- Request time: {ts}
 {persona_block}
 # Available Tools
 {tool_list}

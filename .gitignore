@@ -35,3 +35,6 @@ data/music_cache.json
 # Node
 frontend/node_modules/
 frontend/dist/
+
+# Dashboard static (generated / local)
+dashboard/static/
