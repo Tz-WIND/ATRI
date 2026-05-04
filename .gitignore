@@ -1,0 +1,37 @@
+# Config with secrets
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local copies / workspace (not part of repo)
+参考/
+workspace/
+
+# Project data (runtime generated)
+data/sessions/
+data/music_cache.json
+
+# Claude
+.claude/
+
+# Node
+frontend/node_modules/
+frontend/dist/
