@@ -1,0 +1,72 @@
+# ============================================================
+# ATRI 配置文件示例
+# 复制为 config.yaml 并填入你的实际配置
+# cp config.yaml.example config.yaml
+# ============================================================
+
+# 当前使用的模型
+model: deepseek-chat
+
+# API 连接
+api_key: sk-your-api-key-here
+base_url: https://api.deepseek.com/v1
+api_format: openai
+
+# 已激活的模型列表（可在 WebUI Settings 中管理）
+active_models:
+  - model: deepseek-chat
+    provider: DeepSeek
+
+# 生成参数
+max_tokens: 20000
+temperature: 0.5
+max_context_tokens: 1000000
+max_rounds: 50
+
+# Agent 行为
+wake_words:
+  - atri
+persona: ''
+extra_instructions: ''
+
+# 工作目录（Agent 文件操作沙箱）
+workspace: ./workspace
+
+# 数据存储路径
+sessions_dir: data/sessions
+plugins_dir: plugins
+
+# Dashboard Web 控制台
+dashboard:
+  enabled: true
+  host: 0.0.0.0
+  port: 6185
+
+# OneBot11 反向 WebSocket（QQ / Napcat）
+onebot11:
+  enabled: true
+  ws_reverse_host: 0.0.0.0
+  ws_reverse_port: 6199
+  ws_reverse_token: ''
+
+# 本地音乐库目录（可选）
+music_directories:
+  - /path/to/your/music/folder
+
+# Tavily API Key（可选，用于 Web 搜索工具）
+tavily_api_key: ''
+
+# 模型提供商列表（可在 WebUI 中管理）
+providers:
+  DeepSeek:
+    base_url: https://api.deepseek.com/v1
+    api_key: sk-your-api-key-here
+    api_format: openai
+    models:
+      - deepseek-chat
+
+# MCP Server 配置（可在 WebUI 中管理）
+mcp_servers: {}
+
+# Skills 配置（可在 WebUI 中管理）
+skills: {}
