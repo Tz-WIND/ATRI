@@ -7,9 +7,9 @@
     />
     <div class="app-main">
       <div class="app-content" :class="{ 'has-player': hasPlayer }">
-        <Transition name="fade" mode="out-in">
+        <KeepAlive>
           <component :is="activeComponent" :key="activePage" />
-        </Transition>
+        </KeepAlive>
       </div>
     </div>
 
