@@ -5,7 +5,9 @@ Stores conversation history and model config as JSON, keyed by session ID
 """
 
 import json
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -41,7 +43,21 @@ class SessionStore:
             data["extra"] = extra
 
         path = self.sessions_dir / f"{_safe_filename(session_id)}.json"
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        # Atomic write: write to temp file in same directory, then rename
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.sessions_dir), suffix=".tmp", prefix=".session_"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         return session_id
 
     def load(self, session_id: str) -> tuple[list[dict], str] | None:

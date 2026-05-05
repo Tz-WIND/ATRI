@@ -30,6 +30,8 @@ class EditFileTool(Tool):
     }
 
     def execute(self, file_path: str, old_string: str, new_string: str) -> str:
+        if not old_string:
+            return "Error: old_string must not be empty"
         try:
             p = self.resolve_path(file_path)
             if not p.exists():

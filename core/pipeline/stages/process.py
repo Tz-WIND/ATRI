@@ -8,6 +8,8 @@ Each user/group session gets its own Agent instance with isolated context.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +17,7 @@ from core import logger
 from core.agent.agent import Agent
 from core.agent.llm import LLM
 from core.agent.session import SessionStore
-from core.platform.message import MessageEvent
+from core.platform.message import MessageEvent, normalize_session_id
 from core.pipeline.stage import Stage, register_stage
 from core.skills import SkillManager, build_skills_prompt
 
@@ -49,6 +51,8 @@ class ProcessStage(Stage):
         self.session_store = SessionStore(ctx.get("sessions_dir"))
 
         self._agents: dict[str, Agent] = {}
+        self._agents_lock = threading.Lock()
+        self._agents_last_active: dict[str, float] = {}
         self._llm_template = {
             "model": self.model,
             "api_key": self.api_key,
@@ -58,8 +62,10 @@ class ProcessStage(Stage):
         }
 
         self.broadcast_fn: Callable[[dict], Coroutine[Any, Any, None]] | None = None
-        # Track the currently active agent for Ctrl+C interruption
         self._active_session_id: str | None = None
+
+        # Store event loop reference for thread-safe broadcasting from agent executor
+        self._loop = asyncio.get_running_loop()
 
     def _build_skills_prompt(self) -> str:
         active_skills = self.skill_manager.list_skills(active_only=True)
@@ -67,42 +73,72 @@ class ProcessStage(Stage):
             return ""
         return build_skills_prompt(active_skills)
 
+    # Seconds of inactivity before an idle agent is evicted from memory
+    AGENT_TTL_SECONDS = 1800  # 30 minutes
+
     def _get_or_create_agent(self, session_id: str) -> Agent:
         """Get existing agent for session or create a new one.
 
         Each session (user/group) gets its own Agent with its own LLM instance,
         ensuring isolated context and independent token tracking.
-        """
-        if session_id not in self._agents:
-            llm = LLM(**self._llm_template)
-            agent = Agent(
-                llm=llm,
-                workspace=self.workspace,
-                max_context_tokens=self.max_context_tokens,
-                max_rounds=self.max_rounds,
-                extra_instructions=self.extra_instructions,
-                persona=self.persona,
-                skills_prompt=self._skills_prompt,
-            )
-            # Try to restore session from disk
-            loaded = self.session_store.load(session_id)
-            if loaded:
-                agent.messages = loaded[0]
-                logger.info(f"Restored session {session_id} with {len(loaded[0])} messages")
-            self._agents[session_id] = agent
 
-        return self._agents[session_id]
+        Idle agents are evicted after AGENT_TTL_SECONDS to prevent memory leaks.
+        Thread-safe: uses _agents_lock for dict access from executor threads.
+
+        NOTE: The lock is held during LLM construction and session-store disk I/O
+        when creating a new agent. Agent creation is infrequent (only on first
+        message per session or after TTL eviction), so this is acceptable in
+        practice. If agent creation ever moves to a hot path, switch to a
+        double-checked locking pattern to reduce lock hold time.
+        """
+        now = time.time()
+
+        with self._agents_lock:
+            # Evict stale agents first.
+            # FUTURE: If Agent ever acquires resources that need explicit
+            # cleanup (thread pools, file handles, subprocesses), add a
+            # cleanup call here before popping — currently GC is sufficient.
+            stale = [
+                sid for sid, last in self._agents_last_active.items()
+                if now - last > self.AGENT_TTL_SECONDS
+            ]
+            for sid in stale:
+                logger.info(f"Evicting idle agent for session {sid}")
+                self._agents.pop(sid, None)
+                self._agents_last_active.pop(sid, None)
+                self.session_store.delete(sid)
+
+            if session_id not in self._agents:
+                llm = LLM(**self._llm_template)
+                agent = Agent(
+                    llm=llm,
+                    workspace=self.workspace,
+                    max_context_tokens=self.max_context_tokens,
+                    max_rounds=self.max_rounds,
+                    extra_instructions=self.extra_instructions,
+                    persona=self.persona,
+                    skills_prompt=self._skills_prompt,
+                )
+                # Try to restore session from disk
+                loaded = self.session_store.load(session_id)
+                if loaded:
+                    agent.messages = loaded[0]
+                    logger.info(f"Restored session {session_id} with {len(loaded[0])} messages")
+                self._agents[session_id] = agent
+                self._agents_last_active[session_id] = now
+
+            self._agents_last_active[session_id] = now
+            return self._agents[session_id]
 
     def _fire(self, data: dict):
         """Thread-safe broadcast: schedule the async broadcast on the event loop."""
         if not self.broadcast_fn:
             return
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.run_coroutine_threadsafe(self.broadcast_fn(data), loop)
+            if self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.broadcast_fn(data), self._loop)
             else:
-                loop.run_until_complete(self.broadcast_fn(data))
+                self._loop.run_until_complete(self.broadcast_fn(data))
         except RuntimeError:
             pass
 
@@ -113,7 +149,6 @@ class ProcessStage(Stage):
 
         session_id = event.unified_msg_origin
         agent = self._get_or_create_agent(session_id)
-        loop = asyncio.get_event_loop()
 
         tool_events: list[dict] = []
 
@@ -121,7 +156,7 @@ class ProcessStage(Stage):
             if not self.broadcast_fn:
                 return
             try:
-                asyncio.run_coroutine_threadsafe(self.broadcast_fn(data), loop)
+                asyncio.run_coroutine_threadsafe(self.broadcast_fn(data), self._loop)
             except RuntimeError:
                 pass
 
@@ -242,10 +277,12 @@ class ProcessStage(Stage):
         and tool execution without shutting down the whole process.
         """
         sid = self._active_session_id
-        if sid and sid in self._agents:
-            self._agents[sid].cancel()
-            logger.info(f"Cancelled agent for session {sid}")
-            return True
+        if sid:
+            with self._agents_lock:
+                if sid in self._agents:
+                    self._agents[sid].cancel()
+                    logger.info(f"Cancelled agent for session {sid}")
+                    return True
         return False
 
     def cancel_session(self, session_id: str) -> bool:
@@ -254,55 +291,79 @@ class ProcessStage(Stage):
         Called from the dashboard HTTP handler when the frontend user
         presses the stop/interrupt button.
         """
-        # Convert display ID to internal key if needed (webchat:friend: prefix)
-        if ":" not in session_id:
-            session_id = f"webchat:friend:{session_id}"
-        if session_id in self._agents:
-            self._agents[session_id].cancel()
-            logger.info(f"Cancelled agent for session {session_id}")
-            return True
-        # Also try the currently active session as fallback
+        session_id = normalize_session_id(session_id)
+        with self._agents_lock:
+            if session_id in self._agents:
+                self._agents[session_id].cancel()
+                logger.info(f"Cancelled agent for session {session_id}")
+                return True
         return self.cancel_current()
 
     def update_config(self, **kwargs):
         """Hot-reload configuration (called from WebUI/dashboard)."""
         if "model" in kwargs:
             self._llm_template["model"] = kwargs["model"]
-            for agent in self._agents.values():
-                agent.llm.model = kwargs["model"]
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    agent.llm.model = kwargs["model"]
         if "api_key" in kwargs and kwargs["api_key"] != "***":
             self._llm_template["api_key"] = kwargs["api_key"]
-            for agent in self._agents.values():
-                agent.llm.client.api_key = kwargs["api_key"]
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    agent.llm.client.api_key = kwargs["api_key"]
         if "base_url" in kwargs:
             self._llm_template["base_url"] = kwargs["base_url"]
-            for agent in self._agents.values():
-                agent.llm.client.base_url = kwargs["base_url"]
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    agent.llm.client.base_url = kwargs["base_url"]
         if "extra_instructions" in kwargs:
             self.extra_instructions = kwargs["extra_instructions"]
             self._llm_template["extra_instructions"] = kwargs["extra_instructions"]
-            for agent in self._agents.values():
-                agent.extra_instructions = kwargs["extra_instructions"]
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    agent.extra_instructions = kwargs["extra_instructions"]
         if "persona" in kwargs:
             self.persona = kwargs["persona"]
             self._llm_template["persona"] = kwargs["persona"]
-            for agent in self._agents.values():
-                agent.persona = kwargs["persona"]
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    agent.persona = kwargs["persona"]
         if "skills" in kwargs:
             self.skill_manager.skills_config = kwargs["skills"]
             self._skills_prompt = self._build_skills_prompt()
-            for agent in self._agents.values():
-                agent.skills_prompt = self._skills_prompt
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    agent.skills_prompt = self._skills_prompt
         if "tavily_api_key" in kwargs:
             self.tavily_api_key = kwargs["tavily_api_key"]
             from core.tools.web_search import set_tavily_key
             set_tavily_key(self.tavily_api_key or None)
 
+    def get_agent(self, session_id: str) -> Agent | None:
+        """Thread-safe lookup of a session's agent. Returns None if not found."""
+        with self._agents_lock:
+            return self._agents.get(session_id)
+
+    @property
+    def agent_count(self) -> int:
+        """Thread-safe count of active agents."""
+        with self._agents_lock:
+            return len(self._agents)
+
+    def reload_skills(self):
+        """Rebuild skills prompt and push to all live agents (thread-safe)."""
+        self._skills_prompt = self._build_skills_prompt()
+        with self._agents_lock:
+            for agent in self._agents.values():
+                agent.skills_prompt = self._skills_prompt
+
     def reset_session(self, session_id: str):
         """Clear a specific session's history."""
-        if session_id in self._agents:
-            self._agents[session_id].reset()
-            self.session_store.delete(session_id)
+        with self._agents_lock:
+            if session_id in self._agents:
+                self._agents[session_id].reset()
+                self._agents_last_active.pop(session_id, None)
+                self.session_store.delete(session_id)
 
 
 def _brief(kwargs: dict, maxlen: int = 60) -> str:

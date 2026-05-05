@@ -14,13 +14,29 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .llm import LLM
 
+# CJK + fullwidth ranges: ideographs, kana, hangul, punctuation, fullwidth forms
+_CJK_RE = re.compile(
+    r"[一-鿿㐀-䶿"       # CJK unified ideographs
+    r"぀-ヿ가-힯"         # Hiragana, Katakana, Hangul
+    r"　-〿＀-￯"         # CJK punctuation, fullwidth forms
+    r"]"
+)
+
 
 def _approx_tokens(text: str) -> int:
-    return len(text) // 3
+    """Estimate token count with CJK-aware heuristics.
+
+    CJK characters average ~1.5 tokens each in most tokenizers;
+    Latin/ASCII characters average ~0.25 tokens each (4 chars ≈ 1 token).
+    """
+    cjk_count = len(_CJK_RE.findall(text))
+    latin_count = len(text) - cjk_count
+    return int(cjk_count * 1.5 + latin_count * 0.25)
 
 
-def estimate_tokens(messages: list[dict]) -> int:
-    total = 0
+def estimate_tokens(messages: list[dict], system_prompt: str = "") -> int:
+    """Estimate total tokens including optional system prompt."""
+    total = _approx_tokens(system_prompt) if system_prompt else 0
     for m in messages:
         if m.get("content"):
             total += _approx_tokens(m["content"])
@@ -36,20 +52,26 @@ class ContextManager:
         self._summarize_at = int(max_tokens * 0.70)
         self._collapse_at = int(max_tokens * 0.90)
 
-    def maybe_compress(self, messages: list[dict], llm: "LLM | None" = None) -> bool:
-        """Apply compression layers as needed. Returns True if any compression happened."""
-        current = estimate_tokens(messages)
+    def maybe_compress(
+        self, messages: list[dict], llm: "LLM | None" = None, system_prompt: str = ""
+    ) -> bool:
+        """Apply compression layers as needed. Returns True if any compression happened.
+
+        system_prompt is included in the token budget calculation so that we don't
+        exceed the model's context window after adding the system prompt at call time.
+        """
+        current = estimate_tokens(messages, system_prompt)
         compressed = False
 
         if current > self._snip_at:
             if self._snip_tool_outputs(messages):
                 compressed = True
-                current = estimate_tokens(messages)
+                current = estimate_tokens(messages, system_prompt)
 
         if current > self._summarize_at and len(messages) > 10:
             if self._summarize_old(messages, llm, keep_recent=8):
                 compressed = True
-                current = estimate_tokens(messages)
+                current = estimate_tokens(messages, system_prompt)
 
         if current > self._collapse_at and len(messages) > 4:
             self._hard_collapse(messages, llm)

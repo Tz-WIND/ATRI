@@ -100,7 +100,7 @@ class Agent:
         else:
             self.messages.append({"role": "user", "content": user_input})
 
-        self.context.maybe_compress(self.messages, self.llm)
+        self.context.maybe_compress(self.messages, self.llm, self._build_system())
 
         for _ in range(self.max_rounds):
             # Check for cancellation before each LLM call
@@ -156,7 +156,7 @@ class Agent:
                 self._was_cancelled = True
                 return "[Interrupted by user]"
 
-            self.context.maybe_compress(self.messages, self.llm)
+            self.context.maybe_compress(self.messages, self.llm, self._build_system())
 
         return "(reached maximum tool-call rounds)"
 
@@ -170,8 +170,8 @@ class Agent:
         for tool in self.tools:
             try:
                 tool.cancel()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error cancelling tool {tool.name}: {e}")
 
     async def chat_async(
         self,
@@ -184,7 +184,7 @@ class Agent:
         on_tool_end: Callable | None = None,
     ) -> str:
         """Async wrapper: runs the synchronous chat in a thread executor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             lambda: self.chat(

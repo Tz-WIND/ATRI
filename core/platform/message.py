@@ -132,3 +132,26 @@ class MessageEvent:
             elif isinstance(c, File):
                 parts.append(f"[文件:{c.name}]")
         return " ".join(parts)
+
+
+# Session ID helpers — shared between ProcessStage and Dashboard
+
+WEBChat_SESSION_PREFIX = "webchat:friend:"
+
+
+def normalize_session_id(display_id: str) -> str:
+    """Convert a display session ID to the internal unified_msg_origin key.
+
+    If display_id already contains ':' it is assumed to be already
+    in internal form and returned as-is.
+    """
+    if ":" in display_id:
+        return display_id
+    return f"{WEBChat_SESSION_PREFIX}{display_id}"
+
+
+def display_session_id(internal_id: str) -> str:
+    """Convert an internal unified_msg_origin key to a display session ID."""
+    if internal_id.startswith(WEBChat_SESSION_PREFIX):
+        return internal_id[len(WEBChat_SESSION_PREFIX):]
+    return internal_id

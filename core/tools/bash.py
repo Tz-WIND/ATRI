@@ -11,6 +11,7 @@ Features:
 
 import os
 import re
+import shlex
 import subprocess
 import threading
 from .base import Tool
@@ -150,17 +151,53 @@ class BashTool(Tool):
             return f"Error: {e}"
 
     def _update_cwd(self, command: str):
-        parts = command.split("&&")
+        """Track working directory changes from shell commands.
+
+        Handles cd, pushd, and their chaining via &&, ;, ||.
+        Does NOT handle subshells ( ... ) or source'd scripts.
+        """
+        # Split on common separators
+        parts = _split_shell_commands(command)
         for part in parts:
             part = part.strip()
-            if part.startswith("cd "):
-                target = part[3:].strip().strip("'\"")
+            # cd
+            if part.startswith("cd ") or part == "cd":
+                target = part[2:].strip() if part.startswith("cd ") else ""
+                target = target.strip().strip("'\"")
+                if not target:
+                    self._cwd = os.path.expanduser("~")
+                else:
+                    new_dir = os.path.normpath(
+                        os.path.join(self._cwd, os.path.expanduser(target))
+                    )
+                    if os.path.isdir(new_dir):
+                        self._cwd = new_dir
+            # pushd (tracks the pushed directory, ignoring the stack)
+            elif part.startswith("pushd "):
+                target = part[6:].strip().strip("'\"")
                 if target:
                     new_dir = os.path.normpath(
                         os.path.join(self._cwd, os.path.expanduser(target))
                     )
                     if os.path.isdir(new_dir):
                         self._cwd = new_dir
+            # popd (best-effort: go to parent; we don't maintain a full dirs stack)
+            elif part.strip() == "popd":
+                parent = os.path.dirname(self._cwd)
+                if os.path.isdir(parent):
+                    self._cwd = parent
+
+
+def _split_shell_commands(cmd: str) -> list[str]:
+    """Split a shell command string on &&, ;, and || separators.
+
+    NOTE: This is a simple regex split that does NOT respect shell quoting.
+    For example, echo "a && b" would be incorrectly split on the && inside quotes.
+    In practice this is acceptable because cd/pushd targets rarely contain these
+    separators, but if this function is ever reused for general-purpose command
+    parsing it should be replaced with proper shlex-based tokenization.
+    """
+    return [p for p in re.split(r"(?:&&|;|\|\|)", cmd) if p.strip()]
 
 
 def _check_dangerous(cmd: str) -> str | None:

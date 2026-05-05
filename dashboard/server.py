@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from quart import Quart, Response, jsonify, request, websocket, send_from_directory
 
 from core import logger
+from core.platform.message import normalize_session_id, display_session_id
 
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
@@ -43,21 +44,6 @@ class Dashboard:
         if lifecycle.process_stage:
             lifecycle.process_stage.broadcast_fn = self.broadcast
 
-    @staticmethod
-    def _to_internal_key(display_id: str) -> str:
-        """Frontend display session ID -> internal unified_msg_origin key."""
-        if ":" in display_id:
-            return display_id
-        return f"webchat:friend:{display_id}"
-
-    @staticmethod
-    def _to_display_id(internal_id: str) -> str:
-        """Internal unified_msg_origin key -> frontend display session ID."""
-        prefix = "webchat:friend:"
-        if internal_id.startswith(prefix):
-            return internal_id[len(prefix):]
-        return internal_id
-
     def _apply_model(self, provider_name: str, model: str):
         """Apply a model + provider credentials as the current active model."""
         lc = self.lifecycle
@@ -78,11 +64,8 @@ class Dashboard:
     def _reload_skills_prompt(self):
         """Hot-reload the skills prompt on all live agents after a config change."""
         ps = self.lifecycle.process_stage
-        if ps is None:
-            return
-        ps._skills_prompt = ps._build_skills_prompt()
-        for agent in ps._agents.values():
-            agent.skills_prompt = ps._skills_prompt
+        if ps is not None:
+            ps.reload_skills()
 
     def _register_routes(self):
         app = self.app
@@ -110,7 +93,7 @@ class Dashboard:
                 "api_format": lc.config.get("api_format", "openai"),
                 "onebot11_status": lc.onebot11.status.value if lc.onebot11 else "disabled",
                 "webchat_status": lc.webchat.status.value if lc.webchat else "disabled",
-                "session_count": len(lc.process_stage._agents) if lc.process_stage else 0,
+                "session_count": lc.process_stage.agent_count if lc.process_stage else 0,
                 "mcp_server_count": len(lc.config.get("mcp_servers", {})),
                 "skill_count": len(lc.config.get("skills", {})),
             })
@@ -460,7 +443,7 @@ class Dashboard:
             if self.lifecycle.process_stage:
                 sessions = self.lifecycle.process_stage.session_store.list_sessions()
                 for s in sessions:
-                    s["id"] = self._to_display_id(s["id"])
+                    s["id"] = display_session_id(s["id"])
                 return jsonify(sessions)
             return jsonify([])
 
@@ -479,7 +462,7 @@ class Dashboard:
         @app.route("/api/sessions/<path:session_id>", methods=["DELETE"])
         async def delete_session(session_id: str):
             if self.lifecycle.process_stage:
-                internal_id = self._to_internal_key(session_id)
+                internal_id = normalize_session_id(session_id)
                 self.lifecycle.process_stage.reset_session(internal_id)
                 # Also try raw ID in case internal key format differs
                 if session_id != internal_id:
@@ -566,7 +549,7 @@ class Dashboard:
                 response_text = result.get("text", "")
                 token_usage = {}
                 if self.lifecycle.process_stage:
-                    agent = self.lifecycle.process_stage._agents.get(event.unified_msg_origin)
+                    agent = self.lifecycle.process_stage.get_agent(event.unified_msg_origin)
                     if agent:
                         token_usage = {
                             "prompt": agent.llm.total_prompt_tokens,
@@ -575,7 +558,7 @@ class Dashboard:
                         }
                 return jsonify({
                     "response": response_text,
-                    "session_id": self._to_display_id(event.unified_msg_origin),
+                    "session_id": display_session_id(event.unified_msg_origin),
                     "tool_events": event._extras.get("tool_events", []),
                     "token_usage": token_usage,
                 })
@@ -608,9 +591,9 @@ class Dashboard:
         @app.route("/api/approve-command", methods=["POST"])
         async def approve_command():
             data = await request.get_json()
-            session_id = self._to_internal_key(data.get("session_id", ""))
-            if self.lifecycle.process_stage and session_id in self.lifecycle.process_stage._agents:
-                agent = self.lifecycle.process_stage._agents[session_id]
+            session_id = normalize_session_id(data.get("session_id", ""))
+            agent = self.lifecycle.process_stage.get_agent(session_id) if self.lifecycle.process_stage else None
+            if agent:
                 from core.tools.bash import BashTool
                 for tool in agent.tools:
                     if isinstance(tool, BashTool) and tool._pending_approval:
