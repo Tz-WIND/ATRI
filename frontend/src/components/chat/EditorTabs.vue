@@ -44,9 +44,12 @@
           </div>
         </div>
         <div class="code-wrapper">
-          <div class="line-numbers" ref="lineNumbersRef">
-            <div v-for="n in lineCount" :key="n" class="line-num">{{ n }}</div>
+          <div class="line-numbers">
+            <div class="line-numbers-inner" ref="lineNumbersRef">
+              <div v-for="n in lineCount" :key="n" :class="['line-num', { active: n === currentLine }]">{{ n }}</div>
+            </div>
           </div>
+          <div class="current-line-highlight" :style="currentLineStyle"></div>
           <textarea
             ref="editorRef"
             class="code-editor"
@@ -54,10 +57,16 @@
             @input="onInput"
             @scroll="syncScroll"
             @keydown="onKeydown"
+            @click="updateCursorState"
+            @mouseup="updateCursorState"
+            @select="updateCursorState"
+            @keyup="updateCursorState"
+            @focus="updateCursorState"
             spellcheck="false"
             wrap="off"
           ></textarea>
           <pre class="code-highlight" ref="highlightRef"><code v-html="highlightedCode"></code></pre>
+          <pre class="word-highlights" ref="wordHighlightsRef"><code v-html="wordHighlightsHtml"></code></pre>
         </div>
       </div>
     </template>
@@ -75,8 +84,12 @@ const activeTabPath = ref('')
 const saving = ref(false)
 const editorRef = ref(null)
 const highlightRef = ref(null)
+const wordHighlightsRef = ref(null)
 const lineNumbersRef = ref(null)
 const tabListRef = ref(null)
+const currentLine = ref(1)
+const selectedWord = ref('')
+const editorScrollTop = ref(0)
 
 const activeTab = computed(() => tabs.value.find(t => t.path === activeTabPath.value))
 
@@ -117,6 +130,69 @@ const highlightedCode = computed(() => {
 
 function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+const currentLineStyle = computed(() => {
+  const top = 8 + (currentLine.value - 1) * 20
+  return {
+    top: `${top - editorScrollTop.value}px`,
+  }
+})
+
+const wordHighlightsHtml = computed(() => {
+  if (!activeTab.value || !selectedWord.value) return ''
+  const code = activeTab.value.content || ''
+  const word = selectedWord.value
+  const escaped = escapeRegExp(word)
+  const regex = new RegExp(escaped, 'g')
+  let result = ''
+  let lastIdx = 0
+  let match
+  while ((match = regex.exec(code)) !== null) {
+    const before = code.slice(lastIdx, match.index)
+    result += escapeHtml(before)
+    result += `<mark class="word-match">${escapeHtml(match[0])}</mark>`
+    lastIdx = match.index + match[0].length
+  }
+  result += escapeHtml(code.slice(lastIdx))
+  return result
+})
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function updateCursorState() {
+  if (!editorRef.value) return
+  const ta = editorRef.value
+  const pos = ta.selectionStart
+  const text = ta.value || ''
+  const line = text.substring(0, pos).split('\n').length
+  currentLine.value = line
+
+  const start = ta.selectionStart
+  const end = ta.selectionEnd
+  if (start !== end) {
+    const selected = text.substring(start, end)
+    if (selected.length >= 2 && selected.length <= 60 && /^\w+$/.test(selected)) {
+      if (selectedWord.value !== selected) {
+        selectedWord.value = selected
+        nextTick(syncWordHighlightsScroll)
+      }
+    } else {
+      selectedWord.value = ''
+    }
+  } else {
+    selectedWord.value = ''
+  }
+}
+
+function syncWordHighlightsScroll() {
+  if (wordHighlightsRef.value && editorRef.value) {
+    const st = editorRef.value.scrollTop
+    const sl = editorRef.value.scrollLeft
+    wordHighlightsRef.value.style.transform = `translate(${-sl}px, ${-st}px)`
+  }
 }
 
 async function openFile(fileInfo) {
@@ -165,13 +241,24 @@ function onInput(e) {
   if (!activeTab.value) return
   activeTab.value.content = e.target.value
   activeTab.value.modified = activeTab.value.content !== activeTab.value.originalContent
+  nextTick(updateCursorState)
 }
 
 function syncScroll() {
-  if (!editorRef.value || !highlightRef.value || !lineNumbersRef.value) return
-  highlightRef.value.scrollTop = editorRef.value.scrollTop
-  highlightRef.value.scrollLeft = editorRef.value.scrollLeft
-  lineNumbersRef.value.scrollTop = editorRef.value.scrollTop
+  if (!editorRef.value) return
+  const st = editorRef.value.scrollTop
+  const sl = editorRef.value.scrollLeft
+  editorScrollTop.value = st
+  if (highlightRef.value) {
+    highlightRef.value.style.transform = `translate(${-sl}px, ${-st}px)`
+  }
+  if (wordHighlightsRef.value) {
+    wordHighlightsRef.value.style.transform = `translate(${-sl}px, ${-st}px)`
+  }
+  if (lineNumbersRef.value) {
+    lineNumbersRef.value.style.transform = `translateY(${-st}px)`
+  }
+  updateCursorState()
 }
 
 function onKeydown(e) {
@@ -424,6 +511,7 @@ defineExpose({ openFile })
   position: relative;
   overflow: hidden;
   display: flex;
+  background: var(--bg0);
 }
 
 .line-numbers {
@@ -432,8 +520,12 @@ defineExpose({ openFile })
   overflow: hidden;
   background: var(--bg1);
   border-right: 1px solid var(--border);
-  padding: 8px 0;
   user-select: none;
+  position: relative;
+}
+
+.line-numbers-inner {
+  padding: 8px 0;
 }
 
 .line-num {
@@ -446,8 +538,21 @@ defineExpose({ openFile })
   color: var(--t3);
 }
 
-.code-editor,
-.code-highlight {
+.current-line-highlight {
+  position: absolute;
+  left: 48px;
+  right: 0;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.line-num.active {
+  color: var(--t1);
+}
+
+.code-editor {
   position: absolute;
   top: 0;
   left: 48px;
@@ -459,24 +564,44 @@ defineExpose({ openFile })
   line-height: 20px;
   tab-size: 2;
   white-space: pre;
-  overflow: auto;
   margin: 0;
-}
-
-.code-editor {
+  box-sizing: border-box;
   background: transparent;
   color: transparent;
   caret-color: var(--t1);
   border: none;
   outline: none;
   resize: none;
-  z-index: 2;
+  z-index: 5;
+  overflow: scroll;
+  scrollbar-width: none;
+}
+
+.code-editor::-webkit-scrollbar {
+  display: none;
+}
+
+.code-highlight,
+.word-highlights {
+  position: absolute;
+  top: 0;
+  left: 48px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--mono);
+  line-height: 20px;
+  tab-size: 2;
+  white-space: pre;
+  margin: 0;
+  box-sizing: border-box;
+  pointer-events: none;
+  width: max-content;
+  min-width: calc(100% - 48px);
 }
 
 .code-highlight {
-  pointer-events: none;
   z-index: 1;
-  background: var(--bg0);
+  background: transparent;
   color: var(--t1);
 }
 
@@ -485,9 +610,32 @@ defineExpose({ openFile })
   font-size: inherit;
   line-height: inherit;
 }
+
+.word-highlights {
+  z-index: 3;
+  background: transparent;
+  color: transparent;
+}
+
+.word-highlights code {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: transparent;
+}
 </style>
 
 <style>
+.word-highlights .word-match {
+  background: rgba(255, 200, 50, 0.25);
+  outline: 1px solid rgba(255, 200, 50, 0.4);
+  border-radius: 2px;
+  color: transparent;
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
 /* highlight.js VS Code dark theme */
 .code-highlight .hljs-keyword { color: #c586c0; }
 .code-highlight .hljs-built_in { color: #dcdcaa; }
