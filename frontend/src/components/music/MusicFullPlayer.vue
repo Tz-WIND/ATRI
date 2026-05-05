@@ -57,6 +57,11 @@
 
           <!-- Controls -->
           <div class="fp-controls">
+            <button class="fp-ctrl fp-mode" :class="{ active: playMode !== 'sequential' }" @click="cyclePlayMode" :title="modeLabel">
+              <svg v-if="playMode === 'sequential'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+              <svg v-else-if="playMode === 'shuffle'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/><text x="10" y="16" font-size="9" fill="currentColor" stroke="none" font-weight="bold">1</text></svg>
+            </button>
             <button class="fp-ctrl" @click="prev"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
             <button class="fp-ctrl fp-play" @click="togglePlay">
               <svg v-if="playing" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
@@ -103,10 +108,15 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { useMusic } from '@/composables/useMusic.js'
 
 const {
-  currentSong, playing, progress, volume, lyrics,
+  currentSong, playing, progress, volume, lyrics, playMode,
   currentTime, duration, currentTimeStr, showFullPlayer,
-  togglePlay, next, prev, seek, setVolume, coverUrl, formatTime,
+  togglePlay, next, prev, seek, setVolume, coverUrl, formatTime, cyclePlayMode,
 } = useMusic()
+
+const modeLabel = computed(() => {
+  const labels = { sequential: 'Sequential', shuffle: 'Shuffle', 'repeat-one': 'Repeat One' }
+  return labels[playMode.value] || 'Sequential'
+})
 
 const fpProgressTrack = ref(null)
 const lyricsContainer = ref(null)
@@ -379,6 +389,13 @@ function seekToLyric(time) {
 }
 .fp-ctrl:hover { color: white; background: rgba(255,255,255,0.08); }
 .fp-ctrl svg { width: 24px; height: 24px; }
+
+.fp-mode {
+  width: 36px;
+  height: 36px;
+}
+.fp-mode svg { width: 18px; height: 18px; }
+.fp-mode.active { color: #ff2d55; }
 
 .fp-play {
   width: 56px;

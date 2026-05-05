@@ -13,6 +13,8 @@ const duration = ref(0)
 const volume = ref(80)
 const showFullPlayer = ref(false)
 const playerCollapsed = ref(false)
+// 'sequential' | 'shuffle' | 'repeat-one'
+const playMode = ref('sequential')
 const lyrics = ref(null)
 const loading = ref(false)
 const coverCache = {}
@@ -33,7 +35,7 @@ function getAudio() {
       duration.value = audio.duration || 0
     })
     audio.addEventListener('ended', () => {
-      next()
+      onTrackEnded()
     })
     audio.addEventListener('play', () => { playing.value = true })
     audio.addEventListener('pause', () => { playing.value = false })
@@ -135,10 +137,25 @@ function resume() {
   if (a.src) a.play().catch(() => {})
 }
 
+function onTrackEnded() {
+  if (playMode.value === 'repeat-one') {
+    const a = getAudio()
+    a.currentTime = 0
+    a.play().catch(() => {})
+  } else {
+    next()
+  }
+}
+
 function next() {
   if (queue.value.length === 0) return
-  const idx = (currentIndex.value + 1) % queue.value.length
-  playSongAt(idx)
+  if (playMode.value === 'shuffle') {
+    const idx = Math.floor(Math.random() * queue.value.length)
+    playSongAt(idx)
+  } else {
+    const idx = (currentIndex.value + 1) % queue.value.length
+    playSongAt(idx)
+  }
 }
 
 function prev() {
@@ -148,8 +165,19 @@ function prev() {
     a.currentTime = 0
     return
   }
-  const idx = (currentIndex.value - 1 + queue.value.length) % queue.value.length
-  playSongAt(idx)
+  if (playMode.value === 'shuffle') {
+    const idx = Math.floor(Math.random() * queue.value.length)
+    playSongAt(idx)
+  } else {
+    const idx = (currentIndex.value - 1 + queue.value.length) % queue.value.length
+    playSongAt(idx)
+  }
+}
+
+function cyclePlayMode() {
+  const modes = ['sequential', 'shuffle', 'repeat-one']
+  const i = modes.indexOf(playMode.value)
+  playMode.value = modes[(i + 1) % modes.length]
 }
 
 function stop() {
@@ -236,10 +264,10 @@ function handleWsControl(msg) {
 export function useMusic() {
   return {
     songs, queue, currentIndex, currentSong, playing, currentTime, duration,
-    volume, showFullPlayer, playerCollapsed, lyrics, loading, progress,
+    volume, showFullPlayer, playerCollapsed, playMode, lyrics, loading, progress,
     currentTimeStr, durationStr,
     setLibrary, playAll, playSong, playSongDirect, playSongAt,
-    togglePlay, pause, resume, next, prev, stop,
+    togglePlay, pause, resume, next, prev, stop, cyclePlayMode,
     seek, setVolume, coverUrl, loadLyrics,
     handleWsControl, formatTime,
   }
