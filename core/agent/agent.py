@@ -92,9 +92,11 @@ class Agent:
         lines = [
             "# Sub-Agent Models",
             "The `agent` tool creates a separate LLM instance for every sub-agent. "
-            "You may set `model` and `provider` on an `agent` tool call, or use "
-            "`task_configs` to choose per sub-agent. Omit them to use the current "
-            "model/provider.",
+            "Each sub-agent also gets fresh tool instances and reports status, "
+            "visible text output, tool calls, and tool result previews back to "
+            "you. Thinking content is not exposed. You may set `model` and "
+            "`provider` on an `agent` tool call, or use `task_configs` to choose "
+            "per sub-agent. Omit them to use the current model/provider.",
         ]
         if choices:
             lines.append("Available configured choices:")

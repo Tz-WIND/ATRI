@@ -7,6 +7,7 @@ Chat messages go through the WebChat platform adapter and full pipeline.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 from http.cookies import SimpleCookie
 import json
@@ -47,6 +48,38 @@ _PROCESS_STAGE_SETTING_KEYS = {
 }
 
 _AUTH_COOKIE = "atri_dashboard_session"
+
+_PBKDF2_PREFIX = "pbkdf2:"
+_PBKDF2_ITERATIONS = 600_000
+_PBKDF2_HASH = "sha256"
+_PBKDF2_SALT_BYTES = 16
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password with PBKDF2-SHA256, returning a storable string."""
+    salt = os.urandom(_PBKDF2_SALT_BYTES)
+    dk = hashlib.pbkdf2_hmac(_PBKDF2_HASH, password.encode(), salt, _PBKDF2_ITERATIONS)
+    return f"{_PBKDF2_PREFIX}{salt.hex()}${dk.hex()}"
+
+
+def _verify_password(stored: str, candidate: str) -> bool:
+    """Verify a password against a hashed or legacy plaintext storage string."""
+    if not stored or not candidate:
+        return False
+    if stored.startswith(_PBKDF2_PREFIX):
+        try:
+            prefixed_salt, dk_hex = stored.split("$", 1)
+        except ValueError:
+            return False
+        salt_hex = prefixed_salt[len(_PBKDF2_PREFIX):]
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(dk_hex)
+        dk = hashlib.pbkdf2_hmac(_PBKDF2_HASH, candidate.encode(), salt, _PBKDF2_ITERATIONS)
+        return hmac.compare_digest(dk, expected)
+    # Legacy plaintext comparison — upgrade on next successful login
+    return hmac.compare_digest(stored, candidate)
+
+
 _AUTH_EXEMPT_API_PATHS = {
     "/api/auth/status",
     "/api/auth/login",
@@ -229,10 +262,18 @@ class Dashboard:
             lifecycle.process_stage.broadcast_fn = self.broadcast
 
     def _sync_auth_from_config(self):
+        """Refresh auth state from config.
+
+        NOTE: callers that change the stored username/password MUST regenerate
+        auth_session_token afterwards — this method intentionally does NOT
+        touch the session token so that simple config reloads don't log
+        everyone out.
+        """
         dashboard_cfg = self.lifecycle.config.get("dashboard", {})
         dashboard_enabled = bool(dashboard_cfg.get("enabled", True))
         self.auth_username = str(dashboard_cfg.get("username", "") or "")
         self.auth_password = str(dashboard_cfg.get("password", "") or "")
+        self.auth_password_is_hashed = self.auth_password.startswith(_PBKDF2_PREFIX)
         self.auth_setup_required = bool(
             dashboard_enabled and (not self.auth_username or not self.auth_password)
         )
@@ -257,6 +298,52 @@ class Dashboard:
                 active_models=lc.config.get("active_models", []),
                 providers=lc.config.get("providers", {}),
             )
+
+    def _clear_current_model(self):
+        """Clear the selected chat model when no configured model remains."""
+        lc = self.lifecycle
+        lc.config["model"] = ""
+        lc.config["api_key"] = ""
+        lc.config["base_url"] = None
+        lc.config["api_format"] = "openai"
+        self._push_model_config()
+
+    def _push_model_config(self):
+        lc = self.lifecycle
+        if lc.process_stage:
+            lc.process_stage.update_config(
+                model=lc.config.get("model", ""),
+                api_key=lc.config.get("api_key", ""),
+                base_url=lc.config.get("base_url"),
+                api_format=lc.config.get("api_format", "openai"),
+                active_models=lc.config.get("active_models", []),
+                providers=lc.config.get("providers", {}),
+            )
+
+    def _current_uses_provider_config(self, provider_cfg: dict | None) -> bool:
+        if not isinstance(provider_cfg, dict):
+            return False
+        lc = self.lifecycle
+        return (
+            (lc.config.get("base_url") or "") == (provider_cfg.get("base_url") or "")
+            and lc.config.get("api_format", "openai") == provider_cfg.get("api_format", "openai")
+            and lc.config.get("api_key", "") == provider_cfg.get("api_key", "")
+        )
+
+    def _active_model_entry_available(self, entry: dict) -> bool:
+        if not isinstance(entry, dict) or not entry.get("model"):
+            return False
+        provider = entry.get("provider", "")
+        return not provider or provider in self.lifecycle.config.get("providers", {})
+
+    def _select_first_active_model_or_clear(self):
+        active_models = self.lifecycle.config.get("active_models", [])
+        for entry in active_models:
+            if not self._active_model_entry_available(entry):
+                continue
+            self._apply_model(entry.get("provider", ""), entry.get("model", ""))
+            return
+        self._clear_current_model()
 
     def _reload_skills_prompt(self):
         """Hot-reload the skills prompt on all live agents after a config change."""
@@ -283,11 +370,9 @@ class Dashboard:
             )
 
         def _credentials_ok(username: str, password: str) -> bool:
-            return (
-                self.auth_enabled
-                and hmac.compare_digest(username, self.auth_username)
-                and hmac.compare_digest(password, self.auth_password)
-            )
+            return self.auth_enabled and hmac.compare_digest(
+                username, self.auth_username
+            ) and _verify_password(self.auth_password, password)
 
         def _request_authenticated() -> bool:
             return _session_ok(_provided_session_token())
@@ -337,6 +422,12 @@ class Dashboard:
             password = str(data.get("password", "") or "")
             if not _credentials_ok(username, password):
                 return jsonify({"error": "invalid username or password"}), 401
+            if not self.auth_password_is_hashed:
+                # Upgrade legacy plaintext password to PBKDF2 hash
+                dashboard_cfg = self.lifecycle.config.setdefault("dashboard", {})
+                dashboard_cfg["password"] = _hash_password(password)
+                self.lifecycle.save_config()
+                self._sync_auth_from_config()
             resp = jsonify({"ok": True})
             resp.set_cookie(
                 _AUTH_COOKIE,
@@ -360,9 +451,10 @@ class Dashboard:
 
             dashboard_cfg = self.lifecycle.config.setdefault("dashboard", {})
             dashboard_cfg["username"] = username
-            dashboard_cfg["password"] = password
+            dashboard_cfg["password"] = _hash_password(password)
             self.lifecycle.save_config()
             self._sync_auth_from_config()
+            # Rotate session token so any pre-setup sessions are invalidated
             self.auth_session_token = secrets.token_urlsafe(32)
 
             resp = jsonify({"ok": True})
@@ -483,13 +575,34 @@ class Dashboard:
         async def delete_provider():
             data = await request.get_json()
             name = data.get("name", "")
-            providers = self.lifecycle.config.get("providers", {})
-            providers.pop(name, None)
-            if self.lifecycle.process_stage:
-                self.lifecycle.process_stage.update_config(
-                    providers=providers,
-                    active_models=self.lifecycle.config.get("active_models", []),
-                )
+            lc = self.lifecycle
+            providers = lc.config.setdefault("providers", {})
+            removed_provider = providers.pop(name, None)
+            active_models = lc.config.setdefault("active_models", [])
+            removed_entries = [
+                m for m in active_models
+                if isinstance(m, dict) and m.get("provider", "") == name
+            ]
+            lc.config["active_models"] = [
+                m for m in active_models
+                if not (isinstance(m, dict) and m.get("provider", "") == name)
+            ]
+            current_model = lc.config.get("model", "")
+            current_was_removed = any(
+                m.get("model", "") == current_model for m in removed_entries
+            )
+            current_still_active = any(
+                self._active_model_entry_available(m)
+                and m.get("model", "") == current_model
+                for m in lc.config.get("active_models", [])
+            )
+            if current_was_removed and (
+                not current_still_active
+                or self._current_uses_provider_config(removed_provider)
+            ):
+                self._select_first_active_model_or_clear()
+            else:
+                self._push_model_config()
             self.lifecycle.save_config()
             return jsonify({"ok": True})
 
@@ -571,15 +684,36 @@ class Dashboard:
             model = data.get("model", "")
             lc = self.lifecycle
             active_models = lc.config.setdefault("active_models", [])
+            removed_entries = [
+                m for m in active_models
+                if (
+                    isinstance(m, dict)
+                    and m.get("model", "") == model
+                    and m.get("provider", "") == provider_name
+                )
+            ]
             lc.config["active_models"] = [
                 m for m in active_models
-                if not (m["model"] == model and m["provider"] == provider_name)
-            ]
-            if lc.process_stage:
-                lc.process_stage.update_config(
-                    active_models=lc.config.get("active_models", []),
-                    providers=lc.config.get("providers", {}),
+                if not (
+                    isinstance(m, dict)
+                    and m.get("model", "") == model
+                    and m.get("provider", "") == provider_name
                 )
+            ]
+            current_model = lc.config.get("model", "")
+            current_still_active = any(
+                self._active_model_entry_available(m)
+                and m.get("model", "") == current_model
+                for m in lc.config.get("active_models", [])
+            )
+            provider_cfg = lc.config.get("providers", {}).get(provider_name)
+            if removed_entries and current_model == model and (
+                not current_still_active
+                or self._current_uses_provider_config(provider_cfg)
+            ):
+                self._select_first_active_model_or_clear()
+            else:
+                self._push_model_config()
             lc.save_config()
             return jsonify({"ok": True})
 

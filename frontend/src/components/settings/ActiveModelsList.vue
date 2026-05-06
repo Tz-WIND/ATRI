@@ -10,7 +10,7 @@
       </div>
       <div class="model-actions">
         <span v-if="m.model === activeModel" class="badge-current">✓ current</span>
-        <button class="btn btn-remove" @click="$emit('deactivate', m.provider || '', m.model)">Remove</button>
+        <button class="btn btn-remove" @click="handleDeactivate(m.provider || '', m.model)">Remove</button>
       </div>
     </div>
   </div>

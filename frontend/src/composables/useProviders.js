@@ -55,6 +55,7 @@ export function useProviders() {
     await api.deleteProvider(name)
     if (selectedName.value === name) selectedName.value = ''
     await loadProviders()
+    await loadStatus()
   }
 
   async function fetchModels(data) {
