@@ -65,6 +65,45 @@ _PRICING = {
 }
 
 
+_CHAT_COMPLETIONS_OPTION_KEYS = {
+    "audio",
+    "extra_body",
+    "extra_headers",
+    "extra_query",
+    "frequency_penalty",
+    "function_call",
+    "functions",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "metadata",
+    "modalities",
+    "n",
+    "parallel_tool_calls",
+    "prediction",
+    "presence_penalty",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "reasoning_effort",
+    "response_format",
+    "safety_identifier",
+    "seed",
+    "service_tier",
+    "stop",
+    "store",
+    "stream_options",
+    "temperature",
+    "timeout",
+    "tool_choice",
+    "top_logprobs",
+    "top_p",
+    "user",
+    "verbosity",
+    "web_search_options",
+}
+
+
 class LLM:
     def __init__(
         self,
@@ -79,7 +118,14 @@ class LLM:
             base_url=base_url,
             timeout=httpx.Timeout(connect=10, read=300, write=10, pool=10),
         )
-        self.extra = kwargs
+        ignored = sorted(set(kwargs) - _CHAT_COMPLETIONS_OPTION_KEYS)
+        if ignored:
+            logger.debug(f"Ignoring unsupported LLM option(s): {', '.join(ignored)}")
+        self.extra = {
+            key: value
+            for key, value in kwargs.items()
+            if key in _CHAT_COMPLETIONS_OPTION_KEYS
+        }
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 

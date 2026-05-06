@@ -14,6 +14,8 @@
       :name="selectedName"
       :activeModels="activeModels"
       :activeModel="activeModel"
+      :fetchingModels="fetchingModels"
+      :fetchError="modelFetchError"
       @save="handleSaveProvider"
       @delete="handleDeleteCurrent"
       @fetch-models="handleFetchModels"
@@ -86,6 +88,8 @@ const {
 } = useProviders()
 
 const showForm = ref(false)
+const fetchingModels = ref(false)
+const modelFetchError = ref('')
 const addForm = ref({
   name: '',
   api_format: 'openai',
@@ -101,6 +105,7 @@ async function handleAddProvider() {
 }
 
 async function handleSaveProvider(data) {
+  modelFetchError.value = ''
   await saveProvider(data)
 }
 
@@ -114,9 +119,17 @@ async function handleDeleteCurrent() {
   await removeProvider(selectedName.value)
 }
 
-async function handleFetchModels() {
+async function handleFetchModels(data) {
   if (!selectedName.value) return
-  await fetchModels(selectedName.value)
+  fetchingModels.value = true
+  modelFetchError.value = ''
+  try {
+    await fetchModels(data || { name: selectedName.value })
+  } catch (e) {
+    modelFetchError.value = e.message || String(e)
+  } finally {
+    fetchingModels.value = false
+  }
 }
 
 async function handleActivateModel(provider, model) {

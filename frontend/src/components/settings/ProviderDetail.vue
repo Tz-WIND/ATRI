@@ -45,9 +45,12 @@
               placeholder="Search..."
               class="search-input"
             />
-            <button class="btn btn-primary" @click="$emit('fetch-models')">Get Models</button>
+            <button class="btn btn-primary" :disabled="fetchingModels" @click="handleFetchModels">
+              {{ fetchingModels ? 'Fetching...' : 'Get Models' }}
+            </button>
           </div>
         </div>
+        <div v-if="fetchError" class="models-error">{{ fetchError }}</div>
         <div class="models-list">
           <div v-if="filteredModels.length === 0" class="models-empty">
             {{ models.length ? 'No matches' : 'No models fetched yet. Click "Get Models" to fetch.' }}
@@ -80,6 +83,8 @@ const props = defineProps({
   name: { type: String, default: '' },
   activeModels: { type: Array, default: () => [] },
   activeModel: { type: String, default: '' },
+  fetchingModels: { type: Boolean, default: false },
+  fetchError: { type: String, default: '' },
 })
 
 const emit = defineEmits(['save', 'delete', 'fetch-models', 'activate-model', 'deactivate-model'])
@@ -115,6 +120,15 @@ function isModelActive(provider, model) {
 
 function handleSave() {
   emit('save', {
+    name: props.name,
+    base_url: form.value.base_url,
+    api_key: form.value.api_key,
+    api_format: form.value.api_format,
+  })
+}
+
+function handleFetchModels() {
+  emit('fetch-models', {
     name: props.name,
     base_url: form.value.base_url,
     api_key: form.value.api_key,
@@ -256,6 +270,17 @@ function handleSave() {
   font-size: 12px;
 }
 
+.models-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(248, 81, 73, 0.25);
+  border-radius: 6px;
+  background: rgba(248, 81, 73, 0.08);
+  color: var(--red);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .model-row {
   display: flex;
   align-items: center;
@@ -304,6 +329,11 @@ function handleSave() {
   font-weight: 600;
   font-family: var(--mono);
   transition: all 0.12s;
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .btn-primary {

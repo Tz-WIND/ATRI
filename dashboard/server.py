@@ -15,6 +15,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 from quart import Quart, Response, jsonify, request, websocket, send_from_directory
 
@@ -23,6 +24,55 @@ from core.platform.message import normalize_session_id, display_session_id
 
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
+
+
+def _model_url_candidates(base_url: str) -> list[str]:
+    """Build likely model-list URLs from an OpenAI-compatible base URL."""
+    cleaned = (base_url or "").strip().rstrip("/")
+    if not cleaned:
+        return ["https://api.openai.com/v1/models"]
+    if "://" not in cleaned:
+        cleaned = "https://" + cleaned
+
+    parsed = urlsplit(cleaned)
+    path = parsed.path.rstrip("/")
+    lower_path = path.lower()
+
+    if lower_path.endswith("/models"):
+        return [cleaned]
+
+    if lower_path.endswith("/chat/completions"):
+        path = path[: -len("/chat/completions")]
+        cleaned = urlunsplit(parsed._replace(path=path))
+
+    candidates = [cleaned.rstrip("/") + "/models"]
+    if "/v1" not in lower_path:
+        candidates.append(cleaned.rstrip("/") + "/v1/models")
+    return list(dict.fromkeys(candidates))
+
+
+def _extract_model_ids(body) -> list[str]:
+    if isinstance(body, list):
+        items = body
+    elif isinstance(body, dict):
+        items = body.get("data") or body.get("models") or body.get("result") or []
+    else:
+        items = []
+
+    models: list[str] = []
+    for item in items:
+        model_id = ""
+        if isinstance(item, str):
+            model_id = item
+        elif isinstance(item, dict):
+            for key in ("id", "name", "model"):
+                value = item.get(key)
+                if isinstance(value, str):
+                    model_id = value
+                    break
+        if model_id:
+            models.append(model_id)
+    return sorted(set(models))
 
 
 class Dashboard:
@@ -189,20 +239,40 @@ class Dashboard:
                 return jsonify({"error": "provider not found"}), 404
             cfg = providers[name]
             api_key = cfg.get("api_key", "")
-            base_url = cfg.get("base_url", "")
+            if data.get("api_key") and data["api_key"] != "***":
+                api_key = data["api_key"]
+            base_url = data.get("base_url", cfg.get("base_url", ""))
+            api_format = data.get("api_format", cfg.get("api_format", "openai"))
             try:
                 import httpx as _httpx
-                url = (base_url.rstrip("/") + "/models") if base_url else "https://api.openai.com/v1/models"
-                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                if api_format == "anthropic":
+                    headers = {
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                    } if api_key else {"anthropic-version": "2023-06-01"}
+                else:
+                    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+                last_error = None
+                default_base_url = "https://api.anthropic.com/v1" if api_format == "anthropic" else ""
                 async with _httpx.AsyncClient(timeout=15) as client:
-                    resp = await client.get(url, headers=headers)
-                    resp.raise_for_status()
-                    body = resp.json()
-                models = []
-                for m in body.get("data", []):
-                    models.append(m.get("id", ""))
-                models.sort()
+                    for url in _model_url_candidates(base_url or default_base_url):
+                        try:
+                            resp = await client.get(url, headers=headers)
+                            resp.raise_for_status()
+                            body = resp.json()
+                            models = _extract_model_ids(body)
+                            break
+                        except Exception as e:
+                            last_error = e
+                    else:
+                        raise last_error or RuntimeError("failed to fetch models")
+
                 providers[name]["models"] = models
+                providers[name]["base_url"] = base_url
+                providers[name]["api_format"] = api_format
+                if data.get("api_key") and data["api_key"] != "***":
+                    providers[name]["api_key"] = api_key
                 self.lifecycle.save_config()
                 return jsonify({"models": models})
             except Exception as e:

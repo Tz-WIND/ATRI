@@ -25,7 +25,10 @@ export function useApi() {
     getProviders: () => request('/api/provider/list'),
     saveProvider: (data) => request('/api/provider/save', { method: 'POST', body: JSON.stringify(data) }),
     deleteProvider: (name) => request('/api/provider/delete', { method: 'POST', body: JSON.stringify({ name }) }),
-    fetchProviderModels: (name) => request('/api/provider/models', { method: 'POST', body: JSON.stringify({ name }) }),
+    fetchProviderModels: (data) => request('/api/provider/models', {
+      method: 'POST',
+      body: JSON.stringify(typeof data === 'string' ? { name: data } : data),
+    }),
     activateModel: (provider, model) => request('/api/provider/activate', { method: 'POST', body: JSON.stringify({ provider, model }) }),
     deactivateModel: (provider, model) => request('/api/provider/deactivate', { method: 'POST', body: JSON.stringify({ provider, model }) }),
     selectModel: (provider, model) => request('/api/provider/select', { method: 'POST', body: JSON.stringify({ provider, model }) }),

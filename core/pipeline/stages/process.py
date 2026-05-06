@@ -318,13 +318,13 @@ class ProcessStage(Stage):
                     agent.llm.client.base_url = kwargs["base_url"]
         if "extra_instructions" in kwargs:
             self.extra_instructions = kwargs["extra_instructions"]
-            self._llm_template["extra_instructions"] = kwargs["extra_instructions"]
+            self._llm_template.pop("extra_instructions", None)
             with self._agents_lock:
                 for agent in self._agents.values():
                     agent.extra_instructions = kwargs["extra_instructions"]
         if "persona" in kwargs:
             self.persona = kwargs["persona"]
-            self._llm_template["persona"] = kwargs["persona"]
+            self._llm_template.pop("persona", None)
             with self._agents_lock:
                 for agent in self._agents.values():
                     agent.persona = kwargs["persona"]

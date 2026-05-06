@@ -57,8 +57,8 @@ export function useProviders() {
     await loadProviders()
   }
 
-  async function fetchModels(name) {
-    const result = await api.fetchProviderModels(name)
+  async function fetchModels(data) {
+    const result = await api.fetchProviderModels(data)
     await loadProviders()
     return result
   }
