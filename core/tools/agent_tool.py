@@ -1,7 +1,8 @@
 """Sub-agent spawning with isolated context.
 
 Spawns independent agents with their own conversation history, context manager,
-and tool access. Sub-agents' contexts are fully isolated from the parent.
+LLM instance, and tool access. Sub-agents' contexts are fully isolated from the
+parent.
 
 Two execution modes:
 - blocking (default): parent waits for sub-agent to finish
@@ -15,6 +16,7 @@ import concurrent.futures
 import threading
 import uuid
 
+from core import logger
 from .base import Tool
 
 
@@ -33,10 +35,14 @@ class AgentTool(Tool):
     name = "agent"
     description = (
         "Spawn one or more sub-agents to handle complex sub-tasks independently. "
-        "Each sub-agent has its own isolated context and tool access.\n"
+        "Each sub-agent has its own isolated context, LLM instance, and tool access.\n"
         "\n"
         "**Blocking mode (default):** parent waits for sub-agent(s) to finish.\n"
         "Use 'tasks' (array) to run multiple sub-agents in parallel.\n"
+        "\n"
+        "**Model selection:** optionally pass 'model' and 'provider' to run all "
+        "spawned sub-agents on a specific configured model. Use 'task_configs' "
+        "to choose different models per sub-agent.\n"
         "\n"
         "**Background mode:** set 'background: true' to spawn sub-agents that "
         "run asynchronously. The tool returns a task_id immediately so you can "
@@ -55,6 +61,36 @@ class AgentTool(Tool):
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Multiple tasks to run in parallel across independent sub-agents.",
+            },
+            "task_configs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "Task for this sub-agent.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional model for this sub-agent.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Optional provider name for this sub-agent.",
+                        },
+                    },
+                    "required": ["task"],
+                },
+                "description": "Multiple sub-agent task objects, each with optional model/provider overrides.",
+            },
+            "model": {
+                "type": "string",
+                "description": "Optional model to use for spawned sub-agent(s). Omit to inherit the current model.",
+            },
+            "provider": {
+                "type": "string",
+                "description": "Optional configured provider for the selected model. Use when the same model name exists on multiple providers.",
             },
             "background": {
                 "type": "boolean",
@@ -75,15 +111,34 @@ class AgentTool(Tool):
         self,
         task: str | None = None,
         tasks: list[str] | None = None,
+        task_configs: list[dict] | None = None,
         background: bool = False,
+        model: str | None = None,
+        provider: str | None = None,
         **kwargs,
     ) -> str:
         # Collect task list
-        all_tasks = []
+        all_tasks: list[dict] = []
         if tasks:
-            all_tasks.extend(tasks)
+            all_tasks.extend(
+                {"task": t, "model": model, "provider": provider}
+                for t in tasks
+                if isinstance(t, str) and t.strip()
+            )
         if task:
-            all_tasks.append(task)
+            all_tasks.append({"task": task, "model": model, "provider": provider})
+        if task_configs:
+            for item in task_configs:
+                if not isinstance(item, dict):
+                    continue
+                configured_task = item.get("task")
+                if not isinstance(configured_task, str) or not configured_task.strip():
+                    continue
+                all_tasks.append({
+                    "task": configured_task,
+                    "model": item.get("model") or model,
+                    "provider": item.get("provider") or provider,
+                })
 
         if not all_tasks:
             return "Error: no task or tasks provided"
@@ -100,33 +155,40 @@ class AgentTool(Tool):
     # Blocking execution
     # ------------------------------------------------------------------
 
-    def _run_single(self, task: str) -> str:
+    def _run_single(self, task_spec: dict) -> str:
         if self._parent_agent is None:
             return "Error: agent tool not initialized (no parent agent)"
 
         from core.agent.agent import Agent
 
         parent = self._parent_agent
-        sub = Agent(
-            llm=parent.llm,
-            workspace=parent.workspace,
-            tools=[t for t in parent.tools if t.name not in ("agent", "agent_result")],
-            max_context_tokens=parent.context.max_tokens,
-            max_rounds=20,
-            extra_instructions=parent.extra_instructions,
-            persona=parent.persona,
-            skills_prompt=parent.skills_prompt,
-        )
+        try:
+            sub = Agent(
+                llm=parent.create_child_llm(
+                    model=task_spec.get("model"),
+                    provider=task_spec.get("provider"),
+                ),
+                workspace=parent.workspace,
+                tools=[t for t in parent.tools if t.name not in ("agent", "agent_result")],
+                max_context_tokens=parent.context.max_tokens,
+                max_rounds=20,
+                extra_instructions=parent.extra_instructions,
+                persona=parent.persona,
+                skills_prompt=parent.skills_prompt,
+            )
+        except Exception as e:
+            logger.warning("Sub-agent creation failed: %s", e)
+            return f"Sub-agent setup error: {e}"
 
         try:
-            result = sub.chat(task)
+            result = sub.chat(task_spec["task"])
             if len(result) > 5000:
                 result = result[:4500] + "\n... (sub-agent output truncated)"
             return result
         except Exception as e:
             return f"Sub-agent error: {e}"
 
-    def _run_parallel_blocking(self, tasks: list[str]) -> str:
+    def _run_parallel_blocking(self, tasks: list[dict]) -> str:
         max_workers = min(len(tasks), 5)
         results: dict[int, str] = {}
 
@@ -140,9 +202,12 @@ class AgentTool(Tool):
                     results[idx] = f"Sub-agent error: {e}"
 
         parts = []
-        for i, t in enumerate(tasks):
+        for i, task_spec in enumerate(tasks):
             tag = f"Sub-agent {i+1}/{len(tasks)}"
-            parts.append(f"### {tag}: {t[:100]}\n{results[i]}")
+            task = task_spec["task"]
+            parts.append(
+                f"### {tag}{_format_model_tag(task_spec)}: {task[:100]}\n{results[i]}"
+            )
 
         return "\n\n".join(parts)
 
@@ -150,7 +215,7 @@ class AgentTool(Tool):
     # Background (non-blocking) execution
     # ------------------------------------------------------------------
 
-    def _run_background(self, tasks: list[str]) -> str:
+    def _run_background(self, tasks: list[dict]) -> str:
         """Spawn sub-agent(s) in background threads; return task IDs immediately."""
         from core.agent.agent import Agent
 
@@ -163,27 +228,41 @@ class AgentTool(Tool):
         )
 
         task_ids = []
-        for t in tasks:
+        for task_spec in tasks:
             tid = f"bg_{uuid.uuid4().hex[:8]}"
             task_ids.append(tid)
 
-            sub = Agent(
-                llm=parent.llm,
-                workspace=parent.workspace,
-                tools=[t for t in parent.tools if t.name not in ("agent", "agent_result")],
-                max_context_tokens=parent.context.max_tokens,
-                max_rounds=20,
-                extra_instructions=parent.extra_instructions,
-                persona=parent.persona,
-                skills_prompt=parent.skills_prompt,
-            )
+            try:
+                sub = Agent(
+                    llm=parent.create_child_llm(
+                        model=task_spec.get("model"),
+                        provider=task_spec.get("provider"),
+                    ),
+                    workspace=parent.workspace,
+                    tools=[t for t in parent.tools if t.name not in ("agent", "agent_result")],
+                    max_context_tokens=parent.context.max_tokens,
+                    max_rounds=20,
+                    extra_instructions=parent.extra_instructions,
+                    persona=parent.persona,
+                    skills_prompt=parent.skills_prompt,
+                )
+            except Exception as e:
+                logger.warning("Background sub-agent creation failed: %s", e)
+                with _tasks_lock:
+                    _background_tasks[tid] = _completed_future(
+                        f"Sub-agent setup error: {e}"
+                    )
+                continue
 
-            future = pool.submit(self._run_subagent_thread, sub, t)
+            future = pool.submit(self._run_subagent_thread, sub, task_spec["task"])
             with _tasks_lock:
                 _background_tasks[tid] = future
 
-        # Don't shut down the pool — threads are detached
-        ids_fmt = "\n".join(f"  - `{tid}`: {t[:80]}" for tid, t in zip(task_ids, tasks))
+        # Keep the pool alive; background futures own their running threads.
+        ids_fmt = "\n".join(
+            f"  - `{tid}`{_format_model_tag(t)}: {t['task'][:80]}"
+            for tid, t in zip(task_ids, tasks)
+        )
         return (
             f"Dispatched {len(tasks)} background sub-agent(s):\n{ids_fmt}\n\n"
             f"Use `agent_result(task_id='<id>')` to check status and collect results. "
@@ -202,8 +281,30 @@ class AgentTool(Tool):
             return f"Sub-agent error: {e}"
 
 
+def _completed_future(result: str) -> concurrent.futures.Future:
+    future: concurrent.futures.Future = concurrent.futures.Future()
+    future.set_result(result)
+    return future
+
+
+def _format_model_tag(task_spec: dict) -> str:
+    model = _clean(task_spec.get("model"))
+    provider = _clean(task_spec.get("provider"))
+    if model and provider:
+        return f" [{provider}/{model}]"
+    if model:
+        return f" [{model}]"
+    if provider:
+        return f" [{provider}]"
+    return ""
+
+
+def _clean(value) -> str:
+    return str(value).strip() if value is not None else ""
+
+
 # ---------------------------------------------------------------------------
-# AgentResultTool — poll / collect background sub-agent results
+# AgentResultTool - poll / collect background sub-agent results
 # ---------------------------------------------------------------------------
 
 class AgentResultTool(Tool):
@@ -213,7 +314,7 @@ class AgentResultTool(Tool):
         "via the agent tool with background=true. "
         "Call with no arguments to list all background tasks and their statuses. "
         "Call with a specific task_id to get the result (blocks only if the task "
-        "isn't done yet — it will wait)."
+        "isn't done yet; it will wait)."
     )
     parameters = {
         "type": "object",

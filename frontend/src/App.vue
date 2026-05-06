@@ -1,5 +1,18 @@
 <template>
-  <div class="app-shell">
+  <div v-if="auth.loading" class="auth-loading">
+    <div class="auth-loading-panel">
+      <div class="auth-loading-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5z" />
+          <path d="M2 17l10 5 10-5" />
+          <path d="M2 12l10 5 10-5" />
+        </svg>
+      </div>
+      <span>Checking authorization...</span>
+    </div>
+  </div>
+  <AuthGate v-else-if="(auth.authRequired || auth.setupRequired) && !auth.authenticated" />
+  <div v-else class="app-shell">
     <ActivityBar
       :pages="navPages"
       :activePage="activePage"
@@ -21,8 +34,9 @@
 </template>
 
 <script setup>
-import { ref, computed, markRaw, onMounted, onUnmounted } from 'vue'
+import { ref, computed, markRaw, onMounted, onUnmounted, watch } from 'vue'
 import ActivityBar from './components/activity/ActivityBar.vue'
+import AuthGate from './components/auth/AuthGate.vue'
 import ChatPage from './components/chat/ChatPage.vue'
 import WorkspacePage from './components/pages/WorkspacePage.vue'
 import AdaptersPage from './components/pages/AdaptersPage.vue'
@@ -32,8 +46,11 @@ import SettingsPage from './components/settings/SettingsPage.vue'
 import MusicPage from './components/music/MusicPage.vue'
 import MusicPlayer from './components/music/MusicPlayer.vue'
 import MusicFullPlayer from './components/music/MusicFullPlayer.vue'
+import { useAuth } from './composables/useAuth.js'
 import { useMusic } from './composables/useMusic.js'
+import { clearWsInstance } from './composables/useWebSocket.js'
 
+const { auth, initAuth } = useAuth()
 const { currentSong, playerCollapsed, handleWsControl } = useMusic()
 
 const navPages = [
@@ -70,6 +87,9 @@ let ws = null
 let wsRetryTimer = null
 
 function connectWs() {
+  if (ws || !auth.authenticated) return
+  clearTimeout(wsRetryTimer)
+  wsRetryTimer = null
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
   ws = new WebSocket(`${protocol}//${location.host}/ws`)
   ws.onmessage = (event) => {
@@ -81,18 +101,43 @@ function connectWs() {
     } catch {}
   }
   ws.onclose = () => {
-    wsRetryTimer = setTimeout(connectWs, 3000)
+    ws = null
+    if (auth.authenticated) {
+      wsRetryTimer = setTimeout(connectWs, 3000)
+    }
   }
-  ws.onerror = () => ws.close()
+  ws.onerror = () => {
+    if (ws) ws.close()
+  }
+}
+
+function disconnectWs() {
+  clearTimeout(wsRetryTimer)
+  wsRetryTimer = null
+  clearWsInstance()
+  if (ws) {
+    ws.onclose = null
+    ws.close()
+    ws = null
+  }
 }
 
 onMounted(() => {
-  connectWs()
+  initAuth().then(() => {
+    if (auth.authenticated) connectWs()
+  }).catch(() => {})
+})
+
+watch(() => auth.authenticated, (authenticated) => {
+  if (authenticated) {
+    connectWs()
+  } else {
+    disconnectWs()
+  }
 })
 
 onUnmounted(() => {
-  clearTimeout(wsRetryTimer)
-  if (ws) ws.close()
+  disconnectWs()
 })
 </script>
 
@@ -120,5 +165,36 @@ onUnmounted(() => {
 
 .app-content.has-player {
   padding-bottom: 67px;
+}
+
+.auth-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg0);
+  color: var(--t2);
+}
+
+.auth-loading-panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.auth-loading-logo {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--acc2);
+}
+
+.auth-loading-logo svg {
+  width: 22px;
+  height: 22px;
 }
 </style>

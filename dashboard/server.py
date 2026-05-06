@@ -12,6 +12,7 @@ from http.cookies import SimpleCookie
 import json
 import os
 import io
+import secrets
 import tempfile
 import time
 import zipfile
@@ -22,6 +23,7 @@ from urllib.parse import urlsplit, urlunsplit
 from quart import Quart, Response, jsonify, request, websocket, send_from_directory
 
 from core import logger
+from core.config_schema import CONFIG_SCHEMA
 from core.platform.message import normalize_session_id, display_session_id
 
 if TYPE_CHECKING:
@@ -33,6 +35,8 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "api_key",
     "base_url",
     "api_format",
+    "active_models",
+    "providers",
     "max_tokens",
     "max_context_tokens",
     "max_rounds",
@@ -42,10 +46,13 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "tavily_api_key",
 }
 
-_AUTH_COOKIE = "atri_dashboard_token"
+_AUTH_COOKIE = "atri_dashboard_session"
 _AUTH_EXEMPT_API_PATHS = {
     "/api/auth/status",
     "/api/auth/login",
+    "/api/auth/setup",
+    "/api/auth/logout",
+    "/api/config/schema",
 }
 
 
@@ -205,8 +212,8 @@ class Dashboard:
         self.lifecycle = lifecycle
         self.host = host
         self.port = port
-        dashboard_cfg = lifecycle.config.get("dashboard", {})
-        self.auth_token = str(dashboard_cfg.get("auth_token", "") or "")
+        self._sync_auth_from_config()
+        self.auth_session_token = secrets.token_urlsafe(32)
 
         static_dir = str(Path(__file__).parent / "static")
         self.app = Quart("atri-dashboard", static_folder=static_dir, static_url_path="/static")
@@ -220,6 +227,16 @@ class Dashboard:
 
         if lifecycle.process_stage:
             lifecycle.process_stage.broadcast_fn = self.broadcast
+
+    def _sync_auth_from_config(self):
+        dashboard_cfg = self.lifecycle.config.get("dashboard", {})
+        dashboard_enabled = bool(dashboard_cfg.get("enabled", True))
+        self.auth_username = str(dashboard_cfg.get("username", "") or "")
+        self.auth_password = str(dashboard_cfg.get("password", "") or "")
+        self.auth_setup_required = bool(
+            dashboard_enabled and (not self.auth_username or not self.auth_password)
+        )
+        self.auth_enabled = bool(dashboard_enabled and not self.auth_setup_required)
 
     def _apply_model(self, provider_name: str, model: str):
         """Apply a model + provider credentials as the current active model."""
@@ -237,6 +254,8 @@ class Dashboard:
                 api_key=lc.config["api_key"],
                 base_url=lc.config.get("base_url"),
                 api_format=lc.config.get("api_format", "openai"),
+                active_models=lc.config.get("active_models", []),
+                providers=lc.config.get("providers", {}),
             )
 
     def _reload_skills_prompt(self):
@@ -248,25 +267,34 @@ class Dashboard:
     def _register_routes(self):
         app = self.app
 
-        def _provided_auth_token() -> str:
+        def _provided_session_token() -> str:
             auth = request.headers.get("Authorization", "")
             if auth.lower().startswith("bearer "):
                 return auth[7:].strip()
             return (
-                request.headers.get("X-ATRI-Token", "")
+                request.headers.get("X-ATRI-Session", "")
                 or request.cookies.get(_AUTH_COOKIE, "")
-                or request.args.get("token", "")
             )
 
-        def _auth_ok(token: str) -> bool:
-            return bool(self.auth_token) and hmac.compare_digest(token, self.auth_token)
+        def _session_ok(token: str) -> bool:
+            return bool(self.auth_enabled and token) and hmac.compare_digest(
+                token,
+                self.auth_session_token,
+            )
+
+        def _credentials_ok(username: str, password: str) -> bool:
+            return (
+                self.auth_enabled
+                and hmac.compare_digest(username, self.auth_username)
+                and hmac.compare_digest(password, self.auth_password)
+            )
 
         def _request_authenticated() -> bool:
-            return _auth_ok(_provided_auth_token())
+            return _session_ok(_provided_session_token())
 
         @app.before_request
         async def require_dashboard_auth():
-            if not self.auth_token:
+            if not self.auth_enabled and not self.auth_setup_required:
                 return None
             path = request.path
             if request.method == "OPTIONS":
@@ -275,20 +303,11 @@ class Dashboard:
                 return None
             if path in _AUTH_EXEMPT_API_PATHS:
                 return None
+            if self.auth_setup_required:
+                return jsonify({"error": "setup required", "setup_required": True}), 428
             if _request_authenticated():
                 return None
             return jsonify({"error": "authentication required"}), 401
-
-        @app.after_request
-        async def persist_query_token(response):
-            if self.auth_token and _auth_ok(request.args.get("token", "")):
-                response.set_cookie(
-                    _AUTH_COOKIE,
-                    self.auth_token,
-                    httponly=True,
-                    samesite="Strict",
-                )
-            return response
 
         @app.route("/")
         async def index():
@@ -299,24 +318,71 @@ class Dashboard:
         @app.route("/api/auth/status")
         async def auth_status():
             return jsonify({
-                "auth_required": bool(self.auth_token),
-                "authenticated": not self.auth_token or _request_authenticated(),
+                "auth_required": self.auth_enabled,
+                "setup_required": self.auth_setup_required,
+                "authenticated": (
+                    False
+                    if self.auth_setup_required
+                    else not self.auth_enabled or _request_authenticated()
+                ),
+                "username": self.auth_username,
             })
 
         @app.route("/api/auth/login", methods=["POST"])
         async def auth_login():
+            if self.auth_setup_required:
+                return jsonify({"error": "setup required", "setup_required": True}), 428
             data = await request.get_json(silent=True) or {}
-            token = str(data.get("token", "") or "")
-            if not _auth_ok(token):
-                return jsonify({"error": "invalid token"}), 401
+            username = str(data.get("username", "") or "")
+            password = str(data.get("password", "") or "")
+            if not _credentials_ok(username, password):
+                return jsonify({"error": "invalid username or password"}), 401
             resp = jsonify({"ok": True})
             resp.set_cookie(
                 _AUTH_COOKIE,
-                self.auth_token,
+                self.auth_session_token,
                 httponly=True,
                 samesite="Strict",
             )
             return resp
+
+        @app.route("/api/auth/setup", methods=["POST"])
+        async def auth_setup():
+            if not self.auth_setup_required:
+                return jsonify({"error": "setup is not required"}), 409
+            data = await request.get_json(silent=True) or {}
+            username = str(data.get("username", "") or "").strip()
+            password = str(data.get("password", "") or "")
+            if not username:
+                return jsonify({"error": "username required"}), 400
+            if not password:
+                return jsonify({"error": "password required"}), 400
+
+            dashboard_cfg = self.lifecycle.config.setdefault("dashboard", {})
+            dashboard_cfg["username"] = username
+            dashboard_cfg["password"] = password
+            self.lifecycle.save_config()
+            self._sync_auth_from_config()
+            self.auth_session_token = secrets.token_urlsafe(32)
+
+            resp = jsonify({"ok": True})
+            resp.set_cookie(
+                _AUTH_COOKIE,
+                self.auth_session_token,
+                httponly=True,
+                samesite="Strict",
+            )
+            return resp
+
+        @app.route("/api/auth/logout", methods=["POST"])
+        async def auth_logout():
+            resp = jsonify({"ok": True})
+            resp.delete_cookie(_AUTH_COOKIE)
+            return resp
+
+        @app.route("/api/config/schema")
+        async def config_schema():
+            return jsonify(CONFIG_SCHEMA)
 
         @app.route("/api/ping")
         async def api_ping():
@@ -405,6 +471,11 @@ class Dashboard:
                 "api_format": data.get("api_format", "openai"),
                 "models": existing.get("models", []),
             }
+            if self.lifecycle.process_stage:
+                self.lifecycle.process_stage.update_config(
+                    providers=providers,
+                    active_models=self.lifecycle.config.get("active_models", []),
+                )
             self.lifecycle.save_config()
             return jsonify({"ok": True})
 
@@ -414,6 +485,11 @@ class Dashboard:
             name = data.get("name", "")
             providers = self.lifecycle.config.get("providers", {})
             providers.pop(name, None)
+            if self.lifecycle.process_stage:
+                self.lifecycle.process_stage.update_config(
+                    providers=providers,
+                    active_models=self.lifecycle.config.get("active_models", []),
+                )
             self.lifecycle.save_config()
             return jsonify({"ok": True})
 
@@ -460,6 +536,11 @@ class Dashboard:
                 providers[name]["api_format"] = api_format
                 if data.get("api_key") and data["api_key"] != "***":
                     providers[name]["api_key"] = api_key
+                if self.lifecycle.process_stage:
+                    self.lifecycle.process_stage.update_config(
+                        providers=providers,
+                        active_models=self.lifecycle.config.get("active_models", []),
+                    )
                 self.lifecycle.save_config()
                 return jsonify({"models": models})
             except Exception as e:
@@ -494,6 +575,11 @@ class Dashboard:
                 m for m in active_models
                 if not (m["model"] == model and m["provider"] == provider_name)
             ]
+            if lc.process_stage:
+                lc.process_stage.update_config(
+                    active_models=lc.config.get("active_models", []),
+                    providers=lc.config.get("providers", {}),
+                )
             lc.save_config()
             return jsonify({"ok": True})
 
@@ -897,13 +983,15 @@ class Dashboard:
         # ── WebSocket ──
         @app.websocket("/ws")
         async def ws_handler():
-            if self.auth_token:
-                token = (
-                    websocket.headers.get("X-ATRI-Token", "")
+            if self.auth_setup_required:
+                await websocket.close(1008)
+                return
+            if self.auth_enabled:
+                session_token = (
+                    websocket.headers.get("X-ATRI-Session", "")
                     or _cookie_value(websocket.headers.get("Cookie", ""), _AUTH_COOKIE)
-                    or websocket.args.get("token", "")
                 )
-                if not hmac.compare_digest(token, self.auth_token):
+                if not hmac.compare_digest(session_token, self.auth_session_token):
                     await websocket.close(1008)
                     return
             ws_obj = websocket._get_current_object()
@@ -959,11 +1047,14 @@ class Dashboard:
         config.bind = [f"{self.host}:{self.port}"]
         config.accesslog = None
         logger.info(f"\n  ATRI Dashboard ready\n  -> http://localhost:{self.port}\n")
-        if self.auth_token:
-            masked = self.auth_token[:4] + "****" + self.auth_token[-4:]
+        if self.auth_setup_required:
             logger.info(
-                "Dashboard auth enabled. Open with token: "
-                f"http://localhost:{self.port}/?token={masked}"
+                "Dashboard setup required. Open the dashboard to create an admin account."
+            )
+        elif self.auth_enabled:
+            logger.info(
+                "Dashboard auth enabled. Username: "
+                f"{self.auth_username}. Password is stored in config.yaml."
             )
         self.shutdown_event = asyncio.Event()
         await serve(self.app, config, shutdown_trigger=self.shutdown_event.wait)

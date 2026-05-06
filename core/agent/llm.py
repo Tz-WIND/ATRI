@@ -168,6 +168,22 @@ class LLM:
         if isinstance(self.client, httpx.Client):
             self.client.close()
 
+    def to_config(self) -> dict:
+        """Return constructor kwargs for a fresh LLM with the same settings."""
+        return {
+            "model": self.model,
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "api_format": self.api_format,
+            **self._raw_options,
+        }
+
+    def clone(self, **overrides) -> "LLM":
+        """Create a fresh LLM instance without sharing client or token state."""
+        cfg = self.to_config()
+        cfg.update({k: v for k, v in overrides.items() if v is not None})
+        return LLM(**cfg)
+
     def reconfigure(self, **kwargs):
         """Hot-update model/provider settings and rebuild the client if needed."""
         client_keys = {"api_key", "base_url", "api_format"}
@@ -213,7 +229,7 @@ class LLM:
         tools: list[dict] | None = None,
         on_token=None,
         on_thinking=None,
-        cancel_event=None,  # threading.Event | None — set to interrupt mid-stream
+        cancel_event=None,  # threading.Event | None; set to interrupt mid-stream
     ) -> LLMResponse:
         """Send messages, stream response, handle tool calls.
 

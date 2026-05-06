@@ -6,7 +6,6 @@ Platform adapters (OneBot11 + WebChat), Pipeline, EventBus, Plugin Manager, Dash
 
 import asyncio
 import os
-import secrets
 import tempfile
 import time
 import traceback
@@ -15,6 +14,11 @@ from asyncio import Queue
 from pathlib import Path
 
 from core import logger
+from core.config_schema import (
+    ConfigValidationError,
+    DEFAULT_CONFIG,
+    normalize_config,
+)
 from core.event_bus import EventBus
 from core.pipeline.scheduler import PipelineScheduler
 from core.pipeline.stages import *  # noqa: F401,F403 - registers stages
@@ -25,75 +29,8 @@ from core.plugin.manager import PluginManager
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 
-DEFAULT_CONFIG = {
-    "model": "gpt-4o",
-    "api_key": "",
-    "base_url": None,
-    "api_format": "openai",
-    "active_models": [],
-    "providers": {},
-    "max_tokens": 4096,
-    "temperature": 0.0,
-    "max_context_tokens": 128000,
-    "max_rounds": 50,
-    "workspace": "./workspace",
-    "sessions_dir": "data/sessions",
-    "wake_words": ["atri"],
-    "extra_instructions": "",
-    "persona": "",
-    "onebot11": {
-        "enabled": True,
-        "ws_reverse_host": "0.0.0.0",
-        "ws_reverse_port": 6199,
-        "ws_reverse_token": "",
-    },
-    "dashboard": {
-        "enabled": True,
-        "host": "127.0.0.1",
-        "port": 6185,
-        "auth_token": "",
-    },
-    "plugins_dir": "plugins",
-    "skills": {},
-    "tavily_api_key": "",
-}
-
 
 SHUTDOWN_GRACE_PERIOD = 5.0  # seconds to wait for tasks to finish
-
-
-def _merge_config(default: dict, override: dict) -> dict:
-    """Recursively merge config dictionaries without sharing nested defaults."""
-    merged = {}
-    for key, value in default.items():
-        if isinstance(value, dict):
-            merged[key] = _merge_config(value, {})
-        elif isinstance(value, list):
-            merged[key] = list(value)
-        else:
-            merged[key] = value
-
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_config(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _ensure_dashboard_auth_token(config: dict) -> bool:
-    dashboard_cfg = config.setdefault("dashboard", {})
-    changed = False
-    if "host" not in dashboard_cfg:
-        dashboard_cfg["host"] = DEFAULT_CONFIG["dashboard"]["host"]
-        changed = True
-    if "port" not in dashboard_cfg:
-        dashboard_cfg["port"] = DEFAULT_CONFIG["dashboard"]["port"]
-        changed = True
-    if dashboard_cfg.get("enabled", True) and not dashboard_cfg.get("auth_token"):
-        dashboard_cfg["auth_token"] = secrets.token_urlsafe(32)
-        changed = True
-    return changed
 
 
 class Lifecycle:
@@ -109,14 +46,21 @@ class Lifecycle:
 
     def _load_config(self) -> dict:
         path = Path(self.config_path)
+        config_was_empty = True
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
-            config = _merge_config(DEFAULT_CONFIG, user_config)
+                loaded_config = yaml.safe_load(f)
+            config_was_empty = not bool(loaded_config)
+            user_config = loaded_config or {}
         else:
-            config = _merge_config(DEFAULT_CONFIG, {})
+            user_config = {}
 
-        if _ensure_dashboard_auth_token(config):
+        try:
+            config, changed = normalize_config(user_config)
+        except ConfigValidationError as e:
+            raise RuntimeError(f"Invalid config {self.config_path}: {e}") from e
+
+        if changed or config_was_empty:
             self.save_config(config)
 
         from core.tools.web_search import set_tavily_key
@@ -178,6 +122,8 @@ class Lifecycle:
             "api_key": self.config["api_key"],
             "base_url": self.config.get("base_url"),
             "api_format": self.config.get("api_format", "openai"),
+            "active_models": self.config.get("active_models", []),
+            "providers": self.config.get("providers", {}),
             "max_tokens": self.config.get("max_tokens", 4096),
             "temperature": self.config.get("temperature", 0.0),
             "max_context_tokens": self.config.get("max_context_tokens", 128000),

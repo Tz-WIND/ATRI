@@ -1,12 +1,22 @@
+import { markSetupRequired, markUnauthenticated } from './useAuth.js'
+
 const BASE = ''
 
 async function request(url, options = {}) {
+  const { headers, ...rest } = options
   const res = await fetch(BASE + url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options,
+    ...rest,
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', ...headers },
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
+    if (res.status === 428 && body.setup_required) {
+      markSetupRequired(body.error || 'setup required')
+    }
+    if (res.status === 401) {
+      markUnauthenticated(body.error || 'authentication required')
+    }
     throw new Error(body.error || `HTTP ${res.status}`)
   }
   return res.json()
@@ -16,6 +26,7 @@ export function useApi() {
   return {
     // Status
     getStatus: () => request('/api/status'),
+    getConfigSchema: () => request('/api/config/schema'),
 
     // Settings
     getSettings: () => request('/api/settings'),
@@ -56,10 +67,17 @@ export function useApi() {
       formData.append('file', file)
       return fetch(BASE + '/api/skills/upload', {
         method: 'POST',
+        credentials: 'same-origin',
         body: formData,
       }).then(async res => {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}))
+          if (res.status === 428 && body.setup_required) {
+            markSetupRequired(body.error || 'setup required')
+          }
+          if (res.status === 401) {
+            markUnauthenticated(body.error || 'authentication required')
+          }
           throw new Error(body.error || `HTTP ${res.status}`)
         }
         return res.json()

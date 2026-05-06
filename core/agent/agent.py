@@ -14,6 +14,7 @@ import threading
 from typing import Callable
 
 from core import logger
+from core.utils import clean_optional_str
 from .llm import LLM, LLMResponse
 from .tools_bridge import get_all_tools, get_tool
 from .context import ContextManager
@@ -31,6 +32,8 @@ class Agent:
         extra_instructions: str = "",
         persona: str = "",
         skills_prompt: str = "",
+        llm_factory: Callable[[str | None, str | None], LLM] | None = None,
+        model_catalog: Callable[[], list[dict]] | list[dict] | None = None,
     ):
         self.llm = llm
         self.workspace = workspace
@@ -41,6 +44,8 @@ class Agent:
         self.extra_instructions = extra_instructions
         self.persona = persona
         self.skills_prompt = skills_prompt
+        self.llm_factory = llm_factory
+        self.model_catalog = model_catalog
         self._cancel_event = threading.Event()
         self._was_cancelled = False  # True if previous chat() was interrupted
 
@@ -51,13 +56,68 @@ class Agent:
                 t._parent_agent = self
 
     def _build_system(self) -> str:
-        return build_system_prompt(
+        prompt = build_system_prompt(
             self.tools,
             self.workspace,
             extra_instructions=self.extra_instructions,
             persona=self.persona,
             skills_prompt=self.skills_prompt,
         )
+        subagent_models = self._subagent_model_prompt()
+        if subagent_models:
+            prompt += "\n\n" + subagent_models
+        return prompt
+
+    def create_child_llm(
+        self,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> LLM:
+        """Create an isolated LLM instance for a child agent."""
+        model = clean_optional_str(model)
+        provider = clean_optional_str(provider)
+        if self.llm_factory:
+            return self.llm_factory(model, provider)
+        if provider:
+            raise ValueError(
+                "provider selection is unavailable for this agent; pass model only"
+            )
+        return self.llm.clone(model=model)
+
+    def _subagent_model_prompt(self) -> str:
+        if not any(t.name == "agent" for t in self.tools):
+            return ""
+
+        choices = self._available_model_choices()
+        lines = [
+            "# Sub-Agent Models",
+            "The `agent` tool creates a separate LLM instance for every sub-agent. "
+            "You may set `model` and `provider` on an `agent` tool call, or use "
+            "`task_configs` to choose per sub-agent. Omit them to use the current "
+            "model/provider.",
+        ]
+        if choices:
+            lines.append("Available configured choices:")
+            for item in choices:
+                model = item.get("model", "")
+                provider = item.get("provider", "")
+                if not model:
+                    continue
+                suffix = f" (provider: {provider})" if provider else ""
+                lines.append(f"- {model}{suffix}")
+        return "\n".join(lines)
+
+    def _available_model_choices(self) -> list[dict]:
+        catalog = self.model_catalog
+        if catalog is None:
+            return [{"model": self.llm.model, "provider": ""}]
+        if callable(catalog):
+            try:
+                return list(catalog())
+            except Exception as e:
+                logger.debug(f"Error loading model catalog: {e}")
+                return [{"model": self.llm.model, "provider": ""}]
+        return list(catalog)
 
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._build_system()}] + self.messages
@@ -93,7 +153,7 @@ class Agent:
                 "content": (
                     "[System notice: Your previous task was interrupted by the user "
                     "via Ctrl+C. The task you were working on was stopped mid-execution. "
-                    "Below is the user's new message — respond to it directly.]\n\n"
+                    "Below is the user's new message; respond to it directly.]\n\n"
                     + user_input
                 ),
             })
@@ -164,7 +224,7 @@ class Agent:
         """Signal the agent to stop at the next safe point.
 
         Also cancels any currently running tool (e.g. terminates a bash subprocess).
-        Thread-safe — may be called from the main thread while chat() runs in an executor.
+        Thread-safe; may be called from the main thread while chat() runs in an executor.
         """
         self._cancel_event.set()
         for tool in self.tools:

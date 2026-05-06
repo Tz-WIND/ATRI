@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from core import logger
 from core.agent.agent import Agent
+from core.utils import clean_optional_str
 from core.agent.llm import LLM
 from core.agent.session import SessionStore
 from core.platform.message import MessageEvent, normalize_session_id
@@ -34,6 +35,8 @@ class ProcessStage(Stage):
         self.api_key: str = ctx.get("api_key", "")
         self.base_url: str | None = ctx.get("base_url")
         self.api_format: str = ctx.get("api_format", "openai")
+        self.active_models: list[dict] = list(ctx.get("active_models", []))
+        self.providers: dict = dict(ctx.get("providers", {}))
         self.max_tokens: int = ctx.get("max_tokens", 4096)
         self.temperature: float = ctx.get("temperature", 0.0)
         self.max_context_tokens: int = ctx.get("max_context_tokens", 128_000)
@@ -102,7 +105,7 @@ class ProcessStage(Stage):
             # Evict stale agents first.
             # FUTURE: If Agent ever acquires resources that need explicit
             # cleanup (thread pools, file handles, subprocesses), add a
-            # cleanup call here before popping — currently GC is sufficient.
+            # cleanup call here before popping; currently GC is sufficient.
             stale = [
                 sid for sid, last in self._agents_last_active.items()
                 if now - last > self.AGENT_TTL_SECONDS
@@ -123,6 +126,8 @@ class ProcessStage(Stage):
                     extra_instructions=self.extra_instructions,
                     persona=self.persona,
                     skills_prompt=self._skills_prompt,
+                    llm_factory=self._create_llm_for_model,
+                    model_catalog=self._model_catalog,
                 )
                 # Try to restore session from disk
                 loaded = self.session_store.load(session_id)
@@ -134,6 +139,79 @@ class ProcessStage(Stage):
 
             self._agents_last_active[session_id] = now
             return self._agents[session_id]
+
+    def _create_llm_for_model(
+        self,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> LLM:
+        """Create a fresh LLM for a main or sub-agent model choice."""
+        cfg = self._resolve_llm_config(model=model, provider=provider)
+        return LLM(**cfg)
+
+    def _resolve_llm_config(
+        self,
+        model: str | None = None,
+        provider: str | None = None,
+    ) -> dict:
+        requested_model = clean_optional_str(model)
+        requested_provider = clean_optional_str(provider)
+        cfg = dict(self._llm_template)
+
+        if not requested_model and not requested_provider:
+            return cfg
+        if requested_provider and not requested_model:
+            raise ValueError("model is required when provider is specified")
+
+        if requested_provider:
+            provider_cfg = self.providers.get(requested_provider)
+            if not isinstance(provider_cfg, dict):
+                raise ValueError(f"unknown provider '{requested_provider}'")
+            cfg.update(_llm_config_from_provider(provider_cfg))
+            cfg["model"] = requested_model
+            return cfg
+
+        matches = [
+            item for item in self.active_models
+            if isinstance(item, dict) and item.get("model") == requested_model
+        ]
+        providers = sorted({
+            str(item.get("provider") or "")
+            for item in matches
+            if isinstance(item, dict)
+        })
+        if len(providers) > 1:
+            raise ValueError(
+                f"model '{requested_model}' is available from multiple providers; "
+                "specify provider"
+            )
+        if len(providers) == 1 and providers[0]:
+            provider_cfg = self.providers.get(providers[0])
+            if not isinstance(provider_cfg, dict):
+                raise ValueError(f"unknown provider '{providers[0]}'")
+            cfg.update(_llm_config_from_provider(provider_cfg))
+
+        cfg["model"] = requested_model
+        return cfg
+
+    def _model_catalog(self) -> list[dict]:
+        choices = []
+        seen = set()
+        for item in self.active_models:
+            if not isinstance(item, dict):
+                continue
+            model = clean_optional_str(item.get("model"))
+            if not model:
+                continue
+            provider = clean_optional_str(item.get("provider")) or ""
+            key = (model, provider)
+            if key in seen:
+                continue
+            seen.add(key)
+            choices.append({"model": model, "provider": provider})
+        if not choices:
+            choices.append({"model": self.model, "provider": ""})
+        return choices
 
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
         with self._agents_lock:
@@ -367,6 +445,10 @@ class ProcessStage(Stage):
             self.api_format = kwargs["api_format"]
             self._llm_template["api_format"] = kwargs["api_format"]
             llm_updates["api_format"] = kwargs["api_format"]
+        if "active_models" in kwargs:
+            self.active_models = list(kwargs["active_models"] or [])
+        if "providers" in kwargs:
+            self.providers = dict(kwargs["providers"] or {})
         if "max_tokens" in kwargs:
             self.max_tokens = int(kwargs["max_tokens"])
             self._llm_template["max_tokens"] = self.max_tokens
@@ -446,3 +528,11 @@ class ProcessStage(Stage):
 def _brief(kwargs: dict, maxlen: int = 60) -> str:
     s = ", ".join(f"{k}={repr(v)[:30]}" for k, v in kwargs.items())
     return s[:maxlen] + ("..." if len(s) > maxlen else "")
+
+
+def _llm_config_from_provider(provider_cfg: dict) -> dict:
+    return {
+        "api_key": provider_cfg.get("api_key", ""),
+        "base_url": provider_cfg.get("base_url") or None,
+        "api_format": provider_cfg.get("api_format", "openai"),
+    }

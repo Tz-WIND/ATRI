@@ -41,8 +41,9 @@ dashboard:
   enabled: true
   host: 127.0.0.1
   port: 6185
-  # Generated automatically in config.yaml when missing.
-  auth_token: ''
+  # Leave username or password empty on first run to create them in the Dashboard setup screen.
+  username: admin
+  password: ''
 
 # OneBot11 反向 WebSocket（QQ / Napcat）
 onebot11:

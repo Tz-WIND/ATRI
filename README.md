@@ -38,7 +38,7 @@ ATRI 是一个可扩展的 AI 框架，支持通过 QQ 机器人（OneBot11 / Na
 
 - 工作区沙箱：所有文件操作限定在工作目录内，防止越权访问
 - 两级危险命令检测：拦截 `rm -rf`、格式化、`/dev/sda` 等高危操作
-- Dashboard 认证：启动时自动生成 auth_token，保护 Web 控制台
+- Dashboard 认证：首次运行创建用户名/密码，之后保护 Web 控制台
 
 ### 音乐播放器
 
@@ -127,12 +127,13 @@ workspace: ./workspace
 sessions_dir: data/sessions
 plugins_dir: plugins
 
-# Dashboard（auth_token 缺失时自动生成）
+# Dashboard（username 或 password 缺失/为空时首次打开 Web 控制台会进入注册）
 dashboard:
   enabled: true
   host: 127.0.0.1
   port: 6185
-  auth_token: ''
+  username: admin
+  password: ''
 
 # OneBot11（QQ 机器人）
 onebot11:
