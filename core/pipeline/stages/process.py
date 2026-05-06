@@ -516,13 +516,16 @@ class ProcessStage(Stage):
             for agent in self._agents.values():
                 agent.skills_prompt = self._skills_prompt
 
-    def reset_session(self, session_id: str):
+    def reset_session(self, session_id: str) -> bool:
         """Clear a specific session's history."""
+        deleted = self.session_store.delete(session_id)
         with self._agents_lock:
-            if session_id in self._agents:
-                self._agents[session_id].reset()
-                self._agents_last_active.pop(session_id, None)
-                self.session_store.delete(session_id)
+            agent = self._agents.pop(session_id, None)
+            if agent:
+                agent.reset()
+            self._agents_last_active.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
+        return deleted
 
 
 def _brief(kwargs: dict, maxlen: int = 60) -> str:

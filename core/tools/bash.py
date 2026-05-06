@@ -234,6 +234,8 @@ class BashTool(Tool):
         Handles cd, pushd, and their chaining via &&, ;, ||.
         Does NOT handle subshells ( ... ) or source'd scripts.
         """
+        dir_stack: list[str] = []
+
         # Split on common separators
         parts = _split_shell_commands(command)
         for part in parts:
@@ -258,24 +260,61 @@ class BashTool(Tool):
                         os.path.join(self._cwd, os.path.expanduser(target))
                     )
                     if os.path.isdir(new_dir) and _is_within_workspace(new_dir, self._workspace):
+                        dir_stack.append(self._cwd)
                         self._cwd = new_dir
-            # popd (best-effort: go to parent; we don't maintain a full dirs stack)
+            # popd returns to the last directory tracked by pushd, if any.
             elif part.strip() == "popd":
-                parent = os.path.dirname(self._cwd)
-                if os.path.isdir(parent):
-                    self._cwd = parent
+                if dir_stack:
+                    previous = dir_stack.pop()
+                    if os.path.isdir(previous) and _is_within_workspace(previous, self._workspace):
+                        self._cwd = previous
 
 
 def _split_shell_commands(cmd: str) -> list[str]:
-    """Split a shell command string on &&, ;, and || separators.
+    """Split a shell command string on separators outside quoted strings."""
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escape = False
+    i = 0
 
-    NOTE: This is a simple regex split that does NOT respect shell quoting.
-    For example, echo "a && b" would be incorrectly split on the && inside quotes.
-    In practice this is acceptable because cd/pushd targets rarely contain these
-    separators, but if this function is ever reused for general-purpose command
-    parsing it should be replaced with proper shlex-based tokenization.
-    """
-    return [p for p in re.split(r"(?:&&|;|\|\|)", cmd) if p.strip()]
+    while i < len(cmd):
+        ch = cmd[i]
+        if escape:
+            current.append(ch)
+            escape = False
+            i += 1
+            continue
+        if ch == "\\":
+            current.append(ch)
+            escape = True
+            i += 1
+            continue
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch == ";" or cmd.startswith("&&", i) or cmd.startswith("||", i):
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            i += 2 if ch != ";" else 1
+            continue
+        current.append(ch)
+        i += 1
+
+    part = "".join(current).strip()
+    if part:
+        parts.append(part)
+    return parts
 
 
 def _check_dangerous(cmd: str) -> tuple[DangerLevel, str]:
@@ -314,20 +353,16 @@ def _check_workspace_escape(
                 if not _is_within_workspace(target, workspace):
                     return DangerLevel.BLOCKED, f"{prefix.strip()} outside workspace"
 
-    unquoted = _strip_quoted_strings(cmd)
-    if re.search(r"(?:^|[\s\\/])\.\.(?:[\\/]|$)", unquoted):
+    if re.search(r"(?:^|[\s\\/\"'`=])\.\.(?:[\\/]|$)", cmd):
         return DangerLevel.BLOCKED, "path traversal outside workspace"
-    if os.name == "nt" and re.search(r"(?:^|[\s\\/])[A-Za-z]:[\\/]", unquoted):
+    if os.name == "nt" and re.search(r"(?:^|[\s\"'`=])(?:[A-Za-z]:[\\/]|\\\\)", cmd):
         return DangerLevel.BLOCKED, "absolute Windows path"
-    if re.search(r"(?:^|[\s\\/])~(?:[\\/]|$)", unquoted):
+    if os.name != "nt" and re.search(r"(?:^|[\s\"'`=])/(?:[^/\s\"'`]+)", cmd):
+        return DangerLevel.BLOCKED, "absolute path"
+    if re.search(r"(?:^|[\s\"'`=])~(?:[\\/]|$)", cmd):
         return DangerLevel.BLOCKED, "home-directory path"
 
     return DangerLevel.SAFE, ""
-
-
-def _strip_quoted_strings(cmd: str) -> str:
-    """Remove single- and double-quoted substrings to avoid false positives."""
-    return re.sub(r"'[^']*'", "", re.sub(r'"[^"]*"', "", cmd))
 
 
 def _is_within_workspace(path: str, workspace: str) -> bool:

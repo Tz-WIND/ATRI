@@ -17,7 +17,7 @@
         </div>
       </template>
       <template v-else-if="message.role === 'assistant' && message.md">
-        <div v-html="renderedContent" class="markdown-body"></div>
+        <div v-html="renderedContent" class="markdown-body" @click="handleMarkdownClick"></div>
         <span v-if="message.streaming" class="stream-cursor"></span>
       </template>
       <template v-else>
@@ -78,15 +78,15 @@ renderer.image = function (tokenOrHref, title, text) {
 
 renderer.code = function (tokenOrCode, lang) {
   const code = typeof tokenOrCode === 'object' ? tokenOrCode.text || '' : String(tokenOrCode ?? '')
-  const language = (typeof tokenOrCode === 'object' ? tokenOrCode.lang : lang) || 'text'
+  const language = normalizeLanguage((typeof tokenOrCode === 'object' ? tokenOrCode.lang : lang) || 'text')
+  const classLanguage = language.replace(/[^a-z0-9_-]/g, '-')
   let highlighted
   if (language !== 'text' && hljs.getLanguage(language)) {
     highlighted = hljs.highlight(code, { language }).value
   } else {
     highlighted = hljs.highlightAuto(code).value
   }
-  const safeCode = esc(code).replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-  return `<div class="code-header"><span>${esc(language)}</span><button class="btn-copy" data-code="${safeCode}" onclick="window._copyCode?.(this)">Copy</button></div><pre><code class="hljs language-${esc(language)}">${highlighted}</code></pre>`
+  return `<div class="code-header"><span>${esc(language)}</span><button class="btn-copy" type="button">Copy</button></div><pre><code class="hljs language-${escAttr(classLanguage)}">${highlighted}</code></pre>`
 }
 
 marked.use({ renderer })
@@ -120,6 +120,32 @@ function isSafeUrl(url) {
     return ['http:', 'https:', 'mailto:'].includes(parsed.protocol)
   } catch {
     return false
+  }
+}
+
+function normalizeLanguage(value) {
+  const firstToken = String(value || 'text').trim().split(/\s+/)[0].toLowerCase()
+  if (!firstToken || firstToken.length > 40) return 'text'
+  return /^[a-z0-9_+.-]+$/.test(firstToken) ? firstToken : 'text'
+}
+
+async function handleMarkdownClick(event) {
+  const button = event.target?.closest?.('.btn-copy')
+  if (!button) return
+  const header = button.closest('.code-header')
+  const code = header?.nextElementSibling?.querySelector?.('code')?.textContent || ''
+  try {
+    await navigator.clipboard.writeText(code)
+    const oldText = button.textContent
+    button.textContent = 'Copied'
+    window.setTimeout(() => {
+      button.textContent = oldText || 'Copy'
+    }, 1200)
+  } catch {
+    button.textContent = 'Failed'
+    window.setTimeout(() => {
+      button.textContent = 'Copy'
+    }, 1200)
   }
 }
 </script>

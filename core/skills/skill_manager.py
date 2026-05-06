@@ -118,6 +118,18 @@ def _sanitize_skill_display_name(name: str) -> str:
     return "<invalid_skill_name>"
 
 
+def _validate_skill_name(name: str) -> str:
+    """Validate a user-controlled skill name before using it as a path segment."""
+    skill_name = str(name or "").strip()
+    if (
+        not skill_name
+        or skill_name in {".", ".."}
+        or not _SKILL_NAME_RE.fullmatch(skill_name)
+    ):
+        raise ValueError("Invalid skill name.")
+    return skill_name
+
+
 def _build_skill_read_command_example(path: str) -> str:
     """Generate a shell command to read SKILL.md on the current platform."""
     if path == "<skills_root>/<skill_name>/SKILL.md":
@@ -234,6 +246,17 @@ class SkillManager:
     def _ensure_dir(self) -> None:
         os.makedirs(self.skills_root, exist_ok=True)
 
+    def resolve_skill_dir(self, name: str) -> Path:
+        """Return the resolved directory for a validated skill name."""
+        skill_name = _validate_skill_name(name)
+        root = Path(self.skills_root).resolve()
+        target = (root / skill_name).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as e:
+            raise ValueError("Invalid skill name.") from e
+        return target
+
     # ------------------------------------------------------------------
     # listing
     # ------------------------------------------------------------------
@@ -249,6 +272,10 @@ class SkillManager:
                 if not entry.is_dir():
                     continue
                 skill_name = entry.name
+                try:
+                    _validate_skill_name(skill_name)
+                except ValueError:
+                    continue
                 skill_md = _normalize_skill_markdown_path(entry)
                 if skill_md is None:
                     continue
@@ -284,14 +311,16 @@ class SkillManager:
 
     def set_skill_active(self, name: str, active: bool) -> None:
         """Toggle a skill's active flag in config."""
-        self.skills_config.setdefault(name, {})["active"] = bool(active)
+        skill_name = _validate_skill_name(name)
+        self.skills_config.setdefault(skill_name, {})["active"] = bool(active)
 
     def delete_skill(self, name: str) -> None:
         """Delete a skill directory and its config entry."""
-        skill_dir = Path(self.skills_root) / name
+        skill_name = _validate_skill_name(name)
+        skill_dir = self.resolve_skill_dir(skill_name)
         if skill_dir.exists():
             shutil.rmtree(skill_dir)
-        self.skills_config.pop(name, None)
+        self.skills_config.pop(skill_name, None)
 
     # ------------------------------------------------------------------
     # zip install
@@ -339,11 +368,9 @@ class SkillManager:
 
             archive_skill_name = None
             if skill_name_hint is not None:
-                archive_skill_name = _normalize_skill_name(skill_name_hint)
-                if archive_skill_name and not _SKILL_NAME_RE.fullmatch(
-                    archive_skill_name
-                ):
-                    raise ValueError("Invalid skill name.")
+                archive_skill_name = _validate_skill_name(
+                    _normalize_skill_name(skill_name_hint)
+                )
 
             # Security: validate all paths before extraction
             for name in names:
@@ -365,9 +392,7 @@ class SkillManager:
                     archive_hint = _normalize_skill_name(
                         skill_name_hint or zip_path_obj.stem
                     )
-                    if not archive_hint or not _SKILL_NAME_RE.fullmatch(archive_hint):
-                        raise ValueError("Invalid skill name.")
-                    skill_name = archive_hint
+                    skill_name = _validate_skill_name(archive_hint)
 
                     src_dir = Path(tmp_dir)
                     normalized_path = _normalize_skill_markdown_path(src_dir)
@@ -402,9 +427,11 @@ class SkillManager:
                         ):
                             continue
 
-                        if archive_root_name in {".", "..", ""} or not (
-                            _SKILL_NAME_RE.fullmatch(archive_root_name_normalized)
-                        ):
+                        if archive_root_name in {".", "..", ""}:
+                            continue
+                        try:
+                            _validate_skill_name(archive_root_name_normalized)
+                        except ValueError:
                             continue
 
                         if archive_skill_name and len(top_dirs) == 1:

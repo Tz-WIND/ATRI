@@ -28,10 +28,11 @@ class WakingCheckStage(Stage):
             yield
             return
 
-        # Check if bot is @-mentioned
+        # Check if bot is @-mentioned. OneBot provides the bot id on each event.
+        self_id = event.self_id or self.self_id
         for comp in event.message_chain:
             if isinstance(comp, At):
-                if comp.qq == self.self_id or comp.qq == "all":
+                if (self_id and comp.qq == self_id) or comp.qq == "all":
                     event.is_wake = True
                     break
 

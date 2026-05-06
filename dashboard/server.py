@@ -828,6 +828,10 @@ class Dashboard:
             sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
+            try:
+                sm.resolve_skill_dir(name)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
             skills = sm.list_skills(active_only=False)
             for s in skills:
                 if s.name == name:
@@ -850,8 +854,11 @@ class Dashboard:
             sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
-            if "active" in data:
-                sm.set_skill_active(name, bool(data["active"]))
+            try:
+                if "active" in data:
+                    sm.set_skill_active(name, bool(data["active"]))
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
             self.lifecycle.save_config()
             self._reload_skills_prompt()
             return jsonify({"ok": True})
@@ -861,7 +868,10 @@ class Dashboard:
             sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
-            sm.delete_skill(name)
+            try:
+                sm.delete_skill(name)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
             self.lifecycle.save_config()
             self._reload_skills_prompt()
             return jsonify({"ok": True})
@@ -898,7 +908,10 @@ class Dashboard:
             sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
-            skill_dir = Path(sm.skills_root) / name
+            try:
+                skill_dir = sm.resolve_skill_dir(name)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
             if not skill_dir.exists() or not skill_dir.is_dir():
                 return jsonify({"error": "skill not found"}), 404
             buf = io.BytesIO()
