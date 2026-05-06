@@ -7,6 +7,8 @@ Chat messages go through the WebChat platform adapter and full pipeline.
 from __future__ import annotations
 
 import asyncio
+import hmac
+from http.cookies import SimpleCookie
 import json
 import os
 import io
@@ -39,6 +41,42 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "persona",
     "tavily_api_key",
 }
+
+_AUTH_COOKIE = "atri_dashboard_token"
+_AUTH_EXEMPT_API_PATHS = {
+    "/api/auth/status",
+    "/api/auth/login",
+}
+
+
+def _mask_providers(providers: dict) -> dict:
+    result = {}
+    for name, cfg in (providers or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        result[name] = {**cfg, "api_key": "***" if cfg.get("api_key") else ""}
+    return result
+
+
+def _resolve_workspace_path(workspace: str, rel_path: str) -> tuple[Path, Path]:
+    ws = Path(workspace or ".").resolve()
+    target = (ws / (rel_path or "")).resolve()
+    try:
+        target.relative_to(ws)
+    except ValueError as e:
+        raise PermissionError("path outside workspace") from e
+    return ws, target
+
+
+def _cookie_value(cookie_header: str, name: str) -> str:
+    if not cookie_header:
+        return ""
+    try:
+        cookies = SimpleCookie(cookie_header)
+    except Exception:
+        return ""
+    morsel = cookies.get(name)
+    return morsel.value if morsel else ""
 
 
 def _model_url_candidates(base_url: str) -> list[str]:
@@ -163,10 +201,12 @@ async def _fetch_model_ids(client, url: str, headers: dict, api_format: str) -> 
 
 
 class Dashboard:
-    def __init__(self, lifecycle: "Lifecycle", host: str = "0.0.0.0", port: int = 6185):
+    def __init__(self, lifecycle: "Lifecycle", host: str = "127.0.0.1", port: int = 6185):
         self.lifecycle = lifecycle
         self.host = host
         self.port = port
+        dashboard_cfg = lifecycle.config.get("dashboard", {})
+        self.auth_token = str(dashboard_cfg.get("auth_token", "") or "")
 
         static_dir = str(Path(__file__).parent / "static")
         self.app = Quart("atri-dashboard", static_folder=static_dir, static_url_path="/static")
@@ -208,11 +248,75 @@ class Dashboard:
     def _register_routes(self):
         app = self.app
 
+        def _provided_auth_token() -> str:
+            auth = request.headers.get("Authorization", "")
+            if auth.lower().startswith("bearer "):
+                return auth[7:].strip()
+            return (
+                request.headers.get("X-ATRI-Token", "")
+                or request.cookies.get(_AUTH_COOKIE, "")
+                or request.args.get("token", "")
+            )
+
+        def _auth_ok(token: str) -> bool:
+            return bool(self.auth_token) and hmac.compare_digest(token, self.auth_token)
+
+        def _request_authenticated() -> bool:
+            return _auth_ok(_provided_auth_token())
+
+        @app.before_request
+        async def require_dashboard_auth():
+            if not self.auth_token:
+                return None
+            path = request.path
+            if request.method == "OPTIONS":
+                return None
+            if not path.startswith("/api/"):
+                return None
+            if path in _AUTH_EXEMPT_API_PATHS:
+                return None
+            if _request_authenticated():
+                return None
+            return jsonify({"error": "authentication required"}), 401
+
+        @app.after_request
+        async def persist_query_token(response):
+            if self.auth_token and _auth_ok(request.args.get("token", "")):
+                response.set_cookie(
+                    _AUTH_COOKIE,
+                    self.auth_token,
+                    httponly=True,
+                    samesite="Strict",
+                )
+            return response
+
         @app.route("/")
         async def index():
             response = await send_from_directory(app.static_folder, "index.html")
             response.headers["Cache-Control"] = "no-store"
             return response
+
+        @app.route("/api/auth/status")
+        async def auth_status():
+            return jsonify({
+                "auth_required": bool(self.auth_token),
+                "authenticated": not self.auth_token or _request_authenticated(),
+            })
+
+        @app.route("/api/auth/login", methods=["POST"])
+        async def auth_login():
+            data = await request.get_json(silent=True) or {}
+            token = str(data.get("token", "") or "")
+            if not _auth_ok(token):
+                return jsonify({"error": "invalid token"}), 401
+            resp = jsonify({"ok": True})
+            resp.set_cookie(
+                _AUTH_COOKIE,
+                self.auth_token,
+                httponly=True,
+                samesite="Strict",
+            )
+            return resp
 
         @app.route("/api/ping")
         async def api_ping():
@@ -252,7 +356,7 @@ class Dashboard:
                 "wake_words": c.get("wake_words", []),
                 "extra_instructions": c.get("extra_instructions", ""),
                 "persona": c.get("persona", ""),
-                "providers": c.get("providers", {}),
+                "providers": _mask_providers(c.get("providers", {})),
                 "tavily_api_key": "***" if c.get("tavily_api_key") else "",
             })
 
@@ -285,11 +389,7 @@ class Dashboard:
         # ── Model Providers ──
         @app.route("/api/provider/list", methods=["GET"])
         async def list_providers():
-            providers = self.lifecycle.config.get("providers", {})
-            result = {}
-            for name, cfg in providers.items():
-                result[name] = {**cfg, "api_key": "***" if cfg.get("api_key") else ""}
-            return jsonify(result)
+            return jsonify(_mask_providers(self.lifecycle.config.get("providers", {})))
 
         @app.route("/api/provider/save", methods=["POST"])
         async def save_provider():
@@ -634,9 +734,12 @@ class Dashboard:
         @app.route("/api/filelist")
         async def list_files():
             rel = request.args.get("path", "")
-            ws = Path(self.lifecycle.config.get("workspace", ".")).resolve()
-            target = (ws / rel).resolve()
-            if not str(target).startswith(str(ws)):
+            try:
+                ws, target = _resolve_workspace_path(
+                    self.lifecycle.config.get("workspace", "."),
+                    rel,
+                )
+            except PermissionError:
                 return jsonify({"error": "path outside workspace"}), 403
             if not target.exists() or not target.is_dir():
                 return jsonify({"entries": [], "path": rel})
@@ -658,9 +761,12 @@ class Dashboard:
         @app.route("/api/fileread")
         async def read_file():
             rel = request.args.get("path", "")
-            ws = Path(self.lifecycle.config.get("workspace", ".")).resolve()
-            target = (ws / rel).resolve()
-            if not str(target).startswith(str(ws)):
+            try:
+                _, target = _resolve_workspace_path(
+                    self.lifecycle.config.get("workspace", "."),
+                    rel,
+                )
+            except PermissionError:
                 return jsonify({"error": "path outside workspace"}), 403
             if not target.exists() or not target.is_file():
                 return jsonify({"error": "file not found"}), 404
@@ -675,9 +781,12 @@ class Dashboard:
             data = await request.get_json()
             rel = data.get("path", "")
             content = data.get("content", "")
-            ws = Path(self.lifecycle.config.get("workspace", ".")).resolve()
-            target = (ws / rel).resolve()
-            if not str(target).startswith(str(ws)):
+            try:
+                _, target = _resolve_workspace_path(
+                    self.lifecycle.config.get("workspace", "."),
+                    rel,
+                )
+            except PermissionError:
                 return jsonify({"error": "path outside workspace"}), 403
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -788,6 +897,15 @@ class Dashboard:
         # ── WebSocket ──
         @app.websocket("/ws")
         async def ws_handler():
+            if self.auth_token:
+                token = (
+                    websocket.headers.get("X-ATRI-Token", "")
+                    or _cookie_value(websocket.headers.get("Cookie", ""), _AUTH_COOKIE)
+                    or websocket.args.get("token", "")
+                )
+                if not hmac.compare_digest(token, self.auth_token):
+                    await websocket.close(1008)
+                    return
             ws_obj = websocket._get_current_object()
             self._ws_clients.add(ws_obj)
             try:
@@ -841,6 +959,12 @@ class Dashboard:
         config.bind = [f"{self.host}:{self.port}"]
         config.accesslog = None
         logger.info(f"\n  ATRI Dashboard ready\n  -> http://localhost:{self.port}\n")
+        if self.auth_token:
+            masked = self.auth_token[:4] + "****" + self.auth_token[-4:]
+            logger.info(
+                "Dashboard auth enabled. Open with token: "
+                f"http://localhost:{self.port}/?token={masked}"
+            )
         self.shutdown_event = asyncio.Event()
         await serve(self.app, config, shutdown_trigger=self.shutdown_event.wait)
 

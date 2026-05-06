@@ -55,6 +55,7 @@ class ProcessStage(Stage):
         self._agents: dict[str, Agent] = {}
         self._agents_lock = threading.Lock()
         self._agents_last_active: dict[str, float] = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
         self._llm_template = {
             "model": self.model,
             "api_key": self.api_key,
@@ -65,7 +66,8 @@ class ProcessStage(Stage):
         }
 
         self.broadcast_fn: Callable[[dict], Coroutine[Any, Any, None]] | None = None
-        self._active_session_id: str | None = None
+        self._active_session_ids: set[str] = set()
+        self._active_lock = threading.Lock()
 
         # Store event loop reference for thread-safe broadcasting from agent executor
         self._loop = asyncio.get_running_loop()
@@ -109,7 +111,7 @@ class ProcessStage(Stage):
                 logger.info(f"Evicting idle agent for session {sid}")
                 self._agents.pop(sid, None)
                 self._agents_last_active.pop(sid, None)
-                self.session_store.delete(sid)
+                self._session_locks.pop(sid, None)
 
             if session_id not in self._agents:
                 llm = LLM(**self._llm_template)
@@ -133,6 +135,14 @@ class ProcessStage(Stage):
             self._agents_last_active[session_id] = now
             return self._agents[session_id]
 
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        with self._agents_lock:
+            lock = self._session_locks.get(session_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._session_locks[session_id] = lock
+            return lock
+
     def _fire(self, data: dict):
         """Thread-safe broadcast: schedule the async broadcast on the event loop."""
         if not self.broadcast_fn:
@@ -151,6 +161,16 @@ class ProcessStage(Stage):
             return
 
         session_id = event.unified_msg_origin
+        session_lock = self._get_session_lock(session_id)
+        async with session_lock:
+            async for item in self._process_locked(event, session_id):
+                yield item
+
+    async def _process_locked(
+        self,
+        event: MessageEvent,
+        session_id: str,
+    ) -> AsyncGenerator[None, None]:
         agent = self._get_or_create_agent(session_id)
 
         tool_events: list[dict] = []
@@ -250,7 +270,8 @@ class ProcessStage(Stage):
 
         try:
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
-            self._active_session_id = session_id
+            with self._active_lock:
+                self._active_session_ids.add(session_id)
             response = await agent.chat_async(
                 event.message_str,
                 on_token=on_token,
@@ -287,7 +308,8 @@ class ProcessStage(Stage):
             logger.exception(f"Agent error for {session_id}: {e}")
             event.set_result(f"Error: {e}")
         finally:
-            self._active_session_id = None
+            with self._active_lock:
+                self._active_session_ids.discard(session_id)
 
         yield
 
@@ -297,14 +319,20 @@ class ProcessStage(Stage):
         Called from the main thread on Ctrl+C to interrupt LLM streaming
         and tool execution without shutting down the whole process.
         """
-        sid = self._active_session_id
-        if sid:
-            with self._agents_lock:
-                if sid in self._agents:
-                    self._agents[sid].cancel()
+        with self._active_lock:
+            active = list(self._active_session_ids)
+        if not active:
+            return False
+
+        cancelled = False
+        with self._agents_lock:
+            for sid in active:
+                agent = self._agents.get(sid)
+                if agent:
+                    agent.cancel()
                     logger.info(f"Cancelled agent for session {sid}")
-                    return True
-        return False
+                    cancelled = True
+        return cancelled
 
     def cancel_session(self, session_id: str) -> bool:
         """Cancel a specific session's agent (thread-safe).

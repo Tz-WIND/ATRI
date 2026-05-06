@@ -10,6 +10,13 @@ import subprocess
 import threading
 import time
 from .base import Tool
+from .bash import (
+    CONFIRM_MARKER,
+    DangerLevel,
+    _check_dangerous,
+    _check_workspace_escape,
+    _is_within_workspace,
+)
 
 
 class TerminalTool(Tool):
@@ -47,17 +54,45 @@ class _ShellSession:
 
     def __init__(self, cwd: str):
         self._cwd = cwd
+        self._workspace = cwd
         self._env = os.environ.copy()
         self._history: list[str] = []
 
     def run(self, command: str, timeout: int = 120) -> str:
         self._history.append(command)
 
+        level, reason = _check_dangerous(command)
+        if level == DangerLevel.BLOCKED:
+            return (
+                f"🚫 BLOCKED: {reason}\n"
+                f"Command: {command}\n"
+                f"This command is too dangerous and cannot be executed."
+            )
+        if level == DangerLevel.CONFIRM:
+            return (
+                f"⚠️ {CONFIRM_MARKER}: {reason}\n"
+                f"Command: {command}\n"
+                "Persistent terminal commands cannot be approved inline. "
+                "Use the bash tool if this command is intentional."
+            )
+
+        workspace_level, workspace_reason = _check_workspace_escape(
+            command,
+            self._cwd,
+            self._workspace,
+        )
+        if workspace_level == DangerLevel.BLOCKED:
+            return (
+                f"🚫 BLOCKED: {workspace_reason}\n"
+                f"Command: {command}\n"
+                f"Terminal commands must stay inside workspace '{self._workspace}'."
+            )
+
         # Track cd commands to maintain working directory
         if command.strip().startswith("cd "):
             target = command.strip()[3:].strip().strip("'\"")
             new_dir = os.path.normpath(os.path.join(self._cwd, os.path.expanduser(target)))
-            if os.path.isdir(new_dir):
+            if os.path.isdir(new_dir) and _is_within_workspace(new_dir, self._workspace):
                 self._cwd = new_dir
                 return f"Changed directory to {self._cwd}"
             return f"Error: directory not found: {target}"

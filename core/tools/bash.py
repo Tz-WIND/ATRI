@@ -111,6 +111,18 @@ class BashTool(Tool):
                 f"Please use a safer alternative."
             )
 
+        workspace_level, workspace_reason = _check_workspace_escape(
+            command,
+            self._cwd,
+            self._workspace,
+        )
+        if workspace_level == DangerLevel.BLOCKED:
+            return (
+                f"🚫 BLOCKED: {workspace_reason}\n"
+                f"Command: {command}\n"
+                f"Shell commands must stay inside workspace '{self._workspace}'."
+            )
+
         if level == DangerLevel.CONFIRM:
             self._pending_approval = {
                 "command": command,
@@ -231,12 +243,12 @@ class BashTool(Tool):
                 target = part[2:].strip() if part.startswith("cd ") else ""
                 target = target.strip().strip("'\"")
                 if not target:
-                    self._cwd = os.path.expanduser("~")
+                    self._cwd = self._workspace
                 else:
                     new_dir = os.path.normpath(
                         os.path.join(self._cwd, os.path.expanduser(target))
                     )
-                    if os.path.isdir(new_dir):
+                    if os.path.isdir(new_dir) and _is_within_workspace(new_dir, self._workspace):
                         self._cwd = new_dir
             # pushd (tracks the pushed directory, ignoring the stack)
             elif part.startswith("pushd "):
@@ -245,7 +257,7 @@ class BashTool(Tool):
                     new_dir = os.path.normpath(
                         os.path.join(self._cwd, os.path.expanduser(target))
                     )
-                    if os.path.isdir(new_dir):
+                    if os.path.isdir(new_dir) and _is_within_workspace(new_dir, self._workspace):
                         self._cwd = new_dir
             # popd (best-effort: go to parent; we don't maintain a full dirs stack)
             elif part.strip() == "popd":
@@ -278,3 +290,50 @@ def _check_dangerous(cmd: str) -> tuple[DangerLevel, str]:
         if re.search(pattern, cmd, re.IGNORECASE):
             return DangerLevel.CONFIRM, reason
     return DangerLevel.SAFE, ""
+
+
+def _check_workspace_escape(
+    cmd: str,
+    cwd: str,
+    workspace: str,
+) -> tuple[DangerLevel, str]:
+    """Block common shell patterns that escape the configured workspace."""
+    for part in _split_shell_commands(cmd):
+        stripped = part.strip()
+        lowered = stripped.lower()
+        if lowered == "cd":
+            continue
+        for prefix in ("cd ", "pushd "):
+            if lowered.startswith(prefix):
+                raw_target = stripped[len(prefix):].strip().strip("'\"")
+                if not raw_target:
+                    continue
+                target = os.path.normpath(
+                    os.path.join(cwd, os.path.expanduser(raw_target))
+                )
+                if not _is_within_workspace(target, workspace):
+                    return DangerLevel.BLOCKED, f"{prefix.strip()} outside workspace"
+
+    unquoted = _strip_quoted_strings(cmd)
+    if re.search(r"(?:^|[\s\\/])\.\.(?:[\\/]|$)", unquoted):
+        return DangerLevel.BLOCKED, "path traversal outside workspace"
+    if os.name == "nt" and re.search(r"(?:^|[\s\\/])[A-Za-z]:[\\/]", unquoted):
+        return DangerLevel.BLOCKED, "absolute Windows path"
+    if re.search(r"(?:^|[\s\\/])~(?:[\\/]|$)", unquoted):
+        return DangerLevel.BLOCKED, "home-directory path"
+
+    return DangerLevel.SAFE, ""
+
+
+def _strip_quoted_strings(cmd: str) -> str:
+    """Remove single- and double-quoted substrings to avoid false positives."""
+    return re.sub(r"'[^']*'", "", re.sub(r'"[^"]*"', "", cmd))
+
+
+def _is_within_workspace(path: str, workspace: str) -> bool:
+    try:
+        candidate = os.path.abspath(path)
+        root = os.path.abspath(workspace)
+        return os.path.commonpath([candidate, root]) == root
+    except ValueError:
+        return False

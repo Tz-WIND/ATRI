@@ -6,6 +6,7 @@ Platform adapters (OneBot11 + WebChat), Pipeline, EventBus, Plugin Manager, Dash
 
 import asyncio
 import os
+import secrets
 import tempfile
 import time
 import traceback
@@ -48,8 +49,9 @@ DEFAULT_CONFIG = {
     },
     "dashboard": {
         "enabled": True,
-        "host": "0.0.0.0",
+        "host": "127.0.0.1",
         "port": 6185,
+        "auth_token": "",
     },
     "plugins_dir": "plugins",
     "skills": {},
@@ -58,6 +60,40 @@ DEFAULT_CONFIG = {
 
 
 SHUTDOWN_GRACE_PERIOD = 5.0  # seconds to wait for tasks to finish
+
+
+def _merge_config(default: dict, override: dict) -> dict:
+    """Recursively merge config dictionaries without sharing nested defaults."""
+    merged = {}
+    for key, value in default.items():
+        if isinstance(value, dict):
+            merged[key] = _merge_config(value, {})
+        elif isinstance(value, list):
+            merged[key] = list(value)
+        else:
+            merged[key] = value
+
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _ensure_dashboard_auth_token(config: dict) -> bool:
+    dashboard_cfg = config.setdefault("dashboard", {})
+    changed = False
+    if "host" not in dashboard_cfg:
+        dashboard_cfg["host"] = DEFAULT_CONFIG["dashboard"]["host"]
+        changed = True
+    if "port" not in dashboard_cfg:
+        dashboard_cfg["port"] = DEFAULT_CONFIG["dashboard"]["port"]
+        changed = True
+    if dashboard_cfg.get("enabled", True) and not dashboard_cfg.get("auth_token"):
+        dashboard_cfg["auth_token"] = secrets.token_urlsafe(32)
+        changed = True
+    return changed
 
 
 class Lifecycle:
@@ -76,10 +112,13 @@ class Lifecycle:
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
-            config = {**DEFAULT_CONFIG, **user_config}
+            config = _merge_config(DEFAULT_CONFIG, user_config)
         else:
-            config = dict(DEFAULT_CONFIG)
+            config = _merge_config(DEFAULT_CONFIG, {})
+
+        if _ensure_dashboard_auth_token(config):
             self.save_config(config)
+
         from core.tools.web_search import set_tavily_key
         set_tavily_key(config.get("tavily_api_key", "") or None)
         return config
@@ -196,7 +235,7 @@ class Lifecycle:
             from dashboard.server import Dashboard
             self.dashboard = Dashboard(
                 self,
-                host=dashboard_cfg.get("host", "0.0.0.0"),
+                host=dashboard_cfg.get("host", "127.0.0.1"),
                 port=dashboard_cfg.get("port", 6185),
             )
             self._tasks.append(asyncio.create_task(

@@ -39,8 +39,10 @@ plugins_dir: plugins
 # Dashboard Web 控制台
 dashboard:
   enabled: true
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 6185
+  # Generated automatically in config.yaml when missing.
+  auth_token: ''
 
 # OneBot11 反向 WebSocket（QQ / Napcat）
 onebot11:

@@ -49,6 +49,33 @@ marked.setOptions({
 })
 
 const renderer = new marked.Renderer()
+renderer.html = function (tokenOrHtml) {
+  const raw = typeof tokenOrHtml === 'object'
+    ? tokenOrHtml.raw || tokenOrHtml.text || ''
+    : String(tokenOrHtml ?? '')
+  return esc(raw)
+}
+
+renderer.link = function (tokenOrHref, title, text) {
+  const href = typeof tokenOrHref === 'object' ? tokenOrHref.href || '' : String(tokenOrHref ?? '')
+  const label = typeof tokenOrHref === 'object'
+    ? this.parser.parseInline(tokenOrHref.tokens || [])
+    : String(text ?? '')
+  if (!isSafeUrl(href)) return label
+  const rawTitle = typeof tokenOrHref === 'object' ? tokenOrHref.title : title
+  const titleAttr = rawTitle ? ` title="${escAttr(rawTitle)}"` : ''
+  return `<a href="${escAttr(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${label}</a>`
+}
+
+renderer.image = function (tokenOrHref, title, text) {
+  const href = typeof tokenOrHref === 'object' ? tokenOrHref.href || '' : String(tokenOrHref ?? '')
+  if (!isSafeUrl(href)) return ''
+  const rawTitle = typeof tokenOrHref === 'object' ? tokenOrHref.title : title
+  const alt = typeof tokenOrHref === 'object' ? tokenOrHref.text || '' : String(text ?? '')
+  const titleAttr = rawTitle ? ` title="${escAttr(rawTitle)}"` : ''
+  return `<img src="${escAttr(href)}" alt="${escAttr(alt)}"${titleAttr}>`
+}
+
 renderer.code = function (tokenOrCode, lang) {
   const code = typeof tokenOrCode === 'object' ? tokenOrCode.text || '' : String(tokenOrCode ?? '')
   const language = (typeof tokenOrCode === 'object' ? tokenOrCode.lang : lang) || 'text'
@@ -76,6 +103,24 @@ function esc(s) {
   const d = document.createElement('div')
   d.textContent = s
   return d.innerHTML
+}
+
+function escAttr(s) {
+  return esc(String(s ?? '')).replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+function isSafeUrl(url) {
+  const value = String(url || '').trim()
+  if (!value) return false
+  if (value.startsWith('#') || value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) {
+    return true
+  }
+  try {
+    const parsed = new URL(value, window.location.origin)
+    return ['http:', 'https:', 'mailto:'].includes(parsed.protocol)
+  } catch {
+    return false
+  }
 }
 </script>
 
