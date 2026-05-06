@@ -33,6 +33,7 @@ class ProcessStage(Stage):
         self.model: str = ctx.get("model", "gpt-4o")
         self.api_key: str = ctx.get("api_key", "")
         self.base_url: str | None = ctx.get("base_url")
+        self.api_format: str = ctx.get("api_format", "openai")
         self.max_tokens: int = ctx.get("max_tokens", 4096)
         self.temperature: float = ctx.get("temperature", 0.0)
         self.max_context_tokens: int = ctx.get("max_context_tokens", 128_000)
@@ -58,6 +59,7 @@ class ProcessStage(Stage):
             "model": self.model,
             "api_key": self.api_key,
             "base_url": self.base_url,
+            "api_format": self.api_format,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
@@ -166,6 +168,8 @@ class ProcessStage(Stage):
             logger.info(f"[{session_id}] Tool: {name}({_brief(kwargs)})")
 
         def on_thinking(content: str):
+            if content:
+                thinking_content_parts.append(content)
             _broadcast_sync({
                 "type": "thinking_delta",
                 "session_id": session_id,
@@ -173,6 +177,7 @@ class ProcessStage(Stage):
             })
 
         thinking_done_sent = False
+        thinking_content_parts: list[str] = []
 
         def mark_thinking_done():
             nonlocal thinking_done_sent
@@ -185,6 +190,12 @@ class ProcessStage(Stage):
             })
 
         def on_thinking_done(full_content: str):
+            if full_content and not thinking_content_parts:
+                _broadcast_sync({
+                    "type": "thinking_delta",
+                    "session_id": session_id,
+                    "content": full_content,
+                })
             mark_thinking_done()
 
         response_started = False
@@ -311,21 +322,49 @@ class ProcessStage(Stage):
 
     def update_config(self, **kwargs):
         """Hot-reload configuration (called from WebUI/dashboard)."""
+        llm_updates = {}
         if "model" in kwargs:
+            self.model = kwargs["model"]
             self._llm_template["model"] = kwargs["model"]
-            with self._agents_lock:
-                for agent in self._agents.values():
-                    agent.llm.model = kwargs["model"]
+            llm_updates["model"] = kwargs["model"]
         if "api_key" in kwargs and kwargs["api_key"] != "***":
+            self.api_key = kwargs["api_key"]
             self._llm_template["api_key"] = kwargs["api_key"]
-            with self._agents_lock:
-                for agent in self._agents.values():
-                    agent.llm.client.api_key = kwargs["api_key"]
+            llm_updates["api_key"] = kwargs["api_key"]
         if "base_url" in kwargs:
+            self.base_url = kwargs["base_url"]
             self._llm_template["base_url"] = kwargs["base_url"]
+            llm_updates["base_url"] = kwargs["base_url"]
+        if "api_format" in kwargs:
+            self.api_format = kwargs["api_format"]
+            self._llm_template["api_format"] = kwargs["api_format"]
+            llm_updates["api_format"] = kwargs["api_format"]
+        if "max_tokens" in kwargs:
+            self.max_tokens = int(kwargs["max_tokens"])
+            self._llm_template["max_tokens"] = self.max_tokens
+            llm_updates["max_tokens"] = self.max_tokens
+        if "temperature" in kwargs:
+            self.temperature = float(kwargs["temperature"])
+            self._llm_template["temperature"] = self.temperature
+            llm_updates["temperature"] = self.temperature
+        if llm_updates:
             with self._agents_lock:
                 for agent in self._agents.values():
-                    agent.llm.client.base_url = kwargs["base_url"]
+                    agent.llm.reconfigure(**llm_updates)
+        agent_limit_updates = {}
+        if "max_context_tokens" in kwargs:
+            self.max_context_tokens = int(kwargs["max_context_tokens"])
+            agent_limit_updates["max_context_tokens"] = self.max_context_tokens
+        if "max_rounds" in kwargs:
+            self.max_rounds = int(kwargs["max_rounds"])
+            agent_limit_updates["max_rounds"] = self.max_rounds
+        if agent_limit_updates:
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    if "max_context_tokens" in agent_limit_updates:
+                        agent.context.set_max_tokens(self.max_context_tokens)
+                    if "max_rounds" in agent_limit_updates:
+                        agent.max_rounds = self.max_rounds
         if "extra_instructions" in kwargs:
             self.extra_instructions = kwargs["extra_instructions"]
             self._llm_template.pop("extra_instructions", None)

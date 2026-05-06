@@ -64,6 +64,12 @@ providers:
     api_format: openai
     models:
       - deepseek-chat
+  Anthropic:
+    base_url: https://api.anthropic.com/v1
+    api_key: sk-ant-your-api-key-here
+    api_format: anthropic
+    models:
+      - claude-sonnet-4-6
 
 # MCP Server 配置（可在 WebUI 中管理）
 mcp_servers: {}

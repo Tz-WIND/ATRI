@@ -32,8 +32,12 @@ export function useChat() {
       startThinkingBlock()
     }
     if (msg.type === 'thinking_delta') {
-      if (!thinkingBlock.value || thinkingBlock.value.done) startThinkingBlock()
-      thinkingBlock.value.content += msg.content
+      if (!thinkingBlock.value) {
+        startThinkingBlock()
+      } else if (thinkingBlock.value.done && (thinkingBlock.value.content || '').trim()) {
+        startThinkingBlock()
+      }
+      thinkingBlock.value.content += msg.content || ''
     }
     if (msg.type === 'thinking_done') {
       if (thinkingBlock.value) {

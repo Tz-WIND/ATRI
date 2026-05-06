@@ -26,8 +26,23 @@ if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
 
 
+_PROCESS_STAGE_SETTING_KEYS = {
+    "model",
+    "api_key",
+    "base_url",
+    "api_format",
+    "max_tokens",
+    "max_context_tokens",
+    "max_rounds",
+    "temperature",
+    "extra_instructions",
+    "persona",
+    "tavily_api_key",
+}
+
+
 def _model_url_candidates(base_url: str) -> list[str]:
-    """Build likely model-list URLs from an OpenAI-compatible base URL."""
+    """Build likely model-list URLs from an OpenAI-compatible or Anthropic base URL."""
     cleaned = (base_url or "").strip().rstrip("/")
     if not cleaned:
         return ["https://api.openai.com/v1/models"]
@@ -44,11 +59,63 @@ def _model_url_candidates(base_url: str) -> list[str]:
     if lower_path.endswith("/chat/completions"):
         path = path[: -len("/chat/completions")]
         cleaned = urlunsplit(parsed._replace(path=path))
+    elif lower_path.endswith("/messages"):
+        path = path[: -len("/messages")]
+        cleaned = urlunsplit(parsed._replace(path=path))
 
     candidates = [cleaned.rstrip("/") + "/models"]
     if "/v1" not in lower_path:
         candidates.append(cleaned.rstrip("/") + "/v1/models")
     return list(dict.fromkeys(candidates))
+
+
+def _headers_for_model_fetch(api_format: str, api_key: str) -> dict:
+    if api_format == "anthropic":
+        headers = {"anthropic-version": "2023-06-01"}
+        if api_key:
+            headers["x-api-key"] = api_key
+        return headers
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def _model_fetch_candidates(
+    base_url: str,
+    api_format: str,
+    api_key: str,
+) -> list[tuple[str, dict, str]]:
+    """Build model-list attempts as (url, headers, pagination_format).
+
+    Some providers expose Anthropic-compatible Messages endpoints but keep model
+    discovery on their OpenAI-compatible root endpoint. DeepSeek is one such
+    provider: chat uses /anthropic, while model discovery is /models.
+    """
+    candidates: list[tuple[str, dict, str]] = []
+
+    def add(url: str, headers: dict, fetch_format: str):
+        key = (url, fetch_format)
+        if not any((u, f) == key for u, _, f in candidates):
+            candidates.append((url, headers, fetch_format))
+
+    for url in _model_url_candidates(base_url):
+        add(url, _headers_for_model_fetch(api_format, api_key), api_format)
+
+    if api_format == "anthropic":
+        cleaned = (base_url or "").strip().rstrip("/")
+        if cleaned and "://" not in cleaned:
+            cleaned = "https://" + cleaned
+        parsed = urlsplit(cleaned)
+        parts = [part for part in parsed.path.split("/") if part]
+        if "anthropic" in [part.lower() for part in parts]:
+            stripped_parts = [
+                part for part in parts if part.lower() != "anthropic"
+            ]
+            stripped_path = "/" + "/".join(stripped_parts) if stripped_parts else ""
+            stripped = urlunsplit(parsed._replace(path=stripped_path)).rstrip("/")
+            openai_headers = _headers_for_model_fetch("openai", api_key)
+            for url in _model_url_candidates(stripped):
+                add(url, openai_headers, "openai")
+
+    return candidates
 
 
 def _extract_model_ids(body) -> list[str]:
@@ -72,6 +139,26 @@ def _extract_model_ids(body) -> list[str]:
                     break
         if model_id:
             models.append(model_id)
+    return sorted(set(models))
+
+
+async def _fetch_model_ids(client, url: str, headers: dict, api_format: str) -> list[str]:
+    models: list[str] = []
+    params: dict | None = {"limit": 100} if api_format == "anthropic" else None
+
+    for _ in range(20):
+        resp = await client.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        body = resp.json()
+        models.extend(_extract_model_ids(body))
+
+        if api_format != "anthropic" or not isinstance(body, dict) or not body.get("has_more"):
+            break
+        after_id = body.get("last_id")
+        if not isinstance(after_id, str) or not after_id.strip():
+            break
+        params = {"limit": 100, "after_id": after_id}
+
     return sorted(set(models))
 
 
@@ -109,6 +196,7 @@ class Dashboard:
                 model=model,
                 api_key=lc.config["api_key"],
                 base_url=lc.config.get("base_url"),
+                api_format=lc.config.get("api_format", "openai"),
             )
 
     def _reload_skills_prompt(self):
@@ -189,7 +277,7 @@ class Dashboard:
             if lc.process_stage:
                 lc.process_stage.update_config(**{
                     k: v for k, v in data.items()
-                    if k in ["model", "api_key", "base_url", "extra_instructions", "persona", "tavily_api_key"]
+                    if k in _PROCESS_STAGE_SETTING_KEYS
                 })
             lc.save_config()
             return jsonify({"ok": True})
@@ -245,23 +333,22 @@ class Dashboard:
             api_format = data.get("api_format", cfg.get("api_format", "openai"))
             try:
                 import httpx as _httpx
-                if api_format == "anthropic":
-                    headers = {
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                    } if api_key else {"anthropic-version": "2023-06-01"}
-                else:
-                    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-
                 last_error = None
                 default_base_url = "https://api.anthropic.com/v1" if api_format == "anthropic" else ""
+                effective_base_url = base_url or default_base_url
                 async with _httpx.AsyncClient(timeout=15) as client:
-                    for url in _model_url_candidates(base_url or default_base_url):
+                    for url, headers, fetch_format in _model_fetch_candidates(
+                        effective_base_url,
+                        api_format,
+                        api_key,
+                    ):
                         try:
-                            resp = await client.get(url, headers=headers)
-                            resp.raise_for_status()
-                            body = resp.json()
-                            models = _extract_model_ids(body)
+                            models = await _fetch_model_ids(
+                                client,
+                                url,
+                                headers,
+                                fetch_format,
+                            )
                             break
                         except Exception as e:
                             last_error = e
@@ -269,7 +356,7 @@ class Dashboard:
                         raise last_error or RuntimeError("failed to fetch models")
 
                 providers[name]["models"] = models
-                providers[name]["base_url"] = base_url
+                providers[name]["base_url"] = effective_base_url
                 providers[name]["api_format"] = api_format
                 if data.get("api_key") and data["api_key"] != "***":
                     providers[name]["api_key"] = api_key

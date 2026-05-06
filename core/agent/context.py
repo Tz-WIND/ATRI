@@ -47,6 +47,9 @@ def estimate_tokens(messages: list[dict], system_prompt: str = "") -> int:
 
 class ContextManager:
     def __init__(self, max_tokens: int = 128_000):
+        self.set_max_tokens(max_tokens)
+
+    def set_max_tokens(self, max_tokens: int):
         self.max_tokens = max_tokens
         self._snip_at = int(max_tokens * 0.50)
         self._summarize_at = int(max_tokens * 0.70)
