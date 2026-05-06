@@ -20,12 +20,14 @@ ATRI 是一个可扩展的 AI 框架，支持通过 QQ 机器人（OneBot11 / Na
 - 流式输出（思考过程 + 工具调用实时推送给 WebUI）
 - 三级上下文压缩（截断 → 摘要 → 硬折叠）
 - 会话持久化（按 session 隔离，支持多会话切换）
+- Ctrl+C 优雅取消：首次中断取消当前操作，再次中断安全退出
 
 ### 多模型
 
 - OpenAI 兼容 API（支持 DeepSeek、OpenAI 等）
+- Anthropic API 兼容（支持 Claude 系列模型）
 - 多 Provider 管理，WebUI 中一键切换模型
-- 支持 reasoning（DeepSeek-R1 等思考模型）
+- 支持 reasoning / thinking（DeepSeek-R1、Claude 等思考模型）
 
 ### 扩展系统
 
@@ -34,8 +36,9 @@ ATRI 是一个可扩展的 AI 框架，支持通过 QQ 机器人（OneBot11 / Na
 
 ### 安全
 
-- 工作区沙箱：所有文件操作限定在工作目录内
-- 危险命令拦截：自动阻止 `rm -rf`、格式化等高危操作
+- 工作区沙箱：所有文件操作限定在工作目录内，防止越权访问
+- 两级危险命令检测：拦截 `rm -rf`、格式化、`/dev/sda` 等高危操作
+- Dashboard 认证：启动时自动生成 auth_token，保护 Web 控制台
 
 ### 音乐播放器
 
@@ -44,6 +47,7 @@ ATRI 是一个可扩展的 AI 框架，支持通过 QQ 机器人（OneBot11 / Na
 - 本地音乐库扫描（支持 MP3/FLAC/WAV 等格式）
 - Agent 可通过工具控制播放（play / pause / skip / volume）
 - WebUI 内嵌播放器，支持歌词显示
+- 播放模式切换：顺序 / 随机 / 单曲循环
 
 ## 快速开始
 
@@ -82,7 +86,7 @@ model: deepseek-chat
 # API 连接
 api_key: sk-your-api-key
 base_url: https://api.deepseek.com/v1
-api_format: openai
+api_format: openai  # openai 或 anthropic
 
 # 激活的模型（可在 WebUI Settings 中管理）
 active_models:
@@ -94,9 +98,15 @@ providers:
   DeepSeek:
     base_url: https://api.deepseek.com/v1
     api_key: sk-your-api-key
-    api_format: openai
+    api_format: openai  # openai 或 anthropic
     models:
       - deepseek-chat
+  Anthropic:
+    base_url: https://api.anthropic.com/v1
+    api_key: sk-ant-your-api-key
+    api_format: anthropic
+    models:
+      - claude-sonnet-4-6
 
 # 生成参数
 max_tokens: 20000
@@ -117,11 +127,12 @@ workspace: ./workspace
 sessions_dir: data/sessions
 plugins_dir: plugins
 
-# Dashboard
+# Dashboard（auth_token 缺失时自动生成）
 dashboard:
   enabled: true
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 6185
+  auth_token: ''
 
 # OneBot11（QQ 机器人）
 onebot11:
@@ -155,7 +166,7 @@ ATRI/
 │   ├── event_bus.py             # 事件总线
 │   ├── agent/                   # AI Agent 子系统
 │   │   ├── agent.py             #   主循环（LLM + 工具调用）
-│   │   ├── llm.py               #   LLM 适配层（OpenAI 兼容 API，流式）
+│   │   ├── llm.py               #   LLM 适配层（OpenAI / Anthropic 兼容，流式）
 │   │   ├── context.py           #   三级上下文管理器
 │   │   ├── prompt.py            #   System Prompt 构建
 │   │   ├── session.py           #   会话持久化（JSON）
