@@ -3,7 +3,7 @@
 Features:
 - Output capture with truncation (head+tail preserved)
 - Timeout support
-- Dangerous command pattern detection and blocking
+- Two-tier danger detection: BLOCKED (irreversible) vs CONFIRM (needs approval)
 - Working directory tracking
 - Workspace-constrained execution
 - Cancellable via Ctrl+C (SIGINT)
@@ -11,29 +11,67 @@ Features:
 
 import os
 import re
-import shlex
 import subprocess
 import threading
+from enum import Enum
 from .base import Tool
 
-_DANGEROUS_PATTERNS = [
-    (r"\brm\s+(-\w*)?-r\w*\s+(/|~|\$HOME)", "recursive delete on home/root"),
-    (r"\brm\s+(-\w*)?-rf\b", "force recursive delete (any target)"),
+# Shared marker string — also used by process.py for detection/parsing
+CONFIRM_MARKER = "CONFIRMATION REQUIRED"
+
+
+class DangerLevel(Enum):
+    SAFE = "safe"
+    CONFIRM = "confirm"      # needs user confirmation before executing
+    BLOCKED = "blocked"      # hard-blocked, too dangerous
+
+# ── Hard-blocked patterns: irreversible / catastrophic ──
+_BLOCKED_PATTERNS = [
+    (r"\brm\s+(-\w*)?-rf\s+(/|~|\$HOME)", "recursive force-delete on home/root"),
     (r"\bmkfs\b", "format filesystem"),
     (r"\bdd\s+.*of=/dev/", "raw disk write"),
     (r">\s*/dev/sd[a-z]", "overwrite block device"),
-    (r"\bchmod\s+(-R\s+)?777\b", "chmod 777 (world-writable)"),
     (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
     (r"\bcurl\b.*\|\s*(sudo\s+)?ba?sh\b", "pipe curl to bash/sh"),
     (r"\bwget\b.*\|\s*(sudo\s+)?ba?sh\b", "pipe wget to bash/sh"),
-    (r"\bgit\s+push\s+.*--force", "force push"),
-    (r"\bgit\s+reset\s+--hard", "hard reset"),
-    (r"\bformat\s+[a-zA-Z]:", "format drive (Windows)"),
-    (r"\bdel\s+/[sS]\s+/[qQ]", "recursive delete (Windows)"),
     (r"\bbase64\s+.*\|\s*(sudo\s+)?(ba)?sh\b", "pipe base64 decode to shell"),
     (r"\bxxd\s+.*\|\s*(sudo\s+)?(ba)?sh\b", "pipe xxd decode to shell"),
     (r"`.*rm\s", "backtick rm injection"),
     (r"\$\(.*rm\s", "subshell rm injection"),
+    (r"\bformat\s+[a-zA-Z]:", "format drive (Windows)"),
+]
+
+# ── Confirm-required patterns: destructive but sometimes intentional ──
+_CONFIRM_PATTERNS = [
+    # Unix
+    (r"\brm\s+(-\w*)?-rf\b", "force recursive delete"),
+    (r"\brm\s+(-\w*)?-r\b", "recursive delete"),
+    (r"\brm\s+", "delete files"),
+    (r"\bchmod\s+(-R\s+)?777\b", "chmod 777 (world-writable)"),
+    (r"\bgit\s+push\s+.*--force", "force push"),
+    (r"\bgit\s+reset\s+--hard", "hard reset"),
+    (r"\bgit\s+clean\s+.*-fd", "git clean (remove untracked files)"),
+    # Windows cmd
+    (r"\bdel\s+/[sS]", "recursive delete (Windows)"),
+    (r"\bdel\s+/[fF]", "force delete (Windows)"),
+    (r"\bdel\b\s+(?!/)", "delete files (Windows)"),
+    (r"\berase\b", "erase files (Windows)"),
+    (r"\brd\s+/[sS]", "recursive remove directory (Windows)"),
+    (r"\brd\b", "remove directory (Windows)"),
+    (r"\brmdir\s+/[sS]", "recursive remove directory (Windows)"),
+    (r"\brmdir\b", "remove directory (Windows)"),
+    # PowerShell
+    (r"\bRemove-Item\b", "Remove-Item (PowerShell)"),
+    (r"\bri\s", "ri alias for Remove-Item (PowerShell)"),
+    (r"(?:^|\|\||\||;|&&)\s*del\b", "del alias for Remove-Item (PowerShell)"),
+    (r"\bClear-Content\b", "clear file contents (PowerShell)"),
+    (r"\bStop-Process\b", "kill process (PowerShell)"),
+    (r"\bkill\b", "kill process"),
+    # Destructive data operations
+    (r"\bDROP\s+(TABLE|DATABASE|INDEX|VIEW)\b", "SQL DROP statement"),
+    (r"\bTRUNCATE\s+TABLE\b", "SQL TRUNCATE statement"),
+    (r"\bnpm\s+cache\s+clean\b", "clear npm cache"),
+    (r"\bpip\s+uninstall\b", "pip uninstall"),
 ]
 
 
@@ -42,7 +80,8 @@ class BashTool(Tool):
     description = (
         "Execute a shell command. Returns stdout, stderr, and exit code. "
         "Use this for running tests, installing packages, git operations, etc. "
-        "Dangerous commands (rm -rf, format, etc.) are blocked automatically."
+        "Dangerous commands are blocked or require user confirmation. "
+        "If a command needs confirmation, tell the user and wait for approval."
     )
     parameters = {
         "type": "object",
@@ -59,18 +98,39 @@ class BashTool(Tool):
         self._pending_approval: dict | None = None
         self._current_process: subprocess.Popen | None = None
         self._proc_lock = threading.Lock()
+        self._on_confirm_request: callable = None  # callback for WebSocket broadcast
 
     def execute(self, command: str, timeout: int = 120) -> str:
-        warning = _check_dangerous(command)
-        if warning:
-            self._pending_approval = {"command": command, "reason": warning}
+        level, reason = _check_dangerous(command)
+
+        if level == DangerLevel.BLOCKED:
             return (
-                f"⚠ BLOCKED: {warning}\n"
+                f"🚫 BLOCKED: {reason}\n"
                 f"Command: {command}\n"
-                f"This command requires manual approval via WebUI or chat.\n"
-                f"If intentional, modify the command to be more specific."
+                f"This command is too dangerous and cannot be executed.\n"
+                f"Please use a safer alternative."
             )
 
+        if level == DangerLevel.CONFIRM:
+            self._pending_approval = {
+                "command": command,
+                "reason": reason,
+                "timeout": timeout,
+            }
+            if self._on_confirm_request:
+                self._on_confirm_request(command, reason)
+            return (
+                f"⚠ {CONFIRM_MARKER}: {reason}\n"
+                f"Command: {command}\n"
+                f"This command is potentially destructive. "
+                f"Please confirm execution via the WebUI approve button, "
+                f"or tell the user to approve it."
+            )
+
+        return self._run_command(command, timeout)
+
+    def _run_command(self, command: str, timeout: int = 120) -> str:
+        """Actually execute a shell command (after safety checks pass)."""
         try:
             proc = subprocess.Popen(
                 command,
@@ -126,29 +186,35 @@ class BashTool(Tool):
                 proc.kill()
                 proc.wait()
 
+    @property
+    def has_pending(self) -> bool:
+        return self._pending_approval is not None
+
+    @property
+    def pending_info(self) -> dict | None:
+        if not self._pending_approval:
+            return None
+        return {
+            "command": self._pending_approval["command"],
+            "reason": self._pending_approval["reason"],
+        }
+
     def approve_pending(self) -> str | None:
-        """Execute a previously blocked command after user approval."""
+        """Execute a previously held command after user approval."""
+        if not self._pending_approval:
+            return None
+        cmd = self._pending_approval["command"]
+        timeout = self._pending_approval.get("timeout", 120)
+        self._pending_approval = None
+        return self._run_command(cmd, timeout)
+
+    def reject_pending(self) -> str | None:
+        """Reject and discard the pending command."""
         if not self._pending_approval:
             return None
         cmd = self._pending_approval["command"]
         self._pending_approval = None
-        try:
-            proc = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
-                cwd=self._cwd,
-            )
-            out = proc.stdout
-            if proc.stderr:
-                out += f"\n[stderr]\n{proc.stderr}"
-            return out.strip() or "(no output)"
-        except Exception as e:
-            return f"Error: {e}"
+        return f"Command rejected by user: {cmd}"
 
     def _update_cwd(self, command: str):
         """Track working directory changes from shell commands.
@@ -200,8 +266,15 @@ def _split_shell_commands(cmd: str) -> list[str]:
     return [p for p in re.split(r"(?:&&|;|\|\|)", cmd) if p.strip()]
 
 
-def _check_dangerous(cmd: str) -> str | None:
-    for pattern, reason in _DANGEROUS_PATTERNS:
-        if re.search(pattern, cmd):
-            return reason
-    return None
+def _check_dangerous(cmd: str) -> tuple[DangerLevel, str]:
+    """Check a command against two tiers of danger patterns.
+
+    Returns (DangerLevel, reason). BLOCKED takes priority over CONFIRM.
+    """
+    for pattern, reason in _BLOCKED_PATTERNS:
+        if re.search(pattern, cmd, re.IGNORECASE):
+            return DangerLevel.BLOCKED, reason
+    for pattern, reason in _CONFIRM_PATTERNS:
+        if re.search(pattern, cmd, re.IGNORECASE):
+            return DangerLevel.CONFIRM, reason
+    return DangerLevel.SAFE, ""

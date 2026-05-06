@@ -657,19 +657,46 @@ class Dashboard:
             tools = create_tools(ws)
             return jsonify([{"name": t.name, "description": t.description} for t in tools])
 
-        # ── Approve dangerous command ──
+        # ── Dangerous command approval ──
         @app.route("/api/approve-command", methods=["POST"])
         async def approve_command():
             data = await request.get_json()
             session_id = normalize_session_id(data.get("session_id", ""))
-            agent = self.lifecycle.process_stage.get_agent(session_id) if self.lifecycle.process_stage else None
-            if agent:
-                from core.tools.bash import BashTool
-                for tool in agent.tools:
-                    if isinstance(tool, BashTool) and tool._pending_approval:
-                        result = tool.approve_pending()
-                        return jsonify({"ok": True, "result": result})
+            bash_tool = self._find_bash_tool(session_id)
+            if bash_tool and bash_tool.has_pending:
+                result = bash_tool.approve_pending()
+                await self.broadcast({
+                    "type": "command_approved",
+                    "session_id": session_id,
+                    "result": result,
+                })
+                return jsonify({"ok": True, "result": result})
             return jsonify({"error": "no pending command"}), 404
+
+        @app.route("/api/reject-command", methods=["POST"])
+        async def reject_command():
+            data = await request.get_json()
+            session_id = normalize_session_id(data.get("session_id", ""))
+            bash_tool = self._find_bash_tool(session_id)
+            if bash_tool and bash_tool.has_pending:
+                result = bash_tool.reject_pending()
+                await self.broadcast({
+                    "type": "command_rejected",
+                    "session_id": session_id,
+                    "result": result,
+                })
+                return jsonify({"ok": True, "result": result})
+            return jsonify({"error": "no pending command"}), 404
+
+        @app.route("/api/pending-command", methods=["POST"])
+        async def pending_command():
+            """Check if there is a pending dangerous command for a session."""
+            data = await request.get_json()
+            session_id = normalize_session_id(data.get("session_id", ""))
+            bash_tool = self._find_bash_tool(session_id)
+            if bash_tool and bash_tool.has_pending:
+                return jsonify({"pending": True, **bash_tool.pending_info})
+            return jsonify({"pending": False})
 
         # ── WebSocket ──
         @app.websocket("/ws")
@@ -698,6 +725,19 @@ class Dashboard:
             response = await send_from_directory(app.static_folder, "index.html")
             response.headers["Cache-Control"] = "no-store"
             return response
+
+    def _find_bash_tool(self, session_id: str):
+        """Find the BashTool instance for a given session's agent."""
+        from core.tools.bash import BashTool
+        if not self.lifecycle.process_stage:
+            return None
+        agent = self.lifecycle.process_stage.get_agent(session_id)
+        if not agent:
+            return None
+        for tool in agent.tools:
+            if isinstance(tool, BashTool):
+                return tool
+        return None
 
     async def broadcast(self, data: dict):
         msg = json.dumps(data)

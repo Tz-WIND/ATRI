@@ -20,6 +20,7 @@ from core.agent.session import SessionStore
 from core.platform.message import MessageEvent, normalize_session_id
 from core.pipeline.stage import Stage, register_stage
 from core.skills import SkillManager, build_skills_prompt
+from core.tools.bash import CONFIRM_MARKER
 
 if TYPE_CHECKING:
     pass
@@ -213,6 +214,8 @@ class ProcessStage(Stage):
 
         def on_tool_end(tc_id: str, name: str, args: dict, result: str):
             is_error = result.startswith("Error")
+            is_blocked = "BLOCKED:" in result
+            needs_confirm = CONFIRM_MARKER in result
             preview_len = 8000 if name in {"edit_file", "write_file"} else 200
             preview = result[:preview_len] if len(result) > preview_len else result
             _broadcast_sync({
@@ -222,10 +225,17 @@ class ProcessStage(Stage):
                     "id": tc_id,
                     "tool": name,
                     "args": args,
-                    "success": not is_error,
+                    "success": not is_error and not is_blocked and not needs_confirm,
                     "result_preview": preview,
                 },
             })
+            if needs_confirm and name == "bash":
+                _broadcast_sync({
+                    "type": "confirm_command",
+                    "session_id": session_id,
+                    "command": args.get("command", ""),
+                    "reason": result.split(f"{CONFIRM_MARKER}: ")[-1].split("\n")[0],
+                })
 
         try:
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
