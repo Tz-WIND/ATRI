@@ -1,9 +1,17 @@
 <template>
   <div class="activity-bar">
     <div class="activity-top">
-      <div class="activity-logo" title="ATRI">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      <div
+        class="activity-logo"
+        title="ATRI"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" />
         </svg>
       </div>
     </div>
@@ -15,12 +23,22 @@
         :title="page.label"
         @click="$emit('navigate', page.id)"
       >
-        <div class="activity-icon" v-html="icons[page.icon]"></div>
+        <div
+          class="activity-icon"
+          v-html="icons[page.icon]"
+        />
       </button>
     </div>
     <div class="activity-bottom">
-      <button class="activity-item" title="Toggle Sidebar" @click="$emit('toggleSidebar')">
-        <div class="activity-icon" v-html="icons.layout"></div>
+      <button
+        class="activity-item"
+        title="Toggle Sidebar"
+        @click="$emit('toggleSidebar')"
+      >
+        <div
+          class="activity-icon"
+          v-html="icons.layout"
+        />
       </button>
     </div>
   </div>

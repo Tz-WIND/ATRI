@@ -1,6 +1,9 @@
 <template>
   <span :class="['badge', type]">
-    <span class="badge-dot" v-if="dot"></span>
+    <span
+      v-if="dot"
+      class="badge-dot"
+    />
     <slot />
   </span>
 </template>

@@ -1,12 +1,24 @@
 <template>
   <div :class="['thinking-block', thinking.done ? 'done' : 'active']">
-    <div class="thinking-header" @click="open = !open">
-      <svg :class="['think-chevron', { open }]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div
+      class="thinking-header"
+      @click="open = !open"
+    >
+      <svg
+        :class="['think-chevron', { open }]"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
         <polyline points="9 18 15 12 9 6" />
       </svg>
       <span class="think-icon">&#9679;</span>
       <span class="think-label">{{ thinking.done ? `Thought for ${elapsed}s` : 'Thinking...' }}</span>
-      <span class="think-dur" v-if="!thinking.done">{{ elapsed }}s</span>
+      <span
+        v-if="!thinking.done"
+        class="think-dur"
+      >{{ elapsed }}s</span>
     </div>
     <div :class="['thinking-content', { open }]">
       <pre>{{ thinking.content }}</pre>

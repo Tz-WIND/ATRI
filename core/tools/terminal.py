@@ -30,16 +30,24 @@ class TerminalTool(Tool):
     parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "Command to execute in the persistent session"},  # noqa: E501
+            "command": {
+                "type": "string",
+                "description": "Command to execute in the persistent session",
+            },  # noqa: E501
             "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)"},
-            "session_id": {"type": "string", "description": "Session identifier (default: 'default'). Use different IDs for parallel sessions."},  # noqa: E501
+            "session_id": {
+                "type": "string",
+                "description": "Session identifier (default: 'default'). Use different IDs for parallel sessions.",
+            },  # noqa: E501
         },
         "required": ["command"],
     }
 
     _sessions: dict[str, "_ShellSession"] = {}  # noqa: RUF012
 
-    def execute(self, command: str, timeout: int = 120, session_id: str = "default", **kwargs: Any) -> str:  # noqa: E501
+    def execute(
+        self, command: str, timeout: int = 120, session_id: str = "default", **kwargs: Any
+    ) -> str:  # noqa: E501
         session = self._get_session(session_id)
         return session.run(command, timeout)
 

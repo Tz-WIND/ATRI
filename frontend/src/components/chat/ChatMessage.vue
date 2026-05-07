@@ -1,6 +1,9 @@
 <template>
   <div :class="['message', message.role]">
-    <div v-if="message.role !== 'user'" class="msg-head">
+    <div
+      v-if="message.role !== 'user'"
+      class="msg-head"
+    >
       <span class="msg-role">{{ message.role === 'user' ? 'You' : 'ATRI' }}</span>
       <span class="msg-time">{{ timeStr }}</span>
     </div>
@@ -8,21 +11,39 @@
       <template v-if="message.role === 'user'">
         <div class="user-bubble">
           <pre class="msg-text user-text">{{ message.content }}</pre>
-          <span class="user-action" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M9 14 4 9l5-5"/>
-              <path d="M4 9h11a5 5 0 0 1 0 10h-1"/>
+          <span
+            class="user-action"
+            aria-hidden="true"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M9 14 4 9l5-5" />
+              <path d="M4 9h11a5 5 0 0 1 0 10h-1" />
             </svg>
           </span>
         </div>
       </template>
       <template v-else-if="message.role === 'assistant' && message.md">
-        <div v-html="renderedContent" class="markdown-body" @click="handleMarkdownClick"></div>
-        <span v-if="message.streaming" class="stream-cursor"></span>
+        <div
+          class="markdown-body"
+          @click="handleMarkdownClick"
+          v-html="renderedContent"
+        />
+        <span
+          v-if="message.streaming"
+          class="stream-cursor"
+        />
       </template>
       <template v-else>
         <pre class="msg-text">{{ message.content }}</pre>
-        <span v-if="message.streaming" class="stream-cursor"></span>
+        <span
+          v-if="message.streaming"
+          class="stream-cursor"
+        />
       </template>
     </div>
   </div>

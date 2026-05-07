@@ -22,8 +22,14 @@ class EditFileTool(Tool):
     parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path to the file to edit (relative to workspace)"},  # noqa: E501
-            "old_string": {"type": "string", "description": "Exact text to find (must be unique in file)"},  # noqa: E501
+            "file_path": {
+                "type": "string",
+                "description": "Path to the file to edit (relative to workspace)",
+            },  # noqa: E501
+            "old_string": {
+                "type": "string",
+                "description": "Exact text to find (must be unique in file)",
+            },  # noqa: E501
             "new_string": {"type": "string", "description": "Replacement text"},
         },
         "required": ["file_path", "old_string", "new_string"],
@@ -42,10 +48,7 @@ class EditFileTool(Tool):
 
             if occurrences == 0:
                 preview = content[:500] + ("..." if len(content) > 500 else "")
-                return (
-                    f"Error: old_string not found in {file_path}.\n"
-                    f"File starts with:\n{preview}"
-                )
+                return f"Error: old_string not found in {file_path}.\nFile starts with:\n{preview}"
             if occurrences > 1:
                 return (
                     f"Error: old_string appears {occurrences} times in {file_path}. "

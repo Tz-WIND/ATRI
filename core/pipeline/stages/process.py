@@ -8,6 +8,7 @@ Each user/group session gets its own Agent instance with isolated context.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -48,6 +49,7 @@ class ProcessStage(Stage):
         self.tavily_api_key: str = ctx.get("tavily_api_key", "")
 
         from core.tools.web_search import set_tavily_key
+
         set_tavily_key(self.tavily_api_key or None)
 
         self.skill_manager = SkillManager(self.skills_root, self.skills_config)
@@ -107,7 +109,8 @@ class ProcessStage(Stage):
             # cleanup (thread pools, file handles, subprocesses), add a
             # cleanup call here before popping; currently GC is sufficient.
             stale = [
-                sid for sid, last in self._agents_last_active.items()
+                sid
+                for sid, last in self._agents_last_active.items()
                 if now - last > self.AGENT_TTL_SECONDS
             ]
             for sid in stale:
@@ -172,18 +175,16 @@ class ProcessStage(Stage):
             return cfg
 
         matches = [
-            item for item in self.active_models
+            item
+            for item in self.active_models
             if isinstance(item, dict) and item.get("model") == requested_model
         ]
-        providers = sorted({
-            str(item.get("provider") or "")
-            for item in matches
-            if isinstance(item, dict)
-        })
+        providers = sorted(
+            {str(item.get("provider") or "") for item in matches if isinstance(item, dict)}
+        )
         if len(providers) > 1:
             raise ValueError(
-                f"model '{requested_model}' is available from multiple providers; "
-                "specify provider"
+                f"model '{requested_model}' is available from multiple providers; specify provider"
             )
         if len(providers) == 1 and providers[0]:
             provider_cfg = self.providers.get(providers[0])
@@ -252,7 +253,7 @@ class ProcessStage(Stage):
         agent = self._get_or_create_agent(session_id)
 
         tool_events: list[dict] = []
-        pending_futures: list[asyncio.Future] = []
+        pending_futures: list[concurrent.futures.Future[Any]] = []
 
         def _broadcast_sync(data: dict):
             if not self.broadcast_fn:
@@ -270,11 +271,13 @@ class ProcessStage(Stage):
         def on_thinking(content: str):
             if content:
                 thinking_content_parts.append(content)
-            _broadcast_sync({
-                "type": "thinking_delta",
-                "session_id": session_id,
-                "content": content,
-            })
+            _broadcast_sync(
+                {
+                    "type": "thinking_delta",
+                    "session_id": session_id,
+                    "content": content,
+                }
+            )
 
         thinking_done_sent = False
         thinking_content_parts: list[str] = []
@@ -284,18 +287,22 @@ class ProcessStage(Stage):
             if thinking_done_sent:
                 return
             thinking_done_sent = True
-            _broadcast_sync({
-                "type": "thinking_done",
-                "session_id": session_id,
-            })
+            _broadcast_sync(
+                {
+                    "type": "thinking_done",
+                    "session_id": session_id,
+                }
+            )
 
         def on_thinking_done(full_content: str):
             if full_content and not thinking_content_parts:
-                _broadcast_sync({
-                    "type": "thinking_delta",
-                    "session_id": session_id,
-                    "content": full_content,
-                })
+                _broadcast_sync(
+                    {
+                        "type": "thinking_delta",
+                        "session_id": session_id,
+                        "content": full_content,
+                    }
+                )
             mark_thinking_done()
 
         response_started = False
@@ -305,23 +312,29 @@ class ProcessStage(Stage):
             mark_thinking_done()
             if not response_started:
                 response_started = True
-                _broadcast_sync({
-                    "type": "response_start",
+                _broadcast_sync(
+                    {
+                        "type": "response_start",
+                        "session_id": session_id,
+                    }
+                )
+            _broadcast_sync(
+                {
+                    "type": "response_delta",
                     "session_id": session_id,
-                })
-            _broadcast_sync({
-                "type": "response_delta",
-                "session_id": session_id,
-                "content": content,
-            })
+                    "content": content,
+                }
+            )
 
         def on_tool_start(tc_id: str, name: str, args: dict):
             mark_thinking_done()
-            _broadcast_sync({
-                "type": "tool_start",
-                "session_id": session_id,
-                "data": {"id": tc_id, "tool": name, "args": args},
-            })
+            _broadcast_sync(
+                {
+                    "type": "tool_start",
+                    "session_id": session_id,
+                    "data": {"id": tc_id, "tool": name, "args": args},
+                }
+            )
 
         def on_tool_end(tc_id: str, name: str, args: dict, result: str):
             is_error = result.startswith("Error")
@@ -329,24 +342,28 @@ class ProcessStage(Stage):
             needs_confirm = CONFIRM_MARKER in result
             preview_len = 8000 if name in {"edit_file", "write_file"} else 200
             preview = result[:preview_len] if len(result) > preview_len else result
-            _broadcast_sync({
-                "type": "tool_end",
-                "session_id": session_id,
-                "data": {
-                    "id": tc_id,
-                    "tool": name,
-                    "args": args,
-                    "success": not is_error and not is_blocked and not needs_confirm,
-                    "result_preview": preview,
-                },
-            })
-            if needs_confirm and name == "bash":
-                _broadcast_sync({
-                    "type": "confirm_command",
+            _broadcast_sync(
+                {
+                    "type": "tool_end",
                     "session_id": session_id,
-                    "command": args.get("command", ""),
-                    "reason": result.split(f"{CONFIRM_MARKER}: ")[-1].split("\n")[0],
-                })
+                    "data": {
+                        "id": tc_id,
+                        "tool": name,
+                        "args": args,
+                        "success": not is_error and not is_blocked and not needs_confirm,
+                        "result_preview": preview,
+                    },
+                }
+            )
+            if needs_confirm and name == "bash":
+                _broadcast_sync(
+                    {
+                        "type": "confirm_command",
+                        "session_id": session_id,
+                        "command": args.get("command", ""),
+                        "reason": result.split(f"{CONFIRM_MARKER}: ")[-1].split("\n")[0],
+                    }
+                )
 
         try:
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
@@ -377,11 +394,13 @@ class ProcessStage(Stage):
             # Send response_done directly (not via thread-safe scheduling)
             # so it is guaranteed to reach the frontend before the HTTP response.
             if self.broadcast_fn:
-                await self.broadcast_fn({
-                    "type": "response_done",
-                    "session_id": session_id,
-                    "content": response,
-                })
+                await self.broadcast_fn(
+                    {
+                        "type": "response_done",
+                        "session_id": session_id,
+                        "content": response,
+                    }
+                )
 
             self.session_store.save(
                 agent.messages,
@@ -503,6 +522,7 @@ class ProcessStage(Stage):
         if "tavily_api_key" in kwargs:
             self.tavily_api_key = kwargs["tavily_api_key"]
             from core.tools.web_search import set_tavily_key
+
             set_tavily_key(self.tavily_api_key or None)
 
     def get_agent(self, session_id: str) -> Agent | None:

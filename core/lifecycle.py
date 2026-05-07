@@ -64,6 +64,7 @@ class Lifecycle:
             self.save_config(config)
 
         from core.tools.web_search import set_tavily_key
+
         set_tavily_key(config.get("tavily_api_key", "") or None)
         return config
 
@@ -145,6 +146,7 @@ class Lifecycle:
 
         # Grab reference to ProcessStage for dashboard direct access
         from core.pipeline.stages.process import ProcessStage
+
         for stage in self.scheduler.stages:
             if isinstance(stage, ProcessStage):
                 self.process_stage = stage
@@ -159,41 +161,42 @@ class Lifecycle:
     async def start(self) -> None:
         """Start all services."""
         # Event bus
-        self._tasks.append(asyncio.create_task(
-            self._safe_task(self.event_bus.dispatch(), "EventBus")
-        ))
+        self._tasks.append(
+            asyncio.create_task(self._safe_task(self.event_bus.dispatch(), "EventBus"))
+        )
 
         # WebChat adapter (idle loop, driven by dashboard HTTP)
         if self.webchat:
-            self._tasks.append(asyncio.create_task(
-                self._safe_task(self.webchat.run(), "WebChat")
-            ))
+            self._tasks.append(asyncio.create_task(self._safe_task(self.webchat.run(), "WebChat")))
 
         # OneBot11 adapter
         if self.onebot11:
-            self._tasks.append(asyncio.create_task(
-                self._safe_task(self.onebot11.run(), "OneBot11")
-            ))
+            self._tasks.append(
+                asyncio.create_task(self._safe_task(self.onebot11.run(), "OneBot11"))
+            )
 
         # Dashboard
         dashboard_cfg = self.config.get("dashboard", {})
         if dashboard_cfg.get("enabled", True):
             from dashboard.server import Dashboard
+
             self.dashboard = Dashboard(
                 self,
                 host=dashboard_cfg.get("host", "127.0.0.1"),
                 port=dashboard_cfg.get("port", 6185),
             )
-            self._tasks.append(asyncio.create_task(
-                self._safe_task(self.dashboard.run(), "Dashboard")
-            ))
+            self._tasks.append(
+                asyncio.create_task(self._safe_task(self.dashboard.run(), "Dashboard"))
+            )
 
         # Plugin background tasks
         for plugin in self.plugin_manager.plugins:
             for task_func in plugin.get_background_tasks():
-                self._tasks.append(asyncio.create_task(
-                    self._safe_task(task_func(), f"Plugin-{plugin.metadata.name}")
-                ))
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._safe_task(task_func(), f"Plugin-{plugin.metadata.name}")
+                    )
+                )
 
         logger.info("ATRI is running. Press Ctrl+C to stop.")
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -208,8 +211,8 @@ class Lifecycle:
         """
         if self.process_stage:
             if session_id:
-                return self.process_stage.cancel_session(session_id)
-            return self.process_stage.cancel_current()
+                return bool(self.process_stage.cancel_session(session_id))
+            return bool(self.process_stage.cancel_current())
         return False
 
     async def stop(self) -> None:
@@ -231,9 +234,7 @@ class Lifecycle:
 
         # 4. Wait for tasks to finish with a grace period
         if self._tasks:
-            _done, pending = await asyncio.wait(
-                self._tasks, timeout=SHUTDOWN_GRACE_PERIOD
-            )
+            _done, pending = await asyncio.wait(self._tasks, timeout=SHUTDOWN_GRACE_PERIOD)
             if pending:
                 logger.warning(
                     f"{len(pending)} task(s) did not finish within "

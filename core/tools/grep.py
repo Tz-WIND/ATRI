@@ -11,20 +11,27 @@ from .base import Tool
 class GrepTool(Tool):
     name = "grep"
     description = (
-        "Search file contents with regex. "
-        "Returns matching lines with file path and line number."
+        "Search file contents with regex. Returns matching lines with file path and line number."
     )
     parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Regex pattern to search for"},
-            "path": {"type": "string", "description": "File or directory to search (relative to workspace, default: workspace root)"},  # noqa: E501
-            "include": {"type": "string", "description": "Only search files matching this glob (e.g. '*.py')"},  # noqa: E501
+            "path": {
+                "type": "string",
+                "description": "File or directory to search (relative to workspace, default: workspace root)",
+            },  # noqa: E501
+            "include": {
+                "type": "string",
+                "description": "Only search files matching this glob (e.g. '*.py')",
+            },  # noqa: E501
         },
         "required": ["pattern"],
     }
 
-    def execute(self, pattern: str, path: str = ".", include: str | None = None, **kwargs: Any) -> str:  # noqa: E501
+    def execute(
+        self, pattern: str, path: str = ".", include: str | None = None, **kwargs: Any
+    ) -> str:  # noqa: E501
         try:
             regex = re.compile(pattern)
         except re.error as e:

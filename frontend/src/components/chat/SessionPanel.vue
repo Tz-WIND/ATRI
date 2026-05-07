@@ -1,14 +1,36 @@
 <template>
   <div class="session-panel">
     <div class="session-toolbar">
-      <button class="icon-btn" @click="createNew" title="New Chat">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      <button
+        class="icon-btn"
+        title="New Chat"
+        @click="createNew"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <line
+            x1="12"
+            y1="5"
+            x2="12"
+            y2="19"
+          /><line
+            x1="5"
+            y1="12"
+            x2="19"
+            y2="12"
+          />
         </svg>
       </button>
     </div>
     <div class="session-list">
-      <div v-if="allSessions.length === 0 && !hasCurrent" class="panel-empty">
+      <div
+        v-if="allSessions.length === 0 && !hasCurrent"
+        class="panel-empty"
+      >
         No sessions yet
       </div>
       <div
@@ -16,8 +38,12 @@
         :class="['session-item', 'active']"
         @click="selectSession(currentId)"
       >
-        <div class="si-title">{{ displayName(currentId) }}</div>
-        <div class="si-preview">New conversation</div>
+        <div class="si-title">
+          {{ displayName(currentId) }}
+        </div>
+        <div class="si-preview">
+          New conversation
+        </div>
       </div>
       <div
         v-for="s in allSessions"
@@ -25,9 +51,19 @@
         :class="['session-item', { active: s.id === currentId }]"
         @click="selectSession(s.id)"
       >
-        <button class="si-delete" @click.stop="deleteSession(s.id)" title="Delete">&times;</button>
-        <div class="si-title">{{ displayName(s.id) }}</div>
-        <div class="si-preview">{{ s.preview || 'Empty' }}</div>
+        <button
+          class="si-delete"
+          title="Delete"
+          @click.stop="deleteSession(s.id)"
+        >
+          &times;
+        </button>
+        <div class="si-title">
+          {{ displayName(s.id) }}
+        </div>
+        <div class="si-preview">
+          {{ s.preview || 'Empty' }}
+        </div>
         <div class="si-meta">
           <span class="si-time">{{ s.saved_at || '' }}</span>
           <span class="si-count">{{ s.message_count || 0 }} msgs</span>

@@ -16,7 +16,20 @@ from quart import Blueprint, Response, jsonify, request
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
 
-AUDIO_EXTS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma", ".aiff", ".alac", ".ape", ".dsf", ".dff"}  # noqa: E501
+AUDIO_EXTS = {
+    ".mp3",
+    ".flac",
+    ".wav",
+    ".ogg",
+    ".m4a",
+    ".aac",
+    ".wma",
+    ".aiff",
+    ".alac",
+    ".ape",
+    ".dsf",
+    ".dff",
+}  # noqa: E501
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -104,7 +117,8 @@ def _read_metadata(filepath: str) -> dict | None:
             "bitrate": 0,
             "channels": 0,
             "has_cover": False,
-            "lossless": p.suffix.lower() in {".flac", ".wav", ".aiff", ".alac", ".ape", ".dsf", ".dff"},  # noqa: E501
+            "lossless": p.suffix.lower()
+            in {".flac", ".wav", ".aiff", ".alac", ".ape", ".dsf", ".dff"},  # noqa: E501
         }
 
         if audio.info:
@@ -136,6 +150,7 @@ def _read_metadata(filepath: str) -> dict | None:
             except Exception:
                 logger.debug("Music: MP3 EasyID3 tag read error", exc_info=True)
             from mutagen.id3 import ID3
+
             try:
                 id3 = ID3(filepath)
                 info["has_cover"] = any(k.startswith("APIC") for k in id3.keys())
@@ -204,7 +219,8 @@ def _get_cover_bytes(filepath: str) -> tuple[bytes, str] | None:
                     return frame.data, frame.mime
         elif ext in (".m4a", ".aac"):
             m4 = MP4(filepath)
-            covr = (m4.tags or {}).get("covr")  # type: ignore[union-attr]
+            m4_tags: dict[str, Any] = cast("dict[str, Any]", m4.tags or {})
+            covr = m4_tags.get("covr")
             if covr:
                 return bytes(covr[0]), "image/jpeg"
     except Exception:
@@ -233,12 +249,14 @@ def _find_lyrics(filepath: str) -> str | None:
         ext = p.suffix.lower()
         if ext == ".mp3":
             from mutagen.id3 import ID3
+
             id3 = ID3(filepath)
             for key in id3.keys():
                 if key.startswith("USLT"):
                     return str(id3[key])
         elif ext == ".flac":
             from mutagen.flac import FLAC
+
             f = FLAC(filepath)
             lyrics = f.get("lyrics") or f.get("LYRICS") or f.get("unsyncedlyrics")
             if lyrics:
@@ -250,6 +268,7 @@ def _find_lyrics(filepath: str) -> str | None:
 
 
 # ── Routes ──
+
 
 @bp.route("/dirs", methods=["GET"])
 async def get_dirs():
@@ -289,7 +308,14 @@ async def scan_library():
                 if meta:
                     songs.append(meta)
 
-    songs.sort(key=lambda s: (s["artist"].lower(), s["album"].lower(), s["track_number"], s["title"].lower()))  # noqa: E501
+    songs.sort(
+        key=lambda s: (
+            s["artist"].lower(),
+            s["album"].lower(),
+            s["track_number"],
+            s["title"].lower(),
+        )
+    )  # noqa: E501
 
     try:
         _cache_path().write_text(json.dumps(songs, ensure_ascii=False), encoding="utf-8")
@@ -420,15 +446,18 @@ async def get_lyrics(song_id: str):
 
 # ── Agent control endpoint (receives commands from MusicTool) ──
 
+
 @bp.route("/control", methods=["POST"])
 async def control():
     """Receive player control commands from agent tool and broadcast via WS."""
     data = await request.get_json()
     action = data.get("action", "")
     if _lifecycle and hasattr(_lifecycle, "dashboard") and _lifecycle.dashboard:
-        await _lifecycle.dashboard.broadcast({
-            "type": "music_control",
-            "action": action,
-            "payload": data.get("payload", {}),
-        })
+        await _lifecycle.dashboard.broadcast(
+            {
+                "type": "music_control",
+                "action": action,
+                "payload": data.get("payload", {}),
+            }
+        )
     return jsonify({"ok": True, "action": action})

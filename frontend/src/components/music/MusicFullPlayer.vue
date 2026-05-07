@@ -1,15 +1,31 @@
 <template>
   <Transition name="fullplayer">
-    <div class="full-player" v-if="showFullPlayer" @click.self="showFullPlayer = false">
+    <div
+      v-if="showFullPlayer"
+      class="full-player"
+      @click.self="showFullPlayer = false"
+    >
       <!-- Blurred background -->
       <div class="fp-bg">
-        <img v-if="currentSong?.has_cover" :src="coverUrl(currentSong.id)" class="fp-bg-img" />
+        <img
+          v-if="currentSong?.has_cover"
+          :src="coverUrl(currentSong.id)"
+          class="fp-bg-img"
+        >
       </div>
-      <div class="fp-overlay"></div>
+      <div class="fp-overlay" />
 
       <!-- Close button -->
-      <button class="fp-close" @click="showFullPlayer = false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      <button
+        class="fp-close"
+        @click="showFullPlayer = false"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        ><path d="M6 9l6 6 6-6" /></svg>
       </button>
 
       <div class="fp-content">
@@ -21,32 +37,71 @@
               :src="coverUrl(currentSong.id)"
               class="fp-cover"
               :class="{ playing }"
-            />
-            <div class="fp-cover placeholder" v-else :class="{ playing }">
-              <svg viewBox="0 0 24 24" fill="currentColor" opacity="0.25"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+            >
+            <div
+              v-else
+              class="fp-cover placeholder"
+              :class="{ playing }"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                opacity="0.25"
+              ><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg>
             </div>
           </div>
 
           <div class="fp-song-info">
-            <h2 class="fp-title">{{ currentSong?.title || 'No Song' }}</h2>
-            <p class="fp-artist">{{ currentSong?.artist || '' }}</p>
-            <p class="fp-album">{{ currentSong?.album || '' }}</p>
+            <h2 class="fp-title">
+              {{ currentSong?.title || 'No Song' }}
+            </h2>
+            <p class="fp-artist">
+              {{ currentSong?.artist || '' }}
+            </p>
+            <p class="fp-album">
+              {{ currentSong?.album || '' }}
+            </p>
           </div>
 
-          <div class="fp-quality-row" v-if="currentSong">
+          <div
+            v-if="currentSong"
+            class="fp-quality-row"
+          >
             <span class="fp-format">{{ currentSong.format }}</span>
-            <span class="fp-spec" v-if="currentSong.sample_rate">{{ (currentSong.sample_rate/1000).toFixed(1) }}kHz</span>
-            <span class="fp-spec" v-if="currentSong.bit_depth">{{ currentSong.bit_depth }}bit</span>
-            <span class="fp-spec" v-if="currentSong.channels">{{ currentSong.channels }}ch</span>
-            <span class="fp-hires-badge" v-if="currentSong.bit_depth >= 24 || currentSong.sample_rate > 48000">Hi-Res Lossless</span>
-            <span class="fp-lossless-badge" v-else-if="currentSong.lossless">Lossless</span>
+            <span
+              v-if="currentSong.sample_rate"
+              class="fp-spec"
+            >{{ (currentSong.sample_rate/1000).toFixed(1) }}kHz</span>
+            <span
+              v-if="currentSong.bit_depth"
+              class="fp-spec"
+            >{{ currentSong.bit_depth }}bit</span>
+            <span
+              v-if="currentSong.channels"
+              class="fp-spec"
+            >{{ currentSong.channels }}ch</span>
+            <span
+              v-if="currentSong.bit_depth >= 24 || currentSong.sample_rate > 48000"
+              class="fp-hires-badge"
+            >Hi-Res Lossless</span>
+            <span
+              v-else-if="currentSong.lossless"
+              class="fp-lossless-badge"
+            >Lossless</span>
           </div>
 
           <!-- Progress -->
           <div class="fp-progress-wrap">
-            <div class="fp-progress-track" @click="onProgressClick" ref="fpProgressTrack">
-              <div class="fp-progress-fill" :style="{ width: progress + '%' }">
-                <div class="fp-progress-knob"></div>
+            <div
+              ref="fpProgressTrack"
+              class="fp-progress-track"
+              @click="onProgressClick"
+            >
+              <div
+                class="fp-progress-fill"
+                :style="{ width: progress + '%' }"
+              >
+                <div class="fp-progress-knob" />
               </div>
             </div>
             <div class="fp-time-row">
@@ -57,43 +112,165 @@
 
           <!-- Controls -->
           <div class="fp-controls">
-            <button class="fp-ctrl fp-mode" :class="{ active: playMode !== 'sequential' }" @click="cyclePlayMode" :title="modeLabel">
-              <svg v-if="playMode === 'sequential'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
-              <svg v-else-if="playMode === 'shuffle'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
-              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/><text x="10" y="16" font-size="9" fill="currentColor" stroke="none" font-weight="bold">1</text></svg>
+            <button
+              class="fp-ctrl fp-mode"
+              :class="{ active: playMode !== 'sequential' }"
+              :title="modeLabel"
+              @click="cyclePlayMode"
+            >
+              <svg
+                v-if="playMode === 'sequential'"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              ><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /></svg>
+              <svg
+                v-else-if="playMode === 'shuffle'"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              ><polyline points="16 3 21 3 21 8" /><line
+                x1="4"
+                y1="20"
+                x2="21"
+                y2="3"
+              /><polyline points="21 16 21 21 16 21" /><line
+                x1="15"
+                y1="15"
+                x2="21"
+                y2="21"
+              /><line
+                x1="4"
+                y1="4"
+                x2="9"
+                y2="9"
+              /></svg>
+              <svg
+                v-else
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              ><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /><text
+                x="10"
+                y="16"
+                font-size="9"
+                fill="currentColor"
+                stroke="none"
+                font-weight="bold"
+              >1</text></svg>
             </button>
-            <button class="fp-ctrl" @click="prev"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
-            <button class="fp-ctrl fp-play" @click="togglePlay">
-              <svg v-if="playing" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-              <svg v-else viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+            <button
+              class="fp-ctrl"
+              @click="prev"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              ><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
             </button>
-            <button class="fp-ctrl" @click="next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+            <button
+              class="fp-ctrl fp-play"
+              @click="togglePlay"
+            >
+              <svg
+                v-if="playing"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              ><rect
+                x="6"
+                y="4"
+                width="4"
+                height="16"
+                rx="1"
+              /><rect
+                x="14"
+                y="4"
+                width="4"
+                height="16"
+                rx="1"
+              /></svg>
+              <svg
+                v-else
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              ><polygon points="5,3 19,12 5,21" /></svg>
+            </button>
+            <button
+              class="fp-ctrl"
+              @click="next"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              ><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+            </button>
           </div>
 
           <!-- Volume -->
           <div class="fp-volume">
-            <svg viewBox="0 0 24 24" fill="currentColor" class="vol-icon"><path d="M5 9v6h4l5 5V4L9 9H5z"/></svg>
-            <input type="range" class="fp-vol-slider" min="0" max="100" :value="volume" @input="setVolume(+$event.target.value)" />
-            <svg viewBox="0 0 24 24" fill="currentColor" class="vol-icon"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            <svg
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              class="vol-icon"
+            ><path d="M5 9v6h4l5 5V4L9 9H5z" /></svg>
+            <input
+              type="range"
+              class="fp-vol-slider"
+              min="0"
+              max="100"
+              :value="volume"
+              @input="setVolume(+$event.target.value)"
+            >
+            <svg
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              class="vol-icon"
+            ><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" /></svg>
           </div>
         </div>
 
         <!-- Right: lyrics -->
         <div class="fp-right">
-          <div class="lyrics-container" ref="lyricsContainer">
-            <div class="lyrics-scroll" v-if="lyrics && lyrics.length">
+          <div
+            ref="lyricsContainer"
+            class="lyrics-container"
+          >
+            <div
+              v-if="lyrics && lyrics.length"
+              class="lyrics-scroll"
+            >
               <div
                 v-for="(line, i) in lyrics"
                 :key="i"
-                :class="['lyric-line', { active: i === activeLyricIndex, past: i < activeLyricIndex }]"
                 :ref="el => { if (i === activeLyricIndex) activeLyricEl = el }"
+                :class="['lyric-line', { active: i === activeLyricIndex, past: i < activeLyricIndex }]"
                 @click="seekToLyric(line.time)"
               >
                 {{ line.text || '···' }}
               </div>
             </div>
-            <div class="lyrics-empty" v-else>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            <div
+              v-else
+              class="lyrics-empty"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                opacity="0.3"
+              ><path d="M9 18V5l12-2v13" /><circle
+                cx="6"
+                cy="18"
+                r="3"
+              /><circle
+                cx="18"
+                cy="16"
+                r="3"
+              /></svg>
               <p>No lyrics available</p>
             </div>
           </div>
@@ -126,8 +303,6 @@ const remainingStr = computed(() => {
   const rem = (duration.value || 0) - (currentTime.value || 0)
   return formatTime(Math.max(0, rem))
 })
-
-const durationStr = computed(() => formatTime(duration.value))
 
 const activeLyricIndex = computed(() => {
   if (!lyrics.value || !lyrics.value.length) return -1

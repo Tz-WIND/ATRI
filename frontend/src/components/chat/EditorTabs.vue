@@ -1,18 +1,33 @@
 <template>
   <div class="editor-area">
-    <div v-if="tabs.length === 0" class="editor-empty">
+    <div
+      v-if="tabs.length === 0"
+      class="editor-empty"
+    >
       <div class="empty-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+        >
+          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
         </svg>
       </div>
-      <div class="empty-text">No files open</div>
-      <div class="empty-sub">Double-click a file in the file manager to open it here</div>
+      <div class="empty-text">
+        No files open
+      </div>
+      <div class="empty-sub">
+        Double-click a file in the file manager to open it here
+      </div>
     </div>
     <template v-else>
       <div class="tab-bar">
-        <div class="tab-list" ref="tabListRef">
+        <div
+          ref="tabListRef"
+          class="tab-list"
+        >
           <div
             v-for="tab in tabs"
             :key="tab.path"
@@ -21,23 +36,58 @@
             @auxclick.prevent="closeTab(tab.path)"
           >
             <span class="tab-name">{{ tab.name }}</span>
-            <button class="tab-close" @click.stop="closeTab(tab.path)" title="Close">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            <button
+              class="tab-close"
+              title="Close"
+              @click.stop="closeTab(tab.path)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line
+                  x1="18"
+                  y1="6"
+                  x2="6"
+                  y2="18"
+                /><line
+                  x1="6"
+                  y1="6"
+                  x2="18"
+                  y2="18"
+                />
               </svg>
             </button>
           </div>
         </div>
       </div>
-      <div class="editor-content" v-if="activeTab">
+      <div
+        v-if="activeTab"
+        class="editor-content"
+      >
         <div class="editor-toolbar">
           <span class="editor-path">{{ activeTab.path }}</span>
           <div class="editor-actions">
-            <span v-if="activeTab.modified" class="modified-badge">Modified</span>
-            <button class="tool-btn" @click="saveFile" :disabled="!activeTab.modified || saving" title="Save (Ctrl+S)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
-                <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+            <span
+              v-if="activeTab.modified"
+              class="modified-badge"
+            >Modified</span>
+            <button
+              class="tool-btn"
+              :disabled="!activeTab.modified || saving"
+              title="Save (Ctrl+S)"
+              @click="saveFile"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+                <polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" />
               </svg>
               Save
             </button>
@@ -45,15 +95,29 @@
         </div>
         <div class="code-wrapper">
           <div class="line-numbers">
-            <div class="line-numbers-inner" ref="lineNumbersRef">
-              <div v-for="n in lineCount" :key="n" :class="['line-num', { active: n === currentLine }]">{{ n }}</div>
+            <div
+              ref="lineNumbersRef"
+              class="line-numbers-inner"
+            >
+              <div
+                v-for="n in lineCount"
+                :key="n"
+                :class="['line-num', { active: n === currentLine }]"
+              >
+                {{ n }}
+              </div>
             </div>
           </div>
-          <div class="current-line-highlight" :style="currentLineStyle"></div>
+          <div
+            class="current-line-highlight"
+            :style="currentLineStyle"
+          />
           <textarea
             ref="editorRef"
             class="code-editor"
             :value="activeTab.content"
+            spellcheck="false"
+            wrap="off"
             @input="onInput"
             @scroll="syncScroll"
             @keydown="onKeydown"
@@ -62,11 +126,15 @@
             @select="updateCursorState"
             @keyup="updateCursorState"
             @focus="updateCursorState"
-            spellcheck="false"
-            wrap="off"
-          ></textarea>
-          <pre class="code-highlight" ref="highlightRef"><code v-html="highlightedCode"></code></pre>
-          <pre class="word-highlights" ref="wordHighlightsRef"><code v-html="wordHighlightsHtml"></code></pre>
+          />
+          <pre
+            ref="highlightRef"
+            class="code-highlight"
+          ><code v-html="highlightedCode" /></pre>
+          <pre
+            ref="wordHighlightsRef"
+            class="word-highlights"
+          ><code v-html="wordHighlightsHtml" /></pre>
         </div>
       </div>
     </template>

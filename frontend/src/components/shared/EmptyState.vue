@@ -1,8 +1,20 @@
 <template>
   <div class="empty-state">
-    <div class="empty-icon" v-if="icon" v-html="icon"></div>
-    <p class="empty-text">{{ text }}</p>
-    <button v-if="action" class="btn btn-primary" @click="$emit('action')">{{ action }}</button>
+    <div
+      v-if="icon"
+      class="empty-icon"
+      v-html="icon"
+    />
+    <p class="empty-text">
+      {{ text }}
+    </p>
+    <button
+      v-if="action"
+      class="btn btn-primary"
+      @click="$emit('action')"
+    >
+      {{ action }}
+    </button>
   </div>
 </template>
 

@@ -1,7 +1,10 @@
 <template>
-  <div class="diff-viewer" v-if="lines.length">
+  <div
+    v-if="lines.length"
+    class="diff-viewer"
+  >
     <div class="diff-summary">
-      <span class="diff-file">{{ fileName }}</span>
+      <span class="diff-file">{{ displayName }}</span>
       <span class="diff-stat add">+{{ addCount }}</span>
       <span class="diff-stat del">-{{ delCount }}</span>
     </div>
@@ -60,7 +63,7 @@ const parsed = computed(() => {
 const lines = computed(() => parsed.value.lines)
 const addCount = computed(() => parsed.value.addCount)
 const delCount = computed(() => parsed.value.delCount)
-const fileName = computed(() => parsed.value.fileName)
+const displayName = computed(() => parsed.value.fileName)
 </script>
 
 <style scoped>

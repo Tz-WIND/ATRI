@@ -9,14 +9,19 @@ from .base import Tool
 class GlobTool(Tool):
     name = "glob"
     description = (
-        "Find files matching a glob pattern. "
-        "Supports ** for recursive matching (e.g. '**/*.py')."
+        "Find files matching a glob pattern. Supports ** for recursive matching (e.g. '**/*.py')."
     )
     parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py' or 'src/**/*.ts'"},  # noqa: E501
-            "path": {"type": "string", "description": "Directory to search in (relative to workspace, default: workspace root)"},  # noqa: E501
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern, e.g. '**/*.py' or 'src/**/*.ts'",
+            },  # noqa: E501
+            "path": {
+                "type": "string",
+                "description": "Directory to search in (relative to workspace, default: workspace root)",
+            },  # noqa: E501
         },
         "required": ["pattern"],
     }

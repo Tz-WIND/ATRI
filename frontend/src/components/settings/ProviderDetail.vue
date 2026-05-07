@@ -2,31 +2,58 @@
   <div class="prov-detail">
     <div class="detail-head">
       <div>
-        <div class="detail-title">{{ name }}</div>
-        <div class="detail-subtitle">{{ provider.base_url || 'No base URL set' }}</div>
+        <div class="detail-title">
+          {{ name }}
+        </div>
+        <div class="detail-subtitle">
+          {{ provider.base_url || 'No base URL set' }}
+        </div>
       </div>
       <div class="detail-actions">
-        <button class="btn btn-primary" @click="handleSave">Save</button>
-        <button class="btn btn-danger" @click="$emit('delete')">Delete</button>
+        <button
+          class="btn btn-primary"
+          @click="handleSave"
+        >
+          Save
+        </button>
+        <button
+          class="btn btn-danger"
+          @click="$emit('delete')"
+        >
+          Delete
+        </button>
       </div>
     </div>
     <div class="detail-body">
       <!-- Connection -->
       <div>
-        <div class="section-title">Connection</div>
+        <div class="section-title">
+          Connection
+        </div>
         <div class="field">
           <label>Base URL</label>
-          <input v-model="form.base_url" placeholder="https://api.openai.com/v1" />
+          <input
+            v-model="form.base_url"
+            placeholder="https://api.openai.com/v1"
+          >
         </div>
         <div class="field">
           <label>API Key</label>
-          <input v-model="form.api_key" type="password" :placeholder="provider.api_key ? '••••••••(unchanged)' : 'sk-...'" />
+          <input
+            v-model="form.api_key"
+            type="password"
+            :placeholder="provider.api_key ? '••••••••(unchanged)' : 'sk-...'"
+          >
         </div>
         <div class="field">
           <label>API Format</label>
           <select v-model="form.api_format">
-            <option value="openai">OpenAI Compatible</option>
-            <option value="anthropic">Anthropic</option>
+            <option value="openai">
+              OpenAI Compatible
+            </option>
+            <option value="anthropic">
+              Anthropic
+            </option>
           </select>
         </div>
       </div>
@@ -35,7 +62,12 @@
       <div class="models-section">
         <div class="models-toolbar">
           <div>
-            <div class="section-title" style="margin-bottom:2px">Models</div>
+            <div
+              class="section-title"
+              style="margin-bottom:2px"
+            >
+              Models
+            </div>
             <span class="model-count">{{ models.length }} available</span>
           </div>
           <div class="models-actions">
@@ -44,29 +76,58 @@
               type="text"
               placeholder="Search..."
               class="search-input"
-            />
-            <button class="btn btn-primary" :disabled="fetchingModels" @click="handleFetchModels">
+            >
+            <button
+              class="btn btn-primary"
+              :disabled="fetchingModels"
+              @click="handleFetchModels"
+            >
               {{ fetchingModels ? 'Fetching...' : 'Get Models' }}
             </button>
           </div>
         </div>
-        <div v-if="fetchError" class="models-error">{{ fetchError }}</div>
+        <div
+          v-if="fetchError"
+          class="models-error"
+        >
+          {{ fetchError }}
+        </div>
         <div class="models-list">
-          <div v-if="filteredModels.length === 0" class="models-empty">
+          <div
+            v-if="filteredModels.length === 0"
+            class="models-empty"
+          >
             {{ models.length ? 'No matches' : 'No models fetched yet. Click "Get Models" to fetch.' }}
           </div>
-          <div v-for="m in filteredModels" :key="m" class="model-row">
+          <div
+            v-for="m in filteredModels"
+            :key="m"
+            class="model-row"
+          >
             <div class="model-info">
-              <div :class="['model-name', { active: m === activeModel }]">{{ m }}</div>
+              <div :class="['model-name', { active: m === activeModel }]">
+                {{ m }}
+              </div>
             </div>
             <div class="model-actions">
               <template v-if="isModelActive(name, m)">
                 <span class="model-state">
                   {{ m === activeModel ? '✓ current' : 'enabled' }}
                 </span>
-                <button class="btn btn-danger" @click="$emit('deactivate-model', name, m)">Remove</button>
+                <button
+                  class="btn btn-danger"
+                  @click="$emit('deactivate-model', name, m)"
+                >
+                  Remove
+                </button>
               </template>
-              <button v-else class="btn btn-primary" @click="$emit('activate-model', name, m)">Enable</button>
+              <button
+                v-else
+                class="btn btn-primary"
+                @click="$emit('activate-model', name, m)"
+              >
+                Enable
+              </button>
             </div>
           </div>
         </div>

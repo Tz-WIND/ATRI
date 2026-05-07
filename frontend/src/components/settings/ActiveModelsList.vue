@@ -1,16 +1,38 @@
 <template>
   <div>
-    <div v-if="activeModels.length === 0" class="empty">
+    <div
+      v-if="activeModels.length === 0"
+      class="empty"
+    >
       No models enabled. Enable models from provider model lists above.
     </div>
-    <div v-for="m in activeModels" :key="m.model + m.provider" class="model-row">
+    <div
+      v-for="m in activeModels"
+      :key="m.model + m.provider"
+      class="model-row"
+    >
       <div class="model-info">
-        <div :class="['model-name', { active: m.model === activeModel }]">{{ m.model }}</div>
-        <div class="model-provider" v-if="m.provider">{{ m.provider }}</div>
+        <div :class="['model-name', { active: m.model === activeModel }]">
+          {{ m.model }}
+        </div>
+        <div
+          v-if="m.provider"
+          class="model-provider"
+        >
+          {{ m.provider }}
+        </div>
       </div>
       <div class="model-actions">
-        <span v-if="m.model === activeModel" class="badge-current">✓ current</span>
-        <button class="btn btn-remove" @click="handleDeactivate(m.provider || '', m.model)">Remove</button>
+        <span
+          v-if="m.model === activeModel"
+          class="badge-current"
+        >✓ current</span>
+        <button
+          class="btn btn-remove"
+          @click="handleDeactivate(m.provider || '', m.model)"
+        >
+          Remove
+        </button>
       </div>
     </div>
   </div>

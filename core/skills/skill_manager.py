@@ -121,11 +121,7 @@ def _sanitize_skill_display_name(name: str) -> str:
 def _validate_skill_name(name: str) -> str:
     """Validate a user-controlled skill name before using it as a path segment."""
     skill_name = str(name or "").strip()
-    if (
-        not skill_name
-        or skill_name in {".", ".."}
-        or not _SKILL_NAME_RE.fullmatch(skill_name)
-    ):
+    if not skill_name or skill_name in {".", ".."} or not _SKILL_NAME_RE.fullmatch(skill_name):
         raise ValueError("Invalid skill name.")
     return skill_name
 
@@ -152,7 +148,7 @@ def _build_skill_read_command_example(path: str) -> str:
 class SkillInfo:
     name: str
     description: str
-    path: str        # absolute path to SKILL.md
+    path: str  # absolute path to SKILL.md
     active: bool
 
 
@@ -168,16 +164,12 @@ def build_skills_prompt(skills: list[SkillInfo]) -> str:
     example_path = ""
     for skill in skills:
         display_name = _sanitize_skill_display_name(skill.name)
-        description = _sanitize_prompt_description(
-            skill.description or "No description"
-        )
+        description = _sanitize_prompt_description(skill.description or "No description")
         rendered_path = _sanitize_prompt_path_for_prompt(skill.path)
         if not rendered_path:
             rendered_path = "<skills_root>/<skill_name>/SKILL.md"
 
-        skills_lines.append(
-            f"- **{display_name}**: {description}\n  File: `{rendered_path}`"
-        )
+        skills_lines.append(f"- **{display_name}**: {description}\n  File: `{rendered_path}`")
         if not example_path:
             example_path = rendered_path
 
@@ -366,9 +358,7 @@ class SkillManager:
 
             archive_skill_name = None
             if skill_name_hint is not None:
-                archive_skill_name = _validate_skill_name(
-                    _normalize_skill_name(skill_name_hint)
-                )
+                archive_skill_name = _validate_skill_name(_normalize_skill_name(skill_name_hint))
 
             # Security: validate all paths before extraction
             for name in names:
@@ -387,17 +377,13 @@ class SkillManager:
                     zf.extract(member, tmp_dir)
 
                 if root_mode:
-                    archive_hint = _normalize_skill_name(
-                        skill_name_hint or zip_path_obj.stem
-                    )
+                    archive_hint = _normalize_skill_name(skill_name_hint or zip_path_obj.stem)
                     skill_name = _validate_skill_name(archive_hint)
 
                     src_dir = Path(tmp_dir)
                     normalized_path = _normalize_skill_markdown_path(src_dir)
                     if normalized_path is None:
-                        raise ValueError(
-                            "SKILL.md not found in the root of the zip archive."
-                        )
+                        raise ValueError("SKILL.md not found in the root of the zip archive.")
 
                     dest_dir = Path(self.skills_root) / skill_name
                     if dest_dir.exists() and overwrite:
@@ -410,14 +396,10 @@ class SkillManager:
                     installed_skills.append(skill_name)
 
                 else:
-                    top_dirs = {
-                        PurePosixPath(n).parts[0] for n in file_names if n.strip()
-                    }
+                    top_dirs = {PurePosixPath(n).parts[0] for n in file_names if n.strip()}
 
                     for archive_root_name in top_dirs:
-                        archive_root_name_normalized = _normalize_skill_name(
-                            archive_root_name
-                        )
+                        archive_root_name_normalized = _normalize_skill_name(archive_root_name)
 
                         if (
                             f"{archive_root_name}/SKILL.md" not in file_names
@@ -445,9 +427,7 @@ class SkillManager:
                         dest_dir = Path(self.skills_root) / skill_name
                         if dest_dir.exists():
                             if not overwrite:
-                                raise FileExistsError(
-                                    f"Skill {skill_name} already exists."
-                                )
+                                raise FileExistsError(f"Skill {skill_name} already exists.")
                             shutil.rmtree(dest_dir)
 
                         shutil.move(str(src_dir), str(dest_dir))
@@ -455,9 +435,7 @@ class SkillManager:
                         installed_skills.append(skill_name)
 
         if not installed_skills:
-            raise ValueError(
-                "No valid SKILL.md found in any folder of the zip archive."
-            )
+            raise ValueError("No valid SKILL.md found in any folder of the zip archive.")
 
         return ", ".join(installed_skills)
 

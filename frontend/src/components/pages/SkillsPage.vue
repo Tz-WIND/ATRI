@@ -13,37 +13,79 @@
           accept=".zip"
           class="file-input"
           @change="onFileSelected"
-        />
-        <button class="btn btn-primary" @click="triggerUpload">
+        >
+        <button
+          class="btn btn-primary"
+          @click="triggerUpload"
+        >
           Upload .zip Skill
         </button>
-        <span v-if="uploadMsg" :class="['upload-msg', uploadOk ? 'ok' : 'err']">
+        <span
+          v-if="uploadMsg"
+          :class="['upload-msg', uploadOk ? 'ok' : 'err']"
+        >
           {{ uploadMsg }}
         </span>
       </div>
 
-      <div v-if="skills.length === 0" class="empty">
+      <div
+        v-if="skills.length === 0"
+        class="empty"
+      >
         No skills found. Add SKILL.md files to the skills/ directory or upload a .zip.
       </div>
 
-      <div v-for="s in skills" :key="s.name" class="card">
+      <div
+        v-for="s in skills"
+        :key="s.name"
+        class="card"
+      >
         <div class="card-header">
-          <span class="card-title" @click="toggleDetail(s.name)">{{ s.name }}</span>
-          <StatusBadge :type="s.active ? 'on' : 'off'">{{ s.active ? 'active' : 'inactive' }}</StatusBadge>
+          <span
+            class="card-title"
+            @click="toggleDetail(s.name)"
+          >{{ s.name }}</span>
+          <StatusBadge :type="s.active ? 'on' : 'off'">
+            {{ s.active ? 'active' : 'inactive' }}
+          </StatusBadge>
         </div>
-        <div class="card-meta">{{ s.description }}</div>
-        <div class="card-meta" style="font-size:10px;opacity:0.6">{{ s.path }}</div>
+        <div class="card-meta">
+          {{ s.description }}
+        </div>
+        <div
+          class="card-meta"
+          style="font-size:10px;opacity:0.6"
+        >
+          {{ s.path }}
+        </div>
         <div class="card-actions">
-          <button class="btn btn-ghost" @click="toggleSkill(s.name, !s.active)">
+          <button
+            class="btn btn-ghost"
+            @click="toggleSkill(s.name, !s.active)"
+          >
             {{ s.active ? 'Disable' : 'Enable' }}
           </button>
-          <button class="btn btn-ghost btn-danger" @click="removeSkill(s.name)">
+          <button
+            class="btn btn-ghost btn-danger"
+            @click="removeSkill(s.name)"
+          >
             Delete
           </button>
         </div>
-        <div v-if="expandedName === s.name" class="card-detail">
-          <div v-if="detailLoading" class="loading">Loading...</div>
-          <pre v-else class="skill-content">{{ detailContent }}</pre>
+        <div
+          v-if="expandedName === s.name"
+          class="card-detail"
+        >
+          <div
+            v-if="detailLoading"
+            class="loading"
+          >
+            Loading...
+          </div>
+          <pre
+            v-else
+            class="skill-content"
+          >{{ detailContent }}</pre>
         </div>
       </div>
     </div>

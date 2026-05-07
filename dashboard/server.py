@@ -90,7 +90,7 @@ def _verify_password(stored: str, candidate: str) -> bool:
             prefixed_salt, dk_hex = stored.split("$", 1)
         except ValueError:
             return False
-        salt_hex = prefixed_salt[len(_PBKDF2_PREFIX):]
+        salt_hex = prefixed_salt[len(_PBKDF2_PREFIX) :]
         salt = bytes.fromhex(salt_hex)
         expected = bytes.fromhex(dk_hex)
         dk = hashlib.pbkdf2_hmac(_PBKDF2_HASH, candidate.encode(), salt, _PBKDF2_ITERATIONS)
@@ -203,9 +203,7 @@ def _model_fetch_candidates(
         parsed = urlsplit(cleaned)
         parts = [part for part in parsed.path.split("/") if part]
         if "anthropic" in [part.lower() for part in parts]:
-            stripped_parts = [
-                part for part in parts if part.lower() != "anthropic"
-            ]
+            stripped_parts = [part for part in parts if part.lower() != "anthropic"]
             stripped_path = "/" + "/".join(stripped_parts) if stripped_parts else ""
             stripped = urlunsplit(parsed._replace(path=stripped_path)).rstrip("/")
             openai_headers = _headers_for_model_fetch("openai", api_key)
@@ -275,6 +273,7 @@ class Dashboard:
 
         from dashboard.music import bp as music_bp
         from dashboard.music import init_music
+
         init_music(lifecycle)
         self.app.register_blueprint(music_bp)
 
@@ -377,10 +376,7 @@ class Dashboard:
         auth = request.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip()
-        return (
-            request.headers.get("X-ATRI-Session", "")
-            or request.cookies.get(_AUTH_COOKIE, "")
-        )
+        return request.headers.get("X-ATRI-Session", "") or request.cookies.get(_AUTH_COOKIE, "")
 
     def _session_ok(self, token: str) -> bool:
         return bool(self.auth_enabled and token) and hmac.compare_digest(
@@ -389,9 +385,11 @@ class Dashboard:
         )
 
     def _credentials_ok(self, username: str, password: str) -> bool:
-        return self.auth_enabled and hmac.compare_digest(
-            username, self.auth_username
-        ) and _verify_password(self.auth_password, password)
+        return (
+            self.auth_enabled
+            and hmac.compare_digest(username, self.auth_username)
+            and _verify_password(self.auth_password, password)
+        )
 
     def _request_authenticated(self) -> bool:
         return self._session_ok(self._provided_session_token())
@@ -432,7 +430,10 @@ class Dashboard:
             """Add security headers to all responses."""
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("X-Frame-Options", "DENY")
-            response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:")  # noqa: E501
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:",
+            )  # noqa: E501
             response.headers.setdefault("Cache-Control", "no-store")
             return response
 
@@ -540,39 +541,43 @@ class Dashboard:
         @app.route("/api/status")
         async def api_status():
             lc = self.lifecycle
-            return jsonify({
-                "status": "running",
-                "uptime": int(time.time() - lc.start_time) if lc.start_time else 0,
-                "model": lc.config.get("model", ""),
-                "active_models": lc.config.get("active_models", []),
-                "workspace": lc.config.get("workspace", ""),
-                "api_format": lc.config.get("api_format", "openai"),
-                "onebot11_status": lc.onebot11.status.value if lc.onebot11 else "disabled",
-                "webchat_status": lc.webchat.status.value if lc.webchat else "disabled",
-                "session_count": lc.process_stage.agent_count if lc.process_stage else 0,
-                "mcp_server_count": len(lc.config.get("mcp_servers", {})),
-                "skill_count": len(lc.config.get("skills", {})),
-            })
+            return jsonify(
+                {
+                    "status": "running",
+                    "uptime": int(time.time() - lc.start_time) if lc.start_time else 0,
+                    "model": lc.config.get("model", ""),
+                    "active_models": lc.config.get("active_models", []),
+                    "workspace": lc.config.get("workspace", ""),
+                    "api_format": lc.config.get("api_format", "openai"),
+                    "onebot11_status": lc.onebot11.status.value if lc.onebot11 else "disabled",
+                    "webchat_status": lc.webchat.status.value if lc.webchat else "disabled",
+                    "session_count": lc.process_stage.agent_count if lc.process_stage else 0,
+                    "mcp_server_count": len(lc.config.get("mcp_servers", {})),
+                    "skill_count": len(lc.config.get("skills", {})),
+                }
+            )
 
         # ── Model Settings ──
         @app.route("/api/settings", methods=["GET"])
         async def get_settings():
             c = self.lifecycle.config
-            return jsonify({
-                "model": c.get("model", ""),
-                "api_key": "***" if c.get("api_key") else "",
-                "base_url": c.get("base_url") or "",
-                "api_format": c.get("api_format", "openai"),
-                "max_tokens": c.get("max_tokens", 4096),
-                "temperature": c.get("temperature", 0.0),
-                "max_context_tokens": c.get("max_context_tokens", 128000),
-                "max_rounds": c.get("max_rounds", 50),
-                "wake_words": c.get("wake_words", []),
-                "extra_instructions": c.get("extra_instructions", ""),
-                "persona": c.get("persona", ""),
-                "providers": _mask_providers(c.get("providers", {})),
-                "tavily_api_key": "***" if c.get("tavily_api_key") else "",
-            })
+            return jsonify(
+                {
+                    "model": c.get("model", ""),
+                    "api_key": "***" if c.get("api_key") else "",
+                    "base_url": c.get("base_url") or "",
+                    "api_format": c.get("api_format", "openai"),
+                    "max_tokens": c.get("max_tokens", 4096),
+                    "temperature": c.get("temperature", 0.0),
+                    "max_context_tokens": c.get("max_context_tokens", 128000),
+                    "max_rounds": c.get("max_rounds", 50),
+                    "wake_words": c.get("wake_words", []),
+                    "extra_instructions": c.get("extra_instructions", ""),
+                    "persona": c.get("persona", ""),
+                    "providers": _mask_providers(c.get("providers", {})),
+                    "tavily_api_key": "***" if c.get("tavily_api_key") else "",
+                }
+            )
 
         @app.route("/api/settings", methods=["POST"])
         async def update_settings():
@@ -593,10 +598,9 @@ class Dashboard:
             if "tavily_api_key" in data and data["tavily_api_key"] != "***":
                 lc.config["tavily_api_key"] = data["tavily_api_key"]
             if lc.process_stage:
-                lc.process_stage.update_config(**{
-                    k: v for k, v in data.items()
-                    if k in _PROCESS_STAGE_SETTING_KEYS
-                })
+                lc.process_stage.update_config(
+                    **{k: v for k, v in data.items() if k in _PROCESS_STAGE_SETTING_KEYS}
+                )
             lc.save_config()
             return jsonify({"ok": True})
 
@@ -615,7 +619,9 @@ class Dashboard:
             existing = providers.get(name, {})
             providers[name] = {
                 "base_url": data.get("base_url", ""),
-                "api_key": data["api_key"] if data.get("api_key") and data["api_key"] != "***" else existing.get("api_key", ""),  # noqa: E501
+                "api_key": data["api_key"]
+                if data.get("api_key") and data["api_key"] != "***"
+                else existing.get("api_key", ""),  # noqa: E501
                 "api_format": data.get("api_format", "openai"),
                 "models": existing.get("models", []),
             }
@@ -636,25 +642,21 @@ class Dashboard:
             removed_provider = providers.pop(name, None)
             active_models = lc.config.setdefault("active_models", [])
             removed_entries = [
-                m for m in active_models
-                if isinstance(m, dict) and m.get("provider", "") == name
+                m for m in active_models if isinstance(m, dict) and m.get("provider", "") == name
             ]
             lc.config["active_models"] = [
-                m for m in active_models
+                m
+                for m in active_models
                 if not (isinstance(m, dict) and m.get("provider", "") == name)
             ]
             current_model = lc.config.get("model", "")
-            current_was_removed = any(
-                m.get("model", "") == current_model for m in removed_entries
-            )
+            current_was_removed = any(m.get("model", "") == current_model for m in removed_entries)
             current_still_active = any(
-                self._active_model_entry_available(m)
-                and m.get("model", "") == current_model
+                self._active_model_entry_available(m) and m.get("model", "") == current_model
                 for m in lc.config.get("active_models", [])
             )
             if current_was_removed and (
-                not current_still_active
-                or self._current_uses_provider_config(removed_provider)
+                not current_still_active or self._current_uses_provider_config(removed_provider)
             ):
                 self._select_first_active_model_or_clear()
             else:
@@ -678,8 +680,11 @@ class Dashboard:
             api_format = data.get("api_format", cfg.get("api_format", "openai"))
             try:
                 import httpx as _httpx
+
                 last_error = None
-                default_base_url = "https://api.anthropic.com/v1" if api_format == "anthropic" else ""  # noqa: E501
+                default_base_url = (
+                    "https://api.anthropic.com/v1" if api_format == "anthropic" else ""
+                )  # noqa: E501
                 effective_base_url = base_url or default_base_url
                 async with _httpx.AsyncClient(timeout=15) as client:
                     for url, headers, fetch_format in _model_fetch_candidates(
@@ -726,7 +731,9 @@ class Dashboard:
             lc = self.lifecycle
             active_models = lc.config.setdefault("active_models", [])
             entry = {"model": model, "provider": provider_name}
-            if not any(m["model"] == model and m["provider"] == provider_name for m in active_models):  # noqa: E501
+            if not any(
+                m["model"] == model and m["provider"] == provider_name for m in active_models
+            ):  # noqa: E501
                 active_models.append(entry)
             self._apply_model(provider_name, model)
             lc.save_config()
@@ -741,7 +748,8 @@ class Dashboard:
             lc = self.lifecycle
             active_models = lc.config.setdefault("active_models", [])
             removed_entries = [
-                m for m in active_models
+                m
+                for m in active_models
                 if (
                     isinstance(m, dict)
                     and m.get("model", "") == model
@@ -749,7 +757,8 @@ class Dashboard:
                 )
             ]
             lc.config["active_models"] = [
-                m for m in active_models
+                m
+                for m in active_models
                 if not (
                     isinstance(m, dict)
                     and m.get("model", "") == model
@@ -758,14 +767,14 @@ class Dashboard:
             ]
             current_model = lc.config.get("model", "")
             current_still_active = any(
-                self._active_model_entry_available(m)
-                and m.get("model", "") == current_model
+                self._active_model_entry_available(m) and m.get("model", "") == current_model
                 for m in lc.config.get("active_models", [])
             )
             provider_cfg = lc.config.get("providers", {}).get(provider_name)
-            if removed_entries and current_model == model and (
-                not current_still_active
-                or self._current_uses_provider_config(provider_cfg)
+            if (
+                removed_entries
+                and current_model == model
+                and (not current_still_active or self._current_uses_provider_config(provider_cfg))
             ):
                 self._select_first_active_model_or_clear()
             else:
@@ -805,13 +814,17 @@ class Dashboard:
         @app.route("/api/adapter", methods=["GET"])
         async def get_adapter():
             ob = self.lifecycle.config.get("onebot11", {})
-            return jsonify({
-                "enabled": ob.get("enabled", True),
-                "ws_reverse_host": ob.get("ws_reverse_host", "0.0.0.0"),  # noqa: S104
-                "ws_reverse_port": ob.get("ws_reverse_port", 6199),
-                "ws_reverse_token": "***" if ob.get("ws_reverse_token") else "",
-                "status": self.lifecycle.onebot11.status.value if self.lifecycle.onebot11 else "disabled",  # noqa: E501
-            })
+            return jsonify(
+                {
+                    "enabled": ob.get("enabled", True),
+                    "ws_reverse_host": ob.get("ws_reverse_host", "0.0.0.0"),  # noqa: S104
+                    "ws_reverse_port": ob.get("ws_reverse_port", 6199),
+                    "ws_reverse_token": "***" if ob.get("ws_reverse_token") else "",
+                    "status": self.lifecycle.onebot11.status.value
+                    if self.lifecycle.onebot11
+                    else "disabled",  # noqa: E501
+                }
+            )
 
         @app.route("/api/adapter", methods=["POST"])
         async def update_adapter():
@@ -826,7 +839,9 @@ class Dashboard:
             if "ws_reverse_token" in data and data["ws_reverse_token"] != "***":  # noqa: S105
                 ob["ws_reverse_token"] = data["ws_reverse_token"]
             self.lifecycle.save_config()
-            return jsonify({"ok": True, "note": "Restart required for adapter changes to take effect."})  # noqa: E501
+            return jsonify(
+                {"ok": True, "note": "Restart required for adapter changes to take effect."}
+            )  # noqa: E501
 
         # ── MCP Servers ──
         @app.route("/api/mcp/servers", methods=["GET"])
@@ -834,7 +849,13 @@ class Dashboard:
             servers = self.lifecycle.config.get("mcp_servers", {})
             result = []
             for name, cfg in servers.items():
-                result.append({"name": name, "active": cfg.get("active", True), **{k: v for k, v in cfg.items() if k != "active"}})  # noqa: E501
+                result.append(
+                    {
+                        "name": name,
+                        "active": cfg.get("active", True),
+                        **{k: v for k, v in cfg.items() if k != "active"},
+                    }
+                )  # noqa: E501
             return jsonify(result)
 
         @app.route("/api/mcp/servers", methods=["POST"])
@@ -868,23 +889,29 @@ class Dashboard:
         # ── Skills ──
         @app.route("/api/skills", methods=["GET"])
         async def list_skills():
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
+            sm = (
+                self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            )  # noqa: E501
             if sm is None:
                 return jsonify([])
             skills = sm.list_skills(active_only=False)
-            return jsonify([
-                {
-                    "name": s.name,
-                    "description": s.description,
-                    "path": s.path,
-                    "active": s.active,
-                }
-                for s in skills
-            ])
+            return jsonify(
+                [
+                    {
+                        "name": s.name,
+                        "description": s.description,
+                        "path": s.path,
+                        "active": s.active,
+                    }
+                    for s in skills
+                ]
+            )
 
         @app.route("/api/skills/<name>")
         async def get_skill(name: str):
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
+            sm = (
+                self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            )  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -898,19 +925,23 @@ class Dashboard:
                     content = ""
                     if skill_path.exists():  # noqa: ASYNC240
                         content = skill_path.read_text(encoding="utf-8", errors="replace")  # noqa: ASYNC240
-                    return jsonify({
-                        "name": s.name,
-                        "description": s.description,
-                        "path": s.path,
-                        "active": s.active,
-                        "content": content,
-                    })
+                    return jsonify(
+                        {
+                            "name": s.name,
+                            "description": s.description,
+                            "path": s.path,
+                            "active": s.active,
+                            "content": content,
+                        }
+                    )
             return jsonify({"error": "skill not found"}), 404
 
         @app.route("/api/skills/<name>", methods=["PUT"])
         async def update_skill(name: str):
             data = await request.get_json()
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
+            sm = (
+                self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            )  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -924,7 +955,9 @@ class Dashboard:
 
         @app.route("/api/skills/<name>", methods=["DELETE"])
         async def delete_skill(name: str):
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
+            sm = (
+                self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            )  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -937,7 +970,9 @@ class Dashboard:
 
         @app.route("/api/skills/upload", methods=["POST"])
         async def upload_skill():
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
+            sm = (
+                self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            )  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             files = await request.files
@@ -964,7 +999,9 @@ class Dashboard:
 
         @app.route("/api/skills/<name>/download")
         async def download_skill(name: str):
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
+            sm = (
+                self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            )  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -1000,7 +1037,9 @@ class Dashboard:
         async def get_session(session_id: str):
             if self.lifecycle.process_stage:
                 store = self.lifecycle.process_stage.session_store
-                internal_id = f"webchat:friend:{session_id}" if ":" not in session_id else session_id  # noqa: E501
+                internal_id = (
+                    f"webchat:friend:{session_id}" if ":" not in session_id else session_id
+                )  # noqa: E501
                 for candidate in (internal_id, session_id):
                     result = store.load(candidate)
                     if result:
@@ -1037,15 +1076,19 @@ class Dashboard:
                 return jsonify({"entries": [], "path": rel})
             entries = []
             try:
-                for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):  # noqa: E501
+                for item in sorted(
+                    target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
+                ):  # noqa: E501
                     if item.name.startswith("."):
                         continue
-                    entries.append({
-                        "name": item.name,
-                        "type": "dir" if item.is_dir() else "file",
-                        "size": item.stat().st_size if item.is_file() else 0,
-                        "path": str(item.relative_to(ws)).replace("\\", "/"),
-                    })
+                    entries.append(
+                        {
+                            "name": item.name,
+                            "type": "dir" if item.is_dir() else "file",
+                            "size": item.stat().st_size if item.is_file() else 0,
+                            "path": str(item.relative_to(ws)).replace("\\", "/"),
+                        }
+                    )
             except PermissionError:
                 pass
             return jsonify({"entries": entries, "path": rel})
@@ -1117,12 +1160,14 @@ class Dashboard:
                             "completion": agent.llm.total_completion_tokens,
                             "cost": agent.llm.estimated_cost,
                         }
-                return jsonify({
-                    "response": response_text,
-                    "session_id": display_session_id(event.unified_msg_origin),
-                    "tool_events": event._extras.get("tool_events", []),
-                    "token_usage": token_usage,
-                })
+                return jsonify(
+                    {
+                        "response": response_text,
+                        "session_id": display_session_id(event.unified_msg_origin),
+                        "tool_events": event._extras.get("tool_events", []),
+                        "token_usage": token_usage,
+                    }
+                )
             except TimeoutError:
                 return jsonify({"error": "Agent timed out (300s)"}), 504
             except Exception as e:
@@ -1144,6 +1189,7 @@ class Dashboard:
         @app.route("/api/tools")
         async def list_tools():
             from core.tools import create_tools
+
             ws = self.lifecycle.config.get("workspace", ".")
             tools = create_tools(ws)
             return jsonify([{"name": t.name, "description": t.description} for t in tools])
@@ -1156,11 +1202,13 @@ class Dashboard:
             bash_tool = self._find_bash_tool(session_id)
             if bash_tool and bash_tool.has_pending:
                 result = bash_tool.approve_pending()
-                await self.broadcast({
-                    "type": "command_approved",
-                    "session_id": session_id,
-                    "result": result,
-                })
+                await self.broadcast(
+                    {
+                        "type": "command_approved",
+                        "session_id": session_id,
+                        "result": result,
+                    }
+                )
                 return jsonify({"ok": True, "result": result})
             return jsonify({"error": "no pending command"}), 404
 
@@ -1171,11 +1219,13 @@ class Dashboard:
             bash_tool = self._find_bash_tool(session_id)
             if bash_tool and bash_tool.has_pending:
                 result = bash_tool.reject_pending()
-                await self.broadcast({
-                    "type": "command_rejected",
-                    "session_id": session_id,
-                    "result": result,
-                })
+                await self.broadcast(
+                    {
+                        "type": "command_rejected",
+                        "session_id": session_id,
+                        "result": result,
+                    }
+                )
                 return jsonify({"ok": True, "result": result})
             return jsonify({"error": "no pending command"}), 404
 
@@ -1199,9 +1249,8 @@ class Dashboard:
                 await websocket.close(1008)
                 return
             if self.auth_enabled:
-                session_token = (
-                    websocket.headers.get("X-ATRI-Session", "")
-                    or _cookie_value(websocket.headers.get("Cookie", ""), _AUTH_COOKIE)
+                session_token = websocket.headers.get("X-ATRI-Session", "") or _cookie_value(
+                    websocket.headers.get("Cookie", ""), _AUTH_COOKIE
                 )
                 if not hmac.compare_digest(session_token, self.auth_session_token):
                     await websocket.close(1008)
@@ -1224,6 +1273,7 @@ class Dashboard:
         async def spa_fallback(e):
             """Serve index.html for all non-API routes (Vue SPA)."""
             from quart import request as _req
+
             path = _req.path
             if path.startswith(("/api/", "/ws", "/static/")):
                 return jsonify({"error": "not found"}), 404
@@ -1234,6 +1284,7 @@ class Dashboard:
     def _find_bash_tool(self, session_id: str):
         """Find the BashTool instance for a given session's agent."""
         from core.tools.bash import BashTool
+
         if not self.lifecycle.process_stage:
             return None
         agent = self.lifecycle.process_stage.get_agent(session_id)
@@ -1255,14 +1306,13 @@ class Dashboard:
     async def run(self):
         from hypercorn.asyncio import serve
         from hypercorn.config import Config
+
         config = Config()
         config.bind = [f"{self.host}:{self.port}"]
         config.accesslog = None
         logger.info(f"\n  ATRI Dashboard ready\n  -> http://localhost:{self.port}\n")
         if self.auth_setup_required:
-            logger.info(
-                "Dashboard setup required. Open the dashboard to create an admin account."
-            )
+            logger.info("Dashboard setup required. Open the dashboard to create an admin account.")
         elif self.auth_enabled:
             logger.info(
                 "Dashboard auth enabled. Username: "

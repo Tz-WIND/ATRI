@@ -1,23 +1,58 @@
 <template>
   <div class="file-panel">
     <div class="file-toolbar">
-      <button class="icon-btn" @click="goUp" :disabled="!currentPath" title="Go up">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="15 18 9 12 15 6"/>
+      <button
+        class="icon-btn"
+        :disabled="!currentPath"
+        title="Go up"
+        @click="goUp"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <polyline points="15 18 9 12 15 6" />
         </svg>
       </button>
-      <div class="path-display" :title="currentPath || 'workspace root'">
+      <div
+        class="path-display"
+        :title="currentPath || 'workspace root'"
+      >
         {{ currentPath || '/' }}
       </div>
-      <button class="icon-btn" @click="refresh" title="Refresh">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+      <button
+        class="icon-btn"
+        title="Refresh"
+        @click="refresh"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
         </svg>
       </button>
     </div>
-    <div v-if="loading" class="file-loading">Loading...</div>
-    <div v-else-if="entries.length === 0" class="panel-empty">Empty directory</div>
-    <div v-else class="file-list">
+    <div
+      v-if="loading"
+      class="file-loading"
+    >
+      Loading...
+    </div>
+    <div
+      v-else-if="entries.length === 0"
+      class="panel-empty"
+    >
+      Empty directory
+    </div>
+    <div
+      v-else
+      class="file-list"
+    >
       <div
         v-for="entry in entries"
         :key="entry.path"
@@ -25,9 +60,15 @@
         @click="handleClick(entry)"
         @dblclick="handleDblClick(entry)"
       >
-        <span class="file-icon" v-html="entry.type === 'dir' ? folderIcon : getFileIcon(entry.name)"></span>
+        <span
+          class="file-icon"
+          v-html="entry.type === 'dir' ? folderIcon : getFileIcon(entry.name)"
+        />
         <span class="file-name">{{ entry.name }}</span>
-        <span v-if="entry.type === 'file'" class="file-size">{{ formatSize(entry.size) }}</span>
+        <span
+          v-if="entry.type === 'file'"
+          class="file-size"
+        >{{ formatSize(entry.size) }}</span>
       </div>
     </div>
   </div>

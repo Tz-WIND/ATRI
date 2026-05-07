@@ -392,11 +392,11 @@ class LLM:
             except (RateLimitError, APITimeoutError, APIConnectionError):
                 if attempt == max_retries - 1:
                     raise
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
             except APIError as e:
                 status = getattr(e, "status_code", None)
                 if status and status >= 500 and attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                 else:
                     raise
 
@@ -437,13 +437,13 @@ class LLM:
                 if attempt == 2:
                     raise
                 logger.debug(f"Anthropic call failed, retrying: {e}")
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
                 if status in {408, 409, 429} or status >= 500:
                     if attempt < 2:
                         logger.debug(f"Anthropic HTTP {status}, retrying")
-                        time.sleep(2 ** attempt)
+                        time.sleep(2**attempt)
                         continue
                 raise
 
@@ -481,7 +481,9 @@ class LLM:
 
         with self.client.stream("POST", "messages", json=params, headers=headers) as resp:
             if resp.status_code >= 400:
-                logger.error(f"Anthropic HTTP {resp.status_code}: {resp.read().decode(errors='replace')[:1000]}")  # noqa: E501
+                logger.error(
+                    f"Anthropic HTTP {resp.status_code}: {resp.read().decode(errors='replace')[:1000]}"
+                )  # noqa: E501
             resp.raise_for_status()
             for event_name, data in _iter_sse_json(resp):
                 if cancel_event and cancel_event.is_set():
@@ -489,16 +491,19 @@ class LLM:
                     break
 
                 if event_count == 0:
-                    logger.info(
-                        f"Anthropic first event received after {time.time() - t0:.1f}s"
-                    )
+                    logger.info(f"Anthropic first event received after {time.time() - t0:.1f}s")
                 event_count += 1
 
                 _process_anthropic_sse(
-                    data, event_name,
-                    content_blocks, tc_map,
-                    content_parts, reasoning_parts,
-                    on_token, on_thinking, token_state,
+                    data,
+                    event_name,
+                    content_blocks,
+                    tc_map,
+                    content_parts,
+                    reasoning_parts,
+                    on_token,
+                    on_thinking,
+                    token_state,
                     _delta_seen,
                 )
 
@@ -573,19 +578,14 @@ class LLM:
                     ignored.append(key)
             if ignored:
                 logger.debug(
-                    "Ignoring unsupported Anthropic LLM option(s): "
-                    + ", ".join(sorted(ignored))
+                    "Ignoring unsupported Anthropic LLM option(s): " + ", ".join(sorted(ignored))
                 )
             return extra
 
         ignored = sorted(set(kwargs) - _CHAT_COMPLETIONS_OPTION_KEYS)
         if ignored:
             logger.debug(f"Ignoring unsupported LLM option(s): {', '.join(ignored)}")
-        return {
-            key: value
-            for key, value in kwargs.items()
-            if key in _CHAT_COMPLETIONS_OPTION_KEYS
-        }
+        return {key: value for key, value in kwargs.items() if key in _CHAT_COMPLETIONS_OPTION_KEYS}
 
 
 def _raw_delta_value(delta, key: str):
@@ -685,13 +685,13 @@ class _ThinkingTagSplitter:
 
                 if nested_idx >= 0 and (end_idx < 0 or nested_idx < end_idx):
                     reasoning_parts.append(self._buffer[:nested_idx])
-                    self._buffer = self._buffer[nested_idx + len(self.START):]
+                    self._buffer = self._buffer[nested_idx + len(self.START) :]
                     self._thinking_depth += 1
                     continue
 
                 if end_idx >= 0:
                     reasoning_parts.append(self._buffer[:end_idx])
-                    self._buffer = self._buffer[end_idx + len(self.END):]
+                    self._buffer = self._buffer[end_idx + len(self.END) :]
                     self._thinking_depth -= 1
                     if self._thinking_depth == 0:
                         self._in_thinking = False
@@ -705,7 +705,7 @@ class _ThinkingTagSplitter:
             idx = self._buffer.lower().find(self.START)
             if idx >= 0:
                 content_parts.append(self._buffer[:idx])
-                self._buffer = self._buffer[idx + len(self.START):]
+                self._buffer = self._buffer[idx + len(self.START) :]
                 self._in_thinking = True
                 self._thinking_depth = 1
                 continue
@@ -772,11 +772,13 @@ def _messages_to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
         if role == "tool":
             tool_call_id = msg.get("tool_call_id")
             if tool_call_id:
-                pending_tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call_id,
-                    "content": _content_to_text(content),
-                })
+                pending_tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_call_id,
+                        "content": _content_to_text(content),
+                    }
+                )
             continue
 
         flush_tool_results()
@@ -805,12 +807,14 @@ def _messages_to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
                     args = json.loads(args_text)
                 except json.JSONDecodeError:
                     args = {}
-                blocks.append({
-                    "type": "tool_use",
-                    "id": tool_call.get("id") or f"toolu_{len(blocks)}",
-                    "name": func.get("name") or "",
-                    "input": args if isinstance(args, dict) else {},
-                })
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_call.get("id") or f"toolu_{len(blocks)}",
+                        "name": func.get("name") or "",
+                        "input": args if isinstance(args, dict) else {},
+                    }
+                )
             if blocks:
                 _append_anthropic_message(converted, "assistant", blocks)
         elif role == "user":
@@ -876,11 +880,13 @@ def _tools_to_anthropic(tools: list[dict]) -> list[dict]:
     for tool in tools:
         if tool.get("type") == "function":
             func = tool.get("function") or {}
-            converted.append({
-                "name": func.get("name") or "",
-                "description": func.get("description") or "",
-                "input_schema": func.get("parameters") or {"type": "object"},
-            })
+            converted.append(
+                {
+                    "name": func.get("name") or "",
+                    "description": func.get("description") or "",
+                    "input_schema": func.get("parameters") or {"type": "object"},
+                }
+            )
         elif "input_schema" in tool and "name" in tool:
             converted.append(tool)
     return converted
@@ -970,9 +976,7 @@ def _process_anthropic_sse(
                 content_blocks[idx]["signature"] = block["signature"]
         elif block_type == "redacted_thinking":
             content_blocks[idx] = {
-                key: value
-                for key, value in block.items()
-                if key in {"type", "data"}
+                key: value for key, value in block.items() if key in {"type", "data"}
             }
         elif block_type == "tool_use":
             raw_input = block.get("input")
@@ -1051,9 +1055,9 @@ def _iter_sse_json(resp: httpx.Response):
         if line.startswith(":"):
             continue
         if line.startswith("event:"):
-            event_name = line[len("event:"):].strip()
+            event_name = line[len("event:") :].strip()
         elif line.startswith("data:"):
-            data_lines.append(line[len("data:"):].lstrip())
+            data_lines.append(line[len("data:") :].lstrip())
 
     if data_lines:
         raw = "\n".join(data_lines)

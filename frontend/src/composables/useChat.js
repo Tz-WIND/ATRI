@@ -18,8 +18,6 @@ export function useChat() {
   const thinkingText = ref('')
   const thinkingStart = ref(0)
   const thinkingBlock = ref(null) // { content, startTime, done }
-  let thinkingMessageId = null
-
   // Tool cards
   const toolCards = ref({}) // id -> { tool, args, status: 'executing'|'success'|'failed', result }
   const toolMessageIndex = new Map()
@@ -95,7 +93,6 @@ export function useChat() {
     thinkingText.value = ''
     thinkingStart.value = 0
     thinkingBlock.value = null
-    thinkingMessageId = null
   }
 
   function clearToolCards() {
@@ -126,7 +123,6 @@ export function useChat() {
       done: false,
       time: new Date(),
     }
-    thinkingMessageId = block.id
     thinkingBlock.value = block
     messages.value.push(block)
   }

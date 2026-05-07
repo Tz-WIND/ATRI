@@ -7,13 +7,14 @@ from .base import Tool
 
 class ReadFileTool(Tool):
     name = "read_file"
-    description = (
-        "Read a file's contents with line numbers. Always read a file before editing it."
-    )
+    description = "Read a file's contents with line numbers. Always read a file before editing it."
     parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path to the file (relative to workspace)"},  # noqa: E501
+            "file_path": {
+                "type": "string",
+                "description": "Path to the file (relative to workspace)",
+            },  # noqa: E501
             "offset": {"type": "integer", "description": "Start line (1-based). Default 1."},
             "limit": {"type": "integer", "description": "Max lines to read. Default 2000."},
         },
@@ -38,7 +39,7 @@ class ReadFileTool(Tool):
             result = "\n".join(numbered)
 
             if total > start + limit:
-                result += f"\n... ({total} lines total, showing {start+1}-{start+len(chunk)})"
+                result += f"\n... ({total} lines total, showing {start + 1}-{start + len(chunk)})"
             return result or "(empty file)"
         except PermissionError as e:
             return f"Error: {e}"

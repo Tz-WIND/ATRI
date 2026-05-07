@@ -34,8 +34,7 @@ class Tool(ABC):
         return p
 
     @abstractmethod
-    def execute(self, **kwargs: Any) -> str:
-        ...
+    def execute(self, *args: Any, **kwargs: Any) -> str: ...
 
     def cancel(self):
         """Cancel any ongoing execution. Override in subclasses that support interruption."""

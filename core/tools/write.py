@@ -15,7 +15,10 @@ class WriteFileTool(Tool):
     parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path for the file (relative to workspace)"},  # noqa: E501
+            "file_path": {
+                "type": "string",
+                "description": "Path for the file (relative to workspace)",
+            },  # noqa: E501
             "content": {"type": "string", "description": "Full file content to write"},
         },
         "required": ["file_path", "content"],

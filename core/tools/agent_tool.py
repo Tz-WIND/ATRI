@@ -77,26 +77,29 @@ class SubAgentRun:
                 self.text_parts.append("\n... (text truncated)")
 
     def add_tool_start(self, tc_id: str, name: str, args: dict):
-        self.add_event({
-            "type": "tool_start",
-            "id": tc_id,
-            "tool": name,
-            "args": args,
-        })
+        self.add_event(
+            {
+                "type": "tool_start",
+                "id": tc_id,
+                "tool": name,
+                "args": args,
+            }
+        )
 
     def add_tool_end(self, tc_id: str, name: str, args: dict, result: str):
         success = not (
-            isinstance(result, str)
-            and (result.startswith("Error") or "BLOCKED:" in result)
+            isinstance(result, str) and (result.startswith("Error") or "BLOCKED:" in result)
         )
-        self.add_event({
-            "type": "tool_end",
-            "id": tc_id,
-            "tool": name,
-            "args": args,
-            "success": success,
-            "result_preview": _truncate(result, _MAX_EVENT_PREVIEW_CHARS),
-        })
+        self.add_event(
+            {
+                "type": "tool_end",
+                "id": tc_id,
+                "tool": name,
+                "args": args,
+                "success": success,
+                "result_preview": _truncate(result, _MAX_EVENT_PREVIEW_CHARS),
+            }
+        )
 
     def add_event(self, event: dict):
         with self.lock:
@@ -130,6 +133,7 @@ class SubAgentRun:
 # ---------------------------------------------------------------------------
 # AgentTool
 # ---------------------------------------------------------------------------
+
 
 class AgentTool(Tool):
     name = "agent"
@@ -245,11 +249,13 @@ class AgentTool(Tool):
                 configured_task = item.get("task")
                 if not isinstance(configured_task, str) or not configured_task.strip():
                     continue
-                all_tasks.append({
-                    "task": configured_task,
-                    "model": item.get("model") or model,
-                    "provider": item.get("provider") or provider,
-                })
+                all_tasks.append(
+                    {
+                        "task": configured_task,
+                        "model": item.get("model") or model,
+                        "provider": item.get("provider") or provider,
+                    }
+                )
 
         if not all_tasks:
             return "Error: no task or tasks provided"
@@ -280,8 +286,7 @@ class AgentTool(Tool):
 
         parent = self._parent_agent
         child_tools = [
-            t for t in get_all_tools(parent.workspace)
-            if t.name not in ("agent", "agent_result")
+            t for t in get_all_tools(parent.workspace) if t.name not in ("agent", "agent_result")
         ]
         return Agent(
             llm=parent.create_child_llm(
@@ -370,8 +375,7 @@ class AgentTool(Tool):
                 _background_tasks[tid] = run
 
         ids_fmt = "\n".join(
-            f"  - `{run.task_id}`{_format_run_model_tag(run)}: {run.task[:80]}"
-            for run in runs
+            f"  - `{run.task_id}`{_format_run_model_tag(run)}: {run.task[:80]}" for run in runs
         )
         return (
             f"Dispatched {len(tasks)} background sub-agent(s):\n{ids_fmt}\n\n"
@@ -386,7 +390,8 @@ class AgentTool(Tool):
             seen_ids = {run.task_id for run in runs}
         with _tasks_lock:
             runs.extend(
-                run for run in _background_tasks.values()
+                run
+                for run in _background_tasks.values()
                 if run.status in {"queued", "running"} and run.task_id not in seen_ids
             )
         for run in runs:
@@ -465,6 +470,7 @@ def _format_run_report(run: SubAgentRun, *, total: int = 1, index: int = 0) -> s
 # ---------------------------------------------------------------------------
 # AgentResultTool - poll / collect background sub-agent results
 # ---------------------------------------------------------------------------
+
 
 class AgentResultTool(Tool):
     name = "agent_result"

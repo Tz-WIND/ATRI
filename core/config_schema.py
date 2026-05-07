@@ -62,8 +62,7 @@ def _defaults_from_schema(schema: dict[str, Any]) -> Any:
         return deepcopy(schema["default"])
     if schema.get("type") == "object":
         return {
-            key: _defaults_from_schema(child)
-            for key, child in schema.get("properties", {}).items()
+            key: _defaults_from_schema(child) for key, child in schema.get("properties", {}).items()
         }
     if schema.get("type") == "array":
         return []
@@ -166,7 +165,9 @@ def _coerce_value(value: Any, schema: dict[str, Any], path: str) -> tuple[Any, b
     return value, False
 
 
-def _validate_object(config: dict[str, Any], schema: dict[str, Any], path: str) -> tuple[dict[str, Any], bool]:  # noqa: E501
+def _validate_object(
+    config: dict[str, Any], schema: dict[str, Any], path: str
+) -> tuple[dict[str, Any], bool]:  # noqa: E501
     changed = False
     for key, child_schema in schema.get("properties", {}).items():
         child_path = f"{path}.{key}" if path else key
@@ -194,6 +195,7 @@ def _migrate_dashboard_auth(config: dict[str, Any]) -> bool:
         # Hash immediately so plaintext never hits disk
         import os
         from hashlib import pbkdf2_hmac
+
         salt = os.urandom(16)
         dk = pbkdf2_hmac("sha256", legacy_token.encode(), salt, 600_000)
         dashboard["password"] = f"pbkdf2:{salt.hex()}${dk.hex()}"

@@ -1,7 +1,9 @@
 <template>
   <div class="page-header">
     <div class="header-left">
-      <h2 class="header-title">{{ title }}</h2>
+      <h2 class="header-title">
+        {{ title }}
+      </h2>
       <slot name="status" />
     </div>
     <div class="header-right">

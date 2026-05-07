@@ -2,35 +2,54 @@
   <div class="prov-workbench">
     <ProviderSidebar
       :providers="providerList"
-      :selectedName="selectedName"
+      :selected-name="selectedName"
       @select="selectProvider"
       @add="showForm = true"
       @delete="handleDeleteProvider"
     />
-    <div class="prov-divider"></div>
+    <div class="prov-divider" />
     <ProviderDetail
       v-if="selectedProvider"
       :provider="selectedProvider"
       :name="selectedName"
-      :activeModels="activeModels"
-      :activeModel="activeModel"
-      :fetchingModels="fetchingModels"
-      :fetchError="modelFetchError"
+      :active-models="activeModels"
+      :active-model="activeModel"
+      :fetching-models="fetchingModels"
+      :fetch-error="modelFetchError"
       @save="handleSaveProvider"
       @delete="handleDeleteCurrent"
       @fetch-models="handleFetchModels"
       @activate-model="handleActivateModel"
       @deactivate-model="handleDeactivateModel"
     />
-    <div v-else class="prov-empty">
-      <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--t3)">
-        <circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83"/>
+    <div
+      v-else
+      class="prov-empty"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="40"
+        height="40"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        style="color:var(--t3)"
+      >
+        <circle
+          cx="12"
+          cy="12"
+          r="3"
+        /><path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83" />
       </svg>
       <span>Select a provider or add a new one</span>
     </div>
 
     <!-- Add Provider Form -->
-    <div v-if="showForm" class="modal-overlay" @click.self="showForm = false">
+    <div
+      v-if="showForm"
+      class="modal-overlay"
+      @click.self="showForm = false"
+    >
       <div class="modal-card">
         <div class="card-header">
           <span class="card-title">Add Provider</span>
@@ -38,26 +57,50 @@
         <div class="card-body">
           <div class="field">
             <label>Provider Name</label>
-            <input v-model="addForm.name" placeholder="e.g. DeepSeek, OpenAI, Ollama..." />
+            <input
+              v-model="addForm.name"
+              placeholder="e.g. DeepSeek, OpenAI, Ollama..."
+            >
           </div>
           <div class="field">
             <label>API Format</label>
             <select v-model="addForm.api_format">
-              <option value="openai">OpenAI Compatible</option>
-              <option value="anthropic">Anthropic</option>
+              <option value="openai">
+                OpenAI Compatible
+              </option>
+              <option value="anthropic">
+                Anthropic
+              </option>
             </select>
           </div>
           <div class="field">
             <label>Base URL</label>
-            <input v-model="addForm.base_url" placeholder="https://api.deepseek.com/v1" />
+            <input
+              v-model="addForm.base_url"
+              placeholder="https://api.deepseek.com/v1"
+            >
           </div>
           <div class="field">
             <label>API Key</label>
-            <input v-model="addForm.api_key" type="password" placeholder="sk-..." />
+            <input
+              v-model="addForm.api_key"
+              type="password"
+              placeholder="sk-..."
+            >
           </div>
           <div class="form-actions">
-            <button class="btn btn-primary" @click="handleAddProvider">Save</button>
-            <button class="btn btn-ghost" @click="showForm = false">Cancel</button>
+            <button
+              class="btn btn-primary"
+              @click="handleAddProvider"
+            >
+              Save
+            </button>
+            <button
+              class="btn btn-ghost"
+              @click="showForm = false"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       </div>
@@ -83,8 +126,6 @@ const {
   fetchModels,
   activateModel,
   deactivateModel,
-  loadProviders,
-  loadStatus,
 } = useProviders()
 
 const showForm = ref(false)

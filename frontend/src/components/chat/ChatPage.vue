@@ -2,17 +2,38 @@
   <div class="chat-page">
     <PageHeader title="Chat">
       <template #status>
-        <span :class="['status-dot', wsConnected ? 'on' : 'off']"></span>
-        <span class="header-model" v-if="activeModel">{{ activeModel }}</span>
+        <span :class="['status-dot', wsConnected ? 'on' : 'off']" />
+        <span
+          v-if="activeModel"
+          class="header-model"
+        >{{ activeModel }}</span>
       </template>
       <template #actions>
         <button
           :class="['btn-toggle-sessions', { active: panelOpen }]"
-          @click="togglePanel"
           title="Toggle sidebar"
+          @click="togglePanel"
         >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/>
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect
+              x="3"
+              y="3"
+              width="18"
+              height="18"
+              rx="2"
+            /><line
+              x1="15"
+              y1="3"
+              x2="15"
+              y2="21"
+            />
           </svg>
         </button>
       </template>
@@ -20,12 +41,26 @@
     <div class="chat-body">
       <!-- Left: Chat -->
       <div class="chat-main">
-        <div class="chat-messages" ref="chatArea" @scroll="onScroll">
-          <div v-if="messages.length === 0" class="welcome">
-            <div class="welcome-logo">ATRI</div>
-            <div class="welcome-sub">AI Coding Agent &middot; Type a message to start</div>
+        <div
+          ref="chatArea"
+          class="chat-messages"
+          @scroll="onScroll"
+        >
+          <div
+            v-if="messages.length === 0"
+            class="welcome"
+          >
+            <div class="welcome-logo">
+              ATRI
+            </div>
+            <div class="welcome-sub">
+              AI Coding Agent &middot; Type a message to start
+            </div>
           </div>
-          <template v-for="msg in messages" :key="msg.id">
+          <template
+            v-for="msg in messages"
+            :key="msg.id"
+          >
             <ToolCard
               v-if="msg.role === 'tool'"
               :tool-data="msg.toolData"
@@ -34,9 +69,15 @@
               v-else-if="msg.role === 'thinking'"
               :thinking="msg"
             />
-            <ChatMessage v-else :message="msg" />
+            <ChatMessage
+              v-else
+              :message="msg"
+            />
           </template>
-          <div v-if="sending && !thinkingBlock && Object.keys(toolCards).length === 0" class="thinking-indicator">
+          <div
+            v-if="sending && !thinkingBlock && Object.keys(toolCards).length === 0"
+            class="thinking-indicator"
+          >
             <span class="pulse-text">Thinking</span>
           </div>
         </div>
@@ -51,10 +92,13 @@
       <div
         class="resize-handle"
         @pointerdown="startResize('editor', $event)"
-      ></div>
+      />
 
       <!-- Center: Editor Tabs -->
-      <div class="editor-pane" :style="{ width: `${editorWidth}px` }">
+      <div
+        class="editor-pane"
+        :style="{ width: `${editorWidth}px` }"
+      >
         <EditorTabs ref="editorTabsRef" />
       </div>
 
@@ -63,7 +107,7 @@
         v-if="panelOpen"
         class="resize-handle"
         @pointerdown="startResize('panel', $event)"
-      ></div>
+      />
 
       <!-- Right: Side Panel (Sessions / Files tabs) -->
       <aside
@@ -75,15 +119,22 @@
           <button
             :class="['panel-tab', { active: sideTab === 'sessions' }]"
             @click="sideTab = 'sessions'"
-          >Sessions</button>
+          >
+            Sessions
+          </button>
           <button
             :class="['panel-tab', { active: sideTab === 'files' }]"
             @click="sideTab = 'files'"
-          >Files</button>
+          >
+            Files
+          </button>
         </div>
         <div class="panel-content">
           <SessionPanel v-if="sideTab === 'sessions'" />
-          <FilePanel v-else @open-file="handleOpenFile" />
+          <FilePanel
+            v-else
+            @open-file="handleOpenFile"
+          />
         </div>
       </aside>
     </div>

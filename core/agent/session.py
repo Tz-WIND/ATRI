@@ -22,7 +22,7 @@ def _safe_filename(session_id: str) -> str:
     """
     if ".." in session_id or "\x00" in session_id or "\n" in session_id or "\r" in session_id:
         raise ValueError(f"Invalid session ID: {session_id!r}")
-    return re.sub(r'[<>:"/\\|?*]', '_', session_id)
+    return re.sub(r'[<>:"/\\|?*]', "_", session_id)
 
 
 class SessionStore:

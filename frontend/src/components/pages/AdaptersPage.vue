@@ -4,40 +4,66 @@
     <div class="page-body">
       <section class="form-section">
         <h3>OneBot v11 (Napcat)</h3>
-        <p class="desc">Reverse WebSocket adapter for Napcat / go-cqhttp compatible clients.</p>
+        <p class="desc">
+          Reverse WebSocket adapter for Napcat / go-cqhttp compatible clients.
+        </p>
         <div class="field">
           <label>Enabled</label>
           <select v-model="form.enabled">
-            <option :value="true">Yes</option>
-            <option :value="false">No</option>
+            <option :value="true">
+              Yes
+            </option>
+            <option :value="false">
+              No
+            </option>
           </select>
         </div>
         <div class="field-row">
           <div class="field">
             <label>WS Reverse Host</label>
-            <input v-model="form.ws_reverse_host" placeholder="0.0.0.0" />
+            <input
+              v-model="form.ws_reverse_host"
+              placeholder="0.0.0.0"
+            >
           </div>
           <div class="field">
             <label>WS Reverse Port</label>
-            <input v-model.number="form.ws_reverse_port" type="number" placeholder="6199" />
+            <input
+              v-model.number="form.ws_reverse_port"
+              type="number"
+              placeholder="6199"
+            >
           </div>
         </div>
         <div class="field">
           <label>Access Token</label>
-          <input v-model="form.ws_reverse_token" type="password" placeholder="(optional)" />
+          <input
+            v-model="form.ws_reverse_token"
+            type="password"
+            placeholder="(optional)"
+          >
         </div>
         <StatusBadge :type="obStatus === 'running' ? 'on' : 'off'">
           {{ obStatus || '--' }}
         </StatusBadge>
         <div class="mt-12">
-          <button class="btn btn-primary" @click="save">Save (requires restart)</button>
+          <button
+            class="btn btn-primary"
+            @click="save"
+          >
+            Save (requires restart)
+          </button>
         </div>
       </section>
 
       <section class="form-section">
         <h3>WebChat</h3>
-        <p class="desc">Built-in adapter for the dashboard chat. Always active when dashboard is enabled.</p>
-        <StatusBadge type="on">running</StatusBadge>
+        <p class="desc">
+          Built-in adapter for the dashboard chat. Always active when dashboard is enabled.
+        </p>
+        <StatusBadge type="on">
+          running
+        </StatusBadge>
       </section>
     </div>
   </div>

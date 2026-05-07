@@ -70,13 +70,15 @@ class OneBot11Adapter(Platform):
         """Convert aiocqhttp Event to our unified MessageEvent."""
         if not event.sender:
             return None
-        blocked_users = set(
-            self.config.get("blocked_users", [])
-        )
+        blocked_users = set(self.config.get("blocked_users", []))
         if str(event.sender.get("user_id", "")) in blocked_users:
             return None
 
-        msg_type = MessageType.GROUP_MESSAGE if event.message_type == "group" else MessageType.FRIEND_MESSAGE  # noqa: E501
+        msg_type = (
+            MessageType.GROUP_MESSAGE
+            if event.message_type == "group"
+            else MessageType.FRIEND_MESSAGE
+        )  # noqa: E501
         sender = Sender(
             user_id=str(event.sender["user_id"]),
             nickname=event.sender.get("card") or event.sender.get("nickname", ""),
@@ -97,7 +99,9 @@ class OneBot11Adapter(Platform):
                     chain.append(Plain(text=text))
             elif seg_type == "image":
                 for m in m_group:
-                    chain.append(Image(url=m["data"].get("url", ""), file=m["data"].get("file", "")))  # noqa: E501
+                    chain.append(
+                        Image(url=m["data"].get("url", ""), file=m["data"].get("file", ""))
+                    )  # noqa: E501
             elif seg_type == "at":
                 for m in m_group:
                     qq = str(m["data"].get("qq", ""))
@@ -130,7 +134,9 @@ class OneBot11Adapter(Platform):
                             logger.error(f"Failed to get file URL: {e}")
                     chain.append(File(name=m["data"].get("file", ""), url=file_url))
 
-        session_id = str(event.group_id) if msg_type == MessageType.GROUP_MESSAGE else sender.user_id  # noqa: E501
+        session_id = (
+            str(event.group_id) if msg_type == MessageType.GROUP_MESSAGE else sender.user_id
+        )  # noqa: E501
 
         return MessageEvent(
             message_str=message_str,

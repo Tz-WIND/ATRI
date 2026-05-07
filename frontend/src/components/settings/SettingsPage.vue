@@ -11,7 +11,9 @@
       <!-- Active Models -->
       <section class="form-section">
         <h3>Active Models</h3>
-        <p class="section-desc">Models enabled for use in Chat. Switch between them from the chat input bar.</p>
+        <p class="section-desc">
+          Models enabled for use in Chat. Switch between them from the chat input bar.
+        </p>
         <ActiveModelsList />
       </section>
 
@@ -21,21 +23,34 @@
         <div class="field-row">
           <div class="field">
             <label>Max Tokens</label>
-            <input v-model.number="form.max_tokens" type="number" />
+            <input
+              v-model.number="form.max_tokens"
+              type="number"
+            >
           </div>
           <div class="field">
             <label>Temperature</label>
-            <input v-model.number="form.temperature" type="number" step="0.1" />
+            <input
+              v-model.number="form.temperature"
+              type="number"
+              step="0.1"
+            >
           </div>
         </div>
         <div class="field-row">
           <div class="field">
             <label>Max Context Tokens</label>
-            <input v-model.number="form.max_context_tokens" type="number" />
+            <input
+              v-model.number="form.max_context_tokens"
+              type="number"
+            >
           </div>
           <div class="field">
             <label>Max Rounds</label>
-            <input v-model.number="form.max_rounds" type="number" />
+            <input
+              v-model.number="form.max_rounds"
+              type="number"
+            >
           </div>
         </div>
       </section>
@@ -45,51 +60,107 @@
         <h3>Agent Behavior</h3>
         <div class="field">
           <label>Wake Words (comma separated)</label>
-          <input v-model="form.wake_words" placeholder="atri, hey" />
+          <input
+            v-model="form.wake_words"
+            placeholder="atri, hey"
+          >
         </div>
         <div class="field">
           <label>Persona</label>
-          <textarea v-model="form.persona" rows="2" placeholder="Agent personality..."></textarea>
+          <textarea
+            v-model="form.persona"
+            rows="2"
+            placeholder="Agent personality..."
+          />
         </div>
         <div class="field">
           <label>Extra Instructions</label>
-          <textarea v-model="form.extra_instructions" rows="3" placeholder="Additional system prompt..."></textarea>
+          <textarea
+            v-model="form.extra_instructions"
+            rows="3"
+            placeholder="Additional system prompt..."
+          />
         </div>
       </section>
 
       <!-- Web Search -->
       <section class="form-section">
         <h3>Web Search</h3>
-        <p class="section-desc">Configure a Tavily API key for higher-quality web search. Leave empty to use DuckDuckGo (free).</p>
+        <p class="section-desc">
+          Configure a Tavily API key for higher-quality web search. Leave empty to use DuckDuckGo (free).
+        </p>
         <div class="field">
           <label>Tavily API Key</label>
-          <input v-model="form.tavily_api_key" type="password" placeholder="tvly-..." />
+          <input
+            v-model="form.tavily_api_key"
+            type="password"
+            placeholder="tvly-..."
+          >
         </div>
       </section>
 
       <!-- Music Library -->
       <section class="form-section">
         <h3>Music Library</h3>
-        <p class="section-desc">Directories to scan for music files. Supports FLAC, MP3, WAV, M4A, OGG, AAC, and more.</p>
+        <p class="section-desc">
+          Directories to scan for music files. Supports FLAC, MP3, WAV, M4A, OGG, AAC, and more.
+        </p>
         <div class="music-dirs">
-          <div class="music-dir-row" v-for="(dir, i) in musicDirs" :key="i">
+          <div
+            v-for="(dir, i) in musicDirs"
+            :key="i"
+            class="music-dir-row"
+          >
             <input
               v-model="musicDirs[i]"
               placeholder="C:\Music or /home/user/music"
               class="music-dir-input"
-            />
-            <button class="btn-icon-sm btn-danger" @click="musicDirs.splice(i, 1)" title="Remove">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            >
+            <button
+              class="btn-icon-sm btn-danger"
+              title="Remove"
+              @click="musicDirs.splice(i, 1)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              ><line
+                x1="18"
+                y1="6"
+                x2="6"
+                y2="18"
+              /><line
+                x1="6"
+                y1="6"
+                x2="18"
+                y2="18"
+              /></svg>
             </button>
           </div>
-          <button class="btn btn-outline" @click="musicDirs.push('')">+ Add Directory</button>
+          <button
+            class="btn btn-outline"
+            @click="musicDirs.push('')"
+          >
+            + Add Directory
+          </button>
         </div>
-        <button class="btn btn-secondary" @click="saveMusicDirs" :disabled="savingMusic" style="margin-top:8px;">
+        <button
+          class="btn btn-secondary"
+          :disabled="savingMusic"
+          style="margin-top:8px;"
+          @click="saveMusicDirs"
+        >
           {{ savingMusic ? 'Saving...' : 'Save Music Directories' }}
         </button>
       </section>
 
-      <button class="btn btn-primary" @click="saveSettings" :disabled="saving">
+      <button
+        class="btn btn-primary"
+        :disabled="saving"
+        @click="saveSettings"
+      >
         {{ saving ? 'Saving...' : 'Save Settings' }}
       </button>
     </div>

@@ -2,70 +2,127 @@
   <div class="page">
     <PageHeader title="MCP Servers">
       <template #actions>
-        <button class="btn btn-ghost" @click="showForm = !showForm">
+        <button
+          class="btn btn-ghost"
+          @click="showForm = !showForm"
+        >
           {{ showForm ? 'Cancel' : '+ Add Server' }}
         </button>
       </template>
     </PageHeader>
     <div class="page-body">
       <!-- Add form -->
-      <div v-if="showForm" class="card">
+      <div
+        v-if="showForm"
+        class="card"
+      >
         <section class="form-section">
           <h3>Add MCP Server</h3>
           <div class="field">
             <label>Name</label>
-            <input v-model="form.name" placeholder="my-server" />
+            <input
+              v-model="form.name"
+              placeholder="my-server"
+            >
           </div>
           <div class="field">
             <label>Type</label>
-            <select v-model="form.transport" @change="onTypeChange">
-              <option value="stdio">Stdio</option>
-              <option value="sse">SSE</option>
-              <option value="streamable_http">Streamable HTTP</option>
+            <select
+              v-model="form.transport"
+              @change="onTypeChange"
+            >
+              <option value="stdio">
+                Stdio
+              </option>
+              <option value="sse">
+                SSE
+              </option>
+              <option value="streamable_http">
+                Streamable HTTP
+              </option>
             </select>
           </div>
           <template v-if="form.transport === 'stdio'">
             <div class="field">
               <label>Command</label>
-              <input v-model="form.command" placeholder="npx" />
+              <input
+                v-model="form.command"
+                placeholder="npx"
+              >
             </div>
             <div class="field">
               <label>Args (comma separated)</label>
-              <input v-model="form.argsStr" placeholder="-y, @some/mcp-server" />
+              <input
+                v-model="form.argsStr"
+                placeholder="-y, @some/mcp-server"
+              >
             </div>
           </template>
           <template v-else>
             <div class="field">
               <label>URL</label>
-              <input v-model="form.url" placeholder="http://localhost:3000/mcp" />
+              <input
+                v-model="form.url"
+                placeholder="http://localhost:3000/mcp"
+              >
             </div>
           </template>
           <div class="field">
             <label>Active</label>
             <select v-model="form.active">
-              <option :value="true">Yes</option>
-              <option :value="false">No</option>
+              <option :value="true">
+                Yes
+              </option>
+              <option :value="false">
+                No
+              </option>
             </select>
           </div>
           <div class="form-actions">
-            <button class="btn btn-primary" @click="saveServer">Save</button>
-            <button class="btn btn-ghost" @click="showForm = false">Cancel</button>
+            <button
+              class="btn btn-primary"
+              @click="saveServer"
+            >
+              Save
+            </button>
+            <button
+              class="btn btn-ghost"
+              @click="showForm = false"
+            >
+              Cancel
+            </button>
           </div>
         </section>
       </div>
 
       <!-- Server list -->
-      <div v-if="servers.length === 0" class="empty">No MCP servers configured.</div>
-      <div v-for="s in servers" :key="s.name" class="card">
+      <div
+        v-if="servers.length === 0"
+        class="empty"
+      >
+        No MCP servers configured.
+      </div>
+      <div
+        v-for="s in servers"
+        :key="s.name"
+        class="card"
+      >
         <div class="card-header">
           <span class="card-title">{{ s.name }}</span>
-          <StatusBadge :type="s.active ? 'on' : 'off'">{{ s.active ? 'active' : 'inactive' }}</StatusBadge>
+          <StatusBadge :type="s.active ? 'on' : 'off'">
+            {{ s.active ? 'active' : 'inactive' }}
+          </StatusBadge>
         </div>
         <div class="card-meta">
           {{ s.command ? `stdio: ${s.command}` : s.url || '' }}
         </div>
         <div class="card-actions">
-          <button class="btn btn-ghost" @click="deleteServer(s.name)">Delete</button>
+          <button
+            class="btn btn-ghost"
+            @click="deleteServer(s.name)"
+          >
+            Delete
+          </button>
         </div>
       </div>
     </div>

@@ -4,12 +4,22 @@
     <div class="page-body">
       <section class="form-section">
         <h3>Agent Workspace Directory</h3>
-        <p class="desc">All file operations (read, write, edit, grep, glob) are sandboxed to this directory.</p>
+        <p class="desc">
+          All file operations (read, write, edit, grep, glob) are sandboxed to this directory.
+        </p>
         <div class="field">
           <label>Workspace Path</label>
-          <input v-model="path" placeholder="./workspace" />
+          <input
+            v-model="path"
+            placeholder="./workspace"
+          >
         </div>
-        <button class="btn btn-primary" @click="save">Save</button>
+        <button
+          class="btn btn-primary"
+          @click="save"
+        >
+          Save
+        </button>
       </section>
     </div>
   </div>

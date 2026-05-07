@@ -19,9 +19,9 @@ if TYPE_CHECKING:
 
 # CJK + fullwidth ranges: ideographs, kana, hangul, punctuation, fullwidth forms
 _CJK_RE = re.compile(
-    r"[一-鿿㐀-䶿"       # CJK unified ideographs
-    r"぀-ヿ가-힯"         # Hiragana, Katakana, Hangul
-    r"　-〿＀-￯"         # CJK punctuation, fullwidth forms
+    r"[一-鿿㐀-䶿"  # CJK unified ideographs
+    r"぀-ヿ가-힯"  # Hiragana, Katakana, Hangul
+    r"　-〿＀-￯"  # CJK punctuation, fullwidth forms
     r"]"
 )
 
@@ -112,9 +112,7 @@ class ContextManager:
             changed = True
         return changed
 
-    def _summarize_old(
-        self, messages: list[dict], llm: LLM | None, keep_recent: int = 8
-    ) -> bool:
+    def _summarize_old(self, messages: list[dict], llm: LLM | None, keep_recent: int = 8) -> bool:
         """Layer 2: Summarize old conversation, keep recent messages intact."""
         if len(messages) <= keep_recent:
             return False
@@ -145,9 +143,7 @@ class ContextManager:
         summary = self._get_summary(messages[: -len(tail)], llm)
 
         messages.clear()
-        messages.append(
-            {"role": "user", "content": f"[Hard context reset]\n{summary}"}
-        )
+        messages.append({"role": "user", "content": f"[Hard context reset]\n{summary}"})
         messages.append(
             {
                 "role": "assistant",

@@ -52,6 +52,7 @@ class Agent:
 
         # Wire up sub-agent capability
         from core.tools.agent_tool import AgentTool
+
         for t in self.tools:
             if isinstance(t, AgentTool):
                 t._parent_agent = self
@@ -80,9 +81,7 @@ class Agent:
         if self.llm_factory:
             return self.llm_factory(model, provider)
         if provider:
-            raise ValueError(
-                "provider selection is unavailable for this agent; pass model only"
-            )
+            raise ValueError("provider selection is unavailable for this agent; pass model only")
         return self.llm.clone(model=model)
 
     def _subagent_model_prompt(self) -> str:
@@ -151,15 +150,16 @@ class Agent:
         self._was_cancelled = False
 
         if was_interrupted:
-            self.messages.append({
-                "role": "user",
-                "content": (
-                    "[System notice: Your previous task was interrupted by the user "
-                    "via Ctrl+C. The task you were working on was stopped mid-execution. "
-                    "Below is the user's new message; respond to it directly.]\n\n"
-                    + user_input
-                ),
-            })
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[System notice: Your previous task was interrupted by the user "
+                        "via Ctrl+C. The task you were working on was stopped mid-execution. "
+                        "Below is the user's new message; respond to it directly.]\n\n" + user_input
+                    ),
+                }
+            )
         else:
             self.messages.append({"role": "user", "content": user_input})
 
@@ -202,17 +202,16 @@ class Agent:
                 result = self._exec_tool(tc)
                 if on_tool_end:
                     on_tool_end(tc.id, tc.name, tc.arguments, result)
-                self.messages.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": result}
-                )
+                self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
             else:
                 results = self._exec_tools_parallel(
-                    resp.tool_calls, on_tool, on_tool_start, on_tool_end,
+                    resp.tool_calls,
+                    on_tool,
+                    on_tool_start,
+                    on_tool_end,
                 )
                 for tc, result in zip(resp.tool_calls, results, strict=False):
-                    self.messages.append(
-                        {"role": "tool", "tool_call_id": tc.id, "content": result}
-                    )
+                    self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
             # After tool execution, check for cancellation before next round
             if self._cancel_event.is_set():
@@ -251,8 +250,13 @@ class Agent:
         return await loop.run_in_executor(
             None,
             lambda: self.chat(
-                user_input, on_token, on_tool,
-                on_thinking, on_thinking_done, on_tool_start, on_tool_end,
+                user_input,
+                on_token,
+                on_tool,
+                on_thinking,
+                on_thinking_done,
+                on_tool_start,
+                on_tool_end,
             ),
         )
 
@@ -268,7 +272,11 @@ class Agent:
             return f"Error executing {tc.name}: {e}"
 
     def _exec_tools_parallel(
-        self, tool_calls, on_tool=None, on_tool_start=None, on_tool_end=None,
+        self,
+        tool_calls,
+        on_tool=None,
+        on_tool_start=None,
+        on_tool_end=None,
     ) -> list[str]:
         """Run multiple tool calls concurrently using threads."""
         for tc in tool_calls:

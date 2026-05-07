@@ -9,36 +9,69 @@
         rows="1"
         @keydown="onKeydown"
         @input="autoResize"
-      ></textarea>
+      />
       <div class="input-toolbar">
         <div class="tools-left">
           <ModelSelector />
         </div>
         <div class="tools-right">
-          <button class="icon-btn" title="Attach image" @click="$emit('attach')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+          <button
+            class="icon-btn"
+            title="Attach image"
+            @click="$emit('attach')"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect
+                x="3"
+                y="5"
+                width="18"
+                height="14"
+                rx="2"
+              /><circle
+                cx="8.5"
+                cy="10.5"
+                r="1.5"
+              /><path d="M21 15l-5-5L5 21" />
             </svg>
           </button>
           <button
             v-if="sending"
             class="btn-stop"
-            @click="$emit('cancel')"
             title="Stop (Escape)"
+            @click="$emit('cancel')"
           >
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <rect x="7" y="7" width="10" height="10" rx="1.5"/>
+            <svg
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <rect
+                x="7"
+                y="7"
+                width="10"
+                height="10"
+                rx="1.5"
+              />
             </svg>
           </button>
           <button
             v-else
             class="btn-send"
             :disabled="!text.trim()"
-            @click="send"
             title="Send"
+            @click="send"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M12 19V5"/><path d="M5 12l7-7 7 7"/>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <path d="M12 19V5" /><path d="M5 12l7-7 7 7" />
             </svg>
           </button>
         </div>

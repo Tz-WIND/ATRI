@@ -19,7 +19,17 @@ class MusicTool(Tool):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["play", "pause", "resume", "next", "prev", "stop", "status", "search", "volume"],  # noqa: E501
+                "enum": [
+                    "play",
+                    "pause",
+                    "resume",
+                    "next",
+                    "prev",
+                    "stop",
+                    "status",
+                    "search",
+                    "volume",
+                ],  # noqa: E501
                 "description": "The player action to perform",
             },
             "query": {
@@ -80,7 +90,13 @@ class MusicTool(Tool):
 
         if action in ("pause", "resume", "next", "prev", "stop"):
             self._send_command(action, {})
-            labels = {"pause": "Paused", "resume": "Resumed", "next": "Skipped to next", "prev": "Back to previous", "stop": "Stopped"}  # noqa: E501
+            labels = {
+                "pause": "Paused",
+                "resume": "Resumed",
+                "next": "Skipped to next",
+                "prev": "Back to previous",
+                "stop": "Stopped",
+            }  # noqa: E501
             return f"{labels.get(action, action.title())} playback."
 
         if action == "volume":
@@ -117,6 +133,7 @@ class MusicTool(Tool):
     def _send_command(self, action: str, payload: dict):
         """Queue a WebSocket broadcast command for the frontend player."""
         import httpx
+
         try:
             httpx.post(
                 "http://127.0.0.1:6185/api/music/control",
@@ -125,6 +142,7 @@ class MusicTool(Tool):
             )
         except Exception:
             import logging
+
             logging.getLogger("atri").debug("Music broadcast failed", exc_info=True)
 
     def _status_text(self) -> str:

@@ -2,7 +2,7 @@
  * Global music player state — singleton shared across all components.
  * Handles playback, queue, and WebSocket control messages from the AI agent.
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 
 const songs = ref([])
 const queue = ref([])
@@ -17,11 +17,7 @@ const playerCollapsed = ref(false)
 const playMode = ref('sequential')
 const lyrics = ref(null)
 const loading = ref(false)
-const coverCache = {}
-
 let audio = null
-let animFrame = null
-
 function getAudio() {
   if (!audio) {
     audio = new Audio()

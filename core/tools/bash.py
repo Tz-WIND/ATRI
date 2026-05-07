@@ -25,8 +25,9 @@ CONFIRM_MARKER = "CONFIRMATION REQUIRED"
 
 class DangerLevel(Enum):
     SAFE = "safe"
-    CONFIRM = "confirm"      # needs user confirmation before executing
-    BLOCKED = "blocked"      # hard-blocked, too dangerous
+    CONFIRM = "confirm"  # needs user confirmation before executing
+    BLOCKED = "blocked"  # hard-blocked, too dangerous
+
 
 # ── Hard-blocked patterns: irreversible / catastrophic ──
 _BLOCKED_PATTERNS = [
@@ -187,9 +188,7 @@ class BashTool(Tool):
 
             if len(out) > 15_000:
                 out = (
-                    out[:6000]
-                    + f"\n\n... truncated ({len(out)} chars total) ...\n\n"
-                    + out[-3000:]
+                    out[:6000] + f"\n\n... truncated ({len(out)} chars total) ...\n\n" + out[-3000:]
                 )
             return out.strip() or "(no output)"
         except Exception as e:
@@ -256,18 +255,14 @@ class BashTool(Tool):
                 if not target:
                     self._cwd = self._workspace
                 else:
-                    new_dir = os.path.normpath(
-                        os.path.join(self._cwd, os.path.expanduser(target))
-                    )
+                    new_dir = os.path.normpath(os.path.join(self._cwd, os.path.expanduser(target)))
                     if os.path.isdir(new_dir) and _is_within_workspace(new_dir, self._workspace):
                         self._cwd = new_dir
             # pushd (tracks the pushed directory, ignoring the stack)
             elif part.startswith("pushd "):
                 target = part[6:].strip().strip("'\"")
                 if target:
-                    new_dir = os.path.normpath(
-                        os.path.join(self._cwd, os.path.expanduser(target))
-                    )
+                    new_dir = os.path.normpath(os.path.join(self._cwd, os.path.expanduser(target)))
                     if os.path.isdir(new_dir) and _is_within_workspace(new_dir, self._workspace):
                         dir_stack.append(self._cwd)
                         self._cwd = new_dir
@@ -353,12 +348,10 @@ def _check_workspace_escape(
             continue
         for prefix in ("cd ", "pushd "):
             if lowered.startswith(prefix):
-                raw_target = stripped[len(prefix):].strip().strip("'\"")
+                raw_target = stripped[len(prefix) :].strip().strip("'\"")
                 if not raw_target:
                     continue
-                target = os.path.normpath(
-                    os.path.join(cwd, os.path.expanduser(raw_target))
-                )
+                target = os.path.normpath(os.path.join(cwd, os.path.expanduser(raw_target)))
                 if not _is_within_workspace(target, workspace):
                     return DangerLevel.BLOCKED, f"{prefix.strip()} outside workspace"
 

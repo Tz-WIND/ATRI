@@ -2,36 +2,74 @@
   <div class="music-page">
     <div class="music-header">
       <div class="music-header-left">
-        <h1 class="music-title">Music</h1>
-        <span class="music-count" v-if="songs.length">{{ songs.length }} songs</span>
+        <h1 class="music-title">
+          Music
+        </h1>
+        <span
+          v-if="songs.length"
+          class="music-count"
+        >{{ songs.length }} songs</span>
       </div>
       <div class="music-header-right">
         <input
+          v-model="searchQuery"
           class="music-search"
           type="text"
           placeholder="Search songs..."
-          v-model="searchQuery"
-        />
-        <button class="btn-icon" @click="scanLibrary" :disabled="scanning" title="Scan Library">
-          <svg :class="{ spinning: scanning }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        >
+        <button
+          class="btn-icon"
+          :disabled="scanning"
+          title="Scan Library"
+          @click="scanLibrary"
+        >
+          <svg
+            :class="{ spinning: scanning }"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          ><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>
         </button>
-        <button class="btn-play-all" @click="handlePlayAll" v-if="filteredSongs.length">
-          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+        <button
+          v-if="filteredSongs.length"
+          class="btn-play-all"
+          @click="handlePlayAll"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          ><polygon points="5,3 19,12 5,21" /></svg>
           Play All
         </button>
       </div>
     </div>
 
-    <div class="music-table-wrap" v-if="filteredSongs.length">
+    <div
+      v-if="filteredSongs.length"
+      class="music-table-wrap"
+    >
       <table class="music-table">
         <thead>
           <tr>
-            <th class="col-num">#</th>
-            <th class="col-title">Title</th>
-            <th class="col-artist">Artist</th>
-            <th class="col-album">Album</th>
-            <th class="col-format">Format</th>
-            <th class="col-duration">Duration</th>
+            <th class="col-num">
+              #
+            </th>
+            <th class="col-title">
+              Title
+            </th>
+            <th class="col-artist">
+              Artist
+            </th>
+            <th class="col-album">
+              Album
+            </th>
+            <th class="col-format">
+              Format
+            </th>
+            <th class="col-duration">
+              Duration
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -42,14 +80,76 @@
             @dblclick="handlePlay(song)"
           >
             <td class="col-num">
-              <span class="row-num" v-if="currentSong?.id !== song.id">{{ idx + 1 }}</span>
-              <span class="now-playing" v-else>
-                <svg v-if="playing" viewBox="0 0 16 16" fill="currentColor">
-                  <rect x="1" y="4" width="3" height="8" rx="0.5"><animate attributeName="height" values="8;4;8" dur="0.8s" repeatCount="indefinite"/><animate attributeName="y" values="4;8;4" dur="0.8s" repeatCount="indefinite"/></rect>
-                  <rect x="6.5" y="2" width="3" height="12" rx="0.5"><animate attributeName="height" values="12;6;12" dur="0.6s" repeatCount="indefinite"/><animate attributeName="y" values="2;5;2" dur="0.6s" repeatCount="indefinite"/></rect>
-                  <rect x="12" y="5" width="3" height="6" rx="0.5"><animate attributeName="height" values="6;10;6" dur="0.7s" repeatCount="indefinite"/><animate attributeName="y" values="5;3;5" dur="0.7s" repeatCount="indefinite"/></rect>
+              <span
+                v-if="currentSong?.id !== song.id"
+                class="row-num"
+              >{{ idx + 1 }}</span>
+              <span
+                v-else
+                class="now-playing"
+              >
+                <svg
+                  v-if="playing"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                >
+                  <rect
+                    x="1"
+                    y="4"
+                    width="3"
+                    height="8"
+                    rx="0.5"
+                  ><animate
+                    attributeName="height"
+                    values="8;4;8"
+                    dur="0.8s"
+                    repeatCount="indefinite"
+                  /><animate
+                    attributeName="y"
+                    values="4;8;4"
+                    dur="0.8s"
+                    repeatCount="indefinite"
+                  /></rect>
+                  <rect
+                    x="6.5"
+                    y="2"
+                    width="3"
+                    height="12"
+                    rx="0.5"
+                  ><animate
+                    attributeName="height"
+                    values="12;6;12"
+                    dur="0.6s"
+                    repeatCount="indefinite"
+                  /><animate
+                    attributeName="y"
+                    values="2;5;2"
+                    dur="0.6s"
+                    repeatCount="indefinite"
+                  /></rect>
+                  <rect
+                    x="12"
+                    y="5"
+                    width="3"
+                    height="6"
+                    rx="0.5"
+                  ><animate
+                    attributeName="height"
+                    values="6;10;6"
+                    dur="0.7s"
+                    repeatCount="indefinite"
+                  /><animate
+                    attributeName="y"
+                    values="5;3;5"
+                    dur="0.7s"
+                    repeatCount="indefinite"
+                  /></rect>
                 </svg>
-                <svg v-else viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                <svg
+                  v-else
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                ><polygon points="5,3 19,12 5,21" /></svg>
               </span>
             </td>
             <td class="col-title">
@@ -59,46 +159,96 @@
                   :src="coverUrl(song.id)"
                   class="song-thumb"
                   loading="lazy"
-                />
-                <div class="song-thumb placeholder" v-else>
-                  <svg viewBox="0 0 24 24" fill="currentColor" opacity="0.3"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                >
+                <div
+                  v-else
+                  class="song-thumb placeholder"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    opacity="0.3"
+                  ><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg>
                 </div>
                 <div class="song-info">
                   <span class="song-name">{{ song.title }}</span>
-                  <div class="song-tags" v-if="song.lossless || song.bit_depth >= 24 || song.sample_rate > 48000">
-                    <span class="tag hires" v-if="song.bit_depth >= 24 || song.sample_rate > 48000">Hi-Res</span>
-                    <span class="tag lossless" v-else-if="song.lossless">Lossless</span>
+                  <div
+                    v-if="song.lossless || song.bit_depth >= 24 || song.sample_rate > 48000"
+                    class="song-tags"
+                  >
+                    <span
+                      v-if="song.bit_depth >= 24 || song.sample_rate > 48000"
+                      class="tag hires"
+                    >Hi-Res</span>
+                    <span
+                      v-else-if="song.lossless"
+                      class="tag lossless"
+                    >Lossless</span>
                   </div>
                 </div>
               </div>
             </td>
-            <td class="col-artist">{{ song.artist }}</td>
-            <td class="col-album">{{ song.album }}</td>
+            <td class="col-artist">
+              {{ song.artist }}
+            </td>
+            <td class="col-album">
+              {{ song.album }}
+            </td>
             <td class="col-format">
               <span class="format-badge">{{ song.format }}</span>
-              <span class="format-detail" v-if="song.sample_rate">{{ (song.sample_rate/1000).toFixed(1) }}kHz</span>
-              <span class="format-detail" v-if="song.bit_depth">/{{ song.bit_depth }}bit</span>
+              <span
+                v-if="song.sample_rate"
+                class="format-detail"
+              >{{ (song.sample_rate/1000).toFixed(1) }}kHz</span>
+              <span
+                v-if="song.bit_depth"
+                class="format-detail"
+              >/{{ song.bit_depth }}bit</span>
             </td>
-            <td class="col-duration">{{ formatDuration(song.duration) }}</td>
+            <td class="col-duration">
+              {{ formatDuration(song.duration) }}
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <div class="music-empty" v-else-if="!scanning && songs.length === 0">
+    <div
+      v-else-if="!scanning && songs.length === 0"
+      class="music-empty"
+    >
       <div class="empty-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+        ><path d="M9 18V5l12-2v13" /><circle
+          cx="6"
+          cy="18"
+          r="3"
+        /><circle
+          cx="18"
+          cy="16"
+          r="3"
+        /></svg>
       </div>
       <h3>No Music Found</h3>
       <p>Add music directories in Settings, then scan your library.</p>
     </div>
 
-    <div class="music-empty" v-else-if="!scanning && filteredSongs.length === 0">
+    <div
+      v-else-if="!scanning && filteredSongs.length === 0"
+      class="music-empty"
+    >
       <p>No songs match "{{ searchQuery }}"</p>
     </div>
 
-    <div class="music-scanning" v-if="scanning">
-      <div class="scan-spinner"></div>
+    <div
+      v-if="scanning"
+      class="music-scanning"
+    >
+      <div class="scan-spinner" />
       <span>Scanning library...</span>
     </div>
   </div>
@@ -110,7 +260,7 @@ import { useMusic } from '@/composables/useMusic.js'
 import { useApi } from '@/composables/useApi.js'
 
 const api = useApi()
-const { songs, setLibrary, playAll, playSong, currentSong, playing, coverUrl, formatTime } = useMusic()
+const { songs, setLibrary, playAll, playSong, currentSong, playing, coverUrl } = useMusic()
 
 const searchQuery = ref('')
 const scanning = ref(false)

@@ -1,15 +1,44 @@
 <template>
-  <div class="model-dropdown" ref="dropdown">
-    <button class="model-chip" @click="toggleOpen">
-      <svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83"/>
+  <div
+    ref="dropdown"
+    class="model-dropdown"
+  >
+    <button
+      class="model-chip"
+      @click="toggleOpen"
+    >
+      <svg
+        class="chip-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
+        <circle
+          cx="12"
+          cy="12"
+          r="3"
+        /><path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83" />
       </svg>
       <span>{{ activeModel || 'Select model' }}</span>
     </button>
-    <div v-if="open" class="model-menu" @click.stop>
+    <div
+      v-if="open"
+      class="model-menu"
+      @click.stop
+    >
       <div class="menu-search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <circle
+            cx="11"
+            cy="11"
+            r="8"
+          /><path d="M21 21l-4.35-4.35" />
         </svg>
         <input
           ref="searchInput"
@@ -17,10 +46,13 @@
           type="text"
           placeholder="Search models..."
           @input="filterModels"
-        />
+        >
       </div>
       <div class="menu-list">
-        <div v-if="filteredModels.length === 0" class="menu-empty">
+        <div
+          v-if="filteredModels.length === 0"
+          class="menu-empty"
+        >
           {{ search ? 'No matches' : 'No active models. Enable models in Settings.' }}
         </div>
         <div
@@ -31,7 +63,10 @@
         >
           <span class="mi-check">{{ m.model === activeModel ? '✓' : '' }}</span>
           <span class="mi-name">{{ m.model }}</span>
-          <span class="mi-provider" v-if="m.provider">{{ m.provider }}</span>
+          <span
+            v-if="m.provider"
+            class="mi-provider"
+          >{{ m.provider }}</span>
         </div>
       </div>
     </div>

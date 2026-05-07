@@ -10,14 +10,19 @@ from .base import Tool
 class TreeTool(Tool):
     name = "tree"
     description = (
-        "Show a tree view of directory structure. "
-        "Useful for getting an overview of project layout."
+        "Show a tree view of directory structure. Useful for getting an overview of project layout."
     )
     parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Root directory (relative to workspace, default: workspace root)"},  # noqa: E501
-            "max_depth": {"type": "integer", "description": "Maximum depth to traverse (default: 3)"},  # noqa: E501
+            "path": {
+                "type": "string",
+                "description": "Root directory (relative to workspace, default: workspace root)",
+            },  # noqa: E501
+            "max_depth": {
+                "type": "integer",
+                "description": "Maximum depth to traverse (default: 3)",
+            },  # noqa: E501
         },
         "required": [],
     }

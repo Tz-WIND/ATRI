@@ -1,16 +1,42 @@
 <template>
   <div :class="['tool-card', statusClass]">
-    <button class="tool-header" type="button" @click="open = !open">
-      <svg :class="['tool-chevron', { open }]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <button
+      class="tool-header"
+      type="button"
+      @click="open = !open"
+    >
+      <svg
+        :class="['tool-chevron', { open }]"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+      >
         <polyline points="9 18 15 12 9 6" />
       </svg>
-      <span class="tool-status-icon" v-html="statusIcon"></span>
+      <span
+        class="tool-status-icon"
+        v-html="statusIcon"
+      />
       <span class="tool-label">{{ label }}</span>
-      <span v-if="statusText" class="tool-pill">{{ statusText }}</span>
+      <span
+        v-if="statusText"
+        class="tool-pill"
+      >{{ statusText }}</span>
     </button>
-    <div v-if="open" class="tool-details">
-      <div v-if="argsEntries.length" class="tool-args">
-        <div v-for="entry in argsEntries" :key="entry.key" class="tool-arg">
+    <div
+      v-if="open"
+      class="tool-details"
+    >
+      <div
+        v-if="argsEntries.length"
+        class="tool-args"
+      >
+        <div
+          v-for="entry in argsEntries"
+          :key="entry.key"
+          class="tool-arg"
+        >
           <span class="arg-key">{{ entry.key }}</span>
           <code>{{ entry.value }}</code>
         </div>
@@ -21,7 +47,10 @@
         :raw="toolData.result"
         :file-name="targetLabel"
       />
-      <pre v-else-if="detailsText" class="tool-output">{{ detailsText }}</pre>
+      <pre
+        v-else-if="detailsText"
+        class="tool-output"
+      >{{ detailsText }}</pre>
     </div>
   </div>
 </template>

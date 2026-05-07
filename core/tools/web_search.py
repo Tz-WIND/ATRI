@@ -112,14 +112,16 @@ class WebSearchTool(Tool):
 
     def _search_tavily(self, query: str, max_results: int, api_key: str) -> str:
         try:
-            payload = _json.dumps({
-                "query": query,
-                "max_results": max_results,
-                "search_depth": "basic",
-                "include_answer": False,
-                "include_raw_content": False,
-                "include_images": False,
-            }).encode("utf-8")
+            payload = _json.dumps(
+                {
+                    "query": query,
+                    "max_results": max_results,
+                    "search_depth": "basic",
+                    "include_answer": False,
+                    "include_raw_content": False,
+                    "include_images": False,
+                }
+            ).encode("utf-8")
 
             resp = _open_url(
                 _TAVILY_SEARCH,
@@ -134,7 +136,11 @@ class WebSearchTool(Tool):
 
             if not results:
                 answer = body.get("answer", "")
-                return f"Web search — {query}\n\n{answer}" if answer else f"No results found for: {query}"  # noqa: E501
+                return (
+                    f"Web search — {query}\n\n{answer}"
+                    if answer
+                    else f"No results found for: {query}"
+                )  # noqa: E501
 
             lines = [f"Web search — {query}\n"]
             for i, r in enumerate(results, 1):
@@ -205,9 +211,7 @@ class WebSearchTool(Tool):
             snippet = "(no snippet)"
             snip_m = snippet_pat.search(block)
             if snip_m:
-                snippet = _html.unescape(
-                    re.sub(r"<[^>]*>", "", snip_m.group(1))
-                ).strip()
+                snippet = _html.unescape(re.sub(r"<[^>]*>", "", snip_m.group(1))).strip()
                 snippet = snippet if snippet else "(no snippet)"
 
             results.append({"title": title, "url": url, "snippet": snippet})
@@ -284,16 +288,12 @@ class WebFetchTool(Tool):
     def _extract_text(html_text: str) -> str:
         """Strip HTML tags and return plain text, keeping basic structure."""
         for tag in _SKIP_TAGS:
-            html_text = re.sub(
-                rf"<{tag}[^>]*>.*?</{tag}>", "", html_text, flags=re.DOTALL | re.I
-            )
+            html_text = re.sub(rf"<{tag}[^>]*>.*?</{tag}>", "", html_text, flags=re.DOTALL | re.I)
 
         html_text = re.sub(r"\s+", " ", html_text)
 
         for tag in ("p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "br"):
-            html_text = re.sub(
-                rf"<\s*/?\s*{tag}[^>]*>", "\n", html_text, flags=re.I
-            )
+            html_text = re.sub(rf"<\s*/?\s*{tag}[^>]*>", "\n", html_text, flags=re.I)
 
         text = re.sub(r"<[^>]*>", "", html_text)
         text = _html.unescape(text)

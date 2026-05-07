@@ -1,8 +1,19 @@
 <template>
   <main class="auth-screen">
-    <form class="auth-panel" @submit.prevent="submit">
-      <div class="auth-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <form
+      class="auth-panel"
+      @submit.prevent="submit"
+    >
+      <div
+        class="auth-mark"
+        aria-hidden="true"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
           <path d="M12 2L2 7l10 5 10-5-10-5z" />
           <path d="M2 17l10 5 10-5" />
           <path d="M2 12l10 5 10-5" />
@@ -18,7 +29,7 @@
         autocomplete="username"
         spellcheck="false"
         placeholder="admin"
-      />
+      >
       <label for="dashboard-password">Password</label>
       <input
         id="dashboard-password"
@@ -28,7 +39,7 @@
         :autocomplete="auth.setupRequired ? 'new-password' : 'current-password'"
         spellcheck="false"
         placeholder="password"
-      />
+      >
       <template v-if="auth.setupRequired">
         <label for="dashboard-confirm-password">Confirm Password</label>
         <input
@@ -38,10 +49,18 @@
           autocomplete="new-password"
           spellcheck="false"
           placeholder="password"
-        />
+        >
       </template>
-      <p v-if="errorText" class="auth-error">{{ errorText }}</p>
-      <button type="submit" :disabled="submitDisabled">
+      <p
+        v-if="errorText"
+        class="auth-error"
+      >
+        {{ errorText }}
+      </p>
+      <button
+        type="submit"
+        :disabled="submitDisabled"
+      >
         {{ buttonText }}
       </button>
     </form>

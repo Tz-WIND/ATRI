@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { useApi } from './useApi.js'
 
 const STORAGE_KEY = 'atri_session'

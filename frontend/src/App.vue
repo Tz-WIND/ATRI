@@ -1,8 +1,19 @@
 <template>
-  <div v-if="auth.loading" class="auth-loading">
+  <div
+    v-if="auth.loading"
+    class="auth-loading"
+  >
     <div class="auth-loading-panel">
-      <div class="auth-loading-logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <div
+        class="auth-loading-logo"
+        aria-hidden="true"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
           <path d="M12 2L2 7l10 5 10-5-10-5z" />
           <path d="M2 17l10 5 10-5" />
           <path d="M2 12l10 5 10-5" />
@@ -12,16 +23,25 @@
     </div>
   </div>
   <AuthGate v-else-if="(auth.authRequired || auth.setupRequired) && !auth.authenticated" />
-  <div v-else class="app-shell">
+  <div
+    v-else
+    class="app-shell"
+  >
     <ActivityBar
       :pages="navPages"
-      :activePage="activePage"
+      :active-page="activePage"
       @navigate="navigateTo"
     />
     <div class="app-main">
-      <div class="app-content" :class="{ 'has-player': hasPlayer }">
+      <div
+        class="app-content"
+        :class="{ 'has-player': hasPlayer }"
+      >
         <KeepAlive>
-          <component :is="activeComponent" :key="activePage" />
+          <component
+            :is="activeComponent"
+            :key="activePage"
+          />
         </KeepAlive>
       </div>
     </div>

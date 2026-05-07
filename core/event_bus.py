@@ -36,6 +36,4 @@ class EventBus:
     @staticmethod
     def _log_event(event: MessageEvent) -> None:
         sender = event.get_sender_name() or event.sender.user_id
-        logger.info(
-            f"[{event.platform_name}] {sender}: {event.get_message_outline()[:80]}"
-        )
+        logger.info(f"[{event.platform_name}] {sender}: {event.get_message_outline()[:80]}")

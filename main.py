@@ -58,8 +58,7 @@ async def main():
         if lifecycle.cancel_operation():
             _last_cancel_time = now
             logger.info(
-                "Operation cancelled. "
-                "Press Ctrl+C again within %.0fs to force shutdown.",
+                "Operation cancelled. Press Ctrl+C again within %.0fs to force shutdown.",
                 DOUBLE_PRESS_WINDOW,
             )
         else:

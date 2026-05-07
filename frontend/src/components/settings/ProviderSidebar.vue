@@ -2,23 +2,45 @@
   <div class="prov-sidebar">
     <div class="sidebar-head">
       <span class="sidebar-title">Sources</span>
-      <button class="btn btn-ghost" @click="$emit('add')">+ Add</button>
+      <button
+        class="btn btn-ghost"
+        @click="$emit('add')"
+      >
+        + Add
+      </button>
     </div>
     <div class="sidebar-list">
-      <div v-if="providers.length === 0" class="sidebar-empty">No providers yet</div>
+      <div
+        v-if="providers.length === 0"
+        class="sidebar-empty"
+      >
+        No providers yet
+      </div>
       <button
         v-for="p in providers"
         :key="p.name"
         :class="['prov-source', { active: p.name === selectedName }]"
         @click="$emit('select', p.name)"
       >
-        <span class="prov-dot" :style="{ background: p.api_key ? 'var(--green)' : 'var(--orange)' }"></span>
+        <span
+          class="prov-dot"
+          :style="{ background: p.api_key ? 'var(--green)' : 'var(--orange)' }"
+        />
         <div class="prov-info">
-          <div class="prov-name">{{ p.name }}</div>
-          <div class="prov-url">{{ p.base_url || '(default)' }}</div>
+          <div class="prov-name">
+            {{ p.name }}
+          </div>
+          <div class="prov-url">
+            {{ p.base_url || '(default)' }}
+          </div>
         </div>
         <div class="prov-actions">
-          <button class="btn-delete" @click.stop="$emit('delete', p.name)">&times;</button>
+          <button
+            class="btn-delete"
+            @click.stop="$emit('delete', p.name)"
+          >
+            &times;
+          </button>
         </div>
       </button>
     </div>

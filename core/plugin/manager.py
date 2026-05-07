@@ -42,8 +42,9 @@ class PluginManager:
             elif item.is_file() and item.suffix == ".py" and item.name != "__init__.py":
                 await self._load_plugin_module(item.stem)
 
-        logger.info(f"Loaded {len(self._plugins)} plugins: "
-                     f"{[p.metadata.name for p in self._plugins]}")
+        logger.info(
+            f"Loaded {len(self._plugins)} plugins: {[p.metadata.name for p in self._plugins]}"
+        )
 
     async def _load_plugin_package(self, package_name: str) -> None:
         try:

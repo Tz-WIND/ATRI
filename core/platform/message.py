@@ -153,5 +153,5 @@ def normalize_session_id(display_id: str) -> str:
 def display_session_id(internal_id: str) -> str:
     """Convert an internal unified_msg_origin key to a display session ID."""
     if internal_id.startswith(WEBChat_SESSION_PREFIX):
-        return internal_id[len(WEBChat_SESSION_PREFIX):]
+        return internal_id[len(WEBChat_SESSION_PREFIX) :]
     return internal_id

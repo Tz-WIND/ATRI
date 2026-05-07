@@ -28,17 +28,17 @@ class PipelineScheduler:
         ordered = sorted(
             registered_stages,
             key=lambda cls: (
-                STAGES_ORDER.index(cls.__name__)
-                if cls.__name__ in STAGES_ORDER
-                else 999
+                STAGES_ORDER.index(cls.__name__) if cls.__name__ in STAGES_ORDER else 999
             ),
         )
         for stage_cls in ordered:
             instance = stage_cls()
             await instance.initialize(self.ctx)
             self.stages.append(instance)
-        logger.info(f"Pipeline initialized with {len(self.stages)} stages: "
-                     f"{[s.__class__.__name__ for s in self.stages]}")
+        logger.info(
+            f"Pipeline initialized with {len(self.stages)} stages: "
+            f"{[s.__class__.__name__ for s in self.stages]}"
+        )
 
     async def execute(self, event: MessageEvent) -> None:
         try:

@@ -1,18 +1,27 @@
 <template>
   <div class="status-bar">
     <div class="status-left">
-      <span class="status-item" v-if="activeModel">
+      <span
+        v-if="activeModel"
+        class="status-item"
+      >
         {{ activeModel }}
       </span>
     </div>
     <div class="status-right">
-      <span class="status-item" v-if="tokenInfo">
+      <span
+        v-if="tokenInfo"
+        class="status-item"
+      >
         {{ tokenCount }} tokens
         <template v-if="tokenInfo.cost != null">
           &middot; ${{ tokenInfo.cost.toFixed(4) }}
         </template>
       </span>
-      <span class="status-item" v-if="sessionCount != null">
+      <span
+        v-if="sessionCount != null"
+        class="status-item"
+      >
         {{ sessionCount }} sessions
       </span>
     </div>
