@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -21,6 +22,8 @@ AUDIO_EXTS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma", ".aiff", 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
 _lifecycle: "Lifecycle | None" = None
+
+logger = logging.getLogger(__name__)
 
 
 def init_music(lifecycle: "Lifecycle"):
@@ -40,6 +43,25 @@ def _cache_path() -> Path:
     p = Path("data/music_cache.json")
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _is_in_music_dirs(filepath: str) -> bool:
+    """Validate that a file path is within one of the configured music directories."""
+    dirs = _music_dirs()
+    if not dirs:
+        return False
+    try:
+        resolved = Path(filepath).resolve()
+    except (OSError, RuntimeError):
+        return False
+    for d in dirs:
+        try:
+            d_resolved = Path(d).resolve()
+            if os.path.commonpath([resolved, d_resolved]) == str(d_resolved):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _file_id(filepath: str) -> str:
@@ -273,7 +295,7 @@ async def scan_library():
     try:
         _cache_path().write_text(json.dumps(songs, ensure_ascii=False), encoding="utf-8")
     except Exception:
-        pass
+        logger.debug("Failed to write music cache", exc_info=True)
 
     return jsonify({"songs": songs, "count": len(songs)})
 
@@ -286,7 +308,7 @@ async def get_library():
             songs = json.loads(cp.read_text(encoding="utf-8"))
             return jsonify({"songs": songs, "count": len(songs)})
         except Exception:
-            pass
+            logger.debug("Failed to read music cache", exc_info=True)
     return jsonify({"songs": [], "count": 0})
 
 
@@ -302,6 +324,9 @@ async def stream_audio(song_id: str):
         return jsonify({"error": "song not found"}), 404
 
     filepath = song["path"]
+    # Validate path is within configured music directories
+    if not _is_in_music_dirs(filepath):
+        return jsonify({"error": "file outside music directories"}), 403
     if not Path(filepath).exists():
         return jsonify({"error": "file not found"}), 404
 

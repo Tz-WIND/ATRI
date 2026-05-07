@@ -2,8 +2,7 @@
 
 from pathlib import Path
 from .base import Tool
-
-_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build", ".mypy_cache", ".pytest_cache"}
+from ._constants import SKIP_DIRS
 
 
 class TreeTool(Tool):
@@ -47,7 +46,7 @@ class TreeTool(Tool):
         except PermissionError:
             return
 
-        entries = [e for e in entries if e.name not in _SKIP and not e.name.startswith(".")]
+        entries = [e for e in entries if e.name not in SKIP_DIRS and not e.name.startswith(".")]
         total = len(entries)
 
         for i, entry in enumerate(entries):

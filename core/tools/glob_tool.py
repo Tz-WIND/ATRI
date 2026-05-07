@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from .base import Tool
+from ._constants import SKIP_DIRS
 
 
 class GlobTool(Tool):

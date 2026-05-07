@@ -122,7 +122,8 @@ class MusicTool(Tool):
                 timeout=3,
             )
         except Exception:
-            pass
+            import logging
+            logging.getLogger("atri").debug("Music broadcast failed", exc_info=True)
 
     def _status_text(self) -> str:
         return "Music player is available. Use 'search' to find songs, 'play' to start playback."

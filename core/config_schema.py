@@ -35,6 +35,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "ws_reverse_host": {"type": "string", "default": "0.0.0.0"},
                 "ws_reverse_port": {"type": "integer", "default": 6199, "minimum": 1},
                 "ws_reverse_token": {"type": "string", "default": ""},
+                "blocked_users": {"type": "array", "default": []},
             },
         },
         "dashboard": {
@@ -179,6 +180,7 @@ def _validate_object(config: dict[str, Any], schema: dict[str, Any], path: str) 
 
 
 def _migrate_dashboard_auth(config: dict[str, Any]) -> bool:
+    """Migrate legacy auth_token to hashed password format."""
     dashboard = config.setdefault("dashboard", {})
     changed = False
     legacy_token = dashboard.pop("auth_token", "")
@@ -189,7 +191,12 @@ def _migrate_dashboard_auth(config: dict[str, Any]) -> bool:
         return changed
 
     if legacy_token and not dashboard.get("password"):
-        dashboard["password"] = legacy_token
+        # Hash immediately so plaintext never hits disk
+        from hashlib import pbkdf2_hmac
+        import os
+        salt = os.urandom(16)
+        dk = pbkdf2_hmac("sha256", legacy_token.encode(), salt, 600_000)
+        dashboard["password"] = f"pbkdf2:{salt.hex()}${dk.hex()}"
         changed = True
 
     return changed

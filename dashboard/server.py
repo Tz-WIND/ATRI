@@ -17,6 +17,7 @@ import secrets
 import tempfile
 import time
 import zipfile
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
@@ -49,10 +50,28 @@ _PROCESS_STAGE_SETTING_KEYS = {
 
 _AUTH_COOKIE = "atri_dashboard_session"
 
+# Rate limiting: track failed login/setup attempts per IP
+_RATE_LIMIT_WINDOW = 300  # 5 minutes
+_RATE_LIMIT_MAX_FAILURES = 10
+_rate_limit_buckets: dict[str, list[float]] = defaultdict(list)
+
 _PBKDF2_PREFIX = "pbkdf2:"
 _PBKDF2_ITERATIONS = 600_000
 _PBKDF2_HASH = "sha256"
 _PBKDF2_SALT_BYTES = 16
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if the IP is rate-limited."""
+    now = time.time()
+    bucket = _rate_limit_buckets[ip]
+    # Prune old entries
+    bucket[:] = [t for t in bucket if now - t < _RATE_LIMIT_WINDOW]
+    return len(bucket) >= _RATE_LIMIT_MAX_FAILURES
+
+
+def _record_failure(ip: str) -> None:
+    _rate_limit_buckets[ip].append(time.time())
 
 
 def _hash_password(password: str) -> str:
@@ -351,31 +370,44 @@ class Dashboard:
         if ps is not None:
             ps.reload_skills()
 
+    # ── Auth helpers ──
+
+    def _provided_session_token(self) -> str:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return (
+            request.headers.get("X-ATRI-Session", "")
+            or request.cookies.get(_AUTH_COOKIE, "")
+        )
+
+    def _session_ok(self, token: str) -> bool:
+        return bool(self.auth_enabled and token) and hmac.compare_digest(
+            token,
+            self.auth_session_token,
+        )
+
+    def _credentials_ok(self, username: str, password: str) -> bool:
+        return self.auth_enabled and hmac.compare_digest(
+            username, self.auth_username
+        ) and _verify_password(self.auth_password, password)
+
+    def _request_authenticated(self) -> bool:
+        return self._session_ok(self._provided_session_token())
+
+    # ── Route registration ──
+
     def _register_routes(self):
+        """Register all API routes — delegates to sub-methods by area."""
+        self._register_core_handlers()
+        self._register_auth_routes()
+        self._register_model_routes()
+        self._register_management_routes()
+        self._register_chat_routes()
+        self._register_ws_and_fallback()
+
+    def _register_core_handlers(self):
         app = self.app
-
-        def _provided_session_token() -> str:
-            auth = request.headers.get("Authorization", "")
-            if auth.lower().startswith("bearer "):
-                return auth[7:].strip()
-            return (
-                request.headers.get("X-ATRI-Session", "")
-                or request.cookies.get(_AUTH_COOKIE, "")
-            )
-
-        def _session_ok(token: str) -> bool:
-            return bool(self.auth_enabled and token) and hmac.compare_digest(
-                token,
-                self.auth_session_token,
-            )
-
-        def _credentials_ok(username: str, password: str) -> bool:
-            return self.auth_enabled and hmac.compare_digest(
-                username, self.auth_username
-            ) and _verify_password(self.auth_password, password)
-
-        def _request_authenticated() -> bool:
-            return _session_ok(_provided_session_token())
 
         @app.before_request
         async def require_dashboard_auth():
@@ -390,9 +422,18 @@ class Dashboard:
                 return None
             if self.auth_setup_required:
                 return jsonify({"error": "setup required", "setup_required": True}), 428
-            if _request_authenticated():
+            if self._request_authenticated():
                 return None
             return jsonify({"error": "authentication required"}), 401
+
+        @app.after_request
+        async def add_security_headers(response: Response):
+            """Add security headers to all responses."""
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            response.headers.setdefault("X-Frame-Options", "DENY")
+            response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:")
+            response.headers.setdefault("Cache-Control", "no-store")
+            return response
 
         @app.route("/")
         async def index():
@@ -400,30 +441,47 @@ class Dashboard:
             response.headers["Cache-Control"] = "no-store"
             return response
 
+        @app.route("/api/config/schema")
+        async def config_schema():
+            return jsonify(CONFIG_SCHEMA)
+
+        @app.route("/api/ping")
+        async def api_ping():
+            return jsonify({"pong": True, "routes": len(list(app.url_map.iter_rules()))})
+
+    def _register_auth_routes(self):
+        app = self.app
+
         @app.route("/api/auth/status")
         async def auth_status():
-            return jsonify({
+            authenticated = (
+                False
+                if self.auth_setup_required
+                else not self.auth_enabled or self._request_authenticated()
+            )
+            response = {
                 "auth_required": self.auth_enabled,
                 "setup_required": self.auth_setup_required,
-                "authenticated": (
-                    False
-                    if self.auth_setup_required
-                    else not self.auth_enabled or _request_authenticated()
-                ),
-                "username": self.auth_username,
-            })
+                "authenticated": authenticated,
+            }
+            if authenticated or self.auth_setup_required:
+                response["username"] = self.auth_username
+            return jsonify(response)
 
         @app.route("/api/auth/login", methods=["POST"])
         async def auth_login():
             if self.auth_setup_required:
                 return jsonify({"error": "setup required", "setup_required": True}), 428
+            client_ip = request.remote_addr or "unknown"
+            if _check_rate_limit(client_ip):
+                return jsonify({"error": "too many attempts, try again later"}), 429
             data = await request.get_json(silent=True) or {}
             username = str(data.get("username", "") or "")
             password = str(data.get("password", "") or "")
-            if not _credentials_ok(username, password):
+            if not self._credentials_ok(username, password):
+                _record_failure(client_ip)
                 return jsonify({"error": "invalid username or password"}), 401
             if not self.auth_password_is_hashed:
-                # Upgrade legacy plaintext password to PBKDF2 hash
                 dashboard_cfg = self.lifecycle.config.setdefault("dashboard", {})
                 dashboard_cfg["password"] = _hash_password(password)
                 self.lifecycle.save_config()
@@ -441,6 +499,9 @@ class Dashboard:
         async def auth_setup():
             if not self.auth_setup_required:
                 return jsonify({"error": "setup is not required"}), 409
+            client_ip = request.remote_addr or "unknown"
+            if _check_rate_limit(client_ip):
+                return jsonify({"error": "too many attempts, try again later"}), 429
             data = await request.get_json(silent=True) or {}
             username = str(data.get("username", "") or "").strip()
             password = str(data.get("password", "") or "")
@@ -454,7 +515,6 @@ class Dashboard:
             dashboard_cfg["password"] = _hash_password(password)
             self.lifecycle.save_config()
             self._sync_auth_from_config()
-            # Rotate session token so any pre-setup sessions are invalidated
             self.auth_session_token = secrets.token_urlsafe(32)
 
             resp = jsonify({"ok": True})
@@ -472,13 +532,8 @@ class Dashboard:
             resp.delete_cookie(_AUTH_COOKIE)
             return resp
 
-        @app.route("/api/config/schema")
-        async def config_schema():
-            return jsonify(CONFIG_SCHEMA)
-
-        @app.route("/api/ping")
-        async def api_ping():
-            return jsonify({"pong": True, "routes": len(list(app.url_map.iter_rules()))})
+    def _register_model_routes(self):
+        app = self.app
 
         # ── Status ──
         @app.route("/api/status")
@@ -728,6 +783,9 @@ class Dashboard:
             self._apply_model(provider_name, model)
             self.lifecycle.save_config()
             return jsonify({"ok": True})
+
+    def _register_management_routes(self):
+        app = self.app
 
         # ── Workspace ──
         @app.route("/api/workspace", methods=["GET"])
@@ -1028,6 +1086,9 @@ class Dashboard:
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
+    def _register_chat_routes(self):
+        app = self.app
+
         # ── Chat (via WebChat adapter -> pipeline) ──
         @app.route("/api/chat", methods=["POST"])
         async def chat():
@@ -1126,6 +1187,9 @@ class Dashboard:
             if bash_tool and bash_tool.has_pending:
                 return jsonify({"pending": True, **bash_tool.pending_info})
             return jsonify({"pending": False})
+
+    def _register_ws_and_fallback(self):
+        app = self.app
 
         # ── WebSocket ──
         @app.websocket("/ws")

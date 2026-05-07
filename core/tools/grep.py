@@ -3,8 +3,7 @@
 import re
 from pathlib import Path
 from .base import Tool
-
-_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
+from ._constants import SKIP_DIRS
 
 
 class GrepTool(Tool):
@@ -62,7 +61,7 @@ class GrepTool(Tool):
     def _walk(root: Path, include: str | None) -> list[Path]:
         results = []
         for item in root.rglob(include or "*"):
-            if any(part in _SKIP_DIRS for part in item.parts):
+            if any(part in SKIP_DIRS for part in item.parts):
                 continue
             if item.is_file():
                 results.append(item)

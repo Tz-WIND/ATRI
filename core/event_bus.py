@@ -12,6 +12,7 @@ class EventBus:
     def __init__(self, event_queue: Queue, scheduler: PipelineScheduler):
         self.event_queue = event_queue
         self.scheduler = scheduler
+        self._running_tasks: set[asyncio.Task] = set()
 
     async def dispatch(self) -> None:
         """Infinite loop: pull events from queue and dispatch to pipeline."""
@@ -19,7 +20,18 @@ class EventBus:
         while True:
             event: MessageEvent = await self.event_queue.get()
             self._log_event(event)
-            asyncio.create_task(self.scheduler.execute(event))
+            task = asyncio.create_task(self._safe_dispatch(event))
+            self._running_tasks.add(task)
+            task.add_done_callback(self._running_tasks.discard)
+
+    async def _safe_dispatch(self, event: MessageEvent) -> None:
+        """Wrap pipeline execution so exceptions don't kill the task silently."""
+        try:
+            await self.scheduler.execute(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception(f"Unhandled error in pipeline for event: {e}")
 
     @staticmethod
     def _log_event(event: MessageEvent) -> None:

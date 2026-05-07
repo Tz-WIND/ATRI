@@ -9,7 +9,10 @@ Three layers inspired by Claude Code:
 from __future__ import annotations
 
 import re
+import threading
 from typing import TYPE_CHECKING
+
+from core import logger
 
 if TYPE_CHECKING:
     from .llm import LLM
@@ -47,6 +50,7 @@ def estimate_tokens(messages: list[dict], system_prompt: str = "") -> int:
 
 class ContextManager:
     def __init__(self, max_tokens: int = 128_000):
+        self._lock = threading.Lock()
         self.set_max_tokens(max_tokens)
 
     def set_max_tokens(self, max_tokens: int):
@@ -62,25 +66,29 @@ class ContextManager:
 
         system_prompt is included in the token budget calculation so that we don't
         exceed the model's context window after adding the system prompt at call time.
+
+        Acquires self._lock to prevent races with the Agent thread that may be
+        appending new messages to the same list concurrently.
         """
-        current = estimate_tokens(messages, system_prompt)
-        compressed = False
+        with self._lock:
+            current = estimate_tokens(messages, system_prompt)
+            compressed = False
 
-        if current > self._snip_at:
-            if self._snip_tool_outputs(messages):
+            if current > self._snip_at:
+                if self._snip_tool_outputs(messages):
+                    compressed = True
+                    current = estimate_tokens(messages, system_prompt)
+
+            if current > self._summarize_at and len(messages) > 10:
+                if self._summarize_old(messages, llm, keep_recent=8):
+                    compressed = True
+                    current = estimate_tokens(messages, system_prompt)
+
+            if current > self._collapse_at and len(messages) > 4:
+                self._hard_collapse(messages, llm)
                 compressed = True
-                current = estimate_tokens(messages, system_prompt)
 
-        if current > self._summarize_at and len(messages) > 10:
-            if self._summarize_old(messages, llm, keep_recent=8):
-                compressed = True
-                current = estimate_tokens(messages, system_prompt)
-
-        if current > self._collapse_at and len(messages) > 4:
-            self._hard_collapse(messages, llm)
-            compressed = True
-
-        return compressed
+            return compressed
 
     @staticmethod
     def _snip_tool_outputs(messages: list[dict]) -> bool:
@@ -169,7 +177,7 @@ class ContextManager:
                 )
                 return resp.content
             except Exception:
-                pass
+                logger.debug("LLM summary failed, falling back to heuristics")
         return self._extract_key_info(messages)
 
     @staticmethod

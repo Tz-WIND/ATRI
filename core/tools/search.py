@@ -7,15 +7,7 @@ providing a higher-level "find anything related to X" capability.
 import re
 from pathlib import Path
 from .base import Tool
-
-_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
-_TEXT_EXTS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".scss",
-    ".json", ".yaml", ".yml", ".toml", ".md", ".txt", ".rst",
-    ".xml", ".csv", ".sh", ".bat", ".ps1", ".cfg", ".ini", ".conf",
-    ".java", ".c", ".cpp", ".h", ".hpp", ".go", ".rs", ".rb",
-    ".sql", ".r", ".lua", ".swift", ".kt", ".dart", ".vue", ".svelte",
-}
+from ._constants import SKIP_DIRS, TEXT_EXTS
 
 
 class SearchTool(Tool):
@@ -60,7 +52,7 @@ class SearchTool(Tool):
                 name_matches.append(f"📄 {rel}")
 
             # Content match
-            if not file_only and fp.suffix.lower() in _TEXT_EXTS and fp.stat().st_size < 1_000_000:
+            if not file_only and fp.suffix.lower() in TEXT_EXTS and fp.stat().st_size < 1_000_000:
                 try:
                     text = fp.read_text(encoding="utf-8", errors="ignore")
                     text_lower = text.lower()
@@ -90,7 +82,7 @@ class SearchTool(Tool):
     def _walk(root: Path) -> list[Path]:
         results = []
         for item in root.rglob("*"):
-            if any(part in _SKIP for part in item.parts):
+            if any(part in SKIP_DIRS for part in item.parts):
                 continue
             if item.is_file():
                 results.append(item)

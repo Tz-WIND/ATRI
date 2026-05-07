@@ -15,7 +15,13 @@ DEFAULT_SESSIONS_DIR = Path("data/sessions")
 
 
 def _safe_filename(session_id: str) -> str:
-    """Replace characters illegal in Windows filenames."""
+    """Replace characters illegal in Windows filenames, and block path traversal.
+
+    Rejects session IDs containing '..', null bytes, or newlines to prevent
+    directory traversal attacks.
+    """
+    if ".." in session_id or "\x00" in session_id or "\n" in session_id or "\r" in session_id:
+        raise ValueError(f"Invalid session ID: {session_id!r}")
     return re.sub(r'[<>:"/\\|?*]', '_', session_id)
 
 

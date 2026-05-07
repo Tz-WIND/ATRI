@@ -3,14 +3,7 @@
 import re
 from pathlib import Path
 from .base import Tool
-
-_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
-_TEXT_EXTS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".scss",
-    ".json", ".yaml", ".yml", ".toml", ".md", ".txt", ".rst",
-    ".xml", ".sh", ".bat", ".cfg", ".ini", ".conf",
-    ".java", ".c", ".cpp", ".h", ".hpp", ".go", ".rs", ".rb",
-}
+from ._constants import SKIP_DIRS, TEXT_EXTS
 
 
 class FindReplaceTool(Tool):
@@ -102,9 +95,9 @@ class FindReplaceTool(Tool):
         results = []
         pattern = include or "*"
         for fp in root.rglob(pattern):
-            if any(part in _SKIP for part in fp.parts):
+            if any(part in SKIP_DIRS for part in fp.parts):
                 continue
-            if fp.is_file() and fp.suffix.lower() in _TEXT_EXTS:
+            if fp.is_file() and fp.suffix.lower() in TEXT_EXTS:
                 results.append(fp)
             if len(results) >= 5000:
                 break

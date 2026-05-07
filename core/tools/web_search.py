@@ -53,9 +53,6 @@ _SKIP_TAGS = {"script", "style", "noscript", "iframe", "svg", "head", "meta", "l
 # ---------------------------------------------------------------------------
 
 _SSL_CONTEXT = ssl.create_default_context()
-_SSL_CONTEXT_NO_VERIFY = ssl.create_default_context()
-_SSL_CONTEXT_NO_VERIFY.check_hostname = False
-_SSL_CONTEXT_NO_VERIFY.verify_mode = ssl.CERT_NONE
 
 
 def _open_url(
@@ -64,7 +61,7 @@ def _open_url(
     timeout: int = _TIMEOUT,
     extra_headers: dict | None = None,
 ):
-    """Open a URL with SSL fallback."""
+    """Open a URL with standard SSL verification."""
     headers = {"User-Agent": _USER_AGENT}
     if data:
         headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -72,12 +69,7 @@ def _open_url(
         headers.update(extra_headers)
 
     req = urllib.request.Request(url, data=data, headers=headers)
-
-    try:
-        return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT)
-    except ssl.SSLError:
-        req2 = urllib.request.Request(url, data=data, headers=headers)
-        return urllib.request.urlopen(req2, timeout=timeout, context=_SSL_CONTEXT_NO_VERIFY)
+    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT)
 
 
 # ---------------------------------------------------------------------------

@@ -498,6 +498,12 @@ class AgentResultTool(Tool):
             except Exception as e:
                 run.fail(f"Sub-agent error: {e}")
 
+        snap = run.snapshot()
+        # Clean up completed tasks after they've been collected
+        if snap["status"] in {"done", "error"}:
+            with _tasks_lock:
+                _background_tasks.pop(task_id, None)
+
         return _format_run_report(run)
 
     def _list_all(self) -> str:
@@ -506,6 +512,7 @@ class AgentResultTool(Tool):
                 return "No background sub-agent tasks."
 
             lines = []
+            stale_ids = []
             for tid, run in sorted(_background_tasks.items()):
                 future = run.future
                 if future and future.done() and run.status in {"queued", "running"}:
@@ -518,5 +525,11 @@ class AgentResultTool(Tool):
                     f"  - `{tid}`: {snap['status']}{_format_run_model_tag(run)} - "
                     f"{snap['task'][:80]}"
                 )
+                # Mark completed/errored tasks for cleanup
+                if snap["status"] in {"done", "error"}:
+                    stale_ids.append(tid)
+            # Auto-cleanup completed background tasks
+            for tid in stale_ids:
+                _background_tasks.pop(tid, None)
 
         return "Background sub-agent tasks:\n" + "\n".join(lines)

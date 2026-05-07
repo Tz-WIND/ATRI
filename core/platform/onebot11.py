@@ -72,7 +72,10 @@ class OneBot11Adapter(Platform):
         """Convert aiocqhttp Event to our unified MessageEvent."""
         if not event.sender:
             return None
-        if str(event.sender.get("user_id", "")) == "2854196310":
+        blocked_users = set(
+            self.config.get("blocked_users", [])
+        )
+        if str(event.sender.get("user_id", "")) in blocked_users:
             return None
 
         msg_type = MessageType.GROUP_MESSAGE if event.message_type == "group" else MessageType.FRIEND_MESSAGE

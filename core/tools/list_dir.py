@@ -3,8 +3,7 @@
 import os
 from pathlib import Path
 from .base import Tool
-
-_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox"}
+from ._constants import SKIP_DIRS
 
 
 class ListDirTool(Tool):
@@ -39,7 +38,7 @@ class ListDirTool(Tool):
                 name = item.name
                 if not show_hidden and name.startswith("."):
                     continue
-                if name in _SKIP:
+                if name in SKIP_DIRS:
                     continue
 
                 if item.is_dir():

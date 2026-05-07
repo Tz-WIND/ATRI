@@ -14,6 +14,7 @@ import re
 import subprocess
 import threading
 from enum import Enum
+from typing import Callable
 from .base import Tool
 
 # Shared marker string — also used by process.py for detection/parsing
@@ -39,6 +40,12 @@ _BLOCKED_PATTERNS = [
     (r"`.*rm\s", "backtick rm injection"),
     (r"\$\(.*rm\s", "subshell rm injection"),
     (r"\bformat\s+[a-zA-Z]:", "format drive (Windows)"),
+    (r"\bsudo\s+rm\b", "sudo rm"),
+    (r"\bchown\s+(-R\s+)?[^ ]*\s+(/|~)", "chown on root/home"),
+    (r"\beval\s+", "eval with untrusted input"),
+    (r"\bsource\s+/dev/", "source from device file"),
+    (r"\.\s+/dev/", "source from device file"),
+    (r"\bopenssl\s+.*-d\b", "openssl decryption (potential malware)"),
 ]
 
 # ── Confirm-required patterns: destructive but sometimes intentional ──
@@ -98,7 +105,7 @@ class BashTool(Tool):
         self._pending_approval: dict | None = None
         self._current_process: subprocess.Popen | None = None
         self._proc_lock = threading.Lock()
-        self._on_confirm_request: callable = None  # callback for WebSocket broadcast
+        self._on_confirm_request: Callable[[str, str], None] | None = None
 
     def execute(self, command: str, timeout: int = 120) -> str:
         level, reason = _check_dangerous(command)

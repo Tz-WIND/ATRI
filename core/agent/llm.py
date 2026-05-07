@@ -473,6 +473,7 @@ class LLM:
         event_count = 0
         _delta_seen: set[int] = set()
         t0 = time.time()
+        token_state: dict[str, int] = {"prompt": 0, "completion": 0}
 
         logger.info(f"Anthropic stream started for {self.model}")
 
@@ -491,87 +492,16 @@ class LLM:
                     )
                 event_count += 1
 
-                event_type = data.get("type") or event_name
-                if event_type == "message_start":
-                    usage = (data.get("message") or {}).get("usage") or {}
-                    prompt_tok = usage.get("input_tokens", prompt_tok) or 0
-                    completion_tok = usage.get("output_tokens", completion_tok) or 0
-                elif event_type == "message_delta":
-                    usage = data.get("usage") or {}
-                    completion_tok = usage.get("output_tokens", completion_tok) or 0
-                elif event_type == "content_block_start":
-                    idx = int(data.get("index", 0))
-                    block = data.get("content_block") or {}
-                    block_type = block.get("type")
-                    if block_type == "text":
-                        content_blocks[idx] = {"type": "text", "text": block.get("text") or ""}
-                    elif block_type == "thinking":
-                        content_blocks[idx] = {
-                            "type": "thinking",
-                            "thinking": block.get("thinking") or "",
-                        }
-                        if block.get("signature"):
-                            content_blocks[idx]["signature"] = block["signature"]
-                    elif block_type == "redacted_thinking":
-                        content_blocks[idx] = {
-                            key: value
-                            for key, value in block.items()
-                            if key in {"type", "data"}
-                        }
-                    elif block_type == "tool_use":
-                        raw_input = block.get("input")
-                        content_blocks[idx] = {
-                            "type": "tool_use",
-                            "id": block.get("id") or f"toolu_{idx}",
-                            "name": block.get("name") or "",
-                            "input": raw_input if isinstance(raw_input, dict) else {},
-                            "_partial_json": "",
-                        }
-                        tc_map[idx] = {
-                            "id": block.get("id") or f"toolu_{idx}",
-                            "name": block.get("name") or "",
-                            "args": json.dumps(raw_input) if raw_input else "",
-                        }
-                elif event_type == "content_block_delta":
-                    idx = int(data.get("index", 0))
-                    delta = data.get("delta") or {}
-                    delta_type = delta.get("type")
-                    if delta_type == "text_delta":
-                        text = delta.get("text") or ""
-                        if text:
-                            _delta_seen.add(idx)
-                            if idx in content_blocks:
-                                content_blocks[idx]["text"] = content_blocks[idx].get("text", "") + text
-                            content_parts.append(text)
-                            if on_token:
-                                on_token(text)
-                    elif delta_type == "thinking_delta":
-                        thinking = delta.get("thinking") or ""
-                        if thinking:
-                            _delta_seen.add(idx)
-                            if idx in content_blocks:
-                                content_blocks[idx]["thinking"] = (
-                                    content_blocks[idx].get("thinking", "") + thinking
-                                )
-                            reasoning_parts.append(thinking)
-                            if on_thinking:
-                                on_thinking(thinking)
-                    elif delta_type == "signature_delta":
-                        signature = delta.get("signature")
-                        if signature and idx in content_blocks:
-                            content_blocks[idx]["signature"] = signature
-                    elif delta_type == "input_json_delta":
-                        partial = delta.get("partial_json") or ""
-                        if idx in content_blocks:
-                            content_blocks[idx]["_partial_json"] = (
-                                content_blocks[idx].get("_partial_json", "") + partial
-                            )
-                        if idx not in tc_map:
-                            tc_map[idx] = {"id": f"toolu_{idx}", "name": "", "args": ""}
-                        tc_map[idx]["args"] += partial
-                elif event_type == "error":
-                    error = data.get("error") or {}
-                    raise RuntimeError(error.get("message") or "Anthropic stream error")
+                _process_anthropic_sse(
+                    data, event_name,
+                    content_blocks, tc_map,
+                    content_parts, reasoning_parts,
+                    on_token, on_thinking, token_state,
+                    _delta_seen,
+                )
+
+        prompt_tok = token_state["prompt"]
+        completion_tok = token_state["completion"]
 
         elapsed = time.time() - t0
         logger.info(f"Anthropic stream done: {event_count} events in {elapsed:.1f}s")
@@ -997,6 +927,107 @@ def _clean_anthropic_content_block(block: dict) -> dict:
             "input": parsed_input if isinstance(parsed_input, dict) else {},
         }
     return {}
+
+
+def _process_anthropic_sse(
+    data: dict,
+    event_name: str | None,
+    content_blocks: dict[int, dict],
+    tc_map: dict[int, dict],
+    content_parts: list[str],
+    reasoning_parts: list[str],
+    on_token,
+    on_thinking,
+    token_state: dict[str, int],
+    delta_seen: set[int],
+) -> None:
+    """Process a single Anthropic SSE event, mutating state containers in place."""
+    event_type = data.get("type") or event_name
+
+    if event_type == "message_start":
+        usage = (data.get("message") or {}).get("usage") or {}
+        token_state["prompt"] = usage.get("input_tokens", token_state["prompt"]) or 0
+        token_state["completion"] = usage.get("output_tokens", token_state["completion"]) or 0
+
+    elif event_type == "message_delta":
+        usage = data.get("usage") or {}
+        token_state["completion"] = usage.get("output_tokens", token_state["completion"]) or 0
+
+    elif event_type == "content_block_start":
+        idx = int(data.get("index", 0))
+        block = data.get("content_block") or {}
+        block_type = block.get("type")
+        if block_type == "text":
+            content_blocks[idx] = {"type": "text", "text": block.get("text") or ""}
+        elif block_type == "thinking":
+            content_blocks[idx] = {
+                "type": "thinking",
+                "thinking": block.get("thinking") or "",
+            }
+            if block.get("signature"):
+                content_blocks[idx]["signature"] = block["signature"]
+        elif block_type == "redacted_thinking":
+            content_blocks[idx] = {
+                key: value
+                for key, value in block.items()
+                if key in {"type", "data"}
+            }
+        elif block_type == "tool_use":
+            raw_input = block.get("input")
+            content_blocks[idx] = {
+                "type": "tool_use",
+                "id": block.get("id") or f"toolu_{idx}",
+                "name": block.get("name") or "",
+                "input": raw_input if isinstance(raw_input, dict) else {},
+                "_partial_json": "",
+            }
+            tc_map[idx] = {
+                "id": block.get("id") or f"toolu_{idx}",
+                "name": block.get("name") or "",
+                "args": json.dumps(raw_input) if raw_input else "",
+            }
+
+    elif event_type == "content_block_delta":
+        idx = int(data.get("index", 0))
+        delta = data.get("delta") or {}
+        delta_type = delta.get("type")
+        if delta_type == "text_delta":
+            text = delta.get("text") or ""
+            if text:
+                delta_seen.add(idx)
+                if idx in content_blocks:
+                    content_blocks[idx]["text"] = content_blocks[idx].get("text", "") + text
+                content_parts.append(text)
+                if on_token:
+                    on_token(text)
+        elif delta_type == "thinking_delta":
+            thinking = delta.get("thinking") or ""
+            if thinking:
+                delta_seen.add(idx)
+                if idx in content_blocks:
+                    content_blocks[idx]["thinking"] = (
+                        content_blocks[idx].get("thinking", "") + thinking
+                    )
+                reasoning_parts.append(thinking)
+                if on_thinking:
+                    on_thinking(thinking)
+        elif delta_type == "signature_delta":
+            signature = delta.get("signature")
+            if signature and idx in content_blocks:
+                content_blocks[idx]["signature"] = signature
+        elif delta_type == "input_json_delta":
+            partial = delta.get("partial_json") or ""
+            if idx in content_blocks:
+                content_blocks[idx]["_partial_json"] = (
+                    content_blocks[idx].get("_partial_json", "") + partial
+                )
+            if idx not in tc_map:
+                tc_map[idx] = {"id": f"toolu_{idx}", "name": "", "args": ""}
+            tc_map[idx]["args"] += partial
+
+    elif event_type == "error":
+        error = data.get("error") or {}
+        raise RuntimeError(error.get("message") or "Anthropic stream error")
 
 
 def _iter_sse_json(resp: httpx.Response):
