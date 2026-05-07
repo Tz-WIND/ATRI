@@ -21,4 +21,60 @@ package = false
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "pre-commit>=4.0",
+    "mypy>=1.13",
 ]
+
+# ─── Ruff (linter + formatter) ───────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["core", "dashboard", "plugins"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "S",    # flake8-bandit (security)
+    "ASYNC",# flake8-async
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "S101",   # allow assert in tests
+    "B008",   # allow function calls in defaults (common in frameworks)
+    "A003",   # allow shadowing builtins on classes (id, type, etc.)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "dashboard", "plugins"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ─── Mypy ────────────────────────────────────────────────────────────────────
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+
+# ─── Pytest ──────────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

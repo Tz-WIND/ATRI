@@ -1,0 +1,52 @@
+default_language_version:
+  python: python3.11
+
+repos:
+  # ─── General file hygiene ─────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  # ─── Python: Ruff (lint + format) ────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # ─── Python: Type checking ───────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        additional_dependencies: []
+        args: [--ignore-missing-imports]
+        pass_filenames: false
+
+  # ─── Security: detect secrets ────────────────────────────────────────────
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: (uv\.lock|package-lock\.json)$
+
+  # ─── Frontend: ESLint ────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint (frontend)
+        entry: npx --prefix frontend eslint --fix
+        language: system
+        files: ^frontend/src/.*\.(js|vue)$
+        types: [file]

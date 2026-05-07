@@ -32,6 +32,9 @@ data/music_cache.json
 # Claude
 .claude/
 
+# Secrets baseline (tracked intentionally by detect-secrets)
+# .secrets.baseline
+
 # Node
 frontend/node_modules/
 frontend/dist/
