@@ -1,7 +1,6 @@
 """Base platform adapter."""
 
 import abc
-import asyncio
 from asyncio import Queue
 from dataclasses import dataclass
 from enum import Enum

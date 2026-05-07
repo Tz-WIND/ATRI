@@ -9,23 +9,23 @@ import os
 import tempfile
 import time
 import traceback
-import yaml
 from asyncio import Queue
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from core import logger
 from core.config_schema import (
     ConfigValidationError,
-    DEFAULT_CONFIG,
     normalize_config,
 )
 from core.event_bus import EventBus
 from core.pipeline.scheduler import PipelineScheduler
-from core.pipeline.stages import *  # noqa: F401,F403 - registers stages
+from core.pipeline.stages import *  # noqa: F403 - registers stages
 from core.platform.onebot11 import OneBot11Adapter
 from core.platform.webchat import WebChatAdapter
 from core.plugin.manager import PluginManager
-
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 
@@ -40,7 +40,7 @@ class Lifecycle:
         self.start_time: float = 0
         self.onebot11: OneBot11Adapter | None = None
         self.webchat: WebChatAdapter | None = None
-        self.process_stage = None
+        self.process_stage: Any = None
         self._tasks: list[asyncio.Task] = []
         self._shutdown_event = asyncio.Event()
 
@@ -48,7 +48,7 @@ class Lifecycle:
         path = Path(self.config_path)
         config_was_empty = True
         if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 loaded_config = yaml.safe_load(f)
             config_was_empty = not bool(loaded_config)
             user_config = loaded_config or {}
@@ -90,7 +90,7 @@ class Lifecycle:
         logger.info("ATRI Agent Framework starting...")
 
         ws_path = Path(self.config["workspace"])
-        ws_path.mkdir(parents=True, exist_ok=True)
+        ws_path.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
 
         self.event_queue: Queue = Queue()
 
@@ -117,7 +117,7 @@ class Lifecycle:
 
         # Pipeline context -- pass all platform adapters so RespondStage can route
         pipeline_ctx = {
-            "workspace": str(ws_path.resolve()),
+            "workspace": str(ws_path.resolve()),  # noqa: ASYNC240
             "model": self.config["model"],
             "api_key": self.config["api_key"],
             "base_url": self.config.get("base_url"),
@@ -231,7 +231,7 @@ class Lifecycle:
 
         # 4. Wait for tasks to finish with a grace period
         if self._tasks:
-            done, pending = await asyncio.wait(
+            _done, pending = await asyncio.wait(
                 self._tasks, timeout=SHUTDOWN_GRACE_PERIOD
             )
             if pending:

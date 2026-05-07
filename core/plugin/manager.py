@@ -6,14 +6,14 @@ Scans the plugins/ directory for Python modules containing Plugin subclasses.
 from __future__ import annotations
 
 import importlib
-import os
 import sys
 import traceback
 from pathlib import Path
 
 from core import logger
 from core.platform.message import MessageEvent
-from .base import Plugin, PluginMetadata
+
+from .base import Plugin
 
 
 class PluginManager:

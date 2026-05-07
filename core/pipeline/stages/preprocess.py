@@ -3,8 +3,8 @@
 from collections.abc import AsyncGenerator
 
 from core import logger
-from core.platform.message import MessageEvent, At, Plain
 from core.pipeline.stage import Stage, register_stage
+from core.platform.message import At, MessageEvent, Plain
 
 
 @register_stage

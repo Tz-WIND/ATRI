@@ -7,8 +7,8 @@ and background processes persist across calls.
 
 import os
 import subprocess
-import threading
-import time
+from typing import Any
+
 from .base import Tool
 from .bash import (
     CONFIRM_MARKER,
@@ -27,19 +27,19 @@ class TerminalTool(Tool):
         "and shell history all persist. Use for interactive workflows like "
         "activating virtual environments, setting env vars, then running commands."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "Command to execute in the persistent session"},
+            "command": {"type": "string", "description": "Command to execute in the persistent session"},  # noqa: E501
             "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)"},
-            "session_id": {"type": "string", "description": "Session identifier (default: 'default'). Use different IDs for parallel sessions."},
+            "session_id": {"type": "string", "description": "Session identifier (default: 'default'). Use different IDs for parallel sessions."},  # noqa: E501
         },
         "required": ["command"],
     }
 
-    _sessions: dict[str, "_ShellSession"] = {}
+    _sessions: dict[str, "_ShellSession"] = {}  # noqa: RUF012
 
-    def execute(self, command: str, timeout: int = 120, session_id: str = "default") -> str:
+    def execute(self, command: str, timeout: int = 120, session_id: str = "default", **kwargs: Any) -> str:  # noqa: E501
         session = self._get_session(session_id)
         return session.run(command, timeout)
 
@@ -113,7 +113,7 @@ class _ShellSession:
             else:
                 full_cmd = command
 
-            proc = subprocess.run(
+            proc = subprocess.run(  # noqa: S603
                 full_cmd,
                 shell=shell,
                 capture_output=True,

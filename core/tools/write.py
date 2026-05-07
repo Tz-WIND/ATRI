@@ -1,5 +1,7 @@
 """File creation / overwrite, workspace-constrained."""
 
+from typing import Any
+
 from .base import Tool
 from .edit import _unified_diff
 
@@ -10,16 +12,16 @@ class WriteFileTool(Tool):
         "Create a new file or completely overwrite an existing one. "
         "For small edits to existing files, prefer edit_file instead."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path for the file (relative to workspace)"},
+            "file_path": {"type": "string", "description": "Path for the file (relative to workspace)"},  # noqa: E501
             "content": {"type": "string", "description": "Full file content to write"},
         },
         "required": ["file_path", "content"],
     }
 
-    def execute(self, file_path: str, content: str) -> str:
+    def execute(self, file_path: str, content: str, **kwargs: Any) -> str:
         try:
             p = self.resolve_path(file_path)
             old_content = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""

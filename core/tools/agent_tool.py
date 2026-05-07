@@ -13,19 +13,26 @@ Two execution modes:
 Parallel execution: pass multiple tasks via 'tasks' to run sub-agents concurrently.
 """
 
+from __future__ import annotations
+
 import concurrent.futures
-from dataclasses import dataclass, field
 import threading
 import uuid
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from core import logger
+
 from .base import Tool
+
+if TYPE_CHECKING:
+    from core.agent.agent import Agent
 
 
 # ---------------------------------------------------------------------------
 # Shared state for background tasks (class-level on AgentTool)
 # ---------------------------------------------------------------------------
-_background_tasks: dict[str, "SubAgentRun"] = {}
+_background_tasks: dict[str, SubAgentRun] = {}
 _tasks_lock = threading.Lock()
 _background_pool = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
@@ -47,7 +54,7 @@ class SubAgentRun:
     result: str = ""
     error: str = ""
     future: concurrent.futures.Future | None = None
-    agent: object | None = None
+    agent: Agent | None = None
     lock: threading.Lock = field(
         default_factory=threading.Lock,
         repr=False,
@@ -149,7 +156,7 @@ class AgentTool(Tool):
         "continue working. Use the agent_result tool to inspect live status, "
         "visible output, tool calls, and final results while sub-agents run."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "task": {
@@ -159,7 +166,7 @@ class AgentTool(Tool):
             "tasks": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Multiple tasks to run in parallel across independent sub-agent instances.",
+                "description": "Multiple tasks to run in parallel across independent sub-agent instances.",  # noqa: E501
             },
             "task_configs": {
                 "type": "array",
@@ -181,26 +188,26 @@ class AgentTool(Tool):
                     },
                     "required": ["task"],
                 },
-                "description": "Multiple sub-agent task objects, each with optional model/provider overrides.",
+                "description": "Multiple sub-agent task objects, each with optional model/provider overrides.",  # noqa: E501
             },
             "model": {
                 "type": "string",
-                "description": "Optional model to use for spawned sub-agent(s). Omit to inherit the current model.",
+                "description": "Optional model to use for spawned sub-agent(s). Omit to inherit the current model.",  # noqa: E501
             },
             "provider": {
                 "type": "string",
-                "description": "Optional configured provider for the selected model. Use when the same model name exists on multiple providers.",
+                "description": "Optional configured provider for the selected model. Use when the same model name exists on multiple providers.",  # noqa: E501
             },
             "background": {
                 "type": "boolean",
-                "description": "If true, run sub-agent(s) in the background and return immediately with task_id(s). Use agent_result to inspect live status, visible output, tool calls, and final results.",
+                "description": "If true, run sub-agent(s) in the background and return immediately with task_id(s). Use agent_result to inspect live status, visible output, tool calls, and final results.",  # noqa: E501
                 "default": False,
             },
         },
         "required": [],
     }
 
-    _parent_agent = None
+    _parent_agent: Agent | None = None
 
     def __init__(self, workspace: str = "."):
         super().__init__(workspace)
@@ -219,7 +226,7 @@ class AgentTool(Tool):
         background: bool = False,
         model: str | None = None,
         provider: str | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         # Collect task list
         all_tasks: list[dict] = []
@@ -264,7 +271,7 @@ class AgentTool(Tool):
             provider=_clean(task_spec.get("provider")),
         )
 
-    def _create_child_agent(self, task_spec: dict):
+    def _create_child_agent(self, task_spec: dict) -> Agent:
         if self._parent_agent is None:
             raise RuntimeError("agent tool not initialized (no parent agent)")
 
@@ -328,7 +335,7 @@ class AgentTool(Tool):
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
                 pool.submit(self._run_subagent_task, run, task_spec): i
-                for i, (run, task_spec) in enumerate(zip(runs, tasks))
+                for i, (run, task_spec) in enumerate(zip(runs, tasks, strict=False))
             }
             for future in concurrent.futures.as_completed(futures):
                 idx = futures[future]
@@ -395,11 +402,11 @@ def _clean(value) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def _truncate(text, max_chars: int) -> str:
-    text = "" if text is None else str(text)
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 31] + "\n... (sub-agent output truncated)"
+def _truncate(text: object, max_chars: int) -> str:
+    s = "" if text is None else str(text)
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 31] + "\n... (sub-agent output truncated)"
 
 
 def _format_run_model_tag(run: SubAgentRun) -> str:
@@ -468,18 +475,18 @@ class AgentResultTool(Tool):
         "Call with a specific task_id to inspect live visible text, tool calls, "
         "and final results. Thinking content is never included."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "task_id": {
                 "type": "string",
-                "description": "The task_id returned by a previous background agent call. If omitted, lists all tasks.",
+                "description": "The task_id returned by a previous background agent call. If omitted, lists all tasks.",  # noqa: E501
             },
         },
         "required": [],
     }
 
-    def execute(self, task_id: str | None = None, **kwargs) -> str:
+    def execute(self, task_id: str | None = None, **kwargs: Any) -> str:
         if task_id:
             return self._query_one(task_id)
         return self._list_all()

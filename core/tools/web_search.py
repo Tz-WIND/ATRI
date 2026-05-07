@@ -12,6 +12,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 from .base import Tool
 
@@ -68,8 +69,8 @@ def _open_url(
     if extra_headers:
         headers.update(extra_headers)
 
-    req = urllib.request.Request(url, data=data, headers=headers)
-    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT)
+    req = urllib.request.Request(url, data=data, headers=headers)  # noqa: S310
+    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT)  # noqa: S310
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +86,7 @@ class WebSearchTool(Tool):
         "Use this when you need information beyond your knowledge cutoff, "
         "current events, or to verify facts."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query string"},
@@ -97,7 +98,7 @@ class WebSearchTool(Tool):
         "required": ["query"],
     }
 
-    def execute(self, query: str, max_results: int = 5, **kwargs) -> str:
+    def execute(self, query: str, max_results: int = 5, **kwargs: Any) -> str:
         max_results = min(max(1, max_results), 10)
 
         key = get_tavily_key()
@@ -133,7 +134,7 @@ class WebSearchTool(Tool):
 
             if not results:
                 answer = body.get("answer", "")
-                return f"Web search — {query}\n\n{answer}" if answer else f"No results found for: {query}"
+                return f"Web search — {query}\n\n{answer}" if answer else f"No results found for: {query}"  # noqa: E501
 
             lines = [f"Web search — {query}\n"]
             for i, r in enumerate(results, 1):
@@ -230,7 +231,7 @@ class WebFetchTool(Tool):
         "or to retrieve information from a specific URL. "
         "Returns the page's text content (HTML tags stripped)."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "The URL to fetch"},
@@ -242,7 +243,7 @@ class WebFetchTool(Tool):
         "required": ["url"],
     }
 
-    def execute(self, url: str, max_chars: int = 8000, **kwargs) -> str:
+    def execute(self, url: str, max_chars: int = 8000, **kwargs: Any) -> str:
         max_chars = min(max(500, max_chars), 30000)
 
         try:

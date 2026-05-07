@@ -1,4 +1,4 @@
-from .stage import Stage
 from .scheduler import PipelineScheduler
+from .stage import Stage
 
-__all__ = ["Stage", "PipelineScheduler"]
+__all__ = ["PipelineScheduler", "Stage"]

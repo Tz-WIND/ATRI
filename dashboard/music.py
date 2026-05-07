@@ -3,40 +3,39 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
 import mimetypes
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-from quart import Blueprint, jsonify, request, Response
+from quart import Blueprint, Response, jsonify, request
 
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
 
-AUDIO_EXTS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma", ".aiff", ".alac", ".ape", ".dsf", ".dff"}
+AUDIO_EXTS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma", ".aiff", ".alac", ".ape", ".dsf", ".dff"}  # noqa: E501
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
-_lifecycle: "Lifecycle | None" = None
+_lifecycle: Lifecycle | None = None
 
 logger = logging.getLogger(__name__)
 
 
-def init_music(lifecycle: "Lifecycle"):
+def init_music(lifecycle: Lifecycle):
     global _lifecycle
     _lifecycle = lifecycle
 
 
-def _cfg():
+def _cfg() -> dict[str, Any]:
     return _lifecycle.config if _lifecycle else {}
 
 
 def _music_dirs() -> list[str]:
-    return _cfg().get("music_directories", [])
+    return cast(list[str], _cfg().get("music_directories", []))
 
 
 def _cache_path() -> Path:
@@ -65,7 +64,7 @@ def _is_in_music_dirs(filepath: str) -> bool:
 
 
 def _file_id(filepath: str) -> str:
-    return hashlib.md5(filepath.encode("utf-8")).hexdigest()
+    return hashlib.md5(filepath.encode("utf-8")).hexdigest()  # noqa: S324
 
 
 def _read_metadata(filepath: str) -> dict | None:
@@ -105,7 +104,7 @@ def _read_metadata(filepath: str) -> dict | None:
             "bitrate": 0,
             "channels": 0,
             "has_cover": False,
-            "lossless": p.suffix.lower() in {".flac", ".wav", ".aiff", ".alac", ".ape", ".dsf", ".dff"},
+            "lossless": p.suffix.lower() in {".flac", ".wav", ".aiff", ".alac", ".ape", ".dsf", ".dff"},  # noqa: E501
         }
 
         if audio.info:
@@ -135,17 +134,17 @@ def _read_metadata(filepath: str) -> dict | None:
                 info["year"] = (tags.get("date") or [""])[0]
                 info["genre"] = (tags.get("genre") or [""])[0]
             except Exception:
-                pass
+                logger.debug("Music: MP3 EasyID3 tag read error", exc_info=True)
             from mutagen.id3 import ID3
             try:
                 id3 = ID3(filepath)
                 info["has_cover"] = any(k.startswith("APIC") for k in id3.keys())
             except Exception:
-                pass
+                logger.debug("Music: MP3 ID3 cover check error", exc_info=True)
         elif ext in (".m4a", ".aac"):
             try:
                 m4 = MP4(filepath)
-                tags = m4.tags or {}
+                tags = m4.tags if m4.tags is not None else {}  # type: ignore[assignment]
                 info["title"] = (tags.get("\xa9nam") or [p.stem])[0]
                 info["artist"] = (tags.get("\xa9ART") or ["Unknown Artist"])[0]
                 info["album"] = (tags.get("\xa9alb") or ["Unknown Album"])[0]
@@ -155,7 +154,7 @@ def _read_metadata(filepath: str) -> dict | None:
                 info["genre"] = (tags.get("\xa9gen") or [""])[0]
                 info["has_cover"] = "covr" in tags
             except Exception:
-                pass
+                logger.debug("Music: M4A tag read error", exc_info=True)
         elif ext == ".ogg":
             try:
                 ogg = OggVorbis(filepath)
@@ -166,14 +165,14 @@ def _read_metadata(filepath: str) -> dict | None:
                 info["year"] = (ogg.get("date") or [""])[0]
                 info["genre"] = (ogg.get("genre") or [""])[0]
             except Exception:
-                pass
+                logger.debug("Music: OGG tag read error", exc_info=True)
         elif ext == ".wav":
             try:
                 w = WAVE(filepath)
                 if w.tags:
                     info["title"] = str(w.tags.get("TIT2", p.stem))
             except Exception:
-                pass
+                logger.debug("Music: WAV tag read error", exc_info=True)
 
         return info
     except Exception:
@@ -205,11 +204,11 @@ def _get_cover_bytes(filepath: str) -> tuple[bytes, str] | None:
                     return frame.data, frame.mime
         elif ext in (".m4a", ".aac"):
             m4 = MP4(filepath)
-            covr = (m4.tags or {}).get("covr")
+            covr = (m4.tags or {}).get("covr")  # type: ignore[union-attr]
             if covr:
                 return bytes(covr[0]), "image/jpeg"
     except Exception:
-        pass
+        logger.debug("Music: embedded cover extraction error", exc_info=True)
 
     for name in ("cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"):
         cover_file = p.parent / name
@@ -228,7 +227,7 @@ def _find_lyrics(filepath: str) -> str | None:
             try:
                 return lrc.read_text(encoding="utf-8", errors="replace")
             except Exception:
-                pass
+                logger.debug("Music: lyrics file read error", exc_info=True)
 
     try:
         ext = p.suffix.lower()
@@ -243,9 +242,9 @@ def _find_lyrics(filepath: str) -> str | None:
             f = FLAC(filepath)
             lyrics = f.get("lyrics") or f.get("LYRICS") or f.get("unsyncedlyrics")
             if lyrics:
-                return lyrics[0]
+                return str(lyrics[0])
     except Exception:
-        pass
+        logger.debug("Music: embedded lyrics read error", exc_info=True)
 
     return None
 
@@ -275,7 +274,7 @@ async def scan_library():
 
     for d in dirs:
         dp = Path(d)
-        if not dp.exists() or not dp.is_dir():
+        if not dp.exists() or not dp.is_dir():  # noqa: ASYNC240
             continue
         for root, _, files in os.walk(dp):
             for fname in files:
@@ -290,7 +289,7 @@ async def scan_library():
                 if meta:
                     songs.append(meta)
 
-    songs.sort(key=lambda s: (s["artist"].lower(), s["album"].lower(), s["track_number"], s["title"].lower()))
+    songs.sort(key=lambda s: (s["artist"].lower(), s["album"].lower(), s["track_number"], s["title"].lower()))  # noqa: E501
 
     try:
         _cache_path().write_text(json.dumps(songs, ensure_ascii=False), encoding="utf-8")
@@ -327,11 +326,11 @@ async def stream_audio(song_id: str):
     # Validate path is within configured music directories
     if not _is_in_music_dirs(filepath):
         return jsonify({"error": "file outside music directories"}), 403
-    if not Path(filepath).exists():
+    if not Path(filepath).exists():  # noqa: ASYNC240
         return jsonify({"error": "file not found"}), 404
 
     mime = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
-    file_size = os.path.getsize(filepath)
+    file_size = os.path.getsize(filepath)  # noqa: ASYNC240
 
     range_header = request.headers.get("Range")
     if range_header:

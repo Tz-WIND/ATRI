@@ -10,8 +10,8 @@ Plugins can:
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from core.platform.message import MessageEvent
 from core.tools.base import Tool
@@ -42,7 +42,7 @@ class Plugin(abc.ABC):
 
     async def on_unload(self) -> None:
         """Called when the plugin is unloaded."""
-        pass
+        return
 
     async def on_message(self, event: MessageEvent) -> bool:
         """Called for every incoming message. Return True to stop pipeline propagation."""

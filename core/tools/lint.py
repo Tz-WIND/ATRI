@@ -6,11 +6,12 @@ Python syntax checking. Supports auto-fix via ruff --fix.
 
 import os
 import subprocess
+from typing import Any
+
 from .base import Tool
 
-
 # Ordered by preference
-_LINTERS = [
+_LINTERS: list[dict[str, Any]] = [
     {
         "name": "ruff",
         "check_cmd": ["ruff", "check", "--output-format", "concise", "{path}"],
@@ -40,12 +41,12 @@ class LintTool(Tool):
         "Set fix=true to auto-fix issues with ruff. "
         "Returns linting errors/warnings with file paths and line numbers."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "File or directory to lint, relative to workspace. Use '.' for all Python files.",
+                "description": "File or directory to lint, relative to workspace. Use '.' for all Python files.",  # noqa: E501
             },
             "fix": {
                 "type": "boolean",
@@ -56,7 +57,7 @@ class LintTool(Tool):
         "required": ["path"],
     }
 
-    def execute(self, path: str, fix: bool = False, **kwargs) -> str:
+    def execute(self, path: str, fix: bool = False, **kwargs: Any) -> str:
         target = self.resolve_path(path)
         if not os.path.exists(target):
             return f"Error: path not found: {target}"
@@ -84,7 +85,7 @@ def _detect_linter() -> dict | None:
     for linter in _LINTERS:
         name = linter["name"]
         try:
-            subprocess.run(
+            subprocess.run(  # noqa: S603
                 [name, "--version"],
                 capture_output=True,
                 timeout=5,
@@ -105,7 +106,7 @@ def _run_linter(linter: dict, target, fix: bool) -> str:
         cmd = [a.replace("{path}", str(target)) for a in linter["check_cmd"]]
 
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # noqa: S603
             cmd,
             capture_output=True,
             text=True,

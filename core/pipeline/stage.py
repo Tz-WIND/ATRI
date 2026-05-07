@@ -27,11 +27,12 @@ class Stage(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def process(self, event: "MessageEvent") -> None | AsyncGenerator[None, None]:
+    def process(self, event: MessageEvent) -> AsyncGenerator[None, None]:
         """Process an event.
 
-        Return None to stop pipeline propagation.
-        Yield once to act as an onion-model wrapper (code before yield runs
-        before downstream stages, code after yield runs after).
+        Implementations should be ``async def`` and use ``yield`` to act as an
+        onion-model wrapper (code before yield runs before downstream stages,
+        code after yield runs after).  To stop pipeline propagation, simply
+        return without yielding.
         """
         raise NotImplementedError

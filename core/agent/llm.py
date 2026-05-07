@@ -8,10 +8,11 @@ Also supports Anthropic's native Messages API format.
 import json
 import time
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from openai import OpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
 from core import logger
 
@@ -393,7 +394,8 @@ class LLM:
                     raise
                 time.sleep(2 ** attempt)
             except APIError as e:
-                if e.status_code and e.status_code >= 500 and attempt < max_retries - 1:
+                status = getattr(e, "status_code", None)
+                if status and status >= 500 and attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                 else:
                     raise
@@ -479,7 +481,7 @@ class LLM:
 
         with self.client.stream("POST", "messages", json=params, headers=headers) as resp:
             if resp.status_code >= 400:
-                logger.error(f"Anthropic HTTP {resp.status_code}: {resp.read().decode(errors='replace')[:1000]}")
+                logger.error(f"Anthropic HTTP {resp.status_code}: {resp.read().decode(errors='replace')[:1000]}")  # noqa: E501
             resp.raise_for_status()
             for event_name, data in _iter_sse_json(resp):
                 if cancel_event and cancel_event.is_set():
@@ -556,8 +558,8 @@ class LLM:
 
     def _filtered_options(self, kwargs: dict) -> dict:
         if self.api_format == "anthropic":
-            extra = {}
-            ignored = []
+            extra: dict[str, Any] = {}
+            ignored: list[str] = []
             for key, value in kwargs.items():
                 if key == "tool_choice" and isinstance(value, str):
                     extra[key] = {"type": value}

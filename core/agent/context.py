@@ -60,7 +60,7 @@ class ContextManager:
         self._collapse_at = int(max_tokens * 0.90)
 
     def maybe_compress(
-        self, messages: list[dict], llm: "LLM | None" = None, system_prompt: str = ""
+        self, messages: list[dict], llm: LLM | None = None, system_prompt: str = ""
     ) -> bool:
         """Apply compression layers as needed. Returns True if any compression happened.
 
@@ -113,7 +113,7 @@ class ContextManager:
         return changed
 
     def _summarize_old(
-        self, messages: list[dict], llm: "LLM | None", keep_recent: int = 8
+        self, messages: list[dict], llm: LLM | None, keep_recent: int = 8
     ) -> bool:
         """Layer 2: Summarize old conversation, keep recent messages intact."""
         if len(messages) <= keep_recent:
@@ -139,7 +139,7 @@ class ContextManager:
         messages.extend(tail)
         return True
 
-    def _hard_collapse(self, messages: list[dict], llm: "LLM | None"):
+    def _hard_collapse(self, messages: list[dict], llm: LLM | None):
         """Layer 3: Emergency compression. Keep only last 4 messages + summary."""
         tail = messages[-4:] if len(messages) > 4 else messages[-2:]
         summary = self._get_summary(messages[: -len(tail)], llm)
@@ -156,7 +156,7 @@ class ContextManager:
         )
         messages.extend(tail)
 
-    def _get_summary(self, messages: list[dict], llm: "LLM | None") -> str:
+    def _get_summary(self, messages: list[dict], llm: LLM | None) -> str:
         flat = self._flatten(messages)
         if llm:
             try:

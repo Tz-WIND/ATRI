@@ -1,5 +1,7 @@
 """File reading with line numbers, workspace-constrained."""
 
+from typing import Any
+
 from .base import Tool
 
 
@@ -8,17 +10,17 @@ class ReadFileTool(Tool):
     description = (
         "Read a file's contents with line numbers. Always read a file before editing it."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path to the file (relative to workspace)"},
+            "file_path": {"type": "string", "description": "Path to the file (relative to workspace)"},  # noqa: E501
             "offset": {"type": "integer", "description": "Start line (1-based). Default 1."},
             "limit": {"type": "integer", "description": "Max lines to read. Default 2000."},
         },
         "required": ["file_path"],
     }
 
-    def execute(self, file_path: str, offset: int = 1, limit: int = 2000) -> str:
+    def execute(self, file_path: str, offset: int = 1, limit: int = 2000, **kwargs: Any) -> str:
         try:
             p = self.resolve_path(file_path)
             if not p.exists():

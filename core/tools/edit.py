@@ -6,7 +6,7 @@ safe and reviewable. A unified diff is generated for every edit.
 """
 
 import difflib
-from pathlib import Path
+from typing import Any
 
 from .base import Tool
 
@@ -19,17 +19,17 @@ class EditFileTool(Tool):
         "Include enough surrounding context to ensure uniqueness. "
         "Returns a unified diff showing exactly what changed."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path to the file to edit (relative to workspace)"},
-            "old_string": {"type": "string", "description": "Exact text to find (must be unique in file)"},
+            "file_path": {"type": "string", "description": "Path to the file to edit (relative to workspace)"},  # noqa: E501
+            "old_string": {"type": "string", "description": "Exact text to find (must be unique in file)"},  # noqa: E501
             "new_string": {"type": "string", "description": "Replacement text"},
         },
         "required": ["file_path", "old_string", "new_string"],
     }
 
-    def execute(self, file_path: str, old_string: str, new_string: str) -> str:
+    def execute(self, file_path: str, old_string: str, new_string: str, **kwargs: Any) -> str:
         if not old_string:
             return "Error: old_string must not be empty"
         try:

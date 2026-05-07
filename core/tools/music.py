@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+from typing import Any
+
 from .base import Tool
 
 
@@ -12,17 +14,17 @@ class MusicTool(Tool):
         "pause, resume, next, prev, stop, status, search, volume. "
         "Use this when the user asks to play music, skip songs, pause, etc."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["play", "pause", "resume", "next", "prev", "stop", "status", "search", "volume"],
+                "enum": ["play", "pause", "resume", "next", "prev", "stop", "status", "search", "volume"],  # noqa: E501
                 "description": "The player action to perform",
             },
             "query": {
                 "type": "string",
-                "description": "Song name, artist, or album to search/play (for play and search actions)",
+                "description": "Song name, artist, or album to search/play (for play and search actions)",  # noqa: E501
             },
             "volume": {
                 "type": "number",
@@ -34,7 +36,7 @@ class MusicTool(Tool):
 
     _broadcast_fn = None
 
-    def execute(self, action: str, query: str = "", volume: float = -1, **kwargs) -> str:
+    def execute(self, action: str, query: str = "", volume: float = -1, **kwargs: Any) -> str:
         cache_path = Path("data/music_cache.json")
 
         if action == "status":
@@ -78,7 +80,7 @@ class MusicTool(Tool):
 
         if action in ("pause", "resume", "next", "prev", "stop"):
             self._send_command(action, {})
-            labels = {"pause": "Paused", "resume": "Resumed", "next": "Skipped to next", "prev": "Back to previous", "stop": "Stopped"}
+            labels = {"pause": "Paused", "resume": "Resumed", "next": "Skipped to next", "prev": "Back to previous", "stop": "Stopped"}  # noqa: E501
             return f"{labels.get(action, action.title())} playback."
 
         if action == "volume":

@@ -13,8 +13,10 @@ import os
 import re
 import subprocess
 import threading
+from collections.abc import Callable
 from enum import Enum
-from typing import Callable
+from typing import Any
+
 from .base import Tool
 
 # Shared marker string — also used by process.py for detection/parsing
@@ -90,7 +92,7 @@ class BashTool(Tool):
         "Dangerous commands are blocked or require user confirmation. "
         "If a command needs confirmation, tell the user and wait for approval."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "The shell command to run"},
@@ -107,7 +109,7 @@ class BashTool(Tool):
         self._proc_lock = threading.Lock()
         self._on_confirm_request: Callable[[str, str], None] | None = None
 
-    def execute(self, command: str, timeout: int = 120) -> str:
+    def execute(self, command: str, timeout: int = 120, **kwargs: Any) -> str:
         level, reason = _check_dangerous(command)
 
         if level == DangerLevel.BLOCKED:
@@ -151,7 +153,7 @@ class BashTool(Tool):
     def _run_command(self, command: str, timeout: int = 120) -> str:
         """Actually execute a shell command (after safety checks pass)."""
         try:
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # noqa: S602
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,

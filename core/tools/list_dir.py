@@ -2,8 +2,10 @@
 
 import os
 from pathlib import Path
-from .base import Tool
+from typing import Any
+
 from ._constants import SKIP_DIRS
+from .base import Tool
 
 
 class ListDirTool(Tool):
@@ -12,16 +14,16 @@ class ListDirTool(Tool):
         "List files and directories in a given path with size and type info. "
         "Useful for understanding project structure."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Directory path (relative to workspace, default: workspace root)"},
-            "show_hidden": {"type": "boolean", "description": "Show hidden files/dirs (default: false)"},
+            "path": {"type": "string", "description": "Directory path (relative to workspace, default: workspace root)"},  # noqa: E501
+            "show_hidden": {"type": "boolean", "description": "Show hidden files/dirs (default: false)"},  # noqa: E501
         },
         "required": [],
     }
 
-    def execute(self, path: str = ".", show_hidden: bool = False) -> str:
+    def execute(self, path: str = ".", show_hidden: bool = False, **kwargs: Any) -> str:
         try:
             base = self.resolve_path(path)
         except PermissionError as e:
@@ -42,7 +44,7 @@ class ListDirTool(Tool):
                     continue
 
                 if item.is_dir():
-                    child_count = sum(1 for _ in item.iterdir()) if os.access(str(item), os.R_OK) else 0
+                    child_count = sum(1 for _ in item.iterdir()) if os.access(str(item), os.R_OK) else 0  # noqa: E501
                     entries.append(f"📁 {name}/  ({child_count} items)")
                 else:
                     size = item.stat().st_size
@@ -59,7 +61,7 @@ class ListDirTool(Tool):
         return header + "\n".join(entries)
 
 
-def _fmt_size(n: int) -> str:
+def _fmt_size(n: int | float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
             return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"

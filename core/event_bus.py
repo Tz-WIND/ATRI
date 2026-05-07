@@ -4,8 +4,8 @@ import asyncio
 from asyncio import Queue
 
 from core import logger
-from core.platform.message import MessageEvent
 from core.pipeline.scheduler import PipelineScheduler
+from core.platform.message import MessageEvent
 
 
 class EventBus:

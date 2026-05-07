@@ -7,13 +7,11 @@ compatible implementations.
 import asyncio
 import itertools
 import logging
-import time
-import uuid
-from typing import Any
 
 from aiocqhttp import CQHttp, Event
 
 from core import logger
+
 from .base import Platform, PlatformMeta, PlatformStatus
 from .message import (
     At,
@@ -34,7 +32,7 @@ class OneBot11Adapter(Platform):
 
     def __init__(self, config: dict, event_queue: asyncio.Queue):
         super().__init__(config, event_queue)
-        self.host = config.get("ws_reverse_host", "0.0.0.0")
+        self.host = config.get("ws_reverse_host", "0.0.0.0")  # noqa: S104
         self.port = config.get("ws_reverse_port", 6199)
 
         self.bot = CQHttp(
@@ -78,7 +76,7 @@ class OneBot11Adapter(Platform):
         if str(event.sender.get("user_id", "")) in blocked_users:
             return None
 
-        msg_type = MessageType.GROUP_MESSAGE if event.message_type == "group" else MessageType.FRIEND_MESSAGE
+        msg_type = MessageType.GROUP_MESSAGE if event.message_type == "group" else MessageType.FRIEND_MESSAGE  # noqa: E501
         sender = Sender(
             user_id=str(event.sender["user_id"]),
             nickname=event.sender.get("card") or event.sender.get("nickname", ""),
@@ -99,7 +97,7 @@ class OneBot11Adapter(Platform):
                     chain.append(Plain(text=text))
             elif seg_type == "image":
                 for m in m_group:
-                    chain.append(Image(url=m["data"].get("url", ""), file=m["data"].get("file", "")))
+                    chain.append(Image(url=m["data"].get("url", ""), file=m["data"].get("file", "")))  # noqa: E501
             elif seg_type == "at":
                 for m in m_group:
                     qq = str(m["data"].get("qq", ""))
@@ -132,7 +130,7 @@ class OneBot11Adapter(Platform):
                             logger.error(f"Failed to get file URL: {e}")
                     chain.append(File(name=m["data"].get("file", ""), url=file_url))
 
-        session_id = str(event.group_id) if msg_type == MessageType.GROUP_MESSAGE else sender.user_id
+        session_id = str(event.group_id) if msg_type == MessageType.GROUP_MESSAGE else sender.user_id  # noqa: E501
 
         return MessageEvent(
             message_str=message_str,

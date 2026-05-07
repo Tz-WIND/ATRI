@@ -6,8 +6,8 @@ from collections.abc import AsyncGenerator
 
 from core import logger
 from core.platform.message import MessageEvent
-from .stage import Stage, registered_stages
 
+from .stage import Stage, registered_stages
 
 STAGES_ORDER = [
     "WakingCheckStage",

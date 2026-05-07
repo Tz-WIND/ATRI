@@ -83,7 +83,13 @@ jobs:
         run: uv sync --group dev
 
       - name: Run tests
-        run: uv run pytest --tb=short -q
+        run: |
+          uv run pytest --tb=short -q || ec=$?
+          if [ "${ec:-0}" -eq 5 ]; then
+            echo "::warning::No tests collected (exit 5) – skipping."
+            exit 0
+          fi
+          exit "${ec:-0}"
 
   # ─── Frontend Lint & Build ──────────────────────────────────────────────────
   frontend:

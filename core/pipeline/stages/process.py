@@ -15,13 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 from core import logger
 from core.agent.agent import Agent
-from core.utils import clean_optional_str
 from core.agent.llm import LLM
 from core.agent.session import SessionStore
-from core.platform.message import MessageEvent, normalize_session_id
 from core.pipeline.stage import Stage, register_stage
+from core.platform.message import MessageEvent, normalize_session_id
 from core.skills import SkillManager, build_skills_prompt
 from core.tools.bash import CONFIRM_MARKER
+from core.utils import clean_optional_str
 
 if TYPE_CHECKING:
     pass
@@ -252,12 +252,14 @@ class ProcessStage(Stage):
         agent = self._get_or_create_agent(session_id)
 
         tool_events: list[dict] = []
+        pending_futures: list[asyncio.Future] = []
 
         def _broadcast_sync(data: dict):
             if not self.broadcast_fn:
                 return
             try:
-                asyncio.run_coroutine_threadsafe(self.broadcast_fn(data), self._loop)
+                fut = asyncio.run_coroutine_threadsafe(self.broadcast_fn(data), self._loop)
+                pending_futures.append(fut)
             except RuntimeError:
                 pass
 
@@ -361,8 +363,13 @@ class ProcessStage(Stage):
             )
             mark_thinking_done()
 
-            # Drain any pending cross-thread callbacks before responding
-            await asyncio.sleep(0)
+            # Drain all pending cross-thread callbacks before responding
+            if pending_futures:
+                await asyncio.gather(
+                    *[asyncio.wrap_future(f) for f in pending_futures],
+                    return_exceptions=True,
+                )
+                pending_futures.clear()
 
             event.set_result(response)
             event._extras["tool_events"] = tool_events
@@ -391,7 +398,7 @@ class ProcessStage(Stage):
 
         yield
 
-    def cancel_current(self):
+    def cancel_current(self) -> bool:
         """Cancel the currently running agent operation (thread-safe).
 
         Called from the main thread on Ctrl+C to interrupt LLM streaming

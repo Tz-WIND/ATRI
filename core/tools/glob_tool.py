@@ -1,8 +1,9 @@
 """File pattern matching, workspace-constrained."""
 
 from pathlib import Path
+from typing import Any
+
 from .base import Tool
-from ._constants import SKIP_DIRS
 
 
 class GlobTool(Tool):
@@ -11,16 +12,16 @@ class GlobTool(Tool):
         "Find files matching a glob pattern. "
         "Supports ** for recursive matching (e.g. '**/*.py')."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py' or 'src/**/*.ts'"},
-            "path": {"type": "string", "description": "Directory to search in (relative to workspace, default: workspace root)"},
+            "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.py' or 'src/**/*.ts'"},  # noqa: E501
+            "path": {"type": "string", "description": "Directory to search in (relative to workspace, default: workspace root)"},  # noqa: E501
         },
         "required": ["pattern"],
     }
 
-    def execute(self, pattern: str, path: str = ".") -> str:
+    def execute(self, pattern: str, path: str = ".", **kwargs: Any) -> str:
         try:
             base = self.resolve_path(path)
         except PermissionError as e:

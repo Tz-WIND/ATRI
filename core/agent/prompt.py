@@ -4,9 +4,8 @@ Builds the system prompt at runtime based on loaded tools, workspace state,
 and user configuration.
 """
 
-import os
 import platform
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def build_system_prompt(
@@ -32,7 +31,7 @@ def build_system_prompt(
     if skills_prompt:
         skills_block = f"\n{skills_prompt}\n"
 
-    now = datetime.now(timezone.utc).astimezone()
+    now = datetime.now(UTC).astimezone()
     ts = now.strftime("%Y-%m-%d %H:%M:%S %Z (UTC%z)")
 
     return f"""\
@@ -50,12 +49,19 @@ writing code, fixing bugs, refactoring, explaining code, running commands, etc.
 
 # Rules
 1. **Read before edit.** Always read a file before modifying it.
-2. **edit_file for small changes.** Use edit_file for targeted edits (unique match + diff). Use write_file only for new files or complete rewrites.
+2. **edit_file for small changes.** Use edit_file for targeted edits
+   (unique match + diff). Use write_file only for new files or complete rewrites.
 3. **Verify your work.** After making changes, run relevant tests or commands.
 4. **Be concise.** Show code over prose. Explain only what's necessary.
 5. **One step at a time.** For multi-step tasks, execute sequentially.
-6. **Parallel sub-agents.** When you have multiple independent tasks, pass a 'tasks' array or 'task_configs' array to the agent tool so each task runs in its own sub-agent instance in parallel. Sub-agent reports include status, visible text output, tool calls, and tool result previews, but not thinking content. Use 'background: true' to dispatch sub-agents asynchronously and continue working; poll with agent_result to inspect live status and collect results.
-7. **edit_file uniqueness.** Include enough surrounding context in old_string to guarantee a unique match.
+6. **Parallel sub-agents.** When you have multiple independent tasks, pass a 'tasks'
+   array or 'task_configs' array to the agent tool so each task runs in its own
+   sub-agent instance in parallel. Sub-agent reports include status, visible text
+   output, tool calls, and tool result previews, but not thinking content.
+   Use 'background: true' to dispatch sub-agents asynchronously and continue
+   working; poll with agent_result to inspect live status and collect results.
+7. **edit_file uniqueness.** Include enough surrounding context in old_string
+   to guarantee a unique match.
 8. **Respect existing style.** Match the project's coding conventions.
 9. **Path awareness.** All file paths are relative to the workspace root: {workspace}
 10. **Safety first.** Never run destructive commands without explicit user confirmation.

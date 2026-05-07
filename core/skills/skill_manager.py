@@ -264,7 +264,6 @@ class SkillManager:
     def list_skills(self, active_only: bool = False) -> list[SkillInfo]:
         """List all skills, merging filesystem state with config."""
         skills_by_name: dict[str, SkillInfo] = {}
-        modified = False
         root = Path(self.skills_root)
 
         if root.exists():
@@ -283,7 +282,6 @@ class SkillManager:
                 active = self.skills_config.get(skill_name, {}).get("active", True)
                 if skill_name not in self.skills_config:
                     self.skills_config[skill_name] = {"active": active}
-                    modified = True
 
                 if active_only and not active:
                     continue

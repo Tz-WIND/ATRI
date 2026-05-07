@@ -79,7 +79,7 @@ async def main():
         start_task = asyncio.create_task(lifecycle.start())
         shutdown_task = asyncio.create_task(shutdown_triggered.wait())
 
-        done, pending = await asyncio.wait(
+        _done, pending = await asyncio.wait(
             [start_task, shutdown_task],
             return_when=asyncio.FIRST_COMPLETED,
         )

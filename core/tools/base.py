@@ -3,6 +3,7 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 
 class Tool(ABC):
@@ -33,11 +34,12 @@ class Tool(ABC):
         return p
 
     @abstractmethod
-    def execute(self, **kwargs) -> str:
+    def execute(self, **kwargs: Any) -> str:
         ...
 
     def cancel(self):
         """Cancel any ongoing execution. Override in subclasses that support interruption."""
+        return
 
     def schema(self) -> dict:
         return {

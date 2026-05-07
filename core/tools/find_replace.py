@@ -2,8 +2,10 @@
 
 import re
 from pathlib import Path
-from .base import Tool
+from typing import Any
+
 from ._constants import SKIP_DIRS, TEXT_EXTS
+from .base import Tool
 
 
 class FindReplaceTool(Tool):
@@ -13,15 +15,15 @@ class FindReplaceTool(Tool):
         "Supports regex patterns. Returns a summary of all changes made. "
         "Use with caution -- always search first to preview matches."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "find": {"type": "string", "description": "Text or regex pattern to find"},
             "replace": {"type": "string", "description": "Replacement text"},
-            "path": {"type": "string", "description": "Directory to search in (default: workspace root)"},
-            "include": {"type": "string", "description": "Only process files matching this glob (e.g. '*.py')"},
-            "is_regex": {"type": "boolean", "description": "Treat 'find' as regex (default: false)"},
-            "dry_run": {"type": "boolean", "description": "Preview changes without applying (default: false)"},
+            "path": {"type": "string", "description": "Directory to search in (default: workspace root)"},  # noqa: E501
+            "include": {"type": "string", "description": "Only process files matching this glob (e.g. '*.py')"},  # noqa: E501
+            "is_regex": {"type": "boolean", "description": "Treat 'find' as regex (default: false)"},  # noqa: E501
+            "dry_run": {"type": "boolean", "description": "Preview changes without applying (default: false)"},  # noqa: E501
         },
         "required": ["find", "replace"],
     }
@@ -34,6 +36,7 @@ class FindReplaceTool(Tool):
         include: str | None = None,
         is_regex: bool = False,
         dry_run: bool = False,
+        **kwargs: Any,
     ) -> str:
         try:
             base = self.resolve_path(path)

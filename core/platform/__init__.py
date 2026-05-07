@@ -1,15 +1,15 @@
-from .message import MessageEvent, MessageType, MessageChain, Plain, Image, At, Reply
-from .base import Platform
+from .base import Platform  # noqa: A005
+from .message import At, Image, MessageChain, MessageEvent, MessageType, Plain, Reply
 from .webchat import WebChatAdapter
 
 __all__ = [
+    "At",
+    "Image",
+    "MessageChain",
     "MessageEvent",
     "MessageType",
-    "MessageChain",
     "Plain",
-    "Image",
-    "At",
-    "Reply",
     "Platform",
+    "Reply",
     "WebChatAdapter",
 ]

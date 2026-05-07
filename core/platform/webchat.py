@@ -9,6 +9,7 @@ import uuid
 from asyncio import Queue
 
 from core import logger
+
 from .base import Platform, PlatformMeta, PlatformStatus
 from .message import MessageChain, MessageEvent, MessageType, Plain, Sender
 
@@ -48,7 +49,7 @@ class WebChatAdapter(Platform):
     async def send_message(self, event: MessageEvent, text: str):
         """Resolve the pending future so the dashboard HTTP handler gets the response."""
         req_id = event._extras.get("_webchat_req_id")
-        logger.info(f"WebChat.send_message: req_id={req_id}, pending={list(self._pending.keys())}, text={len(text)}chars")
+        logger.info(f"WebChat.send_message: req_id={req_id}, pending={list(self._pending.keys())}, text={len(text)}chars")  # noqa: E501
         if req_id and req_id in self._pending:
             fut = self._pending.pop(req_id)
             if not fut.done():
@@ -61,7 +62,7 @@ class WebChatAdapter(Platform):
 
     async def send_message_chain(self, event: MessageEvent, chain: MessageChain):
         req_id = event._extras.get("_webchat_req_id")
-        logger.info(f"WebChat.send_message_chain: req_id={req_id}, pending={list(self._pending.keys())}")
+        logger.info(f"WebChat.send_message_chain: req_id={req_id}, pending={list(self._pending.keys())}")  # noqa: E501
         if req_id and req_id in self._pending:
             fut = self._pending.pop(req_id)
             if not fut.done():

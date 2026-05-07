@@ -4,10 +4,11 @@ Combines filename matching and content keyword search into one tool,
 providing a higher-level "find anything related to X" capability.
 """
 
-import re
 from pathlib import Path
-from .base import Tool
+from typing import Any
+
 from ._constants import SKIP_DIRS, TEXT_EXTS
+from .base import Tool
 
 
 class SearchTool(Tool):
@@ -16,17 +17,17 @@ class SearchTool(Tool):
         "Search for files and content matching a query across the workspace. "
         "Searches both file names and file contents. Returns the most relevant results."
     )
-    parameters = {
+    parameters = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query (keywords or pattern)"},
-            "path": {"type": "string", "description": "Subdirectory to search in (default: workspace root)"},
-            "file_only": {"type": "boolean", "description": "Only search file names, not contents (default: false)"},
+            "path": {"type": "string", "description": "Subdirectory to search in (default: workspace root)"},  # noqa: E501
+            "file_only": {"type": "boolean", "description": "Only search file names, not contents (default: false)"},  # noqa: E501
         },
         "required": ["query"],
     }
 
-    def execute(self, query: str, path: str = ".", file_only: bool = False) -> str:
+    def execute(self, query: str, path: str = ".", file_only: bool = False, **kwargs: Any) -> str:
         try:
             base = self.resolve_path(path)
         except PermissionError as e:

@@ -11,14 +11,15 @@ sub-agent isolation, dynamic system prompts, and Ctrl+C cancellation.
 import asyncio
 import concurrent.futures
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 from core import logger
 from core.utils import clean_optional_str
-from .llm import LLM, LLMResponse
-from .tools_bridge import get_all_tools, get_tool
+
 from .context import ContextManager
+from .llm import LLM
 from .prompt import build_system_prompt
+from .tools_bridge import get_all_tools, get_tool
 
 
 class Agent:
@@ -122,7 +123,7 @@ class Agent:
         return list(catalog)
 
     def _full_messages(self) -> list[dict]:
-        return [{"role": "system", "content": self._build_system()}] + self.messages
+        return [{"role": "system", "content": self._build_system()}, *self.messages]
 
     def _tool_schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools]
@@ -208,7 +209,7 @@ class Agent:
                 results = self._exec_tools_parallel(
                     resp.tool_calls, on_tool, on_tool_start, on_tool_end,
                 )
-                for tc, result in zip(resp.tool_calls, results):
+                for tc, result in zip(resp.tool_calls, results, strict=False):
                     self.messages.append(
                         {"role": "tool", "tool_call_id": tc.id, "content": result}
                     )

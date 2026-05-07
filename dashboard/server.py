@@ -9,24 +9,24 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-from http.cookies import SimpleCookie
+import io
 import json
 import os
-import io
 import secrets
 import tempfile
 import time
 import zipfile
 from collections import defaultdict
+from http.cookies import SimpleCookie
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
-from quart import Quart, Response, jsonify, request, websocket, send_from_directory
+from quart import Quart, Response, jsonify, request, send_from_directory, websocket
 
 from core import logger
 from core.config_schema import CONFIG_SCHEMA
-from core.platform.message import normalize_session_id, display_session_id
+from core.platform.message import display_session_id, normalize_session_id
 
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
@@ -260,7 +260,7 @@ async def _fetch_model_ids(client, url: str, headers: dict, api_format: str) -> 
 
 
 class Dashboard:
-    def __init__(self, lifecycle: "Lifecycle", host: str = "127.0.0.1", port: int = 6185):
+    def __init__(self, lifecycle: Lifecycle, host: str = "127.0.0.1", port: int = 6185):
         self.lifecycle = lifecycle
         self.host = host
         self.port = port
@@ -273,7 +273,8 @@ class Dashboard:
         self._ws_clients: set = set()
         self._register_routes()
 
-        from dashboard.music import bp as music_bp, init_music
+        from dashboard.music import bp as music_bp
+        from dashboard.music import init_music
         init_music(lifecycle)
         self.app.register_blueprint(music_bp)
 
@@ -431,13 +432,13 @@ class Dashboard:
             """Add security headers to all responses."""
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("X-Frame-Options", "DENY")
-            response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:")
+            response.headers.setdefault("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:")  # noqa: E501
             response.headers.setdefault("Cache-Control", "no-store")
             return response
 
         @app.route("/")
         async def index():
-            response = await send_from_directory(app.static_folder, "index.html")
+            response = await send_from_directory(app.static_folder or "static", "index.html")
             response.headers["Cache-Control"] = "no-store"
             return response
 
@@ -459,7 +460,7 @@ class Dashboard:
                 if self.auth_setup_required
                 else not self.auth_enabled or self._request_authenticated()
             )
-            response = {
+            response: dict[str, Any] = {
                 "auth_required": self.auth_enabled,
                 "setup_required": self.auth_setup_required,
                 "authenticated": authenticated,
@@ -614,7 +615,7 @@ class Dashboard:
             existing = providers.get(name, {})
             providers[name] = {
                 "base_url": data.get("base_url", ""),
-                "api_key": data["api_key"] if data.get("api_key") and data["api_key"] != "***" else existing.get("api_key", ""),
+                "api_key": data["api_key"] if data.get("api_key") and data["api_key"] != "***" else existing.get("api_key", ""),  # noqa: E501
                 "api_format": data.get("api_format", "openai"),
                 "models": existing.get("models", []),
             }
@@ -678,7 +679,7 @@ class Dashboard:
             try:
                 import httpx as _httpx
                 last_error = None
-                default_base_url = "https://api.anthropic.com/v1" if api_format == "anthropic" else ""
+                default_base_url = "https://api.anthropic.com/v1" if api_format == "anthropic" else ""  # noqa: E501
                 effective_base_url = base_url or default_base_url
                 async with _httpx.AsyncClient(timeout=15) as client:
                     for url, headers, fetch_format in _model_fetch_candidates(
@@ -725,7 +726,7 @@ class Dashboard:
             lc = self.lifecycle
             active_models = lc.config.setdefault("active_models", [])
             entry = {"model": model, "provider": provider_name}
-            if not any(m["model"] == model and m["provider"] == provider_name for m in active_models):
+            if not any(m["model"] == model and m["provider"] == provider_name for m in active_models):  # noqa: E501
                 active_models.append(entry)
             self._apply_model(provider_name, model)
             lc.save_config()
@@ -806,10 +807,10 @@ class Dashboard:
             ob = self.lifecycle.config.get("onebot11", {})
             return jsonify({
                 "enabled": ob.get("enabled", True),
-                "ws_reverse_host": ob.get("ws_reverse_host", "0.0.0.0"),
+                "ws_reverse_host": ob.get("ws_reverse_host", "0.0.0.0"),  # noqa: S104
                 "ws_reverse_port": ob.get("ws_reverse_port", 6199),
                 "ws_reverse_token": "***" if ob.get("ws_reverse_token") else "",
-                "status": self.lifecycle.onebot11.status.value if self.lifecycle.onebot11 else "disabled",
+                "status": self.lifecycle.onebot11.status.value if self.lifecycle.onebot11 else "disabled",  # noqa: E501
             })
 
         @app.route("/api/adapter", methods=["POST"])
@@ -822,10 +823,10 @@ class Dashboard:
                 ob["ws_reverse_host"] = data["ws_reverse_host"]
             if "ws_reverse_port" in data:
                 ob["ws_reverse_port"] = int(data["ws_reverse_port"])
-            if "ws_reverse_token" in data and data["ws_reverse_token"] != "***":
+            if "ws_reverse_token" in data and data["ws_reverse_token"] != "***":  # noqa: S105
                 ob["ws_reverse_token"] = data["ws_reverse_token"]
             self.lifecycle.save_config()
-            return jsonify({"ok": True, "note": "Restart required for adapter changes to take effect."})
+            return jsonify({"ok": True, "note": "Restart required for adapter changes to take effect."})  # noqa: E501
 
         # ── MCP Servers ──
         @app.route("/api/mcp/servers", methods=["GET"])
@@ -833,7 +834,7 @@ class Dashboard:
             servers = self.lifecycle.config.get("mcp_servers", {})
             result = []
             for name, cfg in servers.items():
-                result.append({"name": name, "active": cfg.get("active", True), **{k: v for k, v in cfg.items() if k != "active"}})
+                result.append({"name": name, "active": cfg.get("active", True), **{k: v for k, v in cfg.items() if k != "active"}})  # noqa: E501
             return jsonify(result)
 
         @app.route("/api/mcp/servers", methods=["POST"])
@@ -867,7 +868,7 @@ class Dashboard:
         # ── Skills ──
         @app.route("/api/skills", methods=["GET"])
         async def list_skills():
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
             if sm is None:
                 return jsonify([])
             skills = sm.list_skills(active_only=False)
@@ -883,7 +884,7 @@ class Dashboard:
 
         @app.route("/api/skills/<name>")
         async def get_skill(name: str):
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -895,8 +896,8 @@ class Dashboard:
                 if s.name == name:
                     skill_path = Path(s.path)
                     content = ""
-                    if skill_path.exists():
-                        content = skill_path.read_text(encoding="utf-8", errors="replace")
+                    if skill_path.exists():  # noqa: ASYNC240
+                        content = skill_path.read_text(encoding="utf-8", errors="replace")  # noqa: ASYNC240
                     return jsonify({
                         "name": s.name,
                         "description": s.description,
@@ -909,7 +910,7 @@ class Dashboard:
         @app.route("/api/skills/<name>", methods=["PUT"])
         async def update_skill(name: str):
             data = await request.get_json()
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -923,7 +924,7 @@ class Dashboard:
 
         @app.route("/api/skills/<name>", methods=["DELETE"])
         async def delete_skill(name: str):
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -936,7 +937,7 @@ class Dashboard:
 
         @app.route("/api/skills/upload", methods=["POST"])
         async def upload_skill():
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             files = await request.files
@@ -963,7 +964,7 @@ class Dashboard:
 
         @app.route("/api/skills/<name>/download")
         async def download_skill(name: str):
-            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
+            sm = self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None  # noqa: E501
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -999,7 +1000,7 @@ class Dashboard:
         async def get_session(session_id: str):
             if self.lifecycle.process_stage:
                 store = self.lifecycle.process_stage.session_store
-                internal_id = f"webchat:friend:{session_id}" if ":" not in session_id else session_id
+                internal_id = f"webchat:friend:{session_id}" if ":" not in session_id else session_id  # noqa: E501
                 for candidate in (internal_id, session_id):
                     result = store.load(candidate)
                     if result:
@@ -1036,7 +1037,7 @@ class Dashboard:
                 return jsonify({"entries": [], "path": rel})
             entries = []
             try:
-                for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                for item in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):  # noqa: E501
                     if item.name.startswith("."):
                         continue
                     entries.append({
@@ -1107,7 +1108,7 @@ class Dashboard:
             try:
                 result = await asyncio.wait_for(future, timeout=300)
                 response_text = result.get("text", "")
-                token_usage = {}
+                token_usage: dict[str, Any] = {}
                 if self.lifecycle.process_stage:
                     agent = self.lifecycle.process_stage.get_agent(event.unified_msg_origin)
                     if agent:
@@ -1122,7 +1123,7 @@ class Dashboard:
                     "tool_events": event._extras.get("tool_events", []),
                     "token_usage": token_usage,
                 })
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return jsonify({"error": "Agent timed out (300s)"}), 504
             except Exception as e:
                 logger.exception(f"WebUI chat error: {e}")
@@ -1205,7 +1206,7 @@ class Dashboard:
                 if not hmac.compare_digest(session_token, self.auth_session_token):
                     await websocket.close(1008)
                     return
-            ws_obj = websocket._get_current_object()
+            ws_obj = websocket._get_current_object()  # type: ignore[attr-defined]
             self._ws_clients.add(ws_obj)
             try:
                 while True:
@@ -1226,7 +1227,7 @@ class Dashboard:
             path = _req.path
             if path.startswith(("/api/", "/ws", "/static/")):
                 return jsonify({"error": "not found"}), 404
-            response = await send_from_directory(app.static_folder, "index.html")
+            response = await send_from_directory(app.static_folder or "static", "index.html")
             response.headers["Cache-Control"] = "no-store"
             return response
 

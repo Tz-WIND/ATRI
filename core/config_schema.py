@@ -32,7 +32,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
             "type": "object",
             "properties": {
                 "enabled": {"type": "boolean", "default": True},
-                "ws_reverse_host": {"type": "string", "default": "0.0.0.0"},
+                "ws_reverse_host": {"type": "string", "default": "0.0.0.0"},  # noqa: S104
                 "ws_reverse_port": {"type": "integer", "default": 6199, "minimum": 1},
                 "ws_reverse_token": {"type": "string", "default": ""},
                 "blocked_users": {"type": "array", "default": []},
@@ -131,7 +131,7 @@ def _coerce_value(value: Any, schema: dict[str, Any], path: str) -> tuple[Any, b
         if isinstance(value, bool):
             raise ConfigValidationError(f"{path} must be an integer")
         if isinstance(value, int):
-            coerced = value
+            coerced: int | float = value
         elif isinstance(value, str) and value.strip():
             try:
                 coerced = int(value)
@@ -166,7 +166,7 @@ def _coerce_value(value: Any, schema: dict[str, Any], path: str) -> tuple[Any, b
     return value, False
 
 
-def _validate_object(config: dict[str, Any], schema: dict[str, Any], path: str) -> tuple[dict[str, Any], bool]:
+def _validate_object(config: dict[str, Any], schema: dict[str, Any], path: str) -> tuple[dict[str, Any], bool]:  # noqa: E501
     changed = False
     for key, child_schema in schema.get("properties", {}).items():
         child_path = f"{path}.{key}" if path else key
@@ -192,8 +192,8 @@ def _migrate_dashboard_auth(config: dict[str, Any]) -> bool:
 
     if legacy_token and not dashboard.get("password"):
         # Hash immediately so plaintext never hits disk
-        from hashlib import pbkdf2_hmac
         import os
+        from hashlib import pbkdf2_hmac
         salt = os.urandom(16)
         dk = pbkdf2_hmac("sha256", legacy_token.encode(), salt, 600_000)
         dashboard["password"] = f"pbkdf2:{salt.hex()}${dk.hex()}"
