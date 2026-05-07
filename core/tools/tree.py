@@ -18,11 +18,11 @@ class TreeTool(Tool):
             "path": {
                 "type": "string",
                 "description": "Root directory (relative to workspace, default: workspace root)",
-            },  # noqa: E501
+            },
             "max_depth": {
                 "type": "integer",
                 "description": "Maximum depth to traverse (default: 3)",
-            },  # noqa: E501
+            },
         },
         "required": [],
     }

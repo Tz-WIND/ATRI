@@ -140,7 +140,7 @@ class WebSearchTool(Tool):
                     f"Web search — {query}\n\n{answer}"
                     if answer
                     else f"No results found for: {query}"
-                )  # noqa: E501
+                )
 
             lines = [f"Web search — {query}\n"]
             for i, r in enumerate(results, 1):

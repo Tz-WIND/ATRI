@@ -167,7 +167,7 @@ def _coerce_value(value: Any, schema: dict[str, Any], path: str) -> tuple[Any, b
 
 def _validate_object(
     config: dict[str, Any], schema: dict[str, Any], path: str
-) -> tuple[dict[str, Any], bool]:  # noqa: E501
+) -> tuple[dict[str, Any], bool]:
     changed = False
     for key, child_schema in schema.get("properties", {}).items():
         child_path = f"{path}.{key}" if path else key

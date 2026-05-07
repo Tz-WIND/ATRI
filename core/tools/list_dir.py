@@ -20,11 +20,11 @@ class ListDirTool(Tool):
             "path": {
                 "type": "string",
                 "description": "Directory path (relative to workspace, default: workspace root)",
-            },  # noqa: E501
+            },
             "show_hidden": {
                 "type": "boolean",
                 "description": "Show hidden files/dirs (default: false)",
-            },  # noqa: E501
+            },
         },
         "required": [],
     }
@@ -52,7 +52,7 @@ class ListDirTool(Tool):
                 if item.is_dir():
                     child_count = (
                         sum(1 for _ in item.iterdir()) if os.access(str(item), os.R_OK) else 0
-                    )  # noqa: E501
+                    )
                     entries.append(f"📁 {name}/  ({child_count} items)")
                 else:
                     size = item.stat().st_size

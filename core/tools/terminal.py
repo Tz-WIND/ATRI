@@ -33,12 +33,15 @@ class TerminalTool(Tool):
             "command": {
                 "type": "string",
                 "description": "Command to execute in the persistent session",
-            },  # noqa: E501
+            },
             "timeout": {"type": "integer", "description": "Timeout in seconds (default 120)"},
             "session_id": {
                 "type": "string",
-                "description": "Session identifier (default: 'default'). Use different IDs for parallel sessions.",
-            },  # noqa: E501
+                "description": (
+                    "Session identifier (default: 'default'). "
+                    "Use different IDs for parallel sessions."
+                ),
+            },
         },
         "required": ["command"],
     }
@@ -47,7 +50,7 @@ class TerminalTool(Tool):
 
     def execute(
         self, command: str, timeout: int = 120, session_id: str = "default", **kwargs: Any
-    ) -> str:  # noqa: E501
+    ) -> str:
         session = self._get_session(session_id)
         return session.run(command, timeout)
 

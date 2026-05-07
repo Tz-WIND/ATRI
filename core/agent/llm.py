@@ -481,9 +481,8 @@ class LLM:
 
         with self.client.stream("POST", "messages", json=params, headers=headers) as resp:
             if resp.status_code >= 400:
-                logger.error(
-                    f"Anthropic HTTP {resp.status_code}: {resp.read().decode(errors='replace')[:1000]}"
-                )  # noqa: E501
+                body = resp.read().decode(errors="replace")[:1000]
+                logger.error(f"Anthropic HTTP {resp.status_code}: {body}")
             resp.raise_for_status()
             for event_name, data in _iter_sse_json(resp):
                 if cancel_event and cancel_event.is_set():

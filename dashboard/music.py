@@ -29,7 +29,7 @@ AUDIO_EXTS = {
     ".ape",
     ".dsf",
     ".dff",
-}  # noqa: E501
+}
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -118,7 +118,7 @@ def _read_metadata(filepath: str) -> dict | None:
             "channels": 0,
             "has_cover": False,
             "lossless": p.suffix.lower()
-            in {".flac", ".wav", ".aiff", ".alac", ".ape", ".dsf", ".dff"},  # noqa: E501
+            in {".flac", ".wav", ".aiff", ".alac", ".ape", ".dsf", ".dff"},
         }
 
         if audio.info:
@@ -315,7 +315,7 @@ async def scan_library():
             s["track_number"],
             s["title"].lower(),
         )
-    )  # noqa: E501
+    )
 
     try:
         _cache_path().write_text(json.dumps(songs, ensure_ascii=False), encoding="utf-8")

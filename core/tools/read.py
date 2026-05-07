@@ -14,7 +14,7 @@ class ReadFileTool(Tool):
             "file_path": {
                 "type": "string",
                 "description": "Path to the file (relative to workspace)",
-            },  # noqa: E501
+            },
             "offset": {"type": "integer", "description": "Start line (1-based). Default 1."},
             "limit": {"type": "integer", "description": "Max lines to read. Default 2000."},
         },

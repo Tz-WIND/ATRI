@@ -25,11 +25,11 @@ class EditFileTool(Tool):
             "file_path": {
                 "type": "string",
                 "description": "Path to the file to edit (relative to workspace)",
-            },  # noqa: E501
+            },
             "old_string": {
                 "type": "string",
                 "description": "Exact text to find (must be unique in file)",
-            },  # noqa: E501
+            },
             "new_string": {"type": "string", "description": "Replacement text"},
         },
         "required": ["file_path", "old_string", "new_string"],

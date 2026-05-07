@@ -24,11 +24,11 @@ class SearchTool(Tool):
             "path": {
                 "type": "string",
                 "description": "Subdirectory to search in (default: workspace root)",
-            },  # noqa: E501
+            },
             "file_only": {
                 "type": "boolean",
                 "description": "Only search file names, not contents (default: false)",
-            },  # noqa: E501
+            },
         },
         "required": ["query"],
     }

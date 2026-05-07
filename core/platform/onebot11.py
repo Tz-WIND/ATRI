@@ -78,7 +78,7 @@ class OneBot11Adapter(Platform):
             MessageType.GROUP_MESSAGE
             if event.message_type == "group"
             else MessageType.FRIEND_MESSAGE
-        )  # noqa: E501
+        )
         sender = Sender(
             user_id=str(event.sender["user_id"]),
             nickname=event.sender.get("card") or event.sender.get("nickname", ""),
@@ -101,7 +101,7 @@ class OneBot11Adapter(Platform):
                 for m in m_group:
                     chain.append(
                         Image(url=m["data"].get("url", ""), file=m["data"].get("file", ""))
-                    )  # noqa: E501
+                    )
             elif seg_type == "at":
                 for m in m_group:
                     qq = str(m["data"].get("qq", ""))
@@ -136,7 +136,7 @@ class OneBot11Adapter(Platform):
 
         session_id = (
             str(event.group_id) if msg_type == MessageType.GROUP_MESSAGE else sender.user_id
-        )  # noqa: E501
+        )
 
         return MessageEvent(
             message_str=message_str,

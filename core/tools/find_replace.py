@@ -23,19 +23,19 @@ class FindReplaceTool(Tool):
             "path": {
                 "type": "string",
                 "description": "Directory to search in (default: workspace root)",
-            },  # noqa: E501
+            },
             "include": {
                 "type": "string",
                 "description": "Only process files matching this glob (e.g. '*.py')",
-            },  # noqa: E501
+            },
             "is_regex": {
                 "type": "boolean",
                 "description": "Treat 'find' as regex (default: false)",
-            },  # noqa: E501
+            },
             "dry_run": {
                 "type": "boolean",
                 "description": "Preview changes without applying (default: false)",
-            },  # noqa: E501
+            },
         },
         "required": ["find", "replace"],
     }

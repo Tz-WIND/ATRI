@@ -18,7 +18,7 @@ class WriteFileTool(Tool):
             "file_path": {
                 "type": "string",
                 "description": "Path for the file (relative to workspace)",
-            },  # noqa: E501
+            },
             "content": {"type": "string", "description": "Full file content to write"},
         },
         "required": ["file_path", "content"],

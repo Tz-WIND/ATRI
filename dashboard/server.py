@@ -432,8 +432,11 @@ class Dashboard:
             response.headers.setdefault("X-Frame-Options", "DENY")
             response.headers.setdefault(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:",
-            )  # noqa: E501
+                (
+                    "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                    "script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:"
+                ),
+            )
             response.headers.setdefault("Cache-Control", "no-store")
             return response
 
@@ -621,7 +624,7 @@ class Dashboard:
                 "base_url": data.get("base_url", ""),
                 "api_key": data["api_key"]
                 if data.get("api_key") and data["api_key"] != "***"
-                else existing.get("api_key", ""),  # noqa: E501
+                else existing.get("api_key", ""),
                 "api_format": data.get("api_format", "openai"),
                 "models": existing.get("models", []),
             }
@@ -684,7 +687,7 @@ class Dashboard:
                 last_error = None
                 default_base_url = (
                     "https://api.anthropic.com/v1" if api_format == "anthropic" else ""
-                )  # noqa: E501
+                )
                 effective_base_url = base_url or default_base_url
                 async with _httpx.AsyncClient(timeout=15) as client:
                     for url, headers, fetch_format in _model_fetch_candidates(
@@ -733,7 +736,7 @@ class Dashboard:
             entry = {"model": model, "provider": provider_name}
             if not any(
                 m["model"] == model and m["provider"] == provider_name for m in active_models
-            ):  # noqa: E501
+            ):
                 active_models.append(entry)
             self._apply_model(provider_name, model)
             lc.save_config()
@@ -822,7 +825,7 @@ class Dashboard:
                     "ws_reverse_token": "***" if ob.get("ws_reverse_token") else "",
                     "status": self.lifecycle.onebot11.status.value
                     if self.lifecycle.onebot11
-                    else "disabled",  # noqa: E501
+                    else "disabled",
                 }
             )
 
@@ -841,7 +844,7 @@ class Dashboard:
             self.lifecycle.save_config()
             return jsonify(
                 {"ok": True, "note": "Restart required for adapter changes to take effect."}
-            )  # noqa: E501
+            )
 
         # ── MCP Servers ──
         @app.route("/api/mcp/servers", methods=["GET"])
@@ -855,7 +858,7 @@ class Dashboard:
                         "active": cfg.get("active", True),
                         **{k: v for k, v in cfg.items() if k != "active"},
                     }
-                )  # noqa: E501
+                )
             return jsonify(result)
 
         @app.route("/api/mcp/servers", methods=["POST"])
@@ -891,7 +894,7 @@ class Dashboard:
         async def list_skills():
             sm = (
                 self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
-            )  # noqa: E501
+            )
             if sm is None:
                 return jsonify([])
             skills = sm.list_skills(active_only=False)
@@ -911,7 +914,7 @@ class Dashboard:
         async def get_skill(name: str):
             sm = (
                 self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
-            )  # noqa: E501
+            )
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -941,7 +944,7 @@ class Dashboard:
             data = await request.get_json()
             sm = (
                 self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
-            )  # noqa: E501
+            )
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -957,7 +960,7 @@ class Dashboard:
         async def delete_skill(name: str):
             sm = (
                 self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
-            )  # noqa: E501
+            )
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -972,7 +975,7 @@ class Dashboard:
         async def upload_skill():
             sm = (
                 self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
-            )  # noqa: E501
+            )
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             files = await request.files
@@ -1001,7 +1004,7 @@ class Dashboard:
         async def download_skill(name: str):
             sm = (
                 self.lifecycle.process_stage.skill_manager if self.lifecycle.process_stage else None
-            )  # noqa: E501
+            )
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
@@ -1039,7 +1042,7 @@ class Dashboard:
                 store = self.lifecycle.process_stage.session_store
                 internal_id = (
                     f"webchat:friend:{session_id}" if ":" not in session_id else session_id
-                )  # noqa: E501
+                )
                 for candidate in (internal_id, session_id):
                     result = store.load(candidate)
                     if result:
@@ -1078,7 +1081,7 @@ class Dashboard:
             try:
                 for item in sorted(
                     target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
-                ):  # noqa: E501
+                ):
                     if item.name.startswith("."):
                         continue
                     entries.append(

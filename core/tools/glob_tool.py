@@ -17,11 +17,13 @@ class GlobTool(Tool):
             "pattern": {
                 "type": "string",
                 "description": "Glob pattern, e.g. '**/*.py' or 'src/**/*.ts'",
-            },  # noqa: E501
+            },
             "path": {
                 "type": "string",
-                "description": "Directory to search in (relative to workspace, default: workspace root)",
-            },  # noqa: E501
+                "description": (
+                    "Directory to search in (relative to workspace, default: workspace root)"
+                ),
+            },
         },
         "required": ["pattern"],
     }

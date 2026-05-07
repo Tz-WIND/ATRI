@@ -29,7 +29,7 @@ class MusicTool(Tool):
                     "status",
                     "search",
                     "volume",
-                ],  # noqa: E501
+                ],
                 "description": "The player action to perform",
             },
             "query": {
@@ -96,7 +96,7 @@ class MusicTool(Tool):
                 "next": "Skipped to next",
                 "prev": "Back to previous",
                 "stop": "Stopped",
-            }  # noqa: E501
+            }
             return f"{labels.get(action, action.title())} playback."
 
         if action == "volume":

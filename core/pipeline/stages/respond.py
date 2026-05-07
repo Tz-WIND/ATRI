@@ -27,8 +27,9 @@ class RespondStage(Stage):
         result_text = event.get_result_text()
 
         logger.info(
-            f"RespondStage: text={len(result_text)}chars chain={len(result_chain)}items platform={event.platform_name}"
-        )  # noqa: E501
+            f"RespondStage: text={len(result_text)}chars "
+            f"chain={len(result_chain)}items platform={event.platform_name}"
+        )
 
         if not result_text and not result_chain:
             logger.info("RespondStage: no result to send.")
@@ -51,7 +52,7 @@ class RespondStage(Stage):
                     await platform.send_message(event, result_text)
             logger.info(
                 f"RespondStage: response sent via {event.platform_name} ({len(result_text)} chars)"
-            )  # noqa: E501
+            )
         except Exception as e:
             logger.exception(f"Failed to send response via {event.platform_name}: {e}")
 
