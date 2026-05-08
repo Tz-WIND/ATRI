@@ -1150,6 +1150,52 @@ class Dashboard:
                     self.lifecycle.process_stage.reset_session(session_id)
             return jsonify({"ok": True})
 
+        # 鈹€鈹€ Runtime timeline 鈹€鈹€
+        @app.route("/api/runtime/threads")
+        async def list_runtime_threads():
+            store = self._runtime_store()
+            if store is None:
+                return jsonify([])
+            limit = _parse_int(request.args.get("limit"), 50)
+            include_archived = request.args.get("include_archived", "").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            threads = store.list_threads(limit=limit, include_archived=include_archived)
+            for thread in threads:
+                thread["display_id"] = display_session_id(thread["id"])
+            return jsonify(threads)
+
+        @app.route("/api/runtime/threads/<path:thread_id>")
+        async def get_runtime_thread(thread_id: str):
+            store = self._runtime_store()
+            if store is None:
+                return jsonify({"error": "runtime store not available"}), 503
+            internal_id = normalize_session_id(thread_id)
+            detail = store.thread_detail(internal_id) or store.thread_detail(thread_id)
+            if detail is None:
+                return jsonify({"error": "thread not found"}), 404
+            detail["thread"]["display_id"] = display_session_id(detail["thread"]["id"])
+            return jsonify(detail)
+
+        @app.route("/api/runtime/events")
+        async def list_runtime_events():
+            store = self._runtime_store()
+            if store is None:
+                return jsonify({"events": [], "latest_seq": 0})
+            session_id = (request.args.get("session_id") or "").strip()
+            thread_id = normalize_session_id(session_id) if session_id else None
+            since_seq = _parse_int(request.args.get("since_seq"), 0)
+            limit = _parse_int(request.args.get("limit"), 1000)
+            events = store.events_since(thread_id=thread_id, since_seq=since_seq, limit=limit)
+            return jsonify(
+                {
+                    "events": [event.to_wire_payload() for event in events],
+                    "latest_seq": store.latest_seq(thread_id),
+                }
+            )
+
         @app.route("/api/test-ping")
         async def test_ping():
             return jsonify({"pong": True})
@@ -1360,6 +1406,23 @@ class Dashboard:
                     msg = json.loads(data)
                     if msg.get("type") == "ping":
                         await websocket.send(json.dumps({"type": "pong"}))
+                    elif msg.get("type") == "runtime_replay":
+                        store = self._runtime_store()
+                        if store is None:
+                            continue
+                        session_id = str(msg.get("session_id") or "").strip()
+                        if not session_id:
+                            continue
+                        thread_id = normalize_session_id(session_id)
+                        since_seq = _parse_int(msg.get("since_seq"), 0)
+                        limit = _parse_int(msg.get("limit"), 1000)
+                        events = store.events_since(
+                            thread_id=thread_id,
+                            since_seq=since_seq,
+                            limit=limit,
+                        )
+                        for runtime_event in events:
+                            await websocket.send(json.dumps(runtime_event.to_wire_payload()))
             except asyncio.CancelledError:
                 pass
             finally:
@@ -1392,6 +1455,11 @@ class Dashboard:
                 return tool
         return None
 
+    def _runtime_store(self):
+        if not self.lifecycle.process_stage:
+            return None
+        return getattr(self.lifecycle.process_stage, "runtime_store", None)
+
     async def broadcast(self, data: dict):
         msg = json.dumps(data)
         for ws in list(self._ws_clients):
@@ -1421,3 +1489,10 @@ class Dashboard:
     async def stop(self):
         if hasattr(self, "shutdown_event"):
             self.shutdown_event.set()
+
+
+def _parse_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

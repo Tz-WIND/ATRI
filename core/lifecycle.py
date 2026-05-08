@@ -137,6 +137,7 @@ class Lifecycle:
             "tavily_api_key": self.config.get("tavily_api_key", ""),
             "mcp_servers": self.config.get("mcp_servers", {}),
             "sessions_dir": self.config.get("sessions_dir"),
+            "runtime_dir": self.config.get("runtime_dir"),
             "wake_words": self.config.get("wake_words", []),
             "self_id": "",
             "platforms": platforms,

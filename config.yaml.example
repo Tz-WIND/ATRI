@@ -34,6 +34,7 @@ workspace: ./workspace
 
 # 数据存储路径
 sessions_dir: data/sessions
+runtime_dir: data/runtime
 plugins_dir: plugins
 
 # Dashboard Web 控制台

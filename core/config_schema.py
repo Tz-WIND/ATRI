@@ -25,6 +25,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "max_rounds": {"type": "integer", "default": 50, "minimum": 1},
         "workspace": {"type": "string", "default": "./workspace"},
         "sessions_dir": {"type": "string", "default": "data/sessions"},
+        "runtime_dir": {"type": "string", "default": "data/runtime"},
         "wake_words": {"type": "array", "default": ["atri"]},
         "extra_instructions": {"type": "string", "default": ""},
         "persona": {"type": "string", "default": ""},
