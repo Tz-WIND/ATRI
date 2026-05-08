@@ -8,7 +8,6 @@ WebFetchTool  — fetch and extract text content from a URL.
 import html as _html
 import json as _json
 import re
-import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,15 +44,24 @@ _USER_AGENT = (
     "Chrome/125.0.0.0 Safari/537.36"
 )
 _TIMEOUT = 20
+_ALLOWED_URL_SCHEMES = {"http", "https"}
 
 # Tags we strip when extracting text from HTML
 _SKIP_TAGS = {"script", "style", "noscript", "iframe", "svg", "head", "meta", "link"}
 
 # ---------------------------------------------------------------------------
-# shared SSL context
+# URL opening
 # ---------------------------------------------------------------------------
 
-_SSL_CONTEXT = ssl.create_default_context()
+
+def _validated_http_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_URL_SCHEMES or not parsed.netloc:
+        raise ValueError("Only http and https URLs are supported")
+    if parsed.username or parsed.password:
+        raise ValueError("URLs with embedded credentials are not supported")
+    return urllib.parse.urlunsplit(parsed)
 
 
 def _open_url(
@@ -69,8 +77,10 @@ def _open_url(
     if extra_headers:
         headers.update(extra_headers)
 
-    req = urllib.request.Request(url, data=data, headers=headers)  # noqa: S310
-    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT)  # noqa: S310
+    safe_url = _validated_http_url(url)
+    # S310 is suppressed after scheme validation; HTTPS uses urllib's default TLS checks.
+    req = urllib.request.Request(safe_url, data=data, headers=headers)  # noqa: S310
+    return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
 
 
 # ---------------------------------------------------------------------------
