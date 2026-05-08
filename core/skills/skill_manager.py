@@ -64,6 +64,10 @@ MAX_COMPANION_DEPTH = 4
 MAX_SKILL_DESCRIPTION_CHARS = 512
 MAX_SKILLS_PROMPT_CHARS = 12_000
 SKILL_DISCOVERY_CACHE_TTL_SECONDS = 2.0
+MAX_SKILL_ZIP_ENTRIES = 1_000
+MAX_SKILL_ZIP_MEMBER_BYTES = 25 * 1024 * 1024
+MAX_SKILL_ZIP_TOTAL_BYTES = 100 * 1024 * 1024
+_ZIP_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def _is_ignored_zip_entry(name: str) -> bool:
@@ -71,6 +75,49 @@ def _is_ignored_zip_entry(name: str) -> bool:
     if not parts:
         return True
     return parts[0] == "__MACOSX"
+
+
+def _validate_zip_entry_path(name: str) -> None:
+    if name.startswith("/") or _DRIVE_PATH_RE.match(name):
+        raise ValueError("Zip archive contains absolute paths.")
+    if ".." in PurePosixPath(name).parts:
+        raise ValueError("Zip archive contains invalid relative paths.")
+
+
+def _copy_zip_member(
+    zf: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    target_root: Path,
+    member_name: str,
+    total_written: int,
+) -> int:
+    relative_path = Path(*PurePosixPath(member_name).parts)
+    target_root = target_root.resolve()
+    target = (target_root / relative_path).resolve()
+    try:
+        target.relative_to(target_root)
+    except ValueError as e:
+        raise ValueError("Zip archive contains invalid relative paths.") from e
+
+    if member.is_dir() or member_name.endswith("/"):
+        target.mkdir(parents=True, exist_ok=True)
+        return total_written
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    member_written = 0
+    with zf.open(member) as source, target.open("wb") as destination:
+        while True:
+            chunk = source.read(_ZIP_COPY_CHUNK_BYTES)
+            if not chunk:
+                break
+            member_written += len(chunk)
+            total_written += len(chunk)
+            if member_written > MAX_SKILL_ZIP_MEMBER_BYTES:
+                raise ValueError("Zip archive member exceeds maximum file size.")
+            if total_written > MAX_SKILL_ZIP_TOTAL_BYTES:
+                raise ValueError("Zip archive exceeds maximum uncompressed size.")
+            destination.write(chunk)
+    return total_written
 
 
 def _find_skill_markdown_path(skill_dir: Path) -> Path | None:
@@ -814,12 +861,30 @@ class SkillManager:
         installed_skills: list[str] = []
 
         with zipfile.ZipFile(zip_path) as zf:
-            names = [
-                name
-                for name in (entry.replace("\\", "/") for entry in zf.namelist())
-                if name and not _is_ignored_zip_entry(name)
+            archive_members: list[tuple[zipfile.ZipInfo, str]] = []
+            total_size = 0
+            for member in zf.infolist():
+                member_name = member.filename.replace("\\", "/")
+                if not member_name or _is_ignored_zip_entry(member_name):
+                    continue
+                if len(archive_members) >= MAX_SKILL_ZIP_ENTRIES:
+                    raise ValueError("Zip archive contains too many entries.")
+                _validate_zip_entry_path(member_name)
+                archive_members.append((member, member_name))
+
+                if member.is_dir() or member_name.endswith("/"):
+                    continue
+                if member.file_size > MAX_SKILL_ZIP_MEMBER_BYTES:
+                    raise ValueError("Zip archive member exceeds maximum file size.")
+                total_size += member.file_size
+                if total_size > MAX_SKILL_ZIP_TOTAL_BYTES:
+                    raise ValueError("Zip archive exceeds maximum uncompressed size.")
+
+            file_names = [
+                member_name
+                for member, member_name in archive_members
+                if not member.is_dir() and not member_name.endswith("/")
             ]
-            file_names = [name for name in names if name and not name.endswith("/")]
             if not file_names:
                 raise ValueError("Zip archive is empty.")
 
@@ -834,21 +899,16 @@ class SkillManager:
             if skill_name_hint is not None:
                 archive_skill_name = _validate_skill_name(_normalize_skill_name(skill_name_hint))
 
-            # Security: validate all paths before extraction.
-            for name in names:
-                if not name:
-                    continue
-                if name.startswith("/") or _DRIVE_PATH_RE.match(name):
-                    raise ValueError("Zip archive contains absolute paths.")
-                if ".." in PurePosixPath(name).parts:
-                    raise ValueError("Zip archive contains invalid relative paths.")
-
             with tempfile.TemporaryDirectory() as tmp_dir:
-                for member in zf.infolist():
-                    member_name = member.filename.replace("\\", "/")
-                    if not member_name or _is_ignored_zip_entry(member_name):
-                        continue
-                    zf.extract(member, tmp_dir)
+                total_written = 0
+                for member, member_name in archive_members:
+                    total_written = _copy_zip_member(
+                        zf,
+                        member,
+                        Path(tmp_dir),
+                        member_name,
+                        total_written,
+                    )
 
                 if root_mode:
                     archive_hint = _normalize_skill_name(skill_name_hint or zip_path_obj.stem)

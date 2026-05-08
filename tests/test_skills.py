@@ -2,6 +2,7 @@ import zipfile
 
 import pytest
 
+import core.skills.skill_manager as skill_manager_module
 from core.skills.skill_manager import SkillManager, build_skills_prompt
 from core.tools.skill import LoadSkillTool
 
@@ -118,3 +119,49 @@ def test_skill_manager_installs_root_zip_and_rejects_unsafe_zip_entries(tmp_path
 
     with pytest.raises(ValueError, match="invalid relative paths"):
         manager.install_skill_from_zip(str(unsafe_zip))
+
+
+def test_skill_manager_rejects_oversized_zip_member_before_extraction(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(skill_manager_module, "MAX_SKILL_ZIP_MEMBER_BYTES", 16)
+    monkeypatch.setattr(skill_manager_module, "MAX_SKILL_ZIP_TOTAL_BYTES", 1024)
+
+    def fail_copy(*args, **kwargs):
+        raise AssertionError("zip extraction should not start")
+
+    monkeypatch.setattr(skill_manager_module, "_copy_zip_member", fail_copy)
+    manager = SkillManager(skills_root=str(tmp_path / "skills"), include_global=False)
+
+    zip_path = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("SKILL.md", "A" * 128)
+
+    with pytest.raises(ValueError, match="member exceeds maximum file size"):
+        manager.install_skill_from_zip(str(zip_path))
+
+    assert manager.list_skills() == []
+
+
+def test_skill_manager_rejects_zip_with_too_much_total_uncompressed_data(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(skill_manager_module, "MAX_SKILL_ZIP_MEMBER_BYTES", 1024)
+    monkeypatch.setattr(skill_manager_module, "MAX_SKILL_ZIP_TOTAL_BYTES", 80)
+
+    def fail_copy(*args, **kwargs):
+        raise AssertionError("zip extraction should not start")
+
+    monkeypatch.setattr(skill_manager_module, "_copy_zip_member", fail_copy)
+    manager = SkillManager(skills_root=str(tmp_path / "skills"), include_global=False)
+
+    zip_path = tmp_path / "large-total.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("SKILL.md", "name: demo\n")
+        zf.writestr("asset.bin", "B" * 128)
+
+    with pytest.raises(ValueError, match="exceeds maximum uncompressed size"):
+        manager.install_skill_from_zip(str(zip_path))
+
+    assert manager.list_skills() == []
