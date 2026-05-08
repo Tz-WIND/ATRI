@@ -145,3 +145,15 @@ def test_search_tool_finds_file_names_and_content(tmp_path):
     assert "runtime_notes.txt" in name_result
     assert "code.py:1" in content_result
     assert tool.execute("   ") == "Error: empty query"
+
+
+def test_search_tool_walk_streams_files_and_prunes_skipped_directories(tmp_path):
+    (tmp_path / "visible").mkdir()
+    (tmp_path / "visible" / "keep.txt").write_text("keep", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "ignored.txt").write_text("ignored", encoding="utf-8")
+
+    walked = SearchTool._walk(tmp_path)
+
+    assert iter(walked) is walked
+    assert [path.relative_to(tmp_path).as_posix() for path in walked] == ["visible/keep.txt"]

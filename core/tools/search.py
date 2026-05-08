@@ -4,6 +4,8 @@ Combines filename matching and content keyword search into one tool,
 providing a higher-level "find anything related to X" capability.
 """
 
+import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -86,13 +88,14 @@ class SearchTool(Tool):
         return "\n".join(parts) if parts else "No matches found."
 
     @staticmethod
-    def _walk(root: Path) -> list[Path]:
-        results = []
-        for item in root.rglob("*"):
-            if any(part in SKIP_DIRS for part in item.parts):
-                continue
-            if item.is_file():
-                results.append(item)
-            if len(results) >= 10000:
-                break
-        return results
+    def _walk(root: Path) -> Iterator[Path]:
+        if root.name in SKIP_DIRS:
+            return
+        yielded = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+            for filename in filenames:
+                yield Path(dirpath) / filename
+                yielded += 1
+                if yielded >= 10000:
+                    return
