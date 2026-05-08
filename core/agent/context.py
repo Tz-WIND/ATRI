@@ -214,7 +214,8 @@ class ToolResultStore:
         path = self.root / f"{result_id}.json"
         if not path.exists():
             raise FileNotFoundError(f"Tool result not found: {result_id}")
-        return json.loads(path.read_text(encoding="utf-8"))
+        data: dict = json.loads(path.read_text(encoding="utf-8"))
+        return data
 
     def _read_output(self, record: dict) -> str:
         output_path = record.get("output_path")
