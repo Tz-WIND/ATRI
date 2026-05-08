@@ -350,7 +350,8 @@ class MCPStdioClient:
         body = proc.stdout.read(length)
         if not body:
             return None
-        return json.loads(body.decode("utf-8"))
+        message = json.loads(body.decode("utf-8"))
+        return message if isinstance(message, dict) else None
 
     def _handle_message(self, message: dict) -> None:
         request_id = message.get("id")
@@ -629,7 +630,8 @@ class MCPRegistry:
 
     def snapshot(self) -> dict:
         with self._lock:
-            return json.loads(json.dumps(self._snapshot, default=str))
+            snapshot = json.loads(json.dumps(self._snapshot, default=str))
+            return snapshot if isinstance(snapshot, dict) else {}
 
     def create_tools(self, workspace: str = ".") -> list[Tool]:
         with self._lock:
