@@ -34,12 +34,14 @@ class Agent:
         persona: str = "",
         skills_prompt: str = "",
         skill_manager=None,
+        mcp_servers: dict | None = None,
         llm_factory: Callable[[str | None, str | None], LLM] | None = None,
         model_catalog: Callable[[], list[dict]] | list[dict] | None = None,
     ):
         self.llm = llm
         self.workspace = workspace
         self.skill_manager = skill_manager
+        self.mcp_servers = dict(mcp_servers or {})
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.tools = (
@@ -49,6 +51,7 @@ class Agent:
                 workspace,
                 skill_manager=skill_manager,
                 tool_result_store=self.context.tool_result_store,
+                mcp_servers=self.mcp_servers,
             )
         )
         self.max_rounds = max_rounds
@@ -60,12 +63,27 @@ class Agent:
         self._cancel_event = threading.Event()
         self._was_cancelled = False  # True if previous chat() was interrupted
 
-        # Wire up sub-agent capability
+        self._wire_agent_tools()
+
+    def _wire_agent_tools(self):
+        # Wire up sub-agent capability.
         from core.tools.agent_tool import AgentTool
 
         for t in self.tools:
             if isinstance(t, AgentTool):
                 t._parent_agent = self
+
+    def reload_tools(self, mcp_servers: dict | None = None):
+        """Recreate tool instances after tool-related configuration changes."""
+        if mcp_servers is not None:
+            self.mcp_servers = dict(mcp_servers or {})
+        self.tools = get_all_tools(
+            self.workspace,
+            skill_manager=self.skill_manager,
+            tool_result_store=self.context.tool_result_store,
+            mcp_servers=self.mcp_servers,
+        )
+        self._wire_agent_tools()
 
     def _build_system(self) -> str:
         prompt = build_system_prompt(

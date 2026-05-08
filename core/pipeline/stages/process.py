@@ -49,6 +49,7 @@ class ProcessStage(Stage):
         self.skill_search_roots: list[str] = ctx.get("skill_search_roots", [])
         self.skills_config: dict = ctx.get("skills_config", {})
         self.tavily_api_key: str = ctx.get("tavily_api_key", "")
+        self.mcp_servers: dict = dict(ctx.get("mcp_servers", {}))
 
         from core.tools.web_search import set_tavily_key
 
@@ -137,6 +138,7 @@ class ProcessStage(Stage):
                     persona=self.persona,
                     skills_prompt=self._skills_prompt,
                     skill_manager=self.skill_manager,
+                    mcp_servers=self.mcp_servers,
                     llm_factory=self._create_llm_for_model,
                     model_catalog=self._model_catalog,
                 )
@@ -551,6 +553,11 @@ class ProcessStage(Stage):
             from core.tools.web_search import set_tavily_key
 
             set_tavily_key(self.tavily_api_key or None)
+        if "mcp_servers" in kwargs:
+            self.mcp_servers = dict(kwargs["mcp_servers"] or {})
+            with self._agents_lock:
+                for agent in self._agents.values():
+                    agent.reload_tools(mcp_servers=self.mcp_servers)
 
     def get_agent(self, session_id: str) -> Agent | None:
         """Thread-safe lookup of a session's agent. Returns None if not found."""

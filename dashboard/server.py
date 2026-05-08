@@ -48,6 +48,7 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "skills_root",
     "skill_search_roots",
     "tavily_api_key",
+    "mcp_servers",
 }
 
 _AUTH_COOKIE = "atri_dashboard_session"
@@ -266,6 +267,7 @@ class Dashboard:
         self.port = port
         self._sync_auth_from_config()
         self.auth_session_token = secrets.token_urlsafe(32)
+        self._mcp_push_fingerprint = ""
 
         static_dir = str(Path(__file__).parent / "static")
         self.app = Quart("atri-dashboard", static_folder=static_dir, static_url_path="/static")
@@ -371,6 +373,36 @@ class Dashboard:
         ps = self.lifecycle.process_stage
         if ps is not None:
             ps.reload_skills()
+
+    async def _reload_mcp_tools(self, force: bool = False) -> dict:
+        """Discover configured MCP servers and push tools to live agents."""
+        from core.tools.mcp import get_mcp_registry
+
+        servers = self.lifecycle.config.get("mcp_servers", {})
+        workspace = self.lifecycle.config.get("workspace", ".")
+        registry = get_mcp_registry()
+        snapshot = await asyncio.to_thread(
+            registry.refresh,
+            servers,
+            workspace,
+            force,
+        )
+        fingerprint = str(snapshot.get("push_fingerprint") or snapshot.get("fingerprint") or "")
+        ps = self.lifecycle.process_stage
+        if ps is not None and (force or fingerprint != self._mcp_push_fingerprint):
+            await asyncio.to_thread(ps.update_config, mcp_servers=servers)
+            self._mcp_push_fingerprint = fingerprint
+        return snapshot
+
+    async def _validate_mcp_server(self, name: str, cfg: dict) -> dict:
+        from core.tools.mcp import get_mcp_registry
+
+        return await asyncio.to_thread(
+            get_mcp_registry().validate_server,
+            name,
+            cfg,
+            self.lifecycle.config.get("workspace", "."),
+        )
 
     # ── Auth helpers ──
 
@@ -858,44 +890,82 @@ class Dashboard:
         @app.route("/api/mcp/servers", methods=["GET"])
         async def list_mcp():
             servers = self.lifecycle.config.get("mcp_servers", {})
+            snapshot = await self._reload_mcp_tools(force=False)
+            states = {item.get("name"): item for item in snapshot.get("servers", [])}
             result = []
             for name, cfg in servers.items():
+                state = states.get(name, {})
                 result.append(
                     {
                         "name": name,
                         "active": cfg.get("active", True),
                         **{k: v for k, v in cfg.items() if k != "active"},
+                        "status": state.get("status", "inactive"),
+                        "error": state.get("error", ""),
+                        "tools": state.get("tools", []),
+                        "resources": state.get("resources", []),
+                        "resource_templates": state.get("resource_templates", []),
+                        "prompts": state.get("prompts", []),
+                        "protocol_version": state.get("protocol_version", ""),
+                        "server_info": state.get("server_info", {}),
                     }
                 )
             return jsonify(result)
 
+        @app.route("/api/mcp/status", methods=["GET"])
+        async def mcp_status():
+            return jsonify(await self._reload_mcp_tools(force=False))
+
+        @app.route("/api/mcp/reload", methods=["POST"])
+        async def reload_mcp():
+            return jsonify(await self._reload_mcp_tools(force=True))
+
         @app.route("/api/mcp/servers", methods=["POST"])
         async def add_mcp():
-            data = await request.get_json()
-            name = data.pop("name", "")
+            data = await request.get_json(silent=True) or {}
+            name = str(data.pop("name", "") or "").strip()
             if not name:
                 return jsonify({"error": "name required"}), 400
             servers = self.lifecycle.config.setdefault("mcp_servers", {})
             servers[name] = data
             self.lifecycle.save_config()
-            return jsonify({"ok": True})
+            snapshot = await self._reload_mcp_tools(force=False)
+            return jsonify({"ok": True, "mcp": snapshot})
 
         @app.route("/api/mcp/servers/<name>", methods=["PUT"])
         async def update_mcp(name: str):
-            data = await request.get_json()
+            data = await request.get_json(silent=True) or {}
             servers = self.lifecycle.config.setdefault("mcp_servers", {})
             if name not in servers:
                 return jsonify({"error": "not found"}), 404
             servers[name].update(data)
             self.lifecycle.save_config()
-            return jsonify({"ok": True})
+            snapshot = await self._reload_mcp_tools(force=False)
+            return jsonify({"ok": True, "mcp": snapshot})
 
         @app.route("/api/mcp/servers/<name>", methods=["DELETE"])
         async def delete_mcp(name: str):
             servers = self.lifecycle.config.get("mcp_servers", {})
             servers.pop(name, None)
             self.lifecycle.save_config()
-            return jsonify({"ok": True})
+            snapshot = await self._reload_mcp_tools(force=False)
+            return jsonify({"ok": True, "mcp": snapshot})
+
+        @app.route("/api/mcp/servers/<name>/validate", methods=["POST"])
+        async def validate_mcp(name: str):
+            servers = self.lifecycle.config.get("mcp_servers", {})
+            cfg = servers.get(name)
+            if cfg is None:
+                return jsonify({"error": "not found"}), 404
+            return jsonify(await self._validate_mcp_server(name, cfg))
+
+        @app.route("/api/mcp/servers/<name>/reload", methods=["POST"])
+        async def reload_mcp_server(name: str):
+            snapshot = await self._reload_mcp_tools(force=True)
+            for server in snapshot.get("servers", []):
+                if server.get("name") == name:
+                    return jsonify(server)
+            return jsonify({"error": "not found"}), 404
 
         # ── Skills ──
         @app.route("/api/skills", methods=["GET"])
@@ -1214,7 +1284,11 @@ class Dashboard:
             from core.tools import create_tools
 
             ws = self.lifecycle.config.get("workspace", ".")
-            tools = create_tools(ws)
+            tools = await asyncio.to_thread(
+                create_tools,
+                ws,
+                mcp_servers=self.lifecycle.config.get("mcp_servers", {}),
+            )
             return jsonify([{"name": t.name, "description": t.description} for t in tools])
 
         # ── Dangerous command approval ──

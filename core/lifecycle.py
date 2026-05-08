@@ -135,6 +135,7 @@ class Lifecycle:
             "skill_search_roots": self.config.get("skill_search_roots", []),
             "skills_config": self.config.get("skills", {}),
             "tavily_api_key": self.config.get("tavily_api_key", ""),
+            "mcp_servers": self.config.get("mcp_servers", {}),
             "sessions_dir": self.config.get("sessions_dir"),
             "wake_words": self.config.get("wake_words", []),
             "self_id": "",
@@ -248,6 +249,9 @@ class Lifecycle:
         await self.plugin_manager.terminate()
         if hasattr(self, "dashboard"):
             await self.dashboard.stop()
+        from core.tools.mcp import get_mcp_registry
+
+        get_mcp_registry().close()
 
         logger.info("ATRI stopped.")
 

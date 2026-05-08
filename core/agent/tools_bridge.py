@@ -13,13 +13,19 @@ if TYPE_CHECKING:
     from core.tools.base import Tool
 
 
-def get_all_tools(workspace: str, skill_manager=None, tool_result_store=None) -> list[Tool]:
+def get_all_tools(
+    workspace: str,
+    skill_manager=None,
+    tool_result_store=None,
+    mcp_servers: dict | None = None,
+) -> list[Tool]:
     from core.tools import create_tools
 
     return create_tools(
         workspace,
         skill_manager=skill_manager,
         tool_result_store=tool_result_store,
+        mcp_servers=mcp_servers,
     )
 
 

@@ -9,6 +9,7 @@ from .glob_tool import GlobTool
 from .grep import GrepTool
 from .lint import LintTool
 from .list_dir import ListDirTool
+from .mcp import create_mcp_tools
 from .music import MusicTool
 from .read import ReadFileTool
 from .retrieve_tool_result import RetrieveToolResultTool
@@ -20,9 +21,14 @@ from .web_search import WebFetchTool, WebSearchTool
 from .write import WriteFileTool
 
 
-def create_tools(workspace: str, skill_manager=None, tool_result_store=None) -> list[Tool]:
+def create_tools(
+    workspace: str,
+    skill_manager=None,
+    tool_result_store=None,
+    mcp_servers: dict | None = None,
+) -> list[Tool]:
     """Create a full set of tools bound to the given workspace."""
-    return [
+    tools: list[Tool] = [
         BashTool(workspace),
         TerminalTool(workspace),
         ReadFileTool(workspace),
@@ -43,6 +49,8 @@ def create_tools(workspace: str, skill_manager=None, tool_result_store=None) -> 
         WebSearchTool(workspace),
         WebFetchTool(workspace),
     ]
+    tools.extend(create_mcp_tools(workspace, mcp_servers))
+    return tools
 
 
 def get_tool_by_name(name: str, tools: list[Tool]) -> Tool | None:

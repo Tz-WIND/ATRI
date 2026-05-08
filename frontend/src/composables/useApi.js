@@ -54,7 +54,12 @@ export function useApi() {
 
     // MCP
     getMcpServers: () => request('/api/mcp/servers'),
+    getMcpStatus: () => request('/api/mcp/status'),
+    reloadMcp: () => request('/api/mcp/reload', { method: 'POST' }),
     saveMcpServer: (data) => request('/api/mcp/servers', { method: 'POST', body: JSON.stringify(data) }),
+    updateMcpServer: (name, data) => request(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    validateMcpServer: (name) => request(`/api/mcp/servers/${encodeURIComponent(name)}/validate`, { method: 'POST' }),
+    reloadMcpServer: (name) => request(`/api/mcp/servers/${encodeURIComponent(name)}/reload`, { method: 'POST' }),
     deleteMcpServer: (name) => request(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
     // Skills
