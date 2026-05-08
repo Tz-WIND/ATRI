@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.utils import format_bytes
+
 from ._constants import SKIP_DIRS
 from .base import Tool
 
@@ -56,7 +58,7 @@ class ListDirTool(Tool):
                     entries.append(f"📁 {name}/  ({child_count} items)")
                 else:
                     size = item.stat().st_size
-                    size_str = _fmt_size(size)
+                    size_str = format_bytes(size)
                     entries.append(f"   {name}  ({size_str})")
         except PermissionError:
             return f"Error: permission denied reading {path}"
@@ -67,11 +69,3 @@ class ListDirTool(Tool):
         rel = base.relative_to(Path(self._workspace).resolve())
         header = f"Directory: {rel}/\n{'─' * 40}\n"
         return header + "\n".join(entries)
-
-
-def _fmt_size(n: int | float) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
-        n /= 1024
-    return f"{n:.1f}TB"

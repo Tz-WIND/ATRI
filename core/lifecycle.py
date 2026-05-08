@@ -5,8 +5,6 @@ Platform adapters (OneBot11 + WebChat), Pipeline, EventBus, Plugin Manager, Dash
 """
 
 import asyncio
-import os
-import tempfile
 import time
 import traceback
 from asyncio import Queue
@@ -26,6 +24,7 @@ from core.pipeline.stages import *  # noqa: F403 - registers stages
 from core.platform.onebot11 import OneBot11Adapter
 from core.platform.webchat import WebChatAdapter
 from core.plugin.manager import PluginManager
+from core.utils import atomic_write_text
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 
@@ -71,21 +70,13 @@ class Lifecycle:
     def save_config(self, config: dict | None = None):
         if config is None:
             config = self.config
-        # Atomic write: write to temp file then rename to avoid corruption on crash
         cfg_path = Path(self.config_path)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(cfg_path.parent), suffix=".tmp", prefix=".config_"
+        payload = yaml.dump(config, default_flow_style=False, allow_unicode=True)
+        atomic_write_text(
+            cfg_path,
+            payload,
+            prefix=".config_",
         )
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-            os.replace(tmp_path, cfg_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
 
     async def initialize(self) -> None:
         logger.info("ATRI Agent Framework starting...")

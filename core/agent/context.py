@@ -9,9 +9,7 @@ Three layers inspired by Claude Code:
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 import threading
 import time
 import uuid
@@ -20,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core import logger
+from core.utils import atomic_write_text, format_bytes
 
 if TYPE_CHECKING:
     from .llm import LLM
@@ -60,18 +59,6 @@ def estimate_tokens(messages: list[dict], system_prompt: str = "") -> int:
         if m.get("tool_calls"):
             total += _approx_tokens(str(m["tool_calls"]))
     return total
-
-
-def _format_bytes(size: int) -> str:
-    units = ("B", "KB", "MB", "GB")
-    value = float(max(0, size))
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)}B"
-            return f"{value:.1f}{unit}"
-        value /= 1024
-    return f"{value:.1f}GB"
 
 
 @dataclass
@@ -227,10 +214,10 @@ class ToolResultStore:
 
     def _compact_output(self, record: StoredToolResult, output: str) -> str:
         head = output[: self.head_chars].rstrip()
-        preview_kb = _format_bytes(self.head_chars)
+        preview_kb = format_bytes(self.head_chars)
         return (
             f"{TOOL_OUTPUT_COMPRESSED_MARKER}\n"
-            f"Output too large ({_format_bytes(len(output.encode('utf-8')))}). "
+            f"Output too large ({format_bytes(len(output.encode('utf-8')))}). "
             f"Full output saved to: {record.path}\n"
             f"Tool result id: {record.result_id}\n\n"
             f"Preview (first {preview_kb}):\n"
@@ -302,30 +289,10 @@ class ToolResultStore:
 
     def _atomic_write_json(self, path: Path, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False, indent=2)
-        fd, tmp_path = tempfile.mkstemp(dir=str(self.root), suffix=".tmp", prefix=".tool_result_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(data)
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_text(path, data, prefix=".tool_result_")
 
     def _atomic_write_text(self, path: Path, data: str) -> None:
-        fd, tmp_path = tempfile.mkstemp(dir=str(self.root), suffix=".tmp", prefix=".tool_output_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as f:
-                f.write(data)
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_text(path, data, errors="replace", prefix=".tool_output_")
 
 
 class ContextManager:
