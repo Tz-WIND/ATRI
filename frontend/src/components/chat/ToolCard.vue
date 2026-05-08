@@ -47,8 +47,15 @@
         :raw="toolData.result"
         :file-name="targetLabel"
       />
+      <div
+        v-if="resultCompressed"
+        class="tool-compressed-note"
+      >
+        <span>Full output stored</span>
+        <code v-if="resultId">{{ resultId }}</code>
+      </div>
       <pre
-        v-else-if="detailsText"
+        v-if="!diffContent && detailsText && !resultCompressed"
         class="tool-output"
       >{{ detailsText }}</pre>
     </div>
@@ -67,6 +74,7 @@ const TOOL_LABELS = {
   glob: { ing: 'Searching files', done: 'Found files', fail: 'Search Failed', key: 'pattern' },
   grep: { ing: 'Searching', done: 'Searched', fail: 'Search Failed', key: 'pattern' },
   search: { ing: 'Searching', done: 'Searched', fail: 'Search Failed', key: 'query' },
+  retrieve_tool_result: { ing: 'Retrieving output', done: 'Retrieved output', fail: 'Retrieve Failed', key: 'result_id' },
   list_dir: { ing: 'Listing', done: 'Listed', fail: 'List Failed', key: 'path' },
   tree: { ing: 'Viewing tree', done: 'Viewed tree', fail: 'Tree Failed', key: 'path' },
   bash: { ing: 'Running command', done: 'Ran command', fail: 'Command Failed', key: 'command' },
@@ -124,11 +132,23 @@ const detailsText = computed(() => {
 })
 
 const statusText = computed(() => {
+  if (resultCompressed.value) return 'stored'
   switch (props.toolData.status) {
     case 'executing': return 'running'
     case 'failed': return 'failed'
     default: return ''
   }
+})
+
+const resultCompressed = computed(() =>
+  Boolean(props.toolData.resultCompressed) ||
+  String(props.toolData.result || '').startsWith('<persisted-output>')
+)
+
+const resultId = computed(() => {
+  if (props.toolData.resultId) return props.toolData.resultId
+  const match = String(props.toolData.result || '').match(/^(?:tool_result_id|Tool result id):\s*(\S+)/m)
+  return match ? match[1] : ''
 })
 
 const readRange = computed(() => {
@@ -265,6 +285,25 @@ function previewValue(value, max = 120) {
   color: var(--t3);
   background: rgba(255, 255, 255, 0.06);
   font-size: 10px;
+}
+
+.tool-compressed-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: rgba(55, 148, 255, 0.08);
+  border: 1px solid rgba(55, 148, 255, 0.18);
+  border-radius: 4px;
+  color: var(--t2);
+}
+
+.tool-compressed-note code {
+  padding: 2px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  color: var(--acc2);
 }
 
 .tool-details {

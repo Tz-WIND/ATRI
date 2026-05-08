@@ -75,6 +75,8 @@ export function useChat() {
         args: msg.data.args,
         status: msg.data.success ? 'success' : 'failed',
         result: msg.data.result_preview || null,
+        resultCompressed: Boolean(msg.data.result_compressed),
+        resultId: msg.data.result_id || '',
       })
       toolCards.value = {
         ...toolCards.value,
@@ -84,6 +86,8 @@ export function useChat() {
           args: msg.data.args,
           status: msg.data.success ? 'success' : 'failed',
           result: msg.data.result_preview || null,
+          resultCompressed: Boolean(msg.data.result_compressed),
+          resultId: msg.data.result_id || '',
         },
       }
     }
@@ -257,9 +261,17 @@ export function useChat() {
           args: call.args || {},
           status: result.startsWith('Error') ? 'failed' : 'success',
           result,
+          resultCompressed: result.startsWith('<persisted-output>'),
+          resultId: extractToolResultId(result),
         })
       }
     })
+  }
+
+  function extractToolResultId(result) {
+    if (!result) return ''
+    const match = String(result).match(/^(?:tool_result_id|Tool result id):\s*(\S+)/m)
+    return match ? match[1] : ''
   }
 
   async function cancelMessage() {

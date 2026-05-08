@@ -287,7 +287,11 @@ class AgentTool(Tool):
         parent = self._parent_agent
         child_tools = [
             t
-            for t in get_all_tools(parent.workspace, skill_manager=parent.skill_manager)
+            for t in get_all_tools(
+                parent.workspace,
+                skill_manager=parent.skill_manager,
+                tool_result_store=parent.context.tool_result_store,
+            )
             if t.name not in ("agent", "agent_result")
         ]
         return Agent(

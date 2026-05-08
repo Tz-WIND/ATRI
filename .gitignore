@@ -28,6 +28,7 @@ skills/
 
 # Project data (runtime generated)
 data/sessions/
+data/tool_outputs/
 data/music_cache.json
 
 # Claude

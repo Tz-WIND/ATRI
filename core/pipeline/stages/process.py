@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from core import logger
 from core.agent.agent import Agent
+from core.agent.context import TOOL_OUTPUT_COMPRESSED_MARKER
 from core.agent.llm import LLM
 from core.agent.session import SessionStore
 from core.pipeline.stage import Stage, register_stage
@@ -347,7 +348,9 @@ class ProcessStage(Stage):
             is_error = result.startswith("Error")
             is_blocked = "BLOCKED:" in result
             needs_confirm = CONFIRM_MARKER in result
-            preview_len = 8000 if name in {"edit_file", "write_file"} else 200
+            is_compressed = result.startswith(TOOL_OUTPUT_COMPRESSED_MARKER)
+            result_id = _extract_tool_result_id(result) if is_compressed else ""
+            preview_len = 8000 if name in {"edit_file", "write_file"} or is_compressed else 200
             preview = result[:preview_len] if len(result) > preview_len else result
             _broadcast_sync(
                 {
@@ -359,6 +362,8 @@ class ProcessStage(Stage):
                         "args": args,
                         "success": not is_error and not is_blocked and not needs_confirm,
                         "result_preview": preview,
+                        "result_compressed": is_compressed,
+                        "result_id": result_id,
                     },
                 }
             )
@@ -580,6 +585,15 @@ class ProcessStage(Stage):
 def _brief(kwargs: dict, maxlen: int = 60) -> str:
     s = ", ".join(f"{k}={repr(v)[:30]}" for k, v in kwargs.items())
     return s[:maxlen] + ("..." if len(s) > maxlen else "")
+
+
+def _extract_tool_result_id(result: str) -> str:
+    for line in result.splitlines()[:8]:
+        if line.startswith("tool_result_id:"):
+            return line.split(":", 1)[1].strip()
+        if line.startswith("Tool result id:"):
+            return line.split(":", 1)[1].strip()
+    return ""
 
 
 def _llm_config_from_provider(provider_cfg: dict) -> dict:

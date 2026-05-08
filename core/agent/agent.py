@@ -40,9 +40,17 @@ class Agent:
         self.llm = llm
         self.workspace = workspace
         self.skill_manager = skill_manager
-        self.tools = tools if tools is not None else get_all_tools(workspace, skill_manager)
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
+        self.tools = (
+            tools
+            if tools is not None
+            else get_all_tools(
+                workspace,
+                skill_manager=skill_manager,
+                tool_result_store=self.context.tool_result_store,
+            )
+        )
         self.max_rounds = max_rounds
         self.extra_instructions = extra_instructions
         self.persona = persona
@@ -201,7 +209,7 @@ class Agent:
                     on_tool(tc.name, tc.arguments)
                 if on_tool_start:
                     on_tool_start(tc.id, tc.name, tc.arguments)
-                result = self._exec_tool(tc)
+                result = self._exec_tool_for_context(tc)
                 if on_tool_end:
                     on_tool_end(tc.id, tc.name, tc.arguments, result)
                 self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
@@ -273,6 +281,15 @@ class Agent:
         except Exception as e:
             return f"Error executing {tc.name}: {e}"
 
+    def _exec_tool_for_context(self, tc) -> str:
+        result = self._exec_tool(tc)
+        return self.context.prepare_tool_result(
+            tool=tc.name,
+            tool_call_id=tc.id,
+            args=tc.arguments,
+            output=result,
+        ).content
+
     def _exec_tools_parallel(
         self,
         tool_calls,
@@ -288,7 +305,7 @@ class Agent:
                 on_tool_start(tc.id, tc.name, tc.arguments)
 
         def _run_and_notify(tc):
-            result = self._exec_tool(tc)
+            result = self._exec_tool_for_context(tc)
             if on_tool_end:
                 on_tool_end(tc.id, tc.name, tc.arguments, result)
             return result
