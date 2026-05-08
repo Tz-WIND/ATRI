@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import weakref
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,11 @@ def _json_loads(value: str | None) -> Any:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{int(time.time() * 1000):x}_{uuid.uuid4().hex[:12]}"
+
+
+def _close_connection(conn: sqlite3.Connection, lock: Any) -> None:
+    with lock:
+        conn.close()
 
 
 def summarize_text(text: str, limit: int = 120) -> str:
@@ -118,6 +124,12 @@ class RuntimeTimelineStore:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._connection_finalizer = weakref.finalize(
+            self,
+            _close_connection,
+            self._conn,
+            self._lock,
+        )
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys = ON")
@@ -127,8 +139,7 @@ class RuntimeTimelineStore:
             self._init_schema()
 
     def close(self) -> None:
-        with self._lock:
-            self._conn.close()
+        self._connection_finalizer()
 
     def _init_schema(self) -> None:
         self._conn.executescript(

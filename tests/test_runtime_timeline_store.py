@@ -1,4 +1,8 @@
+import gc
 import sqlite3
+import weakref
+
+import pytest
 
 from core.runtime.timeline import RuntimeEvent, RuntimeTimelineStore, summarize_text
 
@@ -134,6 +138,21 @@ def test_runtime_timeline_rejects_newer_schema_version(tmp_path):
         assert "newer than supported" in str(exc)
     else:
         raise AssertionError("newer schema version was accepted")
+
+
+def test_runtime_timeline_finalizer_closes_unclosed_connection(tmp_path):
+    store = RuntimeTimelineStore(tmp_path / "runtime")
+    conn = store._conn
+    store_ref = weakref.ref(store)
+
+    assert store._connection_finalizer.alive
+
+    del store
+    gc.collect()
+
+    assert store_ref() is None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
 
 
 def test_summarize_text_collapses_whitespace_and_truncates():
