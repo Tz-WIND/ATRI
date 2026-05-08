@@ -12,18 +12,20 @@ from .list_dir import ListDirTool
 from .music import MusicTool
 from .read import ReadFileTool
 from .search import SearchTool
+from .skill import LoadSkillTool
 from .terminal import TerminalTool
 from .tree import TreeTool
 from .web_search import WebFetchTool, WebSearchTool
 from .write import WriteFileTool
 
 
-def create_tools(workspace: str) -> list[Tool]:
+def create_tools(workspace: str, skill_manager=None) -> list[Tool]:
     """Create a full set of tools bound to the given workspace."""
     return [
         BashTool(workspace),
         TerminalTool(workspace),
         ReadFileTool(workspace),
+        LoadSkillTool(workspace, skill_manager=skill_manager),
         WriteFileTool(workspace),
         EditFileTool(workspace),
         FindReplaceTool(workspace),

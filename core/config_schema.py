@@ -51,6 +51,8 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "plugins_dir": {"type": "string", "default": "plugins"},
         "music_directories": {"type": "array", "default": []},
         "mcp_servers": {"type": "object", "default": {}},
+        "skills_root": {"type": "string", "default": "skills"},
+        "skill_search_roots": {"type": "array", "default": []},
         "skills": {"type": "object", "default": {}},
         "tavily_api_key": {"type": "string", "default": ""},
     },

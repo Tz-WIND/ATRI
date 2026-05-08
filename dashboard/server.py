@@ -45,6 +45,8 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "temperature",
     "extra_instructions",
     "persona",
+    "skills_root",
+    "skill_search_roots",
     "tavily_api_key",
 }
 
@@ -577,6 +579,8 @@ class Dashboard:
                     "wake_words": c.get("wake_words", []),
                     "extra_instructions": c.get("extra_instructions", ""),
                     "persona": c.get("persona", ""),
+                    "skills_root": c.get("skills_root", "skills"),
+                    "skill_search_roots": c.get("skill_search_roots", []),
                     "providers": _mask_providers(c.get("providers", {})),
                     "tavily_api_key": "***" if c.get("tavily_api_key") else "",
                 }
@@ -589,6 +593,10 @@ class Dashboard:
             for key in ["model", "base_url", "api_format", "extra_instructions", "persona"]:
                 if key in data:
                     lc.config[key] = data[key]
+            if "skills_root" in data:
+                lc.config["skills_root"] = data["skills_root"]
+            if "skill_search_roots" in data:
+                lc.config["skill_search_roots"] = data["skill_search_roots"]
             if "api_key" in data and data["api_key"] != "***":
                 lc.config["api_key"] = data["api_key"]
             for key in ["max_tokens", "max_context_tokens", "max_rounds"]:
@@ -905,6 +913,12 @@ class Dashboard:
                         "description": s.description,
                         "path": s.path,
                         "active": s.active,
+                        "root": s.root,
+                        "source": s.source,
+                        "format": s.format,
+                        "companion_files": s.companion_files,
+                        "warnings": s.warnings,
+                        "can_delete": s.can_delete,
                     }
                     for s in skills
                 ]
@@ -918,26 +932,27 @@ class Dashboard:
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
-                sm.resolve_skill_dir(name)
+                loaded = sm.load_skill(name, active_only=False)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
-            skills = sm.list_skills(active_only=False)
-            for s in skills:
-                if s.name == name:
-                    skill_path = Path(s.path)
-                    content = ""
-                    if skill_path.exists():  # noqa: ASYNC240
-                        content = skill_path.read_text(encoding="utf-8", errors="replace")  # noqa: ASYNC240
-                    return jsonify(
-                        {
-                            "name": s.name,
-                            "description": s.description,
-                            "path": s.path,
-                            "active": s.active,
-                            "content": content,
-                        }
-                    )
-            return jsonify({"error": "skill not found"}), 404
+            except KeyError:
+                return jsonify({"error": "skill not found"}), 404
+            s = loaded.info
+            return jsonify(
+                {
+                    "name": s.name,
+                    "description": s.description,
+                    "path": s.path,
+                    "active": s.active,
+                    "root": s.root,
+                    "source": s.source,
+                    "format": s.format,
+                    "companion_files": s.companion_files,
+                    "warnings": s.warnings,
+                    "can_delete": s.can_delete,
+                    "content": loaded.content,
+                }
+            )
 
         @app.route("/api/skills/<name>", methods=["PUT"])
         async def update_skill(name: str):
@@ -967,6 +982,8 @@ class Dashboard:
                 sm.delete_skill(name)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
+            except PermissionError as e:
+                return jsonify({"error": str(e)}), 403
             self.lifecycle.save_config()
             self._reload_skills_prompt()
             return jsonify({"ok": True})
@@ -1008,9 +1025,12 @@ class Dashboard:
             if sm is None:
                 return jsonify({"error": "skill manager not available"}), 503
             try:
-                skill_dir = sm.resolve_skill_dir(name)
+                skill = sm.get_skill(name, active_only=False)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
+            if skill is None:
+                return jsonify({"error": "skill not found"}), 404
+            skill_dir = Path(skill.path).parent
             if not skill_dir.exists() or not skill_dir.is_dir():
                 return jsonify({"error": "skill not found"}), 404
             buf = io.BytesIO()

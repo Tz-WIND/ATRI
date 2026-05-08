@@ -78,4 +78,6 @@ providers:
 mcp_servers: {}
 
 # Skills 配置（可在 WebUI 中管理）
+skills_root: skills
+skill_search_roots: []
 skills: {}

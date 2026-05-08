@@ -132,6 +132,7 @@ class Lifecycle:
             "extra_instructions": self.config.get("extra_instructions", ""),
             "persona": self.config.get("persona", ""),
             "skills_root": self.config.get("skills_root", "skills"),
+            "skill_search_roots": self.config.get("skill_search_roots", []),
             "skills_config": self.config.get("skills", {}),
             "tavily_api_key": self.config.get("tavily_api_key", ""),
             "sessions_dir": self.config.get("sessions_dir"),

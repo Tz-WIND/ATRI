@@ -3,7 +3,7 @@
     <PageHeader title="Skills" />
     <div class="page-body">
       <p class="desc">
-        Skills are SKILL.md files in the <code>skills/</code> directory. Each skill provides specialized instructions to the agent.
+        Skills are discovered from the configured <code>skills/</code> install directory, workspace skill folders, and compatible tool directories.
       </p>
 
       <div class="upload-bar">
@@ -37,7 +37,7 @@
 
       <div
         v-for="s in skills"
-        :key="s.name"
+        :key="`${s.name}:${s.path}`"
         class="card"
       >
         <div class="card-header">
@@ -51,6 +51,17 @@
         </div>
         <div class="card-meta">
           {{ s.description }}
+        </div>
+        <div class="card-tags">
+          <span class="tag">{{ s.source || 'configured' }}</span>
+          <span
+            v-if="s.format"
+            class="tag"
+          >{{ s.format }}</span>
+          <span
+            v-if="s.companion_files?.length"
+            class="tag"
+          >{{ s.companion_files.length }} files</span>
         </div>
         <div
           class="card-meta"
@@ -67,10 +78,18 @@
           </button>
           <button
             class="btn btn-ghost btn-danger"
+            :disabled="!s.can_delete"
+            :title="s.can_delete ? 'Delete skill' : 'Only skills in the configured install directory can be deleted'"
             @click="removeSkill(s.name)"
           >
             Delete
           </button>
+        </div>
+        <div
+          v-if="s.warnings?.length"
+          class="warnings"
+        >
+          {{ s.warnings.join(' ') }}
         </div>
         <div
           v-if="expandedName === s.name"
@@ -121,6 +140,8 @@ async function toggleSkill(name, active) {
 }
 
 async function removeSkill(name) {
+  const skill = skills.value.find((s) => s.name === name)
+  if (skill && !skill.can_delete) return
   if (!confirm(`Delete skill "${name}"? This will remove the directory from disk.`)) return
   try {
     await api.deleteSkill(name)
@@ -200,7 +221,19 @@ async function onFileSelected(e) {
 }
 .card-title:hover { color: var(--acc2); }
 .card-meta { font-size: 11px; color: var(--t3); margin-top: 2px; }
+.card-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tag {
+  font-size: 10px; color: var(--t2); background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 7px;
+  font-family: var(--mono);
+}
 .card-actions { margin-top: 8px; display: flex; gap: 6px; }
+.warnings {
+  margin-top: 8px; font-size: 11px; color: var(--yellow, #c8903f);
+  background: color-mix(in srgb, var(--yellow, #c8903f) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow, #c8903f) 25%, transparent);
+  border-radius: 6px; padding: 7px 9px;
+}
 
 .card-detail {
   margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px;
@@ -220,6 +253,8 @@ async function onFileSelected(e) {
   cursor: pointer; font-size: 12px; font-weight: 600; font-family: var(--mono);
   transition: all 0.12s;
 }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled:hover { background: none; color: var(--t2); border-color: var(--border); }
 .btn-primary { background: var(--acc2); color: #fff; border-color: var(--acc2); }
 .btn-primary:hover { opacity: 0.85; }
 .btn-ghost { background: none; color: var(--t2); }

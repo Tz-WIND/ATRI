@@ -45,6 +45,7 @@ class ProcessStage(Stage):
         self.extra_instructions: str = ctx.get("extra_instructions", "")
         self.persona: str = ctx.get("persona", "")
         self.skills_root: str = ctx.get("skills_root", "skills")
+        self.skill_search_roots: list[str] = ctx.get("skill_search_roots", [])
         self.skills_config: dict = ctx.get("skills_config", {})
         self.tavily_api_key: str = ctx.get("tavily_api_key", "")
 
@@ -52,7 +53,12 @@ class ProcessStage(Stage):
 
         set_tavily_key(self.tavily_api_key or None)
 
-        self.skill_manager = SkillManager(self.skills_root, self.skills_config)
+        self.skill_manager = SkillManager(
+            self.skills_root,
+            self.skills_config,
+            workspace=self.workspace,
+            search_roots=self.skill_search_roots,
+        )
         self._skills_prompt = self._build_skills_prompt()
 
         self.session_store = SessionStore(ctx.get("sessions_dir"))
@@ -129,6 +135,7 @@ class ProcessStage(Stage):
                     extra_instructions=self.extra_instructions,
                     persona=self.persona,
                     skills_prompt=self._skills_prompt,
+                    skill_manager=self.skill_manager,
                     llm_factory=self._create_llm_for_model,
                     model_catalog=self._model_catalog,
                 )
@@ -513,8 +520,23 @@ class ProcessStage(Stage):
             with self._agents_lock:
                 for agent in self._agents.values():
                     agent.persona = kwargs["persona"]
+        skills_changed = False
+        if "skills_root" in kwargs:
+            self.skills_root = kwargs["skills_root"]
+            self.skill_manager.skills_root = self.skills_root
+            self.skill_manager._ensure_dir()
+            self.skill_manager.invalidate_cache()
+            skills_changed = True
+        if "skill_search_roots" in kwargs:
+            self.skill_search_roots = list(kwargs["skill_search_roots"])
+            self.skill_manager.search_roots = self.skill_search_roots
+            self.skill_manager.invalidate_cache()
+            skills_changed = True
         if "skills" in kwargs:
             self.skill_manager.skills_config = kwargs["skills"]
+            self.skill_manager.invalidate_cache()
+            skills_changed = True
+        if skills_changed:
             self._skills_prompt = self._build_skills_prompt()
             with self._agents_lock:
                 for agent in self._agents.values():

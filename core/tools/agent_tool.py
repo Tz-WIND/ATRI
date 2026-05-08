@@ -286,7 +286,9 @@ class AgentTool(Tool):
 
         parent = self._parent_agent
         child_tools = [
-            t for t in get_all_tools(parent.workspace) if t.name not in ("agent", "agent_result")
+            t
+            for t in get_all_tools(parent.workspace, skill_manager=parent.skill_manager)
+            if t.name not in ("agent", "agent_result")
         ]
         return Agent(
             llm=parent.create_child_llm(
@@ -300,6 +302,7 @@ class AgentTool(Tool):
             extra_instructions=parent.extra_instructions,
             persona=parent.persona,
             skills_prompt=parent.skills_prompt,
+            skill_manager=parent.skill_manager,
         )
 
     def _run_subagent_task(self, run: SubAgentRun, task_spec: dict) -> str:

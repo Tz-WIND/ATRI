@@ -33,12 +33,14 @@ class Agent:
         extra_instructions: str = "",
         persona: str = "",
         skills_prompt: str = "",
+        skill_manager=None,
         llm_factory: Callable[[str | None, str | None], LLM] | None = None,
         model_catalog: Callable[[], list[dict]] | list[dict] | None = None,
     ):
         self.llm = llm
         self.workspace = workspace
-        self.tools = tools if tools is not None else get_all_tools(workspace)
+        self.skill_manager = skill_manager
+        self.tools = tools if tools is not None else get_all_tools(workspace, skill_manager)
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
