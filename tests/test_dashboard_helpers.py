@@ -1,0 +1,120 @@
+import pytest
+
+from dashboard import server
+
+
+def test_dashboard_password_hash_verify_and_legacy_plaintext(monkeypatch):
+    monkeypatch.setattr(server, "_PBKDF2_ITERATIONS", 1)
+
+    stored = server._hash_password("secret")
+
+    assert stored.startswith("pbkdf2:")
+    assert server._verify_password(stored, "secret") is True
+    assert server._verify_password(stored, "wrong") is False
+    assert server._verify_password("legacy-secret", "legacy-secret") is True
+    assert server._verify_password("", "secret") is False
+    assert server._verify_password("pbkdf2:malformed", "secret") is False
+
+
+def test_dashboard_rate_limit_tracks_failures(monkeypatch):
+    server._rate_limit_buckets.clear()
+    monkeypatch.setattr(server.time, "time", lambda: 1000.0)
+
+    for _ in range(server._RATE_LIMIT_MAX_FAILURES):
+        assert server._check_rate_limit("127.0.0.1") is False
+        server._record_failure("127.0.0.1")
+
+    assert server._check_rate_limit("127.0.0.1") is True
+
+    monkeypatch.setattr(server.time, "time", lambda: 1000.0 + server._RATE_LIMIT_WINDOW + 1)
+    assert server._check_rate_limit("127.0.0.1") is False
+
+
+def test_dashboard_masks_provider_api_keys_without_mutating_input():
+    providers = {
+        "openai": {"api_key": "sk-test", "base_url": "https://example.test"},
+        "local": {"api_key": ""},
+        "bad": "not-a-dict",
+    }
+
+    masked = server._mask_providers(providers)
+
+    assert masked == {
+        "openai": {"api_key": "***", "base_url": "https://example.test"},
+        "local": {"api_key": ""},
+    }
+    assert providers["openai"]["api_key"] == "sk-test"
+
+
+def test_dashboard_resolve_workspace_path_blocks_escape(tmp_path):
+    ws, target = server._resolve_workspace_path(str(tmp_path), "nested/file.txt")
+
+    assert ws == tmp_path.resolve()
+    assert target == (tmp_path / "nested" / "file.txt").resolve()
+    with pytest.raises(PermissionError, match="path outside workspace"):
+        server._resolve_workspace_path(str(tmp_path), "../outside.txt")
+
+
+def test_dashboard_cookie_value_parses_valid_cookie_headers():
+    assert server._cookie_value("a=1; atri_dashboard_session=abc", "atri_dashboard_session") == (
+        "abc"
+    )
+    assert server._cookie_value("", "atri_dashboard_session") == ""
+    assert server._cookie_value("a=1", "missing") == ""
+
+
+def test_dashboard_model_url_candidates_normalize_common_provider_urls():
+    assert server._model_url_candidates("") == ["https://api.openai.com/v1/models"]
+    assert server._model_url_candidates("api.example.test/v1/chat/completions") == [
+        "https://api.example.test/v1/models"
+    ]
+    assert server._model_url_candidates("https://api.example.test/messages") == [
+        "https://api.example.test/models",
+        "https://api.example.test/v1/models",
+    ]
+    assert server._model_url_candidates("https://api.example.test/v1/models") == [
+        "https://api.example.test/v1/models"
+    ]
+
+
+def test_dashboard_model_fetch_headers_and_candidates():
+    assert server._headers_for_model_fetch("anthropic", "key") == {
+        "anthropic-version": "2023-06-01",
+        "x-api-key": "key",
+    }
+    assert server._headers_for_model_fetch("openai", "key") == {"Authorization": "Bearer key"}
+
+    candidates = server._model_fetch_candidates(
+        "api.deepseek.test/anthropic/messages",
+        "anthropic",
+        "key",
+    )
+
+    assert (
+        "https://api.deepseek.test/anthropic/models",
+        {"anthropic-version": "2023-06-01", "x-api-key": "key"},
+        "anthropic",
+    ) in candidates
+    assert (
+        "https://api.deepseek.test/models",
+        {"Authorization": "Bearer key"},
+        "openai",
+    ) in candidates
+
+
+def test_dashboard_extract_model_ids_and_parse_int():
+    assert server._extract_model_ids(
+        {
+            "data": [
+                {"id": "b"},
+                {"name": "a"},
+                {"model": "c"},
+                "a",
+                {"missing": "x"},
+            ]
+        }
+    ) == ["a", "b", "c"]
+    assert server._extract_model_ids({"models": ["x"]}) == ["x"]
+    assert server._extract_model_ids("bad") == []
+    assert server._parse_int("42", 1) == 42
+    assert server._parse_int("bad", 1) == 1
