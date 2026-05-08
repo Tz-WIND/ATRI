@@ -263,349 +263,8 @@ class ProcessStage(Stage):
         session_id: str,
     ) -> AsyncGenerator[None, None]:
         agent = self._get_or_create_agent(session_id)
-        thread_id = session_id
-        runtime_persist_failed = False
-        try:
-            turn_id = self.runtime_store.start_turn(
-                thread_id,
-                input_text=event.message_str,
-                model=agent.llm.model,
-                workspace=self.workspace,
-                metadata={
-                    "platform": event.platform_name,
-                    "message_type": event.message_type.value,
-                    "sender": {
-                        "user_id": event.sender.user_id,
-                        "nickname": event.sender.nickname,
-                    },
-                },
-            )
-        except Exception:
-            logger.exception(f"Runtime timeline turn creation failed for {session_id}")
-            runtime_persist_failed = True
-            turn_id = f"turn_ephemeral_{int(time.time() * 1000)}"
-
-        tool_events: list[dict] = []
-        pending_futures: list[concurrent.futures.Future[Any]] = []
-
-        def _record_runtime_event(
-            event_type: str,
-            payload: dict,
-            *,
-            item_id: str | None = None,
-        ) -> dict:
-            nonlocal runtime_persist_failed
-            if runtime_persist_failed:
-                fallback = dict(payload)
-                fallback.setdefault("type", event_type)
-                fallback["thread_id"] = thread_id
-                fallback["turn_id"] = turn_id
-                if item_id:
-                    fallback["item_id"] = item_id
-                return fallback
-            try:
-                record = self.runtime_store.append_event(
-                    thread_id,
-                    event_type=event_type,
-                    payload=payload,
-                    turn_id=turn_id,
-                    item_id=item_id,
-                )
-                return record.to_wire_payload()
-            except Exception:
-                if not runtime_persist_failed:
-                    logger.exception(f"Runtime timeline persistence failed for {session_id}")
-                    runtime_persist_failed = True
-                fallback = dict(payload)
-                fallback.setdefault("type", event_type)
-                fallback["thread_id"] = thread_id
-                fallback["turn_id"] = turn_id
-                if item_id:
-                    fallback["item_id"] = item_id
-                return fallback
-
-        def _create_runtime_item(
-            *,
-            kind: str,
-            summary: str,
-            status: str = "in_progress",
-            detail: str | None = None,
-            metadata: dict | None = None,
-        ) -> str | None:
-            nonlocal runtime_persist_failed
-            if runtime_persist_failed:
-                return None
-            try:
-                return self.runtime_store.create_item(
-                    thread_id,
-                    turn_id,
-                    kind=kind,
-                    summary=summary,
-                    status=status,
-                    detail=detail,
-                    metadata=metadata,
-                )
-            except Exception:
-                if not runtime_persist_failed:
-                    logger.exception(f"Runtime timeline item persistence failed for {session_id}")
-                    runtime_persist_failed = True
-                return None
-
-        def _finish_runtime_item(
-            item_id: str | None,
-            *,
-            status: str = "completed",
-            detail: str | None = None,
-            metadata: dict | None = None,
-        ) -> None:
-            nonlocal runtime_persist_failed
-            if not item_id:
-                return
-            if runtime_persist_failed:
-                return
-            try:
-                self.runtime_store.finish_item(
-                    item_id,
-                    status=status,
-                    detail=detail,
-                    metadata=metadata,
-                )
-            except Exception:
-                if not runtime_persist_failed:
-                    logger.exception(f"Runtime timeline item update failed for {session_id}")
-                    runtime_persist_failed = True
-
-        def _finish_runtime_turn(*, status: str = "completed", error: str | None = None) -> None:
-            nonlocal runtime_persist_failed
-            if runtime_persist_failed:
-                return
-            try:
-                self.runtime_store.finish_turn(turn_id, status=status, error=error)
-            except Exception:
-                if not runtime_persist_failed:
-                    logger.exception(f"Runtime timeline turn update failed for {session_id}")
-                    runtime_persist_failed = True
-
-        def _broadcast_sync(data: dict):
-            if not self.broadcast_fn:
-                return
-            try:
-                fut = asyncio.run_coroutine_threadsafe(self.broadcast_fn(data), self._loop)
-                pending_futures.append(fut)
-            except RuntimeError:
-                pass
-
-        def on_tool(name, kwargs):
-            tool_events.append({"tool": name, "args": kwargs})
-            logger.info(f"[{session_id}] Tool: {name}({_brief(kwargs)})")
-
-        thinking_done_sent = False
-        thinking_content_parts: list[str] = []
-        thinking_item_id: str | None = None
-
-        _record_runtime_event(
-            "turn_started",
-            {
-                "type": "turn_started",
-                "session_id": session_id,
-                "input_summary": summarize_text(event.message_str),
-                "model": agent.llm.model,
-            },
-        )
-        user_item_id = _create_runtime_item(
-            kind="user_message",
-            summary=summarize_text(event.message_str),
-            status="completed",
-            detail=event.message_str,
-        )
-        _record_runtime_event(
-            "user_message",
-            {
-                "type": "user_message",
-                "session_id": session_id,
-                "content": event.message_str,
-            },
-            item_id=user_item_id,
-        )
-
-        def on_thinking(content: str):
-            nonlocal thinking_item_id
-            if content:
-                thinking_content_parts.append(content)
-            if thinking_item_id is None:
-                thinking_item_id = _create_runtime_item(
-                    kind="agent_reasoning",
-                    summary="Thinking",
-                    metadata={"channel": "reasoning"},
-                )
-            _broadcast_sync(
-                _record_runtime_event(
-                    "thinking_delta",
-                    {
-                        "type": "thinking_delta",
-                        "session_id": session_id,
-                        "content": content,
-                    },
-                    item_id=thinking_item_id,
-                )
-            )
-
-        def mark_thinking_done():
-            nonlocal thinking_done_sent
-            if thinking_done_sent:
-                return
-            thinking_done_sent = True
-            if thinking_item_id is not None:
-                _finish_runtime_item(
-                    thinking_item_id,
-                    detail="".join(thinking_content_parts),
-                )
-            _broadcast_sync(
-                _record_runtime_event(
-                    "thinking_done",
-                    {
-                        "type": "thinking_done",
-                        "session_id": session_id,
-                    },
-                    item_id=thinking_item_id,
-                )
-            )
-
-        def on_thinking_done(full_content: str):
-            nonlocal thinking_item_id
-            if full_content and not thinking_content_parts:
-                if thinking_item_id is None:
-                    thinking_item_id = _create_runtime_item(
-                        kind="agent_reasoning",
-                        summary="Thinking",
-                        metadata={"channel": "reasoning"},
-                    )
-                thinking_content_parts.append(full_content)
-                _broadcast_sync(
-                    _record_runtime_event(
-                        "thinking_delta",
-                        {
-                            "type": "thinking_delta",
-                            "session_id": session_id,
-                            "content": full_content,
-                        },
-                        item_id=thinking_item_id,
-                    )
-                )
-            mark_thinking_done()
-
-        response_started = False
-        response_item_id: str | None = None
-        response_content_parts: list[str] = []
-        tool_item_ids: dict[str, str] = {}
-
-        def on_token(content: str):
-            nonlocal response_item_id, response_started
-            mark_thinking_done()
-            if not response_started:
-                response_started = True
-                response_item_id = _create_runtime_item(
-                    kind="agent_message",
-                    summary="Assistant response",
-                    metadata={"channel": "text"},
-                )
-                _broadcast_sync(
-                    _record_runtime_event(
-                        "response_start",
-                        {
-                            "type": "response_start",
-                            "session_id": session_id,
-                        },
-                        item_id=response_item_id,
-                    )
-                )
-            if content:
-                response_content_parts.append(content)
-            _broadcast_sync(
-                _record_runtime_event(
-                    "response_delta",
-                    {
-                        "type": "response_delta",
-                        "session_id": session_id,
-                        "content": content,
-                    },
-                    item_id=response_item_id,
-                )
-            )
-
-        def on_tool_start(tc_id: str, name: str, args: dict):
-            mark_thinking_done()
-            item_id = _create_runtime_item(
-                kind="command_execution" if name == "bash" else "tool_call",
-                summary=name,
-                metadata={"tool_call_id": tc_id, "tool": name, "args": args},
-            )
-            if item_id:
-                tool_item_ids[tc_id] = item_id
-            _broadcast_sync(
-                _record_runtime_event(
-                    "tool_start",
-                    {
-                        "type": "tool_start",
-                        "session_id": session_id,
-                        "data": {"id": tc_id, "tool": name, "args": args},
-                    },
-                    item_id=item_id,
-                )
-            )
-
-        def on_tool_end(tc_id: str, name: str, args: dict, result: str):
-            is_error = result.startswith("Error")
-            is_blocked = "BLOCKED:" in result
-            needs_confirm = CONFIRM_MARKER in result
-            is_compressed = result.startswith(TOOL_OUTPUT_COMPRESSED_MARKER)
-            result_id = _extract_tool_result_id(result) if is_compressed else ""
-            preview_len = 8000 if name in {"edit_file", "write_file"} or is_compressed else 200
-            preview = result[:preview_len] if len(result) > preview_len else result
-            success = not is_error and not is_blocked and not needs_confirm
-            item_id = tool_item_ids.get(tc_id)
-            _finish_runtime_item(
-                item_id,
-                status="completed" if success else "failed",
-                detail=preview,
-                metadata={
-                    "success": success,
-                    "result_compressed": is_compressed,
-                    "result_id": result_id,
-                },
-            )
-            _broadcast_sync(
-                _record_runtime_event(
-                    "tool_end",
-                    {
-                        "type": "tool_end",
-                        "session_id": session_id,
-                        "data": {
-                            "id": tc_id,
-                            "tool": name,
-                            "args": args,
-                            "success": success,
-                            "result_preview": preview,
-                            "result_compressed": is_compressed,
-                            "result_id": result_id,
-                        },
-                    },
-                    item_id=item_id,
-                )
-            )
-            if needs_confirm and name == "bash":
-                _broadcast_sync(
-                    _record_runtime_event(
-                        "confirm_command",
-                        {
-                            "type": "confirm_command",
-                            "session_id": session_id,
-                            "command": args.get("command", ""),
-                            "reason": result.split(f"{CONFIRM_MARKER}: ")[-1].split("\n")[0],
-                        },
-                        item_id=item_id,
-                    )
-                )
+        turn = _RuntimeTurnRecorder(self, event, session_id, agent.llm.model)
+        turn.record_turn_started()
 
         try:
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
@@ -613,64 +272,20 @@ class ProcessStage(Stage):
                 self._active_session_ids.add(session_id)
             response = await agent.chat_async(
                 event.message_str,
-                on_token=on_token,
-                on_tool=on_tool,
-                on_thinking=on_thinking,
-                on_thinking_done=on_thinking_done,
-                on_tool_start=on_tool_start,
-                on_tool_end=on_tool_end,
+                on_token=turn.on_token,
+                on_tool=turn.on_tool,
+                on_thinking=turn.on_thinking,
+                on_thinking_done=turn.on_thinking_done,
+                on_tool_start=turn.on_tool_start,
+                on_tool_end=turn.on_tool_end,
             )
             response_text = response or ""
-            mark_thinking_done()
-
-            # Drain all pending cross-thread callbacks before responding
-            if pending_futures:
-                await asyncio.gather(
-                    *[asyncio.wrap_future(f) for f in pending_futures],
-                    return_exceptions=True,
-                )
-                pending_futures.clear()
+            turn.mark_thinking_done()
+            await turn.drain_pending_broadcasts()
 
             event.set_result(response_text)
-            event._extras["tool_events"] = tool_events
-            if response_item_id is None and response_text:
-                response_item_id = _create_runtime_item(
-                    kind="agent_message",
-                    summary="Assistant response",
-                    status="completed",
-                    detail=response_text,
-                    metadata={"channel": "text"},
-                )
-            else:
-                _finish_runtime_item(
-                    response_item_id,
-                    detail=response_text or "".join(response_content_parts),
-                )
-
-            # Send response_done directly (not via thread-safe scheduling)
-            # so it is guaranteed to reach the frontend before the HTTP response.
-            response_done_event = _record_runtime_event(
-                "response_done",
-                {
-                    "type": "response_done",
-                    "session_id": session_id,
-                    "content": response_text,
-                },
-                item_id=response_item_id,
-            )
-            if self.broadcast_fn:
-                await self.broadcast_fn(response_done_event)
-
-            turn_status = "canceled" if response_text.startswith("[Interrupted") else "completed"
-            _finish_runtime_turn(status=turn_status)
-            _record_runtime_event(
-                "turn_completed",
-                {
-                    "type": "turn_completed",
-                    "session_id": session_id,
-                    "status": turn_status,
-                },
-            )
+            event._extras["tool_events"] = turn.tool_events
+            await turn.finish_success(response_text)
 
             self.session_store.save(
                 agent.messages,
@@ -681,15 +296,7 @@ class ProcessStage(Stage):
         except Exception as e:
             logger.exception(f"Agent error for {session_id}: {e}")
             event.set_result(f"Error: {e}")
-            _finish_runtime_turn(status="failed", error=str(e))
-            _record_runtime_event(
-                "error",
-                {
-                    "type": "error",
-                    "session_id": session_id,
-                    "message": str(e),
-                },
-            )
+            turn.finish_error(e)
         finally:
             with self._active_lock:
                 self._active_session_ids.discard(session_id)
@@ -857,6 +464,419 @@ class ProcessStage(Stage):
             self._agents_last_active.pop(session_id, None)
             self._session_locks.pop(session_id, None)
         return deleted or runtime_deleted
+
+
+class _RuntimeTurnRecorder:
+    """Owns runtime timeline state and callback side effects for one agent turn."""
+
+    def __init__(
+        self,
+        stage: ProcessStage,
+        event: MessageEvent,
+        session_id: str,
+        model: str,
+    ) -> None:
+        self.stage = stage
+        self.event = event
+        self.session_id = session_id
+        self.thread_id = session_id
+        self.model = model
+        self.runtime_persist_failed = False
+        self.turn_id = self._start_turn()
+        self.tool_events: list[dict] = []
+        self.pending_futures: list[concurrent.futures.Future[Any]] = []
+        self.thinking_done_sent = False
+        self.thinking_content_parts: list[str] = []
+        self.thinking_item_id: str | None = None
+        self.response_started = False
+        self.response_item_id: str | None = None
+        self.response_content_parts: list[str] = []
+        self.tool_item_ids: dict[str, str] = {}
+
+    def _start_turn(self) -> str:
+        try:
+            return self.stage.runtime_store.start_turn(
+                self.thread_id,
+                input_text=self.event.message_str,
+                model=self.model,
+                workspace=self.stage.workspace,
+                metadata={
+                    "platform": self.event.platform_name,
+                    "message_type": self.event.message_type.value,
+                    "sender": {
+                        "user_id": self.event.sender.user_id,
+                        "nickname": self.event.sender.nickname,
+                    },
+                },
+            )
+        except Exception:
+            logger.exception(f"Runtime timeline turn creation failed for {self.session_id}")
+            self.runtime_persist_failed = True
+            return f"turn_ephemeral_{int(time.time() * 1000)}"
+
+    def record_turn_started(self) -> None:
+        self.record_event(
+            "turn_started",
+            {
+                "type": "turn_started",
+                "session_id": self.session_id,
+                "input_summary": summarize_text(self.event.message_str),
+                "model": self.model,
+            },
+        )
+        user_item_id = self.create_item(
+            kind="user_message",
+            summary=summarize_text(self.event.message_str),
+            status="completed",
+            detail=self.event.message_str,
+        )
+        self.record_event(
+            "user_message",
+            {
+                "type": "user_message",
+                "session_id": self.session_id,
+                "content": self.event.message_str,
+            },
+            item_id=user_item_id,
+        )
+
+    def record_event(
+        self,
+        event_type: str,
+        payload: dict,
+        *,
+        item_id: str | None = None,
+    ) -> dict:
+        if self.runtime_persist_failed:
+            return self._fallback_payload(event_type, payload, item_id=item_id)
+        try:
+            record = self.stage.runtime_store.append_event(
+                self.thread_id,
+                event_type=event_type,
+                payload=payload,
+                turn_id=self.turn_id,
+                item_id=item_id,
+            )
+            return record.to_wire_payload()
+        except Exception:
+            logger.exception(f"Runtime timeline persistence failed for {self.session_id}")
+            self.runtime_persist_failed = True
+            return self._fallback_payload(event_type, payload, item_id=item_id)
+
+    def _fallback_payload(
+        self,
+        event_type: str,
+        payload: dict,
+        *,
+        item_id: str | None = None,
+    ) -> dict:
+        fallback = dict(payload)
+        fallback.setdefault("type", event_type)
+        fallback["thread_id"] = self.thread_id
+        fallback["turn_id"] = self.turn_id
+        if item_id:
+            fallback["item_id"] = item_id
+        return fallback
+
+    def create_item(
+        self,
+        *,
+        kind: str,
+        summary: str,
+        status: str = "in_progress",
+        detail: str | None = None,
+        metadata: dict | None = None,
+    ) -> str | None:
+        if self.runtime_persist_failed:
+            return None
+        try:
+            return self.stage.runtime_store.create_item(
+                self.thread_id,
+                self.turn_id,
+                kind=kind,
+                summary=summary,
+                status=status,
+                detail=detail,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.exception(f"Runtime timeline item persistence failed for {self.session_id}")
+            self.runtime_persist_failed = True
+            return None
+
+    def finish_item(
+        self,
+        item_id: str | None,
+        *,
+        status: str = "completed",
+        detail: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        if not item_id or self.runtime_persist_failed:
+            return
+        try:
+            self.stage.runtime_store.finish_item(
+                item_id,
+                status=status,
+                detail=detail,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.exception(f"Runtime timeline item update failed for {self.session_id}")
+            self.runtime_persist_failed = True
+
+    def finish_turn(self, *, status: str = "completed", error: str | None = None) -> None:
+        if self.runtime_persist_failed:
+            return
+        try:
+            self.stage.runtime_store.finish_turn(self.turn_id, status=status, error=error)
+        except Exception:
+            logger.exception(f"Runtime timeline turn update failed for {self.session_id}")
+            self.runtime_persist_failed = True
+
+    def broadcast_sync(self, data: dict) -> None:
+        if not self.stage.broadcast_fn:
+            return
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.stage.broadcast_fn(data),
+                self.stage._loop,
+            )
+            self.pending_futures.append(fut)
+        except RuntimeError:
+            pass
+
+    async def drain_pending_broadcasts(self) -> None:
+        if not self.pending_futures:
+            return
+        await asyncio.gather(
+            *[asyncio.wrap_future(f) for f in self.pending_futures],
+            return_exceptions=True,
+        )
+        self.pending_futures.clear()
+
+    def on_tool(self, name: str, kwargs: dict) -> None:
+        self.tool_events.append({"tool": name, "args": kwargs})
+        logger.info(f"[{self.session_id}] Tool: {name}({_brief(kwargs)})")
+
+    def on_thinking(self, content: str) -> None:
+        if content:
+            self.thinking_content_parts.append(content)
+        if self.thinking_item_id is None:
+            self.thinking_item_id = self.create_item(
+                kind="agent_reasoning",
+                summary="Thinking",
+                metadata={"channel": "reasoning"},
+            )
+        self.broadcast_sync(
+            self.record_event(
+                "thinking_delta",
+                {
+                    "type": "thinking_delta",
+                    "session_id": self.session_id,
+                    "content": content,
+                },
+                item_id=self.thinking_item_id,
+            )
+        )
+
+    def mark_thinking_done(self) -> None:
+        if self.thinking_done_sent:
+            return
+        self.thinking_done_sent = True
+        if self.thinking_item_id is not None:
+            self.finish_item(
+                self.thinking_item_id,
+                detail="".join(self.thinking_content_parts),
+            )
+        self.broadcast_sync(
+            self.record_event(
+                "thinking_done",
+                {
+                    "type": "thinking_done",
+                    "session_id": self.session_id,
+                },
+                item_id=self.thinking_item_id,
+            )
+        )
+
+    def on_thinking_done(self, full_content: str) -> None:
+        if full_content and not self.thinking_content_parts:
+            if self.thinking_item_id is None:
+                self.thinking_item_id = self.create_item(
+                    kind="agent_reasoning",
+                    summary="Thinking",
+                    metadata={"channel": "reasoning"},
+                )
+            self.thinking_content_parts.append(full_content)
+            self.broadcast_sync(
+                self.record_event(
+                    "thinking_delta",
+                    {
+                        "type": "thinking_delta",
+                        "session_id": self.session_id,
+                        "content": full_content,
+                    },
+                    item_id=self.thinking_item_id,
+                )
+            )
+        self.mark_thinking_done()
+
+    def on_token(self, content: str) -> None:
+        self.mark_thinking_done()
+        if not self.response_started:
+            self.response_started = True
+            self.response_item_id = self.create_item(
+                kind="agent_message",
+                summary="Assistant response",
+                metadata={"channel": "text"},
+            )
+            self.broadcast_sync(
+                self.record_event(
+                    "response_start",
+                    {
+                        "type": "response_start",
+                        "session_id": self.session_id,
+                    },
+                    item_id=self.response_item_id,
+                )
+            )
+        if content:
+            self.response_content_parts.append(content)
+        self.broadcast_sync(
+            self.record_event(
+                "response_delta",
+                {
+                    "type": "response_delta",
+                    "session_id": self.session_id,
+                    "content": content,
+                },
+                item_id=self.response_item_id,
+            )
+        )
+
+    def on_tool_start(self, tc_id: str, name: str, args: dict) -> None:
+        self.mark_thinking_done()
+        item_id = self.create_item(
+            kind="command_execution" if name == "bash" else "tool_call",
+            summary=name,
+            metadata={"tool_call_id": tc_id, "tool": name, "args": args},
+        )
+        if item_id:
+            self.tool_item_ids[tc_id] = item_id
+        self.broadcast_sync(
+            self.record_event(
+                "tool_start",
+                {
+                    "type": "tool_start",
+                    "session_id": self.session_id,
+                    "data": {"id": tc_id, "tool": name, "args": args},
+                },
+                item_id=item_id,
+            )
+        )
+
+    def on_tool_end(self, tc_id: str, name: str, args: dict, result: str) -> None:
+        is_error = result.startswith("Error")
+        is_blocked = "BLOCKED:" in result
+        needs_confirm = CONFIRM_MARKER in result
+        is_compressed = result.startswith(TOOL_OUTPUT_COMPRESSED_MARKER)
+        result_id = _extract_tool_result_id(result) if is_compressed else ""
+        preview_len = 8000 if name in {"edit_file", "write_file"} or is_compressed else 200
+        preview = result[:preview_len] if len(result) > preview_len else result
+        success = not is_error and not is_blocked and not needs_confirm
+        item_id = self.tool_item_ids.get(tc_id)
+        self.finish_item(
+            item_id,
+            status="completed" if success else "failed",
+            detail=preview,
+            metadata={
+                "success": success,
+                "result_compressed": is_compressed,
+                "result_id": result_id,
+            },
+        )
+        self.broadcast_sync(
+            self.record_event(
+                "tool_end",
+                {
+                    "type": "tool_end",
+                    "session_id": self.session_id,
+                    "data": {
+                        "id": tc_id,
+                        "tool": name,
+                        "args": args,
+                        "success": success,
+                        "result_preview": preview,
+                        "result_compressed": is_compressed,
+                        "result_id": result_id,
+                    },
+                },
+                item_id=item_id,
+            )
+        )
+        if needs_confirm and name == "bash":
+            self.broadcast_sync(
+                self.record_event(
+                    "confirm_command",
+                    {
+                        "type": "confirm_command",
+                        "session_id": self.session_id,
+                        "command": args.get("command", ""),
+                        "reason": result.split(f"{CONFIRM_MARKER}: ")[-1].split("\n")[0],
+                    },
+                    item_id=item_id,
+                )
+            )
+
+    async def finish_success(self, response_text: str) -> None:
+        if self.response_item_id is None and response_text:
+            self.response_item_id = self.create_item(
+                kind="agent_message",
+                summary="Assistant response",
+                status="completed",
+                detail=response_text,
+                metadata={"channel": "text"},
+            )
+        else:
+            self.finish_item(
+                self.response_item_id,
+                detail=response_text or "".join(self.response_content_parts),
+            )
+
+        response_done_event = self.record_event(
+            "response_done",
+            {
+                "type": "response_done",
+                "session_id": self.session_id,
+                "content": response_text,
+            },
+            item_id=self.response_item_id,
+        )
+        if self.stage.broadcast_fn:
+            await self.stage.broadcast_fn(response_done_event)
+
+        turn_status = "canceled" if response_text.startswith("[Interrupted") else "completed"
+        self.finish_turn(status=turn_status)
+        self.record_event(
+            "turn_completed",
+            {
+                "type": "turn_completed",
+                "session_id": self.session_id,
+                "status": turn_status,
+            },
+        )
+
+    def finish_error(self, error: Exception) -> None:
+        self.finish_turn(status="failed", error=str(error))
+        self.record_event(
+            "error",
+            {
+                "type": "error",
+                "session_id": self.session_id,
+                "message": str(error),
+            },
+        )
 
 
 def _brief(kwargs: dict, maxlen: int = 60) -> str:

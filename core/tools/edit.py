@@ -62,7 +62,7 @@ class EditFileTool(Tool):
             return f"Edited {file_path}\n{diff}"
         except PermissionError as e:
             return f"Error: {e}"
-        except Exception as e:
+        except OSError as e:
             return f"Error: {e}"
 
 

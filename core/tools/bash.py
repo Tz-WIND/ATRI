@@ -191,7 +191,7 @@ class BashTool(Tool):
                     out[:6000] + f"\n\n... truncated ({len(out)} chars total) ...\n\n" + out[-3000:]
                 )
             return out.strip() or "(no output)"
-        except Exception as e:
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
             return f"Error running command: {e}"
 
     def cancel(self):

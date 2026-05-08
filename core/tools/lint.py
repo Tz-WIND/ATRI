@@ -116,7 +116,7 @@ def _run_linter(linter: dict, target, fix: bool) -> str:
         )
     except subprocess.TimeoutExpired:
         return f"Error: {name} timed out (120s)"
-    except Exception as e:
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
         return f"Error running {name}: {e}"
 
     out = proc.stdout.strip()

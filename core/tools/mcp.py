@@ -151,7 +151,7 @@ class MCPStdioClient:
             )
         except FileNotFoundError as e:
             raise MCPError(f"MCP command not found: {command}") from e
-        except Exception as e:
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
             raise MCPError(f"failed to start MCP server: {e}") from e
 
         self._reader_thread = threading.Thread(
@@ -180,7 +180,7 @@ class MCPStdioClient:
             self.capabilities = result.get("capabilities") or {}
             self.server_info = result.get("serverInfo") or {}
             self.notify("notifications/initialized")
-        except Exception:
+        except (MCPError, OSError, TimeoutError, ValueError):
             self.close()
             raise
 
@@ -201,7 +201,7 @@ class MCPStdioClient:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=2)
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             logger.debug(f"Error closing MCP server {self.name}: {e}")
 
     def request(
@@ -326,7 +326,7 @@ class MCPStdioClient:
                     message = json.loads(stripped.decode("utf-8"))
                 if isinstance(message, dict):
                     self._handle_message(message)
-            except Exception:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
                 break
 
     def _read_header_framed_message(self, first_line: bytes) -> dict | None:
@@ -696,7 +696,7 @@ class MCPRegistry:
                 "prompts": prompts,
                 "error": "",
             }
-        except Exception as e:
+        except (MCPError, OSError, TimeoutError, ValueError) as e:
             return {
                 "name": name,
                 "active": bool(cfg.get("active", True)),
@@ -783,7 +783,7 @@ class MCPRegistry:
             self._client_fingerprints[name] = client_fingerprint
             try:
                 client.start()
-            except Exception as e:
+            except (MCPError, OSError, TimeoutError, ValueError) as e:
                 self._clients.pop(name, None)
                 self._client_fingerprints.pop(name, None)
                 base_state.update(
@@ -796,7 +796,7 @@ class MCPRegistry:
             resources = client.list_resources()
             resource_templates = client.list_resource_templates()
             prompts = client.list_prompts()
-        except Exception as e:
+        except (MCPError, OSError, TimeoutError, ValueError) as e:
             base_state.update(
                 {"status": "error", "error": _diagnostic_error(e, client.stderr_tail)}
             )

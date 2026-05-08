@@ -55,5 +55,5 @@ class GlobTool(Tool):
             if total > 100:
                 result += f"\n... ({total} matches, showing first 100)"
             return result or "No files matched."
-        except Exception as e:
+        except (OSError, ValueError) as e:
             return f"Error: {e}"

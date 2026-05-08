@@ -47,7 +47,7 @@ class LoadSkillTool(Tool):
             return "Error: no active skills are available."
         except (FileNotFoundError, PermissionError, ValueError) as e:
             return f"Error: {e}"
-        except Exception as e:
+        except OSError as e:
             return f"Error: {e}"
 
         if loaded.companion_file:

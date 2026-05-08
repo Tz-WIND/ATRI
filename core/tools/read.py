@@ -43,5 +43,5 @@ class ReadFileTool(Tool):
             return result or "(empty file)"
         except PermissionError as e:
             return f"Error: {e}"
-        except Exception as e:
+        except OSError as e:
             return f"Error: {e}"

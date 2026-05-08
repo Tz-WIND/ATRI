@@ -316,7 +316,7 @@ class AgentTool(Tool):
         try:
             sub = self._create_child_agent(task_spec)
             run.agent = sub
-        except Exception as e:
+        except (RuntimeError, ValueError, OSError) as e:
             logger.warning("Sub-agent creation failed: %s", e)
             run.fail(f"Sub-agent setup error: {e}")
             with self._active_runs_lock:
@@ -333,7 +333,7 @@ class AgentTool(Tool):
             )
             run.finish(result)
             return result
-        except Exception as e:
+        except (RuntimeError, ValueError, OSError) as e:
             run.fail(f"Sub-agent error: {e}")
             return run.error
         finally:
@@ -353,7 +353,7 @@ class AgentTool(Tool):
                 idx = futures[future]
                 try:
                     future.result()
-                except Exception as e:
+                except (RuntimeError, ValueError, OSError, concurrent.futures.CancelledError) as e:
                     runs[idx].fail(f"Sub-agent error: {e}")
 
         parts = []
@@ -406,7 +406,7 @@ class AgentTool(Tool):
             if agent is not None:
                 try:
                     agent.cancel()
-                except Exception as e:
+                except (RuntimeError, OSError) as e:
                     logger.debug("Error cancelling sub-agent %s: %s", run.task_id, e)
 
 
@@ -515,7 +515,7 @@ class AgentResultTool(Tool):
         if future and future.done() and run.status in {"queued", "running"}:
             try:
                 future.result()
-            except Exception as e:
+            except (RuntimeError, ValueError, OSError, concurrent.futures.CancelledError) as e:
                 run.fail(f"Sub-agent error: {e}")
 
         snap = run.snapshot()
@@ -538,7 +538,12 @@ class AgentResultTool(Tool):
                 if future and future.done() and run.status in {"queued", "running"}:
                     try:
                         future.result()
-                    except Exception as e:
+                    except (
+                        RuntimeError,
+                        ValueError,
+                        OSError,
+                        concurrent.futures.CancelledError,
+                    ) as e:
                         run.fail(f"Sub-agent error: {e}")
                 snap = run.snapshot()
                 lines.append(

@@ -72,5 +72,5 @@ class RetrieveToolResultTool(Tool):
             )
         except (FileNotFoundError, ValueError) as e:
             return f"Error: {e}"
-        except Exception as e:
+        except OSError as e:
             return f"Error retrieving tool result: {e}"

@@ -1,6 +1,7 @@
 """Music player control tool — lets the AI agent control playback."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +114,7 @@ class MusicTool(Tool):
             return []
         try:
             songs = json.loads(cache_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return []
         q = query.lower()
         results = []
@@ -140,9 +141,7 @@ class MusicTool(Tool):
                 json={"action": action, "payload": payload},
                 timeout=3,
             )
-        except Exception:
-            import logging
-
+        except httpx.HTTPError:
             logging.getLogger("atri").debug("Music broadcast failed", exc_info=True)
 
     def _status_text(self) -> str:

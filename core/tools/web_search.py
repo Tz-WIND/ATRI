@@ -150,7 +150,7 @@ class WebSearchTool(Tool):
                 lines.append("")
             return "\n".join(lines).strip()
 
-        except Exception as e:
+        except (OSError, ValueError) as e:
             return f"Tavily search failed: {e}"
 
     # ------------------------------------------------------------------
@@ -163,7 +163,7 @@ class WebSearchTool(Tool):
             resp = _open_url(_DDG_HTML, data=data)
             raw = resp.read().decode("utf-8", errors="ignore")
             results = self._parse_ddg(raw, max_results)
-        except Exception as e:
+        except (OSError, ValueError, urllib.error.URLError) as e:
             return f"Web search failed: {e}"
 
         if not results:
@@ -277,7 +277,7 @@ class WebFetchTool(Tool):
             return f"HTTP error fetching {url}: {e.code} {e.reason}"
         except urllib.error.URLError as e:
             return f"Connection error fetching {url}: {e.reason}"
-        except Exception as e:
+        except (OSError, ValueError) as e:
             return f"Fetch failed for {url}: {e}"
 
     # ------------------------------------------------------------------

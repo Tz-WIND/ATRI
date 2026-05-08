@@ -148,5 +148,5 @@ class _ShellSession:
             return out.strip() or "(no output)"
         except subprocess.TimeoutExpired:
             return f"Error: timed out after {timeout}s"
-        except Exception as e:
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
             return f"Error: {e}"

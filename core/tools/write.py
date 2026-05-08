@@ -35,5 +35,5 @@ class WriteFileTool(Tool):
             return f"Wrote {n_lines} lines to {file_path}\n{diff}"
         except PermissionError as e:
             return f"Error: {e}"
-        except Exception as e:
+        except OSError as e:
             return f"Error: {e}"
