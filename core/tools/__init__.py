@@ -15,6 +15,7 @@ from .read import ReadFileTool
 from .retrieve_tool_result import RetrieveToolResultTool
 from .search import SearchTool
 from .skill import LoadSkillTool
+from .task_result import TaskResultTool
 from .terminal import TerminalTool
 from .tree import TreeTool
 from .web_search import WebFetchTool, WebSearchTool
@@ -25,6 +26,7 @@ def create_tools(
     workspace: str,
     skill_manager=None,
     tool_result_store=None,
+    task_store=None,
     mcp_servers: dict | None = None,
 ) -> list[Tool]:
     """Create a full set of tools bound to the given workspace."""
@@ -42,8 +44,9 @@ def create_tools(
         SearchTool(workspace),
         ListDirTool(workspace),
         TreeTool(workspace),
-        AgentTool(workspace),
-        AgentResultTool(workspace),
+        AgentTool(workspace, task_store=task_store),
+        AgentResultTool(workspace, task_store=task_store),
+        TaskResultTool(workspace, task_store=task_store),
         LintTool(workspace),
         MusicTool(workspace),
         WebSearchTool(workspace),

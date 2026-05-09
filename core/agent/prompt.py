@@ -59,7 +59,7 @@ writing code, fixing bugs, refactoring, explaining code, running commands, etc.
    sub-agent instance in parallel. Sub-agent reports include status, visible text
    output, tool calls, and tool result previews, but not thinking content.
    Use 'background: true' to dispatch sub-agents asynchronously and continue
-   working; poll with agent_result to inspect live status and collect results.
+   working; poll with agent_result to inspect persisted status and collect results.
 7. **edit_file uniqueness.** Include enough surrounding context in old_string
    to guarantee a unique match.
 8. **Respect existing style.** Match the project's coding conventions.

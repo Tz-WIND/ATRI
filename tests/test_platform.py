@@ -1,3 +1,8 @@
+import asyncio
+
+import pytest
+
+from core.platform.base import PlatformStatus
 from core.platform.message import (
     At,
     File,
@@ -9,6 +14,10 @@ from core.platform.message import (
     display_session_id,
     normalize_session_id,
 )
+from core.platform.webchat import WebChatAdapter
+
+
+# ── MessageEvent ────────────────────────────────────────────────────
 
 
 def test_message_event_tracks_result_text_and_chain():
@@ -63,3 +72,42 @@ def test_session_id_display_normalization_round_trip_for_webchat_ids():
     assert normalize_session_id("onebot11:group:42") == "onebot11:group:42"
     assert display_session_id("webchat:friend:abc") == "abc"
     assert display_session_id("onebot11:group:42") == "onebot11:group:42"
+
+
+# ── WebChatAdapter ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_webchat_adapter_create_event_commits_to_queue_and_resolves_text_response():
+    queue = asyncio.Queue()
+    adapter = WebChatAdapter(queue)
+
+    event, future = adapter.create_event("hello", "session-1")
+
+    assert adapter.status == PlatformStatus.RUNNING
+    assert await queue.get() is event
+    assert event.message_str == "hello"
+    assert event.session_id == "session-1"
+    assert event.platform_name == "webchat"
+    assert future.done() is False
+
+    await adapter.send_message(event, "response")
+
+    assert future.result() == {"text": "response", "chain": None}
+
+
+@pytest.mark.asyncio
+async def test_webchat_adapter_resolves_chain_response_and_cancels_pending_on_terminate():
+    queue = asyncio.Queue()
+    adapter = WebChatAdapter(queue)
+    event, future = adapter.create_event("hello", "session-1")
+
+    await adapter.send_message_chain(event, [Plain(text="a"), Plain(text="b")])
+
+    assert future.result() == {"text": "a\nb", "chain": [Plain(text="a"), Plain(text="b")]}
+
+    _event, pending = adapter.create_event("second", "session-1")
+    await adapter.terminate()
+
+    assert pending.cancelled() is True
+    assert adapter.status == PlatformStatus.STOPPED

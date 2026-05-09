@@ -21,7 +21,7 @@ from core.agent.llm import LLM
 from core.agent.session import SessionStore
 from core.pipeline.stage import Stage, register_stage
 from core.platform.message import MessageEvent, normalize_session_id
-from core.runtime import RuntimeTimelineStore, summarize_text
+from core.runtime import RuntimeTimelineStore, TaskStore, summarize_text
 from core.skills import SkillManager, build_skills_prompt
 from core.tools.bash import CONFIRM_MARKER
 from core.utils import clean_optional_str
@@ -66,6 +66,10 @@ class ProcessStage(Stage):
 
         self.session_store = SessionStore(ctx.get("sessions_dir"))
         self.runtime_store = RuntimeTimelineStore(ctx.get("runtime_dir"))
+        self.task_store = TaskStore(ctx.get("runtime_dir"))
+        self.task_store.mark_incomplete_as_interrupted(
+            reason="ATRI restarted before the background task finished"
+        )
 
         self._agents: dict[str, Agent] = {}
         self._agents_lock = threading.Lock()
@@ -140,6 +144,7 @@ class ProcessStage(Stage):
                     persona=self.persona,
                     skills_prompt=self._skills_prompt,
                     skill_manager=self.skill_manager,
+                    task_store=self.task_store,
                     mcp_servers=self.mcp_servers,
                     llm_factory=self._create_llm_for_model,
                     model_catalog=self._model_catalog,

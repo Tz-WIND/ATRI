@@ -16,7 +16,9 @@ Parallel execution: pass multiple tasks via 'tasks' to run sub-agents concurrent
 from __future__ import annotations
 
 import concurrent.futures
+import sqlite3
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -27,6 +29,7 @@ from .base import Tool
 
 if TYPE_CHECKING:
     from core.agent.agent import Agent
+    from core.runtime import TaskStore
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +43,7 @@ _MAX_TEXT_CHARS = 4000
 _MAX_RESULT_CHARS = 5000
 _MAX_EVENT_PREVIEW_CHARS = 800
 _MAX_REPORT_CHARS = 12000
+_TEXT_SNAPSHOT_INTERVAL_SECONDS = 1.0
 
 
 @dataclass
@@ -55,6 +59,8 @@ class SubAgentRun:
     error: str = ""
     future: concurrent.futures.Future | None = None
     agent: Agent | None = None
+    task_store: TaskStore | None = field(default=None, repr=False, compare=False)
+    _last_text_snapshot_at: float = field(default=0.0, init=False, repr=False, compare=False)
     lock: threading.Lock = field(
         default_factory=threading.Lock,
         repr=False,
@@ -64,17 +70,31 @@ class SubAgentRun:
     def set_status(self, status: str):
         with self.lock:
             self.status = status
+        if status == "running":
+            self._persist_start()
+        else:
+            self._persist_update(status=status)
 
     def add_text(self, text: str):
         if not text:
             return
+        delta = ""
+        visible_text = ""
         with self.lock:
             current_len = sum(len(part) for part in self.text_parts)
             remaining = max(0, _MAX_TEXT_CHARS - current_len)
             if remaining:
-                self.text_parts.append(text[:remaining])
+                delta = text[:remaining]
+                self.text_parts.append(delta)
             elif not self.text_parts or self.text_parts[-1] != "\n... (text truncated)":
-                self.text_parts.append("\n... (text truncated)")
+                delta = "\n... (text truncated)"
+                self.text_parts.append(delta)
+            if delta and self._should_persist_text_snapshot_locked():
+                visible_text = "".join(self.text_parts)
+        if delta:
+            self._persist_event("text_delta", {"text": delta})
+            if visible_text:
+                self._persist_update(metadata={"text": visible_text})
 
     def add_tool_start(self, tc_id: str, name: str, args: dict):
         self.add_event(
@@ -104,16 +124,21 @@ class SubAgentRun:
     def add_event(self, event: dict):
         with self.lock:
             self.events.append(event)
+        self._persist_event(str(event.get("type") or "event"), event)
 
     def finish(self, result: str):
         with self.lock:
             self.status = "done"
             self.result = _truncate(result, _MAX_RESULT_CHARS)
+            visible_text = "".join(self.text_parts)
+        self._persist_finish("completed", result=self.result, metadata={"text": visible_text})
 
     def fail(self, error: str):
         with self.lock:
             self.status = "error"
             self.error = error
+            visible_text = "".join(self.text_parts)
+        self._persist_finish("failed", error=error, metadata={"text": visible_text})
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -128,6 +153,63 @@ class SubAgentRun:
                 "result": self.result,
                 "error": self.error,
             }
+
+    def _should_persist_text_snapshot_locked(self) -> bool:
+        now = time.monotonic()
+        if now - self._last_text_snapshot_at < _TEXT_SNAPSHOT_INTERVAL_SECONDS:
+            return False
+        self._last_text_snapshot_at = now
+        return True
+
+    def _persist_start(self) -> None:
+        if not self.task_store:
+            return
+        self._safe_persist("start", lambda: self.task_store.start_task(self.task_id))
+
+    def _persist_update(self, **kwargs: Any) -> None:
+        if not self.task_store:
+            return
+        self._safe_persist("update", lambda: self.task_store.update_task(self.task_id, **kwargs))
+
+    def _persist_finish(
+        self,
+        status: str,
+        *,
+        result: str | None = None,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if not self.task_store:
+            return
+        self._safe_persist(
+            "finish",
+            lambda: self.task_store.finish_task(
+                self.task_id,
+                status=status,
+                result=result,
+                error=error,
+                metadata=metadata,
+            ),
+        )
+
+    def _persist_event(self, event_type: str, payload: dict) -> None:
+        if not self.task_store:
+            return
+        self._safe_persist(
+            "event",
+            lambda: self.task_store.append_event(self.task_id, event_type, payload),
+        )
+
+    def _safe_persist(self, operation: str, callback) -> None:
+        try:
+            callback()
+        except (RuntimeError, OSError, sqlite3.Error, TypeError, ValueError) as e:
+            logger.debug(
+                "Sub-agent task persistence %s failed for %s: %s",
+                operation,
+                self.task_id,
+                e,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +295,9 @@ class AgentTool(Tool):
 
     _parent_agent: Agent | None = None
 
-    def __init__(self, workspace: str = "."):
+    def __init__(self, workspace: str = ".", task_store: TaskStore | None = None):
         super().__init__(workspace)
+        self.task_store = task_store
         self._active_runs: dict[str, SubAgentRun] = {}
         self._active_runs_lock = threading.Lock()
 
@@ -269,12 +352,19 @@ class AgentTool(Tool):
     # Blocking execution
     # ------------------------------------------------------------------
 
-    def _new_run(self, task_spec: dict, task_id: str | None = None) -> SubAgentRun:
+    def _new_run(
+        self,
+        task_spec: dict,
+        task_id: str | None = None,
+        *,
+        persist: bool = False,
+    ) -> SubAgentRun:
         return SubAgentRun(
             task_id=task_id or f"run_{uuid.uuid4().hex[:8]}",
             task=task_spec["task"],
             model=_clean(task_spec.get("model")),
             provider=_clean(task_spec.get("provider")),
+            task_store=self.task_store if persist else None,
         )
 
     def _create_child_agent(self, task_spec: dict) -> Agent:
@@ -291,6 +381,7 @@ class AgentTool(Tool):
                 parent.workspace,
                 skill_manager=parent.skill_manager,
                 tool_result_store=parent.context.tool_result_store,
+                task_store=parent.task_store,
             )
             if t.name not in ("agent", "agent_result")
         ]
@@ -307,6 +398,7 @@ class AgentTool(Tool):
             persona=parent.persona,
             skills_prompt=parent.skills_prompt,
             skill_manager=parent.skill_manager,
+            task_store=parent.task_store,
         )
 
     def _run_subagent_task(self, run: SubAgentRun, task_spec: dict) -> str:
@@ -374,7 +466,24 @@ class AgentTool(Tool):
         runs = []
         for task_spec in tasks:
             tid = f"bg_{uuid.uuid4().hex[:8]}"
-            run = self._new_run(task_spec, task_id=tid)
+            persist = False
+            if self.task_store:
+                try:
+                    tid = self.task_store.create_task(
+                        task_id=tid,
+                        kind="sub_agent",
+                        title=_truncate(task_spec["task"], 160),
+                        input_text=task_spec["task"],
+                        workspace=self._workspace,
+                        metadata={
+                            "model": _clean(task_spec.get("model")),
+                            "provider": _clean(task_spec.get("provider")),
+                        },
+                    )
+                    persist = True
+                except (RuntimeError, OSError, sqlite3.Error, TypeError, ValueError) as e:
+                    logger.debug("Failed to persist background sub-agent task %s: %s", tid, e)
+            run = self._new_run(task_spec, task_id=tid, persist=persist)
             future = _background_pool.submit(self._run_subagent_task, run, task_spec)
             run.future = future
             runs.append(run)
@@ -422,12 +531,23 @@ def _truncate(text: object, max_chars: int) -> str:
 
 
 def _format_run_model_tag(run: SubAgentRun) -> str:
-    if run.model and run.provider:
-        return f" [{run.provider}/{run.model}]"
-    if run.model:
-        return f" [{run.model}]"
-    if run.provider:
-        return f" [{run.provider}]"
+    return _format_model_tag(run.model, run.provider)
+
+
+def _format_task_model_tag(task: dict) -> str:
+    metadata = task.get("metadata") or {}
+    model = _clean(metadata.get("model"))
+    provider = _clean(metadata.get("provider"))
+    return _format_model_tag(model, provider)
+
+
+def _format_model_tag(model: str, provider: str) -> str:
+    if model and provider:
+        return f" [{provider}/{model}]"
+    if model:
+        return f" [{model}]"
+    if provider:
+        return f" [{provider}]"
     return ""
 
 
@@ -474,6 +594,55 @@ def _format_run_report(run: SubAgentRun, *, total: int = 1, index: int = 0) -> s
     return _truncate("\n".join(lines), _MAX_REPORT_CHARS)
 
 
+def _format_task_report(task: dict, events: list) -> str:
+    metadata = task.get("metadata") or {}
+    lines = [
+        f"### Background task `{task['id']}`{_format_task_model_tag(task)}",
+        f"Kind: {task['kind']}",
+        f"Task: {task['input'][:200]}",
+        f"Status: {task['status']}",
+    ]
+    if task.get("error"):
+        lines.append(f"Error: {task['error']}")
+
+    text = metadata.get("text")
+    if text:
+        lines.extend(["", "Visible text output:", str(text)])
+
+    tool_events = [
+        event for event in events if getattr(event, "event_type", "") in {"tool_start", "tool_end"}
+    ]
+    if tool_events:
+        lines.extend(["", "Tool activity:"])
+        for event in tool_events[-30:]:
+            payload = event.payload
+            tool = payload.get("tool", "tool")
+            args = _format_args(payload.get("args") or {})
+            if event.event_type == "tool_start":
+                lines.append(f"- started `{tool}` with args {args}")
+            elif event.event_type == "tool_end":
+                state = "succeeded" if payload.get("success") else "failed"
+                preview = payload.get("result_preview") or ""
+                lines.append(f"- {state} `{tool}` with args {args}")
+                if preview:
+                    lines.append(f"  result preview: {_truncate(preview, 500)}")
+        if len(tool_events) > 30:
+            lines.append(f"- ... ({len(tool_events) - 30} earlier event(s) omitted)")
+
+    evidence = task.get("evidence") or {}
+    if evidence:
+        lines.extend(["", f"Evidence: {_truncate(repr(evidence), 1000)}"])
+
+    artifacts = task.get("artifacts") or []
+    if artifacts:
+        lines.extend(["", f"Artifacts: {_truncate(repr(artifacts), 1000)}"])
+
+    if task.get("result"):
+        lines.extend(["", "Final result:", task["result"]])
+
+    return _truncate("\n".join(lines), _MAX_REPORT_CHARS)
+
+
 # ---------------------------------------------------------------------------
 # AgentResultTool - poll / collect background sub-agent results
 # ---------------------------------------------------------------------------
@@ -499,6 +668,10 @@ class AgentResultTool(Tool):
         "required": [],
     }
 
+    def __init__(self, workspace: str = ".", task_store: TaskStore | None = None):
+        super().__init__(workspace)
+        self.task_store = task_store
+
     def execute(self, task_id: str | None = None, **kwargs: Any) -> str:
         if task_id:
             return self._query_one(task_id)
@@ -509,6 +682,10 @@ class AgentResultTool(Tool):
             run = _background_tasks.get(task_id)
 
         if run is None:
+            if self.task_store:
+                task = self.task_store.get_task(task_id)
+                if task is not None and task.get("kind") == "sub_agent":
+                    return _format_task_report(task, self.task_store.events(task_id))
             return f"No background task found with id '{task_id}'"
 
         future = run.future
@@ -527,13 +704,12 @@ class AgentResultTool(Tool):
         return _format_run_report(run)
 
     def _list_all(self) -> str:
+        lines = []
+        active_ids = set()
         with _tasks_lock:
-            if not _background_tasks:
-                return "No background sub-agent tasks."
-
-            lines = []
             stale_ids = []
             for tid, run in sorted(_background_tasks.items()):
+                active_ids.add(tid)
                 future = run.future
                 if future and future.done() and run.status in {"queued", "running"}:
                     try:
@@ -556,5 +732,18 @@ class AgentResultTool(Tool):
             # Auto-cleanup completed background tasks
             for tid in stale_ids:
                 _background_tasks.pop(tid, None)
+
+        if self.task_store:
+            for task in self.task_store.list_tasks(kind="sub_agent", limit=50):
+                tid = task["id"]
+                if tid in active_ids:
+                    continue
+                lines.append(
+                    f"  - `{tid}`: {task['status']}{_format_task_model_tag(task)} - "
+                    f"{task['input'][:80]}"
+                )
+
+        if not lines:
+            return "No background sub-agent tasks."
 
         return "Background sub-agent tasks:\n" + "\n".join(lines)

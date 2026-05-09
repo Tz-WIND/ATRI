@@ -34,6 +34,7 @@ class Agent:
         persona: str = "",
         skills_prompt: str = "",
         skill_manager=None,
+        task_store=None,
         mcp_servers: dict | None = None,
         llm_factory: Callable[[str | None, str | None], LLM] | None = None,
         model_catalog: Callable[[], list[dict]] | list[dict] | None = None,
@@ -41,6 +42,7 @@ class Agent:
         self.llm = llm
         self.workspace = workspace
         self.skill_manager = skill_manager
+        self.task_store = task_store
         self.mcp_servers = dict(mcp_servers or {})
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
@@ -51,6 +53,7 @@ class Agent:
                 workspace,
                 skill_manager=skill_manager,
                 tool_result_store=self.context.tool_result_store,
+                task_store=self.task_store,
                 mcp_servers=self.mcp_servers,
             )
         )
@@ -81,6 +84,7 @@ class Agent:
             self.workspace,
             skill_manager=self.skill_manager,
             tool_result_store=self.context.tool_result_store,
+            task_store=self.task_store,
             mcp_servers=self.mcp_servers,
         )
         self._wire_agent_tools()
