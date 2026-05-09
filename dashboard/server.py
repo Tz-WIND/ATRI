@@ -1265,7 +1265,27 @@ class Dashboard:
                     result = store.load(candidate)
                     if result:
                         messages, model = result
-                        return jsonify({"messages": messages, "model": model})
+                        runtime = self._runtime_store()
+                        runtime_detail = None
+                        if runtime is not None:
+                            runtime_detail = (
+                                runtime.thread_detail(candidate)
+                                or runtime.thread_detail(normalize_session_id(candidate))
+                            )
+                        runtime_turns = runtime_detail.get("turns", []) if runtime_detail else []
+                        runtime_items = [
+                            item
+                            for item in (runtime_detail.get("items", []) if runtime_detail else [])
+                            if item.get("kind") == "agent_reasoning" and item.get("detail")
+                        ]
+                        return jsonify(
+                            {
+                                "messages": messages,
+                                "model": model,
+                                "runtime_turns": runtime_turns,
+                                "runtime_items": runtime_items,
+                            }
+                        )
             return jsonify({"messages": [], "model": ""})
 
         @app.route("/api/sessions/<path:session_id>", methods=["DELETE"])

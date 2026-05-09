@@ -214,7 +214,7 @@ async function handleMarkdownClick(event) {
 
 <style scoped>
 .message {
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   max-width: 900px;
   margin-left: auto;
   margin-right: auto;
@@ -234,7 +234,15 @@ async function handleMarkdownClick(event) {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
+  min-height: 18px;
+  margin-bottom: 2px;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.message:hover .msg-head,
+.message:focus-within .msg-head {
+  opacity: 1;
 }
 
 .msg-role {
@@ -252,7 +260,7 @@ async function handleMarkdownClick(event) {
 
 .msg-body {
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.68;
   word-break: break-word;
 }
 
@@ -272,7 +280,7 @@ async function handleMarkdownClick(event) {
   color: #f0f0f0;
   background: rgba(37, 37, 38, 0.86);
   border: 1px solid var(--border-input);
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
@@ -332,6 +340,13 @@ async function handleMarkdownClick(event) {
   width: 22px;
   height: 22px;
   color: var(--t3);
+  opacity: 0;
+  transition: opacity 0.14s ease, color 0.14s ease;
+}
+
+.message.user:hover .user-action,
+.message.user:focus-within .user-action {
+  opacity: 1;
 }
 
 .user-action svg {
@@ -356,6 +371,7 @@ async function handleMarkdownClick(event) {
 /* Markdown rendered styles */
 .markdown-body {
   color: var(--t1);
+  max-width: 100%;
 }
 
 .markdown-body :deep(h1),
@@ -427,6 +443,7 @@ async function handleMarkdownClick(event) {
   font-size: 13px;
   line-height: 1.5;
   font-family: var(--mono);
+  color: var(--code-text);
   overflow-x: auto;
 }
 

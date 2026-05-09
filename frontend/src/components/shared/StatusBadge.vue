@@ -32,8 +32,8 @@ defineProps({
 }
 
 .badge.on {
-  background: var(--green-bg);
-  color: var(--green);
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 
 .badge.off {

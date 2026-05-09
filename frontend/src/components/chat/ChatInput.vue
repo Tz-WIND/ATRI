@@ -279,7 +279,7 @@
         </div>
         <div class="tools-right">
           <button
-            class="icon-btn"
+            class="icon-btn optional-tool optional-command"
             type="button"
             title="Command palette (Ctrl+K)"
             @pointerdown.prevent.stop="togglePalette"
@@ -294,7 +294,7 @@
             </svg>
           </button>
           <button
-            class="icon-btn"
+            class="icon-btn optional-tool optional-history"
             type="button"
             title="Search history (Ctrl+H)"
             @pointerdown.prevent.stop="toggleHistory"
@@ -309,7 +309,7 @@
             </svg>
           </button>
           <button
-            class="icon-btn"
+            class="icon-btn optional-tool optional-stash"
             type="button"
             title="Stash draft (Ctrl+S)"
             :disabled="!text.trim()"
@@ -1819,11 +1819,12 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  container-type: inline-size;
   max-width: 920px;
   margin: 0 auto;
   background: rgba(37, 37, 38, 0.92);
   border: 1px solid var(--border-input);
-  border-radius: 13px;
+  border-radius: 8px;
   padding: 12px 12px 10px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.04);
   transition: border-color 0.15s, box-shadow 0.15s;
@@ -1986,6 +1987,8 @@ textarea::placeholder {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .tools-left,
@@ -1993,10 +1996,31 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .tools-left {
+  flex: 0 1 auto;
+  overflow: visible;
+}
+
+.tools-left :deep(.model-dropdown) {
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 220px;
+  max-inline-size: 220px;
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: left center;
+  transition:
+    opacity 0.16s ease,
+    max-inline-size 0.16s ease,
+    transform 0.16s ease;
+}
+
+.tools-right {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .mode-picker {
@@ -2086,14 +2110,15 @@ textarea::placeholder {
 }
 
 .state-pill {
-  border: 1px solid rgba(137, 209, 133, 0.22);
+  border: 1px solid rgba(130, 184, 255, 0.22);
   border-radius: 999px;
-  background: var(--green-bg);
-  color: var(--green);
+  background: var(--ok-bg);
+  color: var(--ok);
   font-family: var(--mono);
   font-size: 10px;
   padding: 2px 7px;
   white-space: nowrap;
+  transition: opacity 0.16s ease, inline-size 0.16s ease, padding 0.16s ease, border-color 0.16s ease;
 }
 
 .icon-btn {
@@ -2128,6 +2153,21 @@ textarea::placeholder {
 .icon-btn svg {
   width: 16px;
   height: 16px;
+}
+
+.optional-tool {
+  flex: 0 0 31px;
+  inline-size: 31px;
+  overflow: hidden;
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity 0.16s ease,
+    inline-size 0.16s ease,
+    width 0.16s ease,
+    transform 0.16s ease,
+    background 0.12s,
+    color 0.12s;
 }
 
 .btn-send {
@@ -2206,6 +2246,71 @@ textarea::placeholder {
 @keyframes stop-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.4); }
   50% { box-shadow: 0 0 0 6px rgba(229, 57, 53, 0); }
+}
+
+@container (max-width: 460px) {
+  .tools-left :deep(.model-dropdown) {
+    max-inline-size: 0;
+    opacity: 0;
+    transform: scale(0.96);
+    pointer-events: none;
+  }
+
+  .state-pill {
+    inline-size: 0;
+    padding-inline: 0;
+    border-color: transparent;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+}
+
+@container (max-width: 430px) {
+  .optional-command {
+    width: 0;
+    inline-size: 0;
+    opacity: 0;
+    transform: scale(0.86);
+    pointer-events: none;
+  }
+}
+
+@container (max-width: 390px) {
+  .optional-history {
+    width: 0;
+    inline-size: 0;
+    opacity: 0;
+    transform: scale(0.86);
+    pointer-events: none;
+  }
+}
+
+@container (max-width: 350px) {
+  .optional-stash {
+    width: 0;
+    inline-size: 0;
+    opacity: 0;
+    transform: scale(0.86);
+    pointer-events: none;
+  }
+}
+
+@container (max-width: 430px) {
+  .input-toolbar {
+    gap: 8px;
+  }
+
+  .tools-left,
+  .tools-right {
+    gap: 5px;
+  }
+}
+
+@container (max-width: 320px) {
+  .tools-left {
+    flex: 0 0 auto;
+  }
 }
 
 @media (max-width: 720px) {

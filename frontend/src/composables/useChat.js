@@ -38,20 +38,22 @@ export function useChat() {
       thinkingBlock.value.content += msg.content || ''
     }
     if (msg.type === 'thinking_done') {
-      if (thinkingBlock.value) {
-        thinkingBlock.value.done = true
-      }
+      finishThinkingBlock()
     }
     if (msg.type === 'response_start') {
+      finishThinkingBlock()
       ensureAssistantStream()
     }
     if (msg.type === 'response_delta') {
+      finishThinkingBlock()
       appendAssistantDelta(msg.content || '')
     }
     if (msg.type === 'response_done') {
+      finishThinkingBlock()
       finishAssistantStream(msg.content || '')
     }
     if (msg.type === 'tool_start') {
+      finishThinkingBlock()
       finishAssistantStream()
       addToolMessage(msg.data.id, {
         tool: msg.data.tool,
@@ -70,6 +72,7 @@ export function useChat() {
       }
     }
     if (msg.type === 'tool_end') {
+      finishThinkingBlock()
       updateToolMessage(msg.data.id, {
         tool: msg.data.tool,
         args: msg.data.args,
@@ -94,6 +97,7 @@ export function useChat() {
   }
 
   function clearThinking() {
+    finishThinkingBlock()
     thinkingText.value = ''
     thinkingStart.value = 0
     thinkingBlock.value = null
@@ -119,11 +123,14 @@ export function useChat() {
   }
 
   function startThinkingBlock() {
+    finishThinkingBlock()
+    const now = Date.now()
     const block = {
       id: makeId(),
       role: 'thinking',
       content: '',
-      startTime: Date.now(),
+      startTime: now,
+      endTime: null,
       done: false,
       time: new Date(),
     }
@@ -141,6 +148,14 @@ export function useChat() {
     const next = { ...messages.value[index], ...patch }
     messages.value.splice(index, 1, next)
     return next
+  }
+
+  function finishThinkingBlock() {
+    const current = thinkingBlock.value
+    if (!current || current.done) return
+    const endTime = Date.now()
+    const patched = patchMessage(current.id, { done: true, endTime })
+    thinkingBlock.value = patched || { ...current, done: true, endTime }
   }
 
   function ensureAssistantStream() {
@@ -235,9 +250,43 @@ export function useChat() {
     }
   }
 
-  function loadTranscript(rawMessages) {
+  function loadTranscript(transcript) {
     resetMessages()
     const callsById = new Map()
+    const rawMessages = Array.isArray(transcript) ? transcript : transcript?.messages || []
+    const runtimeTurns = Array.isArray(transcript?.runtimeTurns) ? transcript.runtimeTurns : []
+    const runtimeItems = Array.isArray(transcript?.runtimeItems) ? transcript.runtimeItems : []
+    const reasoningByTurn = new Map()
+
+    runtimeItems
+      .filter((item) => item?.kind === 'agent_reasoning' && String(item.detail || '').trim())
+      .forEach((item) => {
+        const list = reasoningByTurn.get(item.turn_id) || []
+        list.push(item)
+        reasoningByTurn.set(item.turn_id, list)
+      })
+
+    const orderedTurnIds = runtimeTurns
+      .map((turn) => turn?.id)
+      .filter(Boolean)
+      .filter((turnId) => reasoningByTurn.has(turnId))
+    const fallbackReasoning = runtimeItems
+      .filter((item) => item?.kind === 'agent_reasoning' && String(item.detail || '').trim())
+      .filter((item) => !item.turn_id || !orderedTurnIds.includes(item.turn_id))
+    let turnIndex = 0
+
+    function addRuntimeThinkingForNextTurn() {
+      let items = []
+      while (turnIndex < orderedTurnIds.length && !items.length) {
+        const turnId = orderedTurnIds[turnIndex]
+        turnIndex += 1
+        items = reasoningByTurn.get(turnId) || []
+      }
+      if (!items.length && fallbackReasoning.length) {
+        items = [fallbackReasoning.shift()]
+      }
+      items.forEach(addRuntimeThinkingMessage)
+    }
 
     rawMessages.forEach((m) => {
       if (m.tool_calls?.length) {
@@ -252,6 +301,7 @@ export function useChat() {
       if (m.role === 'user' && m.content) {
         const parsed = parseUserContent(m.content)
         addMessage('user', parsed.text, false, { attachments: parsed.attachments })
+        addRuntimeThinkingForNextTurn()
       } else if (m.role === 'assistant' && m.content) {
         addMessage('assistant', m.content, true)
       } else if (m.role === 'tool') {
@@ -267,6 +317,33 @@ export function useChat() {
         })
       }
     })
+
+    while (turnIndex < orderedTurnIds.length) {
+      addRuntimeThinkingForNextTurn()
+    }
+    fallbackReasoning.forEach(addRuntimeThinkingMessage)
+  }
+
+  function addRuntimeThinkingMessage(item) {
+    const content = String(item.detail || '').trim()
+    if (!content) return
+    const startTime = parseRuntimeTime(item.started_at || item.created_at) || Date.now()
+    const endTime = parseRuntimeTime(item.ended_at) || startTime
+    messages.value.push({
+      id: item.id || makeId(),
+      role: 'thinking',
+      content,
+      startTime,
+      endTime,
+      done: true,
+      time: new Date(startTime),
+    })
+  }
+
+  function parseRuntimeTime(value) {
+    if (!value) return 0
+    const parsed = Date.parse(String(value))
+    return Number.isNaN(parsed) ? 0 : parsed
   }
 
   function extractToolResultId(result) {

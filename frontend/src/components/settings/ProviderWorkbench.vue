@@ -187,7 +187,7 @@ async function handleDeactivateModel(provider, model) {
   display: grid;
   grid-template-columns: 260px 1px 1fr;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--bg1);
   min-height: 520px;
   overflow: hidden;
@@ -222,7 +222,7 @@ async function handleDeactivateModel(provider, model) {
 .modal-card {
   background: var(--bg1);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 8px;
   width: 420px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
@@ -291,12 +291,12 @@ async function handleDeactivateModel(provider, model) {
 }
 
 .btn-primary {
-  background: rgba(63, 185, 80, 0.15);
-  color: var(--green);
-  border-color: rgba(63, 185, 80, 0.3);
+  background: var(--acc-bg);
+  color: var(--acc2);
+  border-color: rgba(55, 148, 255, 0.3);
 }
 
-.btn-primary:hover { background: rgba(63, 185, 80, 0.25); }
+.btn-primary:hover { background: rgba(55, 148, 255, 0.22); }
 
 .btn-ghost {
   background: none;

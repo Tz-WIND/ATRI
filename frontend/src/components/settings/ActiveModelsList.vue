@@ -93,7 +93,7 @@ function handleDeactivate(provider, model) {
 
 .badge-current {
   font-size: 11px;
-  color: var(--green);
+  color: var(--ok);
   font-family: var(--mono);
   margin-right: 6px;
 }

@@ -376,7 +376,7 @@ function handleFetchModels() {
 
 .model-state {
   font-size: 11px;
-  color: var(--green);
+  color: var(--ok);
   font-family: var(--mono);
   margin-right: 6px;
 }
@@ -398,12 +398,12 @@ function handleFetchModels() {
 }
 
 .btn-primary {
-  background: rgba(63, 185, 80, 0.15);
-  color: var(--green);
-  border-color: rgba(63, 185, 80, 0.3);
+  background: var(--acc-bg);
+  color: var(--acc2);
+  border-color: rgba(55, 148, 255, 0.3);
 }
 
-.btn-primary:hover { background: rgba(63, 185, 80, 0.25); }
+.btn-primary:hover { background: rgba(55, 148, 255, 0.22); }
 
 .btn-danger {
   background: rgba(248, 81, 73, 0.1);

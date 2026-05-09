@@ -641,9 +641,9 @@ function resourceLabel(resource) {
   border-color: rgba(248,81,73,0.28);
 }
 .notice.ok {
-  color: var(--green);
-  background: var(--green-bg);
-  border-color: rgba(63,185,80,0.28);
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: rgba(130,184,255,0.28);
 }
 
 .form-actions,
@@ -664,8 +664,8 @@ function resourceLabel(resource) {
   transition: all 0.12s;
 }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn-primary { background: rgba(63,185,80,0.15); color: var(--green); border-color: rgba(63,185,80,0.3); }
-.btn-primary:hover:not(:disabled) { background: rgba(63,185,80,0.25); }
+.btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(55,148,255,0.3); }
+.btn-primary:hover:not(:disabled) { background: rgba(55,148,255,0.22); }
 .btn-ghost { background: none; color: var(--t2); }
 .btn-ghost:hover:not(:disabled) { background: var(--bg2); color: var(--t1); }
 .btn-danger { background: none; color: var(--red); border-color: rgba(248,81,73,0.25); }

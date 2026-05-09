@@ -94,7 +94,7 @@ const displayName = computed(() => parsed.value.fileName)
 }
 
 .diff-file { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.diff-stat.add { color: #7ee787; }
+.diff-stat.add { color: var(--acc2); }
 .diff-stat.del { color: #ffa198; }
 
 .diff-line {
@@ -105,12 +105,12 @@ const displayName = computed(() => parsed.value.fileName)
   white-space: pre;
 }
 
-.diff-line.add { background: rgba(46, 160, 67, 0.18); }
+.diff-line.add { background: rgba(55, 148, 255, 0.13); }
 .diff-line.add .diff-gutter {
-  color: #7ee787; background: rgba(46, 160, 67, 0.25);
-  border-right-color: rgba(46, 160, 67, 0.35);
+  color: var(--acc2); background: rgba(55, 148, 255, 0.2);
+  border-right-color: rgba(55, 148, 255, 0.32);
 }
-.diff-line.add code { color: #d2ffd9; }
+.diff-line.add code { color: #d7e7ff; }
 
 .diff-line.del { background: rgba(248, 81, 73, 0.18); }
 .diff-line.del .diff-gutter {

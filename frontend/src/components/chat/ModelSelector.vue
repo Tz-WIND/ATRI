@@ -129,7 +129,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
   height: 32px;
   padding: 0 12px;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 16px;
+  border-radius: 8px;
   background: transparent;
   color: var(--t2);
   font-size: 13px;
@@ -140,6 +140,13 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.model-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-chip:hover {
@@ -162,7 +169,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
   width: 320px;
   background: var(--bg1);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 8px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   z-index: 200;
   overflow: hidden;

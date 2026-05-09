@@ -58,20 +58,24 @@
             </div>
           </div>
           <template
-            v-for="msg in messages"
-            :key="msg.id"
+            v-for="item in displayItems"
+            :key="item.id"
           >
             <ToolCard
-              v-if="msg.role === 'tool'"
-              :tool-data="msg.toolData"
+              v-if="item.type === 'tool'"
+              :tool-data="item.message.toolData"
+            />
+            <ToolCard
+              v-else-if="item.type === 'tool-group'"
+              :tool-group="item.tools"
             />
             <ThinkingBlock
-              v-else-if="msg.role === 'thinking'"
-              :thinking="msg"
+              v-else-if="item.type === 'thinking'"
+              :thinking="item.message"
             />
             <ChatMessage
               v-else
-              :message="msg"
+              :message="item.message"
             />
           </template>
           <div
@@ -145,7 +149,7 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ChatMessage from './ChatMessage.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
@@ -183,6 +187,45 @@ const autoScroll = ref(true)
 let handledEventCount = 0
 let processingEvents = false
 let resizeState = null
+
+const CONTEXT_TOOL_NAMES = new Set(['read_file', 'list_dir', 'tree', 'glob', 'grep', 'search'])
+
+const displayItems = computed(() => {
+  const items = []
+  let contextTools = []
+
+  function flushContextTools() {
+    if (!contextTools.length) return
+    const first = contextTools[0]
+    const last = contextTools[contextTools.length - 1]
+    items.push({
+      id: `context-${first.id}-${last.id}`,
+      type: 'tool-group',
+      tools: contextTools.map((message) => ({
+        id: message.id,
+        ...(message.toolData || {}),
+      })),
+    })
+    contextTools = []
+  }
+
+  messages.value.forEach((message) => {
+    if (message.role === 'tool' && CONTEXT_TOOL_NAMES.has(message.toolData?.tool)) {
+      contextTools.push(message)
+      return
+    }
+
+    flushContextTools()
+    items.push({
+      id: message.id,
+      type: message.role,
+      message,
+    })
+  })
+
+  flushContextTools()
+  return items
+})
 
 function togglePanel() {
   panelOpen.value = !panelOpen.value
@@ -244,9 +287,9 @@ function handleOpenFile(fileInfo) {
 async function loadChatSession(id) {
   resetMessages()
   handledEventCount = events.value.length
-  const msgs = await loadSessionMessages(id)
-  if (msgs.length) {
-    loadTranscript(msgs)
+  const transcript = await loadSessionMessages(id)
+  if (transcript.messages.length || transcript.runtimeItems.length) {
+    loadTranscript(transcript)
   }
   scrollToBottom()
 }
@@ -366,13 +409,13 @@ onUnmounted(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-width: 260px;
+  min-width: 340px;
 }
 
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 18px 20px 20px;
   scroll-behavior: smooth;
 }
 
@@ -402,8 +445,8 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .status-dot.on {
-  background: var(--green);
-  box-shadow: 0 0 6px var(--green);
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
 }
 .status-dot.off {
   background: var(--red);
@@ -523,14 +566,28 @@ onUnmounted(() => {
 }
 
 .thinking-indicator {
-  text-align: center;
-  padding: 12px;
+  max-width: 900px;
+  margin: 8px auto 10px;
+  padding-left: 34px;
+  color: var(--t3);
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 .pulse-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--t3);
-  font-size: 14px;
   animation: pulse 1.5s ease-in-out infinite;
+}
+
+.pulse-text::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--acc2);
 }
 
 @keyframes pulse {

@@ -22,12 +22,30 @@
   --acc-bg: rgba(0, 122, 204, 0.15);
 
   /* Semantic */
-  --green: #89d185;
-  --green-bg: rgba(137, 209, 133, 0.12);
+  --ok: #82b8ff;
+  --ok-bg: rgba(130, 184, 255, 0.12);
+  --green: var(--ok);
+  --green-bg: var(--ok-bg);
   --red: #f48771;
   --red-bg: rgba(244, 135, 113, 0.12);
   --orange: #cca700;
   --purple: #c586c0;
+  --yellow: #c8903f;
+  --acc1: var(--acc2);
+
+  /* Syntax colors - intentionally avoid green hues */
+  --code-keyword: #c586c0;
+  --code-built-in: #dcdcaa;
+  --code-type: #7fb4ff;
+  --code-literal: #6aa9ff;
+  --code-number: #b8a9ff;
+  --code-string: #ce9178;
+  --code-regexp: #d16969;
+  --code-variable: #9cdcfe;
+  --code-selector: #d7ba7d;
+  --code-comment: #8a8f98;
+  --code-meta: #9b9b9b;
+  --code-text: #d4d4d4;
 
   /* Fonts */
   --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
@@ -120,4 +138,79 @@ body {
 /* Utility */
 .mono {
   font-family: var(--mono);
+}
+
+/* highlight.js workbench theme */
+.hljs-keyword,
+.hljs-formula {
+  color: var(--code-keyword);
+}
+
+.hljs-built_in,
+.hljs-title,
+.hljs-title.function_ {
+  color: var(--code-built-in);
+}
+
+.hljs-type,
+.hljs-title.class_ {
+  color: var(--code-type);
+}
+
+.hljs-literal,
+.hljs-symbol,
+.hljs-section,
+.hljs-tag,
+.hljs-name,
+.hljs-meta .hljs-keyword {
+  color: var(--code-literal);
+}
+
+.hljs-number {
+  color: var(--code-number);
+}
+
+.hljs-string,
+.hljs-link,
+.hljs-meta .hljs-string {
+  color: var(--code-string);
+}
+
+.hljs-regexp,
+.hljs-deletion {
+  color: var(--code-regexp);
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attr,
+.hljs-attribute,
+.hljs-params,
+.hljs-property {
+  color: var(--code-variable);
+}
+
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--code-selector);
+}
+
+.hljs-comment,
+.hljs-doctag {
+  color: var(--code-comment);
+  font-style: italic;
+}
+
+.hljs-meta {
+  color: var(--code-meta);
+}
+
+.hljs-subst,
+.hljs-punctuation {
+  color: var(--code-text);
+}
+
+.hljs-addition {
+  color: var(--acc2);
+  background: rgba(55, 148, 255, 0.1);
 }

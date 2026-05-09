@@ -55,9 +55,13 @@ export function useSession() {
   async function loadSessionMessages(id) {
     try {
       const data = await api.getSession(id)
-      return data.messages || []
+      return {
+        messages: data.messages || [],
+        runtimeTurns: data.runtime_turns || [],
+        runtimeItems: data.runtime_items || [],
+      }
     } catch {
-      return []
+      return { messages: [], runtimeTurns: [], runtimeItems: [] }
     }
   }
 

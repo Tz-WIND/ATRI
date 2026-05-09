@@ -67,32 +67,6 @@
         v-if="activeTab"
         class="editor-content"
       >
-        <div class="editor-toolbar">
-          <span class="editor-path">{{ activeTab.path }}</span>
-          <div class="editor-actions">
-            <span
-              v-if="activeTab.modified"
-              class="modified-badge"
-            >Modified</span>
-            <button
-              class="tool-btn"
-              :disabled="!activeTab.modified || saving"
-              title="Save (Ctrl+S)"
-              @click="saveFile"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
-                <polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" />
-              </svg>
-              Save
-            </button>
-          </div>
-        </div>
         <div class="code-wrapper">
           <div class="line-numbers">
             <div
@@ -158,6 +132,8 @@ const tabListRef = ref(null)
 const currentLine = ref(1)
 const selectedWord = ref('')
 const editorScrollTop = ref(0)
+const EDITOR_PADDING_TOP = 12
+const EDITOR_LINE_HEIGHT = 28
 
 const activeTab = computed(() => tabs.value.find(t => t.path === activeTabPath.value))
 
@@ -201,7 +177,7 @@ function escapeHtml(str) {
 }
 
 const currentLineStyle = computed(() => {
-  const top = 8 + (currentLine.value - 1) * 20
+  const top = EDITOR_PADDING_TOP + (currentLine.value - 1) * EDITOR_LINE_HEIGHT
   return {
     top: `${top - editorScrollTop.value}px`,
   }
@@ -470,10 +446,14 @@ defineExpose({ openFile })
 }
 
 .tab.modified .tab-name::after {
-  content: '●';
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
   margin-left: 4px;
-  color: var(--orange);
-  font-size: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 
 .tab-close {
@@ -506,67 +486,6 @@ defineExpose({ openFile })
   height: 12px;
 }
 
-.editor-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg1);
-  flex-shrink: 0;
-}
-
-.editor-path {
-  font-size: 11px;
-  color: var(--t3);
-  font-family: var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.editor-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.modified-badge {
-  font-size: 10px;
-  color: var(--orange);
-  font-family: var(--mono);
-}
-
-.tool-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  font-size: 11px;
-  font-family: var(--mono);
-  background: rgba(63,185,80,0.12);
-  color: var(--green);
-  border: 1px solid rgba(63,185,80,0.25);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.12s;
-}
-
-.tool-btn:hover:not(:disabled) {
-  background: rgba(63,185,80,0.22);
-}
-
-.tool-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.tool-btn svg {
-  width: 13px;
-  height: 13px;
-}
-
 .editor-content {
   flex: 1;
   display: flex;
@@ -580,56 +499,61 @@ defineExpose({ openFile })
   overflow: hidden;
   display: flex;
   background: var(--bg0);
+  --editor-gutter-w: 48px;
+  --editor-line-height: 28px;
+  --editor-pad-y: 12px;
+  --editor-pad-x: 16px;
 }
 
 .line-numbers {
-  width: 48px;
+  width: var(--editor-gutter-w);
   flex-shrink: 0;
   overflow: hidden;
-  background: var(--bg1);
-  border-right: 1px solid var(--border);
+  background: transparent;
+  border-right: 0;
   user-select: none;
   position: relative;
 }
 
 .line-numbers-inner {
-  padding: 8px 0;
+  padding: var(--editor-pad-y) 0;
 }
 
 .line-num {
-  height: 20px;
-  line-height: 20px;
+  height: var(--editor-line-height);
+  line-height: var(--editor-line-height);
   text-align: right;
-  padding-right: 12px;
+  padding-right: 10px;
   font-size: 12px;
   font-family: var(--mono);
-  color: var(--t3);
+  color: rgba(133, 133, 133, 0.72);
 }
 
 .current-line-highlight {
   position: absolute;
-  left: 48px;
+  left: var(--editor-gutter-w);
   right: 0;
-  height: 20px;
-  background: rgba(255, 255, 255, 0.06);
+  height: var(--editor-line-height);
+  background: rgba(255, 255, 255, 0.055);
   pointer-events: none;
   z-index: 2;
 }
 
 .line-num.active {
-  color: var(--t1);
+  color: var(--t2);
+  background: rgba(255, 255, 255, 0.055);
 }
 
 .code-editor {
   position: absolute;
   top: 0;
-  left: 48px;
+  left: var(--editor-gutter-w);
   right: 0;
   bottom: 0;
-  padding: 8px 12px;
+  padding: var(--editor-pad-y) var(--editor-pad-x);
   font-size: 13px;
   font-family: var(--mono);
-  line-height: 20px;
+  line-height: var(--editor-line-height);
   tab-size: 2;
   white-space: pre;
   margin: 0;
@@ -653,18 +577,18 @@ defineExpose({ openFile })
 .word-highlights {
   position: absolute;
   top: 0;
-  left: 48px;
-  padding: 8px 12px;
+  left: var(--editor-gutter-w);
+  padding: var(--editor-pad-y) var(--editor-pad-x);
   font-size: 13px;
   font-family: var(--mono);
-  line-height: 20px;
+  line-height: var(--editor-line-height);
   tab-size: 2;
   white-space: pre;
   margin: 0;
   box-sizing: border-box;
   pointer-events: none;
   width: max-content;
-  min-width: calc(100% - 48px);
+  min-width: calc(100% - var(--editor-gutter-w));
 }
 
 .code-highlight {
@@ -695,8 +619,8 @@ defineExpose({ openFile })
 
 <style>
 .word-highlights .word-match {
-  background: rgba(255, 200, 50, 0.25);
-  outline: 1px solid rgba(255, 200, 50, 0.4);
+  background: rgba(255, 200, 50, 0.18);
+  outline: 0;
   border-radius: 2px;
   color: transparent;
   padding: 0;
@@ -704,38 +628,38 @@ defineExpose({ openFile })
   border: none;
 }
 
-/* highlight.js VS Code dark theme */
-.code-highlight .hljs-keyword { color: #c586c0; }
-.code-highlight .hljs-built_in { color: #dcdcaa; }
-.code-highlight .hljs-type { color: #4ec9b0; }
-.code-highlight .hljs-literal { color: #569cd6; }
-.code-highlight .hljs-number { color: #b5cea8; }
-.code-highlight .hljs-string { color: #ce9178; }
-.code-highlight .hljs-regexp { color: #d16969; }
-.code-highlight .hljs-symbol { color: #569cd6; }
-.code-highlight .hljs-variable { color: #9cdcfe; }
-.code-highlight .hljs-template-variable { color: #9cdcfe; }
-.code-highlight .hljs-link { color: #ce9178; }
-.code-highlight .hljs-selector-class { color: #d7ba7d; }
-.code-highlight .hljs-selector-id { color: #d7ba7d; }
-.code-highlight .hljs-comment { color: #6a9955; font-style: italic; }
-.code-highlight .hljs-doctag { color: #608b4e; }
-.code-highlight .hljs-meta { color: #9b9b9b; }
-.code-highlight .hljs-meta .hljs-keyword { color: #569cd6; }
-.code-highlight .hljs-meta .hljs-string { color: #ce9178; }
-.code-highlight .hljs-section { color: #569cd6; }
-.code-highlight .hljs-tag { color: #569cd6; }
-.code-highlight .hljs-name { color: #569cd6; }
-.code-highlight .hljs-attr { color: #9cdcfe; }
-.code-highlight .hljs-attribute { color: #9cdcfe; }
-.code-highlight .hljs-title { color: #dcdcaa; }
-.code-highlight .hljs-title.function_ { color: #dcdcaa; }
-.code-highlight .hljs-title.class_ { color: #4ec9b0; }
-.code-highlight .hljs-params { color: #9cdcfe; }
-.code-highlight .hljs-property { color: #9cdcfe; }
-.code-highlight .hljs-subst { color: #d4d4d4; }
-.code-highlight .hljs-formula { color: #c586c0; }
-.code-highlight .hljs-addition { color: #b5cea8; background: rgba(63,185,80,0.1); }
-.code-highlight .hljs-deletion { color: #ce9178; background: rgba(244,135,113,0.1); }
-.code-highlight .hljs-punctuation { color: #d4d4d4; }
+/* highlight.js workbench theme */
+.code-highlight .hljs-keyword { color: var(--code-keyword); }
+.code-highlight .hljs-built_in { color: var(--code-built-in); }
+.code-highlight .hljs-type { color: var(--code-type); }
+.code-highlight .hljs-literal { color: var(--code-literal); }
+.code-highlight .hljs-number { color: var(--code-number); }
+.code-highlight .hljs-string { color: var(--code-string); }
+.code-highlight .hljs-regexp { color: var(--code-regexp); }
+.code-highlight .hljs-symbol { color: var(--code-literal); }
+.code-highlight .hljs-variable { color: var(--code-variable); }
+.code-highlight .hljs-template-variable { color: var(--code-variable); }
+.code-highlight .hljs-link { color: var(--code-string); }
+.code-highlight .hljs-selector-class { color: var(--code-selector); }
+.code-highlight .hljs-selector-id { color: var(--code-selector); }
+.code-highlight .hljs-comment { color: var(--code-comment); font-style: italic; }
+.code-highlight .hljs-doctag { color: var(--code-comment); }
+.code-highlight .hljs-meta { color: var(--code-meta); }
+.code-highlight .hljs-meta .hljs-keyword { color: var(--code-literal); }
+.code-highlight .hljs-meta .hljs-string { color: var(--code-string); }
+.code-highlight .hljs-section { color: var(--code-literal); }
+.code-highlight .hljs-tag { color: var(--code-literal); }
+.code-highlight .hljs-name { color: var(--code-literal); }
+.code-highlight .hljs-attr { color: var(--code-variable); }
+.code-highlight .hljs-attribute { color: var(--code-variable); }
+.code-highlight .hljs-title { color: var(--code-built-in); }
+.code-highlight .hljs-title.function_ { color: var(--code-built-in); }
+.code-highlight .hljs-title.class_ { color: var(--code-type); }
+.code-highlight .hljs-params { color: var(--code-variable); }
+.code-highlight .hljs-property { color: var(--code-variable); }
+.code-highlight .hljs-subst { color: var(--code-text); }
+.code-highlight .hljs-formula { color: var(--code-keyword); }
+.code-highlight .hljs-addition { color: var(--acc2); background: rgba(55,148,255,0.1); }
+.code-highlight .hljs-deletion { color: var(--code-string); background: rgba(244,135,113,0.1); }
+.code-highlight .hljs-punctuation { color: var(--code-text); }
 </style>

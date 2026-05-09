@@ -1,7 +1,8 @@
 <template>
   <div :class="['thinking-block', thinking.done ? 'done' : 'active']">
-    <div
+    <button
       class="thinking-header"
+      type="button"
       @click="open = !open"
     >
       <svg
@@ -13,21 +14,24 @@
       >
         <polyline points="9 18 15 12 9 6" />
       </svg>
-      <span class="think-icon">&#9679;</span>
-      <span class="think-label">{{ thinking.done ? `Thought for ${elapsed}s` : 'Thinking...' }}</span>
+      <span class="think-icon" />
+      <span class="think-label">{{ thinking.done ? `Thought for ${elapsed}s` : 'Thinking' }}</span>
       <span
         v-if="!thinking.done"
         class="think-dur"
       >{{ elapsed }}s</span>
-    </div>
-    <div :class="['thinking-content', { open }]">
+    </button>
+    <div
+      v-if="thinking.content"
+      :class="['thinking-content', { open }]"
+    >
       <pre>{{ thinking.content }}</pre>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   thinking: { type: Object, required: true },
@@ -38,7 +42,8 @@ const now = ref(Date.now())
 
 const elapsed = computed(() => {
   if (!props.thinking.startTime) return '0.0'
-  return ((now.value - props.thinking.startTime) / 1000).toFixed(1)
+  const end = props.thinking.done && props.thinking.endTime ? props.thinking.endTime : now.value
+  return ((end - props.thinking.startTime) / 1000).toFixed(1)
 })
 
 let timer = null
@@ -53,43 +58,35 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(timer)
 })
-
-// Auto-close when done
-watch(() => props.thinking.done, (done) => {
-  if (done) open.value = false
-})
 </script>
 
 <style scoped>
 .thinking-block {
-  margin: 8px auto;
+  margin: 10px auto 14px;
+  padding: 5px 0 6px;
   max-width: 900px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--bg1);
-  font-family: var(--mono);
-  font-size: 12px;
-  transition: border-color 0.2s;
-}
-
-.thinking-block.active {
-  border-color: rgba(197, 134, 192, 0.35);
+  color: var(--t3);
+  font-size: 13px;
 }
 
 .thinking-header {
+  width: 100%;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: pointer;
-  color: var(--purple);
-  transition: background 0.12s;
+  color: var(--t3);
   user-select: none;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 .thinking-header:hover {
-  background: var(--bg2);
+  color: var(--t2);
 }
 
 .think-chevron {
@@ -105,7 +102,12 @@ watch(() => props.thinking.done, (done) => {
 }
 
 .think-icon {
+  width: 7px;
+  height: 7px;
   flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--acc2);
+  color: var(--acc2);
 }
 
 .thinking-block.active .think-icon {
@@ -118,8 +120,9 @@ watch(() => props.thinking.done, (done) => {
 }
 
 .think-label {
-  flex: 1;
-  color: var(--t2);
+  flex: 0 0 auto;
+  color: inherit;
+  font-weight: 600;
 }
 
 .think-dur {
@@ -129,7 +132,7 @@ watch(() => props.thinking.done, (done) => {
 
 .thinking-content {
   display: none;
-  padding: 0 12px 8px;
+  padding: 6px 0 0 34px;
 }
 
 .thinking-content.open {
@@ -138,15 +141,15 @@ watch(() => props.thinking.done, (done) => {
 
 .thinking-content pre {
   margin: 0;
-  padding: 8px;
-  background: var(--bg0);
-  border-radius: 4px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--t2);
+  padding: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.65;
+  color: rgba(204, 204, 204, 0.58);
+  font-family: var(--sans);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 400px;
+  max-height: 420px;
   overflow: auto;
 }
 </style>

@@ -547,12 +547,12 @@ onBeforeUnmount(() => {
 }
 
 .switch-field.active .switch-track {
-  border-color: rgba(137, 209, 133, 0.45);
-  background: var(--green-bg);
+  border-color: rgba(130, 184, 255, 0.45);
+  background: var(--ok-bg);
 }
 
 .switch-field.active .switch-track .switch-thumb {
-  background: var(--green);
+  background: var(--ok);
   transform: translateX(20px);
 }
 
@@ -638,13 +638,13 @@ onBeforeUnmount(() => {
 }
 
 .btn-primary {
-  background: rgba(63, 185, 80, 0.15);
-  color: var(--green);
-  border-color: rgba(63, 185, 80, 0.3);
+  background: var(--acc-bg);
+  color: var(--acc2);
+  border-color: rgba(55, 148, 255, 0.3);
 }
 
 .btn-primary:hover {
-  background: rgba(63, 185, 80, 0.25);
+  background: rgba(55, 148, 255, 0.22);
 }
 
 .btn-primary:disabled {

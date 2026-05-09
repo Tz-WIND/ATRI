@@ -24,7 +24,7 @@
       >
         <span
           class="prov-dot"
-          :style="{ background: p.api_key ? 'var(--green)' : 'var(--orange)' }"
+          :style="{ background: p.api_key ? 'var(--ok)' : 'var(--orange)' }"
         />
         <div class="prov-info">
           <div class="prov-name">

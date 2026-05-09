@@ -138,6 +138,6 @@ async function save() {
   cursor: pointer; font-size: 12px; font-weight: 600; font-family: var(--mono);
   transition: all 0.12s;
 }
-.btn-primary { background: rgba(63,185,80,0.15); color: var(--green); border-color: rgba(63,185,80,0.3); }
-.btn-primary:hover { background: rgba(63,185,80,0.25); }
+.btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(55,148,255,0.3); }
+.btn-primary:hover { background: rgba(55,148,255,0.22); }
 </style>
