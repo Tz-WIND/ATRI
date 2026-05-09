@@ -10,6 +10,7 @@ from .grep import GrepTool
 from .lint import LintTool
 from .list_dir import ListDirTool
 from .mcp import create_mcp_tools
+from .mode import AgentModeTool
 from .music import MusicTool
 from .read import ReadFileTool
 from .retrieve_tool_result import RetrieveToolResultTool
@@ -28,6 +29,7 @@ def create_tools(
     tool_result_store=None,
     task_store=None,
     mcp_servers: dict | None = None,
+    mode_controller=None,
 ) -> list[Tool]:
     """Create a full set of tools bound to the given workspace."""
     tools: list[Tool] = [
@@ -47,6 +49,7 @@ def create_tools(
         AgentTool(workspace, task_store=task_store),
         AgentResultTool(workspace, task_store=task_store),
         TaskResultTool(workspace, task_store=task_store),
+        AgentModeTool(workspace, mode_controller=mode_controller),
         LintTool(workspace),
         MusicTool(workspace),
         WebSearchTool(workspace),

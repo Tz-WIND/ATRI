@@ -388,6 +388,8 @@ class AgentTool(Tool):
                 skill_manager=parent.skill_manager,
                 tool_result_store=parent.context.tool_result_store,
                 task_store=parent.task_store,
+                mcp_servers=parent.mcp_servers,
+                mode_controller=parent.mode_controller,
             )
             if t.name not in ("agent", "agent_result")
         ]
@@ -405,6 +407,8 @@ class AgentTool(Tool):
             skills_prompt=parent.skills_prompt,
             skill_manager=parent.skill_manager,
             task_store=parent.task_store,
+            mode_controller=parent.mode_controller,
+            mcp_servers=parent.mcp_servers,
         )
 
     def _run_subagent_task(self, run: SubAgentRun, task_spec: dict) -> str:

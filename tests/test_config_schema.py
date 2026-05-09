@@ -22,6 +22,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["base_url"] is None
     assert config["max_tokens"] == 256
     assert config["temperature"] == 0.75
+    assert config["agent_mode"] == DEFAULT_CONFIG["agent_mode"]
     assert config["onebot11"]["enabled"] is False
     assert config["onebot11"]["ws_reverse_port"] == 6200
     assert config["workspace"] == DEFAULT_CONFIG["workspace"]
@@ -45,6 +46,7 @@ def test_normalize_config_does_not_share_nested_default_state():
         ({"max_rounds": 0}, "max_rounds must be >= 1"),
         ({"dashboard": {"enabled": "yes"}}, "dashboard.enabled must be a boolean"),
         ({"active_models": "gpt-test"}, "active_models must be an array"),
+        ({"agent_mode": "execute"}, "agent_mode must be one of: plan, agent"),
         ([], "config root must be an object"),
     ],
 )
@@ -67,6 +69,13 @@ def test_normalize_config_migrates_legacy_dashboard_auth_token():
     assert "auth_token" not in config["dashboard"]
     assert config["dashboard"]["password"].startswith("pbkdf2:")
     assert "secret-token" not in config["dashboard"]["password"]
+
+
+def test_normalize_config_accepts_uppercase_agent_mode():
+    config, changed = normalize_config({"agent_mode": "PLAN"})
+
+    assert changed is True
+    assert config["agent_mode"] == "plan"
 
 
 def test_normalize_config_removes_legacy_auth_token_when_dashboard_is_disabled():

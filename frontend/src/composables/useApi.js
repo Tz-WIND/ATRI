@@ -97,6 +97,8 @@ export function useApi() {
     // Chat
     sendMessage: (message, sessionId) => request('/api/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId }) }),
     cancelChat: (sessionId) => request('/api/chat/cancel', { method: 'POST', body: JSON.stringify({ session_id: sessionId || '' }) }),
+    getAgentMode: () => request('/api/agent-mode'),
+    setAgentMode: (mode, reason = '') => request('/api/agent-mode', { method: 'POST', body: JSON.stringify({ mode, reason }) }),
     getTools: () => request('/api/tools'),
     approveCommand: (sessionId) => request('/api/approve-command', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
 

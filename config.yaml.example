@@ -28,6 +28,7 @@ wake_words:
   - atri
 persona: ''
 extra_instructions: ''
+agent_mode: agent  # agent or plan
 
 # 工作目录（Agent 文件操作沙箱）
 workspace: ./workspace

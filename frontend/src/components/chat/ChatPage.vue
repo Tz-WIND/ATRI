@@ -83,8 +83,11 @@
         </div>
         <ChatInput
           :sending="sending"
+          :agent-mode="agentMode"
+          :mode-pending="modePending"
           @send="handleSend"
           @cancel="handleCancel"
+          @set-mode="handleSetMode"
         />
       </div>
 
@@ -151,6 +154,7 @@ import ChatInput from './ChatInput.vue'
 import SessionPanel from './SessionPanel.vue'
 import FilePanel from './FilePanel.vue'
 import EditorTabs from './EditorTabs.vue'
+import { useApi } from '@/composables/useApi.js'
 import { useChat } from '@/composables/useChat.js'
 import { useWebSocket } from '@/composables/useWebSocket.js'
 import { useSession } from '@/composables/useSession.js'
@@ -165,9 +169,12 @@ const {
 const { currentId, loadSessionMessages, loadList } = useSession()
 const { activeModel, loadProviders, loadStatus } = useProviders()
 const { connected: wsConnected, events } = useWebSocket(currentId)
+const api = useApi()
 
 const chatArea = ref(null)
 const editorTabsRef = ref(null)
+const agentMode = ref('agent')
+const modePending = ref(false)
 const panelOpen = ref(true)
 const sideTab = ref('files')
 const panelWidth = ref(280)
@@ -256,6 +263,31 @@ function handleCancel() {
   cancelMessage()
 }
 
+function normalizeMode(mode) {
+  return mode === 'plan' ? 'plan' : 'agent'
+}
+
+async function loadAgentMode() {
+  try {
+    const data = await api.getAgentMode()
+    agentMode.value = normalizeMode(data.mode)
+  } catch {
+    agentMode.value = 'agent'
+  }
+}
+
+async function handleSetMode(mode) {
+  const nextMode = normalizeMode(mode)
+  if (agentMode.value === nextMode || modePending.value) return
+  modePending.value = true
+  try {
+    const data = await api.setAgentMode(nextMode, 'dashboard mode switch')
+    agentMode.value = normalizeMode(data.mode)
+  } finally {
+    modePending.value = false
+  }
+}
+
 function onGlobalKeydown(e) {
   if (e.key === 'Escape' && sending.value) {
     e.preventDefault()
@@ -278,6 +310,9 @@ async function processEvents() {
     while (handledEventCount < events.value.length) {
       const event = events.value[handledEventCount]
       handledEventCount++
+      if (event.type === 'mode_changed') {
+        agentMode.value = normalizeMode(event.mode)
+      }
       handleWsEvent(event)
       scrollToBottom()
       await nextTick()
@@ -301,7 +336,7 @@ watch(currentId, async (newId, oldId) => {
 
 onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown)
-  await Promise.all([loadProviders(), loadStatus()])
+  await Promise.all([loadProviders(), loadStatus(), loadAgentMode()])
   await loadChatSession(currentId.value)
 })
 

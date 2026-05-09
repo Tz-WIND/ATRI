@@ -29,6 +29,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "wake_words": {"type": "array", "default": ["atri"]},
         "extra_instructions": {"type": "string", "default": ""},
         "persona": {"type": "string", "default": ""},
+        "agent_mode": {"type": "string", "default": "agent", "enum": ["plan", "agent"]},
         "onebot11": {
             "type": "object",
             "properties": {
@@ -162,6 +163,13 @@ def _coerce_value(value: Any, schema: dict[str, Any], path: str) -> tuple[Any, b
 
     if "string" in allowed:
         if isinstance(value, str):
+            enum = schema.get("enum")
+            if enum is not None and value not in enum:
+                lowered = value.lower()
+                if lowered in enum:
+                    return lowered, True
+                allowed_values = ", ".join(str(item) for item in enum)
+                raise ConfigValidationError(f"{path} must be one of: {allowed_values}")
             return value, False
         raise ConfigValidationError(f"{path} must be a string")
 

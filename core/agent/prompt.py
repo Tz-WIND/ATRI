@@ -15,6 +15,7 @@ def build_system_prompt(
     extra_instructions: str = "",
     persona: str = "",
     skills_prompt: str = "",
+    agent_mode: str = "agent",
 ) -> str:
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
@@ -31,6 +32,28 @@ def build_system_prompt(
     if skills_prompt:
         skills_block = f"\n{skills_prompt}\n"
 
+    mode = str(agent_mode or "agent").strip().lower()
+    mode_label = "PLAN" if mode == "plan" else "AGENT"
+    if mode_label == "PLAN":
+        mode_rules = """\
+# Operating Mode
+Current mode: PLAN
+- Focus on understanding, outlining options, and producing concrete implementation plans.
+- Do not modify files or run mutating commands while you remain in PLAN mode.
+- Read-only inspection, search, and explanation are allowed.
+- If the user's request clearly requires implementation or verification, call
+  `set_agent_mode` with `mode="agent"` and a short reason before taking action.
+"""
+    else:
+        mode_rules = """\
+# Operating Mode
+Current mode: AGENT
+- Execute the user's software task end to end, including code changes and verification.
+- You may call `set_agent_mode` with `mode="plan"` when the task needs design work,
+  risk analysis, or the user asks to plan before editing.
+- You may call `set_agent_mode` with `mode="agent"` when you are ready to implement.
+"""
+
     now = datetime.now(UTC).astimezone()
     ts = now.strftime("%Y-%m-%d %H:%M:%S %Z (UTC%z)")
 
@@ -44,6 +67,7 @@ writing code, fixing bugs, refactoring, explaining code, running commands, etc.
 - Python: {platform.python_version()}
 - Request time: {ts}
 {persona_block}
+{mode_rules}
 # Available Tools
 {tool_list}
 

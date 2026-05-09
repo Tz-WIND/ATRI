@@ -18,6 +18,7 @@ from core import logger
 from core.agent.agent import Agent
 from core.agent.context import TOOL_OUTPUT_COMPRESSED_MARKER
 from core.agent.llm import LLM
+from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
 from core.pipeline.stage import Stage, register_stage
 from core.platform.message import MessageEvent, normalize_session_id
@@ -51,6 +52,10 @@ class ProcessStage(Stage):
         self.skills_config: dict = ctx.get("skills_config", {})
         self.tavily_api_key: str = ctx.get("tavily_api_key", "")
         self.mcp_servers: dict = dict(ctx.get("mcp_servers", {}))
+        self.mode_controller = AgentModeController(
+            ctx.get("agent_mode", "agent"),
+            on_change=self._on_agent_mode_changed,
+        )
 
         from core.tools.web_search import set_tavily_key
 
@@ -90,6 +95,26 @@ class ProcessStage(Stage):
 
         # Store event loop reference for thread-safe broadcasting from agent executor
         self._loop = asyncio.get_running_loop()
+
+    def _on_agent_mode_changed(self, mode: str, source: str, reason: str) -> None:
+        self._fire(
+            {
+                "type": "mode_changed",
+                "mode": mode,
+                "source": source,
+                "reason": reason,
+            }
+        )
+
+    @property
+    def agent_mode(self) -> str:
+        return self.mode_controller.mode
+
+    def set_agent_mode(self, mode: object, *, source: str = "user", reason: str = "") -> str:
+        next_mode, changed = self.mode_controller.set_mode(mode, source=source, reason=reason)
+        if not changed:
+            self._on_agent_mode_changed(next_mode, source, reason)
+        return next_mode
 
     def _build_skills_prompt(self) -> str:
         active_skills = self.skill_manager.list_skills(active_only=True)
@@ -146,6 +171,7 @@ class ProcessStage(Stage):
                     skill_manager=self.skill_manager,
                     task_store=self.task_store,
                     mcp_servers=self.mcp_servers,
+                    mode_controller=self.mode_controller,
                     llm_factory=self._create_llm_for_model,
                     model_catalog=self._model_catalog,
                 )
@@ -435,6 +461,12 @@ class ProcessStage(Stage):
             with self._agents_lock:
                 for agent in self._agents.values():
                     agent.reload_tools(mcp_servers=self.mcp_servers)
+        if "agent_mode" in kwargs:
+            self.set_agent_mode(
+                normalize_agent_mode(kwargs["agent_mode"]),
+                source="config",
+                reason="configuration updated",
+            )
 
     def get_agent(self, session_id: str) -> Agent | None:
         """Thread-safe lookup of a session's agent. Returns None if not found."""

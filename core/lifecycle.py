@@ -122,6 +122,7 @@ class Lifecycle:
             "max_rounds": self.config.get("max_rounds", 50),
             "extra_instructions": self.config.get("extra_instructions", ""),
             "persona": self.config.get("persona", ""),
+            "agent_mode": self.config.get("agent_mode", "agent"),
             "skills_root": self.config.get("skills_root", "skills"),
             "skill_search_roots": self.config.get("skill_search_roots", []),
             "skills_config": self.config.get("skills", {}),

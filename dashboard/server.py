@@ -45,6 +45,7 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "temperature",
     "extra_instructions",
     "persona",
+    "agent_mode",
     "skills_root",
     "skill_search_roots",
     "tavily_api_key",
@@ -586,6 +587,11 @@ class Dashboard:
                     "active_models": lc.config.get("active_models", []),
                     "workspace": lc.config.get("workspace", ""),
                     "api_format": lc.config.get("api_format", "openai"),
+                    "agent_mode": (
+                        lc.process_stage.agent_mode
+                        if lc.process_stage
+                        else lc.config.get("agent_mode", "agent")
+                    ),
                     "onebot11_status": lc.onebot11.status.value if lc.onebot11 else "disabled",
                     "webchat_status": lc.webchat.status.value if lc.webchat else "disabled",
                     "session_count": lc.process_stage.agent_count if lc.process_stage else 0,
@@ -611,6 +617,7 @@ class Dashboard:
                     "wake_words": c.get("wake_words", []),
                     "extra_instructions": c.get("extra_instructions", ""),
                     "persona": c.get("persona", ""),
+                    "agent_mode": c.get("agent_mode", "agent"),
                     "skills_root": c.get("skills_root", "skills"),
                     "skill_search_roots": c.get("skill_search_roots", []),
                     "providers": _mask_providers(c.get("providers", {})),
@@ -622,7 +629,21 @@ class Dashboard:
         async def update_settings():
             data = await request.get_json()
             lc = self.lifecycle
-            for key in ["model", "base_url", "api_format", "extra_instructions", "persona"]:
+            if "agent_mode" in data:
+                from core.agent.mode import normalize_agent_mode
+
+                try:
+                    data["agent_mode"] = normalize_agent_mode(data["agent_mode"])
+                except ValueError as e:
+                    return jsonify({"error": str(e)}), 400
+            for key in [
+                "model",
+                "base_url",
+                "api_format",
+                "extra_instructions",
+                "persona",
+                "agent_mode",
+            ]:
                 if key in data:
                     lc.config[key] = data[key]
             if "skills_root" in data:
@@ -1271,6 +1292,36 @@ class Dashboard:
 
     def _register_chat_routes(self):
         app = self.app
+
+        @app.route("/api/agent-mode", methods=["GET"])
+        async def get_agent_mode():
+            mode = (
+                self.lifecycle.process_stage.agent_mode
+                if self.lifecycle.process_stage
+                else self.lifecycle.config.get("agent_mode", "agent")
+            )
+            return jsonify({"mode": mode})
+
+        @app.route("/api/agent-mode", methods=["POST"])
+        async def set_agent_mode():
+            from core.agent.mode import normalize_agent_mode
+
+            data = await request.get_json(silent=True) or {}
+            try:
+                mode = normalize_agent_mode(data.get("mode", ""))
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+            reason = str(data.get("reason") or "user selected mode").strip()
+            self.lifecycle.config["agent_mode"] = mode
+            if self.lifecycle.process_stage:
+                mode = self.lifecycle.process_stage.set_agent_mode(
+                    mode,
+                    source="user",
+                    reason=reason,
+                )
+            self.lifecycle.save_config()
+            return jsonify({"mode": mode})
 
         # ── Chat (via WebChat adapter -> pipeline) ──
         @app.route("/api/chat", methods=["POST"])

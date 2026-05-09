@@ -19,6 +19,7 @@ def get_all_tools(
     tool_result_store=None,
     task_store=None,
     mcp_servers: dict | None = None,
+    mode_controller=None,
 ) -> list[Tool]:
     from core.tools import create_tools
 
@@ -28,6 +29,7 @@ def get_all_tools(
         tool_result_store=tool_result_store,
         task_store=task_store,
         mcp_servers=mcp_servers,
+        mode_controller=mode_controller,
     )
 
 

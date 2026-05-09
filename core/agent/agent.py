@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable
 
 from core import logger
+from core.agent.mode import AgentModeController
 from core.utils import clean_optional_str
 
 from .context import ContextManager
@@ -36,6 +37,7 @@ class Agent:
         skill_manager=None,
         task_store=None,
         mcp_servers: dict | None = None,
+        mode_controller: AgentModeController | None = None,
         llm_factory: Callable[[str | None, str | None], LLM] | None = None,
         model_catalog: Callable[[], list[dict]] | list[dict] | None = None,
     ):
@@ -44,6 +46,7 @@ class Agent:
         self.skill_manager = skill_manager
         self.task_store = task_store
         self.mcp_servers = dict(mcp_servers or {})
+        self.mode_controller = mode_controller or AgentModeController()
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.tools = (
@@ -55,6 +58,7 @@ class Agent:
                 tool_result_store=self.context.tool_result_store,
                 task_store=self.task_store,
                 mcp_servers=self.mcp_servers,
+                mode_controller=self.mode_controller,
             )
         )
         self.max_rounds = max_rounds
@@ -86,6 +90,7 @@ class Agent:
             tool_result_store=self.context.tool_result_store,
             task_store=self.task_store,
             mcp_servers=self.mcp_servers,
+            mode_controller=self.mode_controller,
         )
         self._wire_agent_tools()
 
@@ -96,6 +101,7 @@ class Agent:
             extra_instructions=self.extra_instructions,
             persona=self.persona,
             skills_prompt=self.skills_prompt,
+            agent_mode=self.mode_controller.mode,
         )
         subagent_models = self._subagent_model_prompt()
         if subagent_models:
