@@ -22,6 +22,8 @@ class Plain:
 class Image:
     url: str = ""
     file: str = ""
+    mime_type: str = ""
+    size: int = 0
     type: str = "image"
 
 

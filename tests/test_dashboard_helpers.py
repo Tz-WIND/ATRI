@@ -46,6 +46,38 @@ def test_dashboard_masks_provider_api_keys_without_mutating_input():
     assert providers["openai"]["api_key"] == "sk-test"
 
 
+def test_dashboard_masks_and_merges_image_transcription_config():
+    existing = {
+        "enabled": False,
+        "model": "old-vision",
+        "api_key": "sk-existing",
+        "base_url": "https://old.example/v1",
+        "api_format": "openai",
+        "prompt": "old prompt",
+        "max_tokens": 512,
+        "temperature": 0.1,
+    }
+
+    assert server._mask_image_transcription(existing)["api_key"] == "***"
+
+    merged = server._merge_image_transcription_config(
+        existing,
+        {
+            "enabled": True,
+            "model": "new-vision",
+            "api_key": "***",
+            "max_tokens": "1024",
+            "temperature": "0.25",
+        },
+    )
+
+    assert merged["enabled"] is True
+    assert merged["model"] == "new-vision"
+    assert merged["api_key"] == "sk-existing"
+    assert merged["max_tokens"] == 1024
+    assert merged["temperature"] == 0.25
+
+
 def test_dashboard_resolve_workspace_path_blocks_escape(tmp_path):
     ws, target = server._resolve_workspace_path(str(tmp_path), "nested/file.txt")
 
@@ -53,6 +85,43 @@ def test_dashboard_resolve_workspace_path_blocks_escape(tmp_path):
     assert target == (tmp_path / "nested" / "file.txt").resolve()
     with pytest.raises(PermissionError, match="path outside workspace"):
         server._resolve_workspace_path(str(tmp_path), "../outside.txt")
+
+
+def test_dashboard_normalize_chat_images_accepts_valid_data_urls():
+    images = server._normalize_chat_images(
+        [
+            {
+                "dataUrl": "data:image/png;base64,aGVsbG8=",
+                "name": "../screen.png",
+            }
+        ]
+    )
+
+    assert images == [
+        {
+            "url": "data:image/png;base64,aGVsbG8=",
+            "file": "screen.png",
+            "mime_type": "image/png",
+            "size": 5,
+        }
+    ]
+
+
+def test_dashboard_normalize_chat_images_rejects_invalid_payloads(monkeypatch):
+    with pytest.raises(ValueError, match="images must be a list"):
+        server._normalize_chat_images({"bad": True})
+    with pytest.raises(ValueError, match="at most"):
+        server._normalize_chat_images([{}] * (server._MAX_CHAT_IMAGES + 1))
+    with pytest.raises(ValueError, match="image type"):
+        server._normalize_chat_images([{"dataUrl": "data:text/plain;base64,aGVsbG8="}])
+
+    monkeypatch.setattr(server, "_MAX_CHAT_IMAGE_BYTES", 2)
+    with pytest.raises(ValueError, match="smaller"):
+        server._normalize_chat_images([{"dataUrl": "data:image/png;base64,aGVsbG8="}])
+
+
+def test_dashboard_csp_allows_chat_image_previews():
+    assert "img-src 'self' data: blob:" in server._DASHBOARD_CSP
 
 
 def test_dashboard_cookie_value_parses_valid_cookie_headers():

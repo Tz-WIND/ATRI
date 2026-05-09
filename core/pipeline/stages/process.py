@@ -21,7 +21,7 @@ from core.agent.llm import LLM
 from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
 from core.pipeline.stage import Stage, register_stage
-from core.platform.message import MessageEvent, normalize_session_id
+from core.platform.message import Image, MessageEvent, Plain, normalize_session_id
 from core.runtime import RuntimeTimelineStore, TaskStore, summarize_text
 from core.skills import SkillManager, build_skills_prompt
 from core.tools.bash import CONFIRM_MARKER
@@ -29,6 +29,43 @@ from core.utils import clean_optional_str
 
 if TYPE_CHECKING:
     pass
+
+
+def _event_images(event: MessageEvent) -> list[Image]:
+    return [comp for comp in event.message_chain if isinstance(comp, Image) and comp.url]
+
+
+def _event_plain_text(event: MessageEvent) -> str:
+    parts = [comp.text for comp in event.message_chain if isinstance(comp, Plain) and comp.text]
+    if parts:
+        return " ".join(parts).strip()
+    return "" if _event_images(event) else event.message_str.strip()
+
+
+def _event_user_content(event: MessageEvent) -> str | list[dict]:
+    images = _event_images(event)
+    if not images:
+        return event.message_str
+
+    text = _event_plain_text(event)
+    blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": text or "Please analyze the attached image(s).",
+        }
+    ]
+    for image in images:
+        blocks.append({"type": "image_url", "image_url": {"url": image.url}})
+    return blocks
+
+
+def _event_user_content_with_transcription(event: MessageEvent, transcription: str) -> str:
+    text = _event_plain_text(event)
+    parts = []
+    if text:
+        parts.append(text)
+    parts.append("[Image transcription]\n" + transcription.strip())
+    return "\n\n".join(parts)
 
 
 @register_stage
@@ -52,6 +89,7 @@ class ProcessStage(Stage):
         self.skills_config: dict = ctx.get("skills_config", {})
         self.tavily_api_key: str = ctx.get("tavily_api_key", "")
         self.mcp_servers: dict = dict(ctx.get("mcp_servers", {}))
+        self.image_transcription: dict = dict(ctx.get("image_transcription", {}) or {})
         self.mode_controller = AgentModeController(
             ctx.get("agent_mode", "agent"),
             on_change=self._on_agent_mode_changed,
@@ -278,7 +316,7 @@ class ProcessStage(Stage):
             pass
 
     async def process(self, event: MessageEvent) -> AsyncGenerator[None, None]:
-        if not event.message_str.strip():
+        if not event.message_str.strip() and not _event_images(event):
             yield
             return
 
@@ -301,8 +339,9 @@ class ProcessStage(Stage):
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
             with self._active_lock:
                 self._active_session_ids.add(session_id)
+            user_content = await self._event_content_for_agent(event)
             response = await agent.chat_async(
-                event.message_str,
+                user_content,
                 on_token=turn.on_token,
                 on_tool=turn.on_tool,
                 on_thinking=turn.on_thinking,
@@ -333,6 +372,52 @@ class ProcessStage(Stage):
                 self._active_session_ids.discard(session_id)
 
         yield
+
+    async def _event_content_for_agent(self, event: MessageEvent) -> str | list[dict]:
+        images = _event_images(event)
+        if not images or not self.image_transcription.get("enabled"):
+            return _event_user_content(event)
+        transcription = await asyncio.to_thread(self._transcribe_event_images, event, images)
+        return _event_user_content_with_transcription(event, transcription)
+
+    def _transcribe_event_images(self, event: MessageEvent, images: list[Image]) -> str:
+        cfg = self.image_transcription
+        model = str(cfg.get("model") or "").strip()
+        if not model:
+            raise ValueError("image transcription model is enabled but no model is configured")
+
+        prompt = str(cfg.get("prompt") or "").strip()
+        if not prompt:
+            prompt = "Transcribe and describe the attached image(s) for the main agent."
+
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        user_text = _event_plain_text(event)
+        if user_text:
+            content.append({"type": "text", "text": "\n\nUser request:\n" + user_text})
+        for image in images:
+            content.append({"type": "image_url", "image_url": {"url": image.url}})
+
+        llm = LLM(
+            model=model,
+            api_key=str(cfg.get("api_key") or ""),
+            base_url=cfg.get("base_url") or None,
+            api_format=str(cfg.get("api_format") or "openai"),
+            max_tokens=int(cfg.get("max_tokens") or 1024),
+            temperature=float(cfg.get("temperature") or 0.0),
+        )
+        try:
+            response = llm.chat(messages=[{"role": "user", "content": content}], stream=False)
+        finally:
+            llm.close()
+
+        transcription = (response.content or "").strip()
+        if not transcription:
+            base_url = str(cfg.get("base_url") or "").strip() or "default"
+            raise ValueError(
+                f"image transcription model {model!r} returned an empty response "
+                f"(api_format={llm.api_format}, base_url={base_url})"
+            )
+        return transcription
 
     def cancel_current(self) -> bool:
         """Cancel the currently running agent operation (thread-safe).
@@ -461,6 +546,8 @@ class ProcessStage(Stage):
             with self._agents_lock:
                 for agent in self._agents.values():
                     agent.reload_tools(mcp_servers=self.mcp_servers)
+        if "image_transcription" in kwargs:
+            self.image_transcription = dict(kwargs["image_transcription"] or {})
         if "agent_mode" in kwargs:
             self.set_agent_mode(
                 normalize_agent_mode(kwargs["agent_mode"]),

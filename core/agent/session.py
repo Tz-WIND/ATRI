@@ -9,6 +9,7 @@ import re
 import time
 from pathlib import Path
 
+from core.agent.context import content_to_text
 from core.utils import atomic_write_text
 
 DEFAULT_SESSIONS_DIR = Path("data/sessions")
@@ -80,7 +81,7 @@ class SessionStore:
                 preview = ""
                 for m in data.get("messages", []):
                     if m.get("role") == "user" and m.get("content"):
-                        preview = m["content"][:80]
+                        preview = content_to_text(m["content"])[:80]
                         break
                 sessions.append(
                     {

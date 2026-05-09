@@ -2,12 +2,14 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
+from core.agent.llm import LLMResponse
 from core.pipeline.scheduler import PipelineScheduler
 from core.pipeline.stage import Stage
 from core.pipeline.stages.preprocess import PreProcessStage
+from core.pipeline.stages.process import ProcessStage
 from core.pipeline.stages.respond import _split_message
 from core.pipeline.stages.waking import WakingCheckStage
-from core.platform.message import At, MessageEvent, MessageType, Plain
+from core.platform.message import At, Image, MessageEvent, MessageType, Plain
 
 
 async def _consume(stage: Stage, event: MessageEvent) -> list[None]:
@@ -80,6 +82,98 @@ def test_split_message_prefers_paragraph_then_line_boundaries():
     assert _split_message("aa\n\nbbcc", 4) == ["aa", "bbcc"]
     assert _split_message("aa\nbbcc", 4) == ["aa", "bbcc"]
     assert _split_message("abcdef", 3) == ["abc", "def"]
+
+
+@pytest.mark.asyncio
+async def test_process_stage_routes_images_through_transcription_when_enabled(monkeypatch):
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": True}
+    event = MessageEvent(
+        message_str="what is this?",
+        message_chain=[
+            Plain(text="what is this?"),
+            Image(url="data:image/png;base64,aGVsbG8=", file="screen.png"),
+        ],
+    )
+
+    def fake_transcribe(received_event, images):
+        assert received_event is event
+        assert len(images) == 1
+        return "a screenshot with an error"
+
+    monkeypatch.setattr(stage, "_transcribe_event_images", fake_transcribe)
+
+    content = await stage._event_content_for_agent(event)
+
+    assert content == "what is this?\n\n[Image transcription]\na screenshot with an error"
+
+
+def test_process_stage_image_transcription_uses_non_stream_llm(monkeypatch):
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+            self.api_format = kwargs["api_format"]
+
+        def chat(self, messages, stream=True):
+            captured["messages"] = messages
+            captured["stream"] = stream
+            return LLMResponse(content="screen description")
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr("core.pipeline.stages.process.LLM", FakeLLM)
+
+    stage = ProcessStage()
+    stage.image_transcription = {
+        "enabled": True,
+        "model": "vision-model",
+        "api_key": "sk-test",
+        "base_url": "https://example.test/v1",
+        "api_format": "openai",
+        "max_tokens": 512,
+        "temperature": 0,
+        "prompt": "describe it",
+    }
+    image = Image(url="data:image/png;base64,aGVsbG8=", file="screen.png")
+    event = MessageEvent(
+        message_str="what is this?",
+        message_chain=[
+            Plain(text="what is this?"),
+            image,
+        ],
+    )
+
+    transcription = stage._transcribe_event_images(event, [image])
+
+    assert image.file == "screen.png"
+    assert transcription == "screen description"
+    assert captured["stream"] is False
+    assert captured["closed"] is True
+    assert captured["init"]["model"] == "vision-model"
+    assert captured["messages"][0]["content"][0]["text"] == "describe it"
+
+
+@pytest.mark.asyncio
+async def test_process_stage_keeps_multimodal_content_when_transcription_disabled():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    event = MessageEvent(
+        message_str="look",
+        message_chain=[
+            Plain(text="look"),
+            Image(url="data:image/png;base64,aGVsbG8=", file="screen.png"),
+        ],
+    )
+
+    content = await stage._event_content_for_agent(event)
+
+    assert content == [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+    ]
 
 
 @pytest.mark.asyncio

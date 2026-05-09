@@ -23,6 +23,12 @@ from .prompt import build_system_prompt
 from .tools_bridge import get_all_tools, get_tool
 
 
+def _prepend_user_notice(user_input: str | list[dict], notice: str) -> str | list[dict]:
+    if isinstance(user_input, list):
+        return [{"type": "text", "text": notice + "\n\n"}, *user_input]
+    return notice + "\n\n" + str(user_input)
+
+
 class Agent:
     def __init__(
         self,
@@ -167,7 +173,7 @@ class Agent:
 
     def chat(
         self,
-        user_input: str,
+        user_input: str | list[dict],
         on_token: Callable | None = None,
         on_tool: Callable | None = None,
         on_thinking: Callable | None = None,
@@ -191,10 +197,14 @@ class Agent:
             self.messages.append(
                 {
                     "role": "user",
-                    "content": (
-                        "[System notice: Your previous task was interrupted by the user "
-                        "via Ctrl+C. The task you were working on was stopped mid-execution. "
-                        "Below is the user's new message; respond to it directly.]\n\n" + user_input
+                    "content": _prepend_user_notice(
+                        user_input,
+                        (
+                            "[System notice: Your previous task was interrupted by the user "
+                            "via Ctrl+C. The task you were working on was stopped "
+                            "mid-execution. Below is the user's new message; respond to it "
+                            "directly.]"
+                        ),
                     ),
                 }
             )
@@ -271,7 +281,7 @@ class Agent:
 
     async def chat_async(
         self,
-        user_input: str,
+        user_input: str | list[dict],
         on_token: Callable | None = None,
         on_tool: Callable | None = None,
         on_thinking: Callable | None = None,

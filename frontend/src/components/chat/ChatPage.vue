@@ -251,10 +251,12 @@ async function loadChatSession(id) {
   scrollToBottom()
 }
 
-async function handleSend(text) {
+async function handleSend(payload) {
+  const text = typeof payload === 'string' ? payload : payload?.text || ''
+  const images = Array.isArray(payload?.images) ? payload.images : []
   clearThinking()
   clearToolCards()
-  await sendMessage(text)
+  await sendMessage(text, images)
   scrollToBottom()
   if (panelOpen.value && sideTab.value === 'sessions') loadList()
 }

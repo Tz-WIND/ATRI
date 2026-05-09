@@ -50,12 +50,33 @@ def _approx_tokens(text: str) -> int:
     return int(cjk_count * 1.5 + latin_count * 0.25)
 
 
+def content_to_text(content) -> str:
+    """Return text-only content for estimates, summaries, and previews."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(content_to_text(part) for part in content)
+    if isinstance(content, dict):
+        block_type = content.get("type")
+        text = content.get("text")
+        if block_type == "text" and isinstance(text, str):
+            return text
+        if block_type in {"image", "image_url"}:
+            return "\n[Image attachment]\n"
+        if "content" in content:
+            return content_to_text(content["content"])
+        return json.dumps(content, ensure_ascii=False)
+    return str(content)
+
+
 def estimate_tokens(messages: list[dict], system_prompt: str = "") -> int:
     """Estimate total tokens including optional system prompt."""
     total = _approx_tokens(system_prompt) if system_prompt else 0
     for m in messages:
         if m.get("content"):
-            total += _approx_tokens(m["content"])
+            total += _approx_tokens(content_to_text(m["content"]))
         if m.get("tool_calls"):
             total += _approx_tokens(str(m["tool_calls"]))
     return total
@@ -367,6 +388,9 @@ class ContextManager:
             if m.get("role") != "tool":
                 continue
             content = m.get("content", "")
+            if not isinstance(content, str):
+                content = content_to_text(content)
+                m["content"] = content
             if content.startswith(TOOL_OUTPUT_COMPRESSED_MARKER):
                 continue
             if len(content) <= 1500:
@@ -452,7 +476,7 @@ class ContextManager:
         parts = []
         for m in messages:
             role = m.get("role", "?")
-            text = m.get("content", "") or ""
+            text = content_to_text(m.get("content", ""))
             if text:
                 parts.append(f"[{role}] {text[:400]}")
         return "\n".join(parts)
@@ -462,7 +486,7 @@ class ContextManager:
         files_seen: set[str] = set()
         errors: list[str] = []
         for m in messages:
-            text = m.get("content", "") or ""
+            text = content_to_text(m.get("content", ""))
             for match in re.finditer(r"[\w./\-]+\.\w{1,5}", text):
                 files_seen.add(match.group())
             for line in text.splitlines():

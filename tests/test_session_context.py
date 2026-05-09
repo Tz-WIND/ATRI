@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from core.agent.context import TOOL_OUTPUT_COMPRESSED_MARKER, ContextManager, ToolResultStore
+from core.agent.context import (
+    TOOL_OUTPUT_COMPRESSED_MARKER,
+    ContextManager,
+    ToolResultStore,
+    content_to_text,
+    estimate_tokens,
+)
 from core.agent.session import SessionStore
 from core.tools.retrieve_tool_result import RetrieveToolResultTool
 
@@ -32,6 +38,23 @@ def test_session_store_save_load_list_and_delete(tmp_path):
     assert store.delete("webchat:friend:user/1") is True
     assert store.delete("webchat:friend:user/1") is False
     assert store.load("webchat:friend:user/1") is None
+
+
+def test_session_store_lists_multimodal_user_content_preview(tmp_path):
+    store = SessionStore(tmp_path)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "check this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+            ],
+        }
+    ]
+
+    store.save(messages, "gpt-test", "webchat:friend:vision")
+
+    assert store.list_sessions()[0]["preview"] == "check this\n[Image attachment]\n"
 
 
 def test_session_store_rejects_path_traversal_session_ids(tmp_path):
@@ -127,3 +150,13 @@ def test_context_manager_snips_large_multiline_tool_outputs():
     assert ContextManager._snip_tool_outputs(messages) is True
     assert "snipped to save context" in messages[0]["content"]
     assert messages[1]["content"].endswith("already compact")
+
+
+def test_context_text_helpers_handle_multimodal_content_without_base64_bloat():
+    content = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("a" * 1000)}},
+    ]
+
+    assert content_to_text(content) == "look\n[Image attachment]\n"
+    assert estimate_tokens([{"role": "user", "content": content}]) < 20

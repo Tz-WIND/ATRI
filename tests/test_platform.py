@@ -96,6 +96,36 @@ async def test_webchat_adapter_create_event_commits_to_queue_and_resolves_text_r
 
 
 @pytest.mark.asyncio
+async def test_webchat_adapter_create_event_supports_image_attachments():
+    queue = asyncio.Queue()
+    adapter = WebChatAdapter(queue)
+
+    event, _future = adapter.create_event(
+        "",
+        "session-1",
+        images=[
+            {
+                "url": "data:image/png;base64,aGVsbG8=",
+                "file": "screen.png",
+                "mime_type": "image/png",
+                "size": 5,
+            }
+        ],
+    )
+
+    assert await queue.get() is event
+    assert event.message_str == "[1 image attachment(s)]"
+    assert event.message_chain == [
+        Image(
+            url="data:image/png;base64,aGVsbG8=",
+            file="screen.png",
+            mime_type="image/png",
+            size=5,
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_webchat_adapter_resolves_chain_response_and_cancels_pending_on_terminate():
     queue = asyncio.Queue()
     adapter = WebChatAdapter(queue)

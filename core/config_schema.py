@@ -5,6 +5,12 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+DEFAULT_IMAGE_TRANSCRIPTION_PROMPT = (
+    "Transcribe and describe the attached image for a downstream coding agent. "
+    "Include visible text, UI state, errors, file paths, code snippets, diagrams, "
+    "and any details needed to answer the user's request. Be concise and factual."
+)
+
 
 class ConfigValidationError(ValueError):
     """Raised when config.yaml contains an invalid value."""
@@ -30,6 +36,19 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "extra_instructions": {"type": "string", "default": ""},
         "persona": {"type": "string", "default": ""},
         "agent_mode": {"type": "string", "default": "agent", "enum": ["plan", "agent"]},
+        "image_transcription": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "default": False},
+                "model": {"type": "string", "default": ""},
+                "api_key": {"type": "string", "default": ""},
+                "base_url": {"type": ["string", "null"], "default": None},
+                "api_format": {"type": "string", "default": "openai"},
+                "prompt": {"type": "string", "default": DEFAULT_IMAGE_TRANSCRIPTION_PROMPT},
+                "max_tokens": {"type": "integer", "default": 1024, "minimum": 1},
+                "temperature": {"type": "number", "default": 0.0},
+            },
+        },
         "onebot11": {
             "type": "object",
             "properties": {

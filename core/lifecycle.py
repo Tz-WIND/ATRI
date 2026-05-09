@@ -127,6 +127,7 @@ class Lifecycle:
             "skill_search_roots": self.config.get("skill_search_roots", []),
             "skills_config": self.config.get("skills", {}),
             "tavily_api_key": self.config.get("tavily_api_key", ""),
+            "image_transcription": self.config.get("image_transcription", {}),
             "mcp_servers": self.config.get("mcp_servers", {}),
             "sessions_dir": self.config.get("sessions_dir"),
             "runtime_dir": self.config.get("runtime_dir"),

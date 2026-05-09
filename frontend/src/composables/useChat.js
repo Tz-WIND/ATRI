@@ -250,7 +250,8 @@ export function useChat() {
       }
 
       if (m.role === 'user' && m.content) {
-        addMessage('user', m.content, false)
+        const parsed = parseUserContent(m.content)
+        addMessage('user', parsed.text, false, { attachments: parsed.attachments })
       } else if (m.role === 'assistant' && m.content) {
         addMessage('assistant', m.content, true)
       } else if (m.role === 'tool') {
@@ -274,6 +275,80 @@ export function useChat() {
     return match ? match[1] : ''
   }
 
+  function parseUserContent(content) {
+    if (typeof content === 'string') {
+      return { text: content, attachments: [] }
+    }
+    if (!Array.isArray(content)) {
+      return { text: String(content || ''), attachments: [] }
+    }
+
+    const textParts = []
+    const attachments = []
+    content.forEach((part, index) => {
+      if (typeof part === 'string') {
+        textParts.push(part)
+        return
+      }
+      if (!part || typeof part !== 'object') return
+      if (part.type === 'text' && typeof part.text === 'string') {
+        textParts.push(part.text)
+        return
+      }
+      if (part.type === 'image_url') {
+        const src = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url
+        if (src) {
+          attachments.push({
+            id: makeId(),
+            name: part.name || `image-${index + 1}`,
+            type: mimeFromDataUrl(src),
+            size: 0,
+            src,
+          })
+        }
+        return
+      }
+      if (part.type === 'image' && part.source?.type === 'base64') {
+        const mediaType = part.source.media_type || 'image/png'
+        attachments.push({
+          id: makeId(),
+          name: part.name || `image-${index + 1}`,
+          type: mediaType,
+          size: 0,
+          src: `data:${mediaType};base64,${part.source.data || ''}`,
+        })
+      }
+    })
+
+    return { text: textParts.join('').trim(), attachments }
+  }
+
+  function mimeFromDataUrl(src) {
+    const match = String(src || '').match(/^data:([^;,]+)[;,]/)
+    return match ? match[1] : ''
+  }
+
+  function normalizeImagePayload(images) {
+    return (images || [])
+      .map((image) => ({
+        dataUrl: image.dataUrl || image.src || image.url || '',
+        name: image.name || 'image',
+        type: image.type || '',
+        size: Number(image.size || 0),
+      }))
+      .filter((image) => image.dataUrl)
+  }
+
+  function normalizeImageAttachments(images) {
+    return normalizeImagePayload(images).map((image) => ({
+      id: makeId(),
+      name: image.name,
+      type: image.type,
+      size: image.size,
+      src: image.dataUrl,
+    }))
+  }
+
   async function cancelMessage() {
     if (!sending.value) return
     try {
@@ -283,18 +358,20 @@ export function useChat() {
     }
   }
 
-  async function sendMessage(text) {
-    if (!text.trim() || sending.value) return
+  async function sendMessage(text, images = []) {
+    const messageText = String(text || '')
+    const imagePayload = normalizeImagePayload(images)
+    if ((!messageText.trim() && !imagePayload.length) || sending.value) return
     sending.value = true
     clearThinking()
     clearToolCards()
     streamingAssistantId = null
     streamingMessage = null
 
-    addMessage('user', text, false)
+    addMessage('user', messageText, false, { attachments: normalizeImageAttachments(imagePayload) })
 
     try {
-      const result = await api.sendMessage(text, sessionId.value)
+      const result = await api.sendMessage(messageText, sessionId.value, imagePayload)
 
       if (result.session_id) {
         const newId = normalizeSessionId(result.session_id)

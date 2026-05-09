@@ -7,6 +7,8 @@ Chat messages go through the WebChat platform adapter and full pipeline.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import io
@@ -46,6 +48,7 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "extra_instructions",
     "persona",
     "agent_mode",
+    "image_transcription",
     "skills_root",
     "skill_search_roots",
     "tavily_api_key",
@@ -53,6 +56,16 @@ _PROCESS_STAGE_SETTING_KEYS = {
 }
 
 _AUTH_COOKIE = "atri_dashboard_session"
+_CHAT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+_MAX_CHAT_IMAGES = 4
+_MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024
+_DASHBOARD_CSP = (
+    "default-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "connect-src 'self' ws: wss:; "
+    "img-src 'self' data: blob:"
+)
 
 # Rate limiting: track failed login/setup attempts per IP
 _RATE_LIMIT_WINDOW = 300  # 5 minutes
@@ -121,6 +134,39 @@ def _mask_providers(providers: dict) -> dict:
     return result
 
 
+def _mask_image_transcription(cfg: dict | None) -> dict:
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "model": cfg.get("model", ""),
+        "api_key": "***" if cfg.get("api_key") else "",
+        "base_url": cfg.get("base_url") or "",
+        "api_format": cfg.get("api_format", "openai"),
+        "prompt": cfg.get("prompt", ""),
+        "max_tokens": cfg.get("max_tokens", 1024),
+        "temperature": cfg.get("temperature", 0.0),
+    }
+
+
+def _merge_image_transcription_config(existing: dict | None, incoming: object) -> dict:
+    if not isinstance(incoming, dict):
+        raise ValueError("image_transcription must be an object")
+    merged = dict(existing or {})
+    for key in ("model", "base_url", "api_format", "prompt"):
+        if key in incoming:
+            merged[key] = str(incoming.get(key) or "")
+    if "enabled" in incoming:
+        merged["enabled"] = bool(incoming["enabled"])
+    if "api_key" in incoming and incoming["api_key"] != "***":
+        merged["api_key"] = str(incoming.get("api_key") or "")
+    if "max_tokens" in incoming:
+        merged["max_tokens"] = max(1, int(incoming["max_tokens"]))
+    if "temperature" in incoming:
+        merged["temperature"] = float(incoming["temperature"])
+    return merged
+
+
 def _resolve_workspace_path(workspace: str, rel_path: str) -> tuple[Path, Path]:
     ws = Path(workspace or ".").resolve()
     target = (ws / (rel_path or "")).resolve()
@@ -129,6 +175,58 @@ def _resolve_workspace_path(workspace: str, rel_path: str) -> tuple[Path, Path]:
     except ValueError as e:
         raise PermissionError("path outside workspace") from e
     return ws, target
+
+
+def _normalize_chat_images(raw_images: object) -> list[dict[str, Any]]:
+    if raw_images in (None, ""):
+        return []
+    if not isinstance(raw_images, list):
+        raise ValueError("images must be a list")
+    if len(raw_images) > _MAX_CHAT_IMAGES:
+        raise ValueError(f"at most {_MAX_CHAT_IMAGES} images can be attached")
+
+    images: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_images, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("each image must be an object")
+        data_url = str(item.get("dataUrl") or item.get("url") or "").strip()
+        mime_type, size = _parse_image_data_url(data_url)
+        name = Path(str(item.get("name") or f"image-{index}")).name[:120]
+        images.append(
+            {
+                "url": data_url,
+                "file": name or f"image-{index}",
+                "mime_type": mime_type,
+                "size": size,
+            }
+        )
+    return images
+
+
+def _parse_image_data_url(data_url: str) -> tuple[str, int]:
+    if not data_url.startswith("data:") or "," not in data_url:
+        raise ValueError("images must be base64 data URLs")
+
+    header, encoded = data_url.split(",", 1)
+    meta = header[5:].split(";")
+    mime_type = (meta[0] or "").lower()
+    flags = {part.lower() for part in meta[1:]}
+    if mime_type not in _CHAT_IMAGE_MIME_TYPES:
+        raise ValueError("image type must be PNG, JPEG, WebP, or GIF")
+    if "base64" not in flags:
+        raise ValueError("image data URL must be base64 encoded")
+
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError("invalid image data") from e
+
+    if not decoded:
+        raise ValueError("image data is empty")
+    if len(decoded) > _MAX_CHAT_IMAGE_BYTES:
+        limit_mb = _MAX_CHAT_IMAGE_BYTES // (1024 * 1024)
+        raise ValueError(f"image must be {limit_mb} MB or smaller")
+    return mime_type, len(decoded)
 
 
 def _cookie_value(cookie_header: str, name: str) -> str:
@@ -467,10 +565,7 @@ class Dashboard:
             response.headers.setdefault("X-Frame-Options", "DENY")
             response.headers.setdefault(
                 "Content-Security-Policy",
-                (
-                    "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-                    "script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:"
-                ),
+                _DASHBOARD_CSP,
             )
             response.headers.setdefault("Cache-Control", "no-store")
             return response
@@ -618,6 +713,9 @@ class Dashboard:
                     "extra_instructions": c.get("extra_instructions", ""),
                     "persona": c.get("persona", ""),
                     "agent_mode": c.get("agent_mode", "agent"),
+                    "image_transcription": _mask_image_transcription(
+                        c.get("image_transcription", {})
+                    ),
                     "skills_root": c.get("skills_root", "skills"),
                     "skill_search_roots": c.get("skill_search_roots", []),
                     "providers": _mask_providers(c.get("providers", {})),
@@ -661,6 +759,15 @@ class Dashboard:
                 lc.config["wake_words"] = data["wake_words"]
             if "tavily_api_key" in data and data["tavily_api_key"] != "***":
                 lc.config["tavily_api_key"] = data["tavily_api_key"]
+            if "image_transcription" in data:
+                try:
+                    lc.config["image_transcription"] = _merge_image_transcription_config(
+                        lc.config.get("image_transcription", {}),
+                        data["image_transcription"],
+                    )
+                    data["image_transcription"] = lc.config["image_transcription"]
+                except (TypeError, ValueError) as e:
+                    return jsonify({"error": str(e)}), 400
             if lc.process_stage:
                 lc.process_stage.update_config(
                     **{k: v for k, v in data.items() if k in _PROCESS_STAGE_SETTING_KEYS}
@@ -1326,16 +1433,20 @@ class Dashboard:
         # ── Chat (via WebChat adapter -> pipeline) ──
         @app.route("/api/chat", methods=["POST"])
         async def chat():
-            data = await request.get_json()
-            message = data.get("message", "").strip()
-            session_id = data.get("session_id", "webchat_default")
-            if not message:
+            data = await request.get_json(silent=True) or {}
+            message = str(data.get("message") or "").strip()
+            session_id = str(data.get("session_id") or "webchat_default")
+            try:
+                images = _normalize_chat_images(data.get("images"))
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            if not message and not images:
                 return jsonify({"error": "empty message"}), 400
             webchat = self.lifecycle.webchat
             if not webchat:
                 return jsonify({"error": "webchat adapter not available"}), 503
 
-            event, future = webchat.create_event(message, session_id)
+            event, future = webchat.create_event(message, session_id, images=images)
             await self.broadcast({"type": "thinking", "session_id": session_id})
 
             try:

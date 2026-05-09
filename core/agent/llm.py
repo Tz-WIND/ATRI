@@ -15,6 +15,7 @@ import httpx
 from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 
 from core import logger
+from core.agent.context import content_to_text
 
 
 @dataclass
@@ -231,6 +232,7 @@ class LLM:
         on_token=None,
         on_thinking=None,
         cancel_event=None,  # threading.Event | None; set to interrupt mid-stream
+        stream: bool = True,
     ) -> LLMResponse:
         """Send messages, stream response, handle tool calls.
 
@@ -244,6 +246,7 @@ class LLM:
                 on_token=on_token,
                 on_thinking=on_thinking,
                 cancel_event=cancel_event,
+                stream=stream,
             )
         return self._chat_openai(
             messages=messages,
@@ -251,6 +254,7 @@ class LLM:
             on_token=on_token,
             on_thinking=on_thinking,
             cancel_event=cancel_event,
+            stream=stream,
         )
 
     def _chat_openai(
@@ -260,11 +264,12 @@ class LLM:
         on_token=None,
         on_thinking=None,
         cancel_event=None,
+        stream: bool = True,
     ) -> LLMResponse:
         params: dict = {
             "model": self.model,
             "messages": messages,
-            "stream": True,
+            "stream": stream,
             **self.extra,
         }
         if tools:
@@ -273,12 +278,19 @@ class LLM:
         if cancel_event and cancel_event.is_set():
             return LLMResponse(content="[Interrupted by user]")
 
+        if not stream:
+            return self._chat_openai_non_stream(
+                params,
+                on_token=on_token,
+                on_thinking=on_thinking,
+            )
+
         try:
             params["stream_options"] = {"include_usage": True}
-            stream = self._call_with_retry(params)
+            stream_response = self._call_with_retry(params)
         except Exception:
             params.pop("stream_options", None)
-            stream = self._call_with_retry(params)
+            stream_response = self._call_with_retry(params)
 
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -291,7 +303,7 @@ class LLM:
 
         logger.info(f"LLM stream started for {self.model}")
 
-        for chunk in stream:
+        for chunk in stream_response:
             if cancel_event and cancel_event.is_set():
                 logger.info("LLM stream cancelled by user")
                 break
@@ -383,6 +395,25 @@ class LLM:
             completion_tokens=completion_tok,
         )
 
+    def _chat_openai_non_stream(
+        self,
+        params: dict,
+        on_token=None,
+        on_thinking=None,
+    ) -> LLMResponse:
+        t0 = time.time()
+        logger.info(f"LLM request started for {self.model}")
+        response = self._call_with_retry(params)
+        logger.info(f"LLM request done for {self.model} in {time.time() - t0:.1f}s")
+        llm_response = _openai_completion_to_response(
+            response,
+            on_token=on_token,
+            on_thinking=on_thinking,
+        )
+        self.total_prompt_tokens += llm_response.prompt_tokens
+        self.total_completion_tokens += llm_response.completion_tokens
+        return llm_response
+
     def _call_with_retry(self, params: dict, max_retries: int = 3):
         for attempt in range(max_retries):
             try:
@@ -407,6 +438,7 @@ class LLM:
         on_token=None,
         on_thinking=None,
         cancel_event=None,
+        stream: bool = True,
     ) -> LLMResponse:
         if cancel_event and cancel_event.is_set():
             return LLMResponse(content="[Interrupted by user]")
@@ -415,7 +447,7 @@ class LLM:
         params: dict = {
             "model": self.model,
             "messages": anthropic_messages,
-            "stream": True,
+            "stream": stream,
             **self.extra,
         }
         if "max_tokens" not in params:
@@ -424,6 +456,13 @@ class LLM:
             params["system"] = system
         if tools:
             params["tools"] = _tools_to_anthropic(tools)
+
+        if not stream:
+            return self._chat_anthropic_non_stream(
+                params,
+                on_token=on_token,
+                on_thinking=on_thinking,
+            )
 
         for attempt in range(3):
             try:
@@ -560,6 +599,59 @@ class LLM:
             completion_tokens=completion_tok,
         )
 
+    def _chat_anthropic_non_stream(
+        self,
+        params: dict,
+        on_token=None,
+        on_thinking=None,
+    ) -> LLMResponse:
+        if not isinstance(self.client, httpx.Client):
+            raise RuntimeError("Anthropic client is not configured")
+
+        headers = {
+            "anthropic-version": _ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        }
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+
+        t0 = time.time()
+        logger.info(f"Anthropic request started for {self.model}")
+        for attempt in range(3):
+            try:
+                resp = self.client.post("messages", json=params, headers=headers)
+                if resp.status_code >= 400:
+                    body = resp.read().decode(errors="replace")[:1000]
+                    logger.error(f"Anthropic HTTP {resp.status_code}: {body}")
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except (httpx.TimeoutException, httpx.NetworkError) as e:
+                if attempt == 2:
+                    raise
+                logger.debug(f"Anthropic call failed, retrying: {e}")
+                time.sleep(2**attempt)
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                if status in {408, 409, 429} or status >= 500:
+                    if attempt < 2:
+                        logger.debug(f"Anthropic HTTP {status}, retrying")
+                        time.sleep(2**attempt)
+                        continue
+                raise
+        else:
+            raise RuntimeError("Anthropic call failed")
+        logger.info(f"Anthropic request done for {self.model} in {time.time() - t0:.1f}s")
+
+        llm_response = _anthropic_message_to_response(
+            data,
+            on_token=on_token,
+            on_thinking=on_thinking,
+        )
+        self.total_prompt_tokens += llm_response.prompt_tokens
+        self.total_completion_tokens += llm_response.completion_tokens
+        return llm_response
+
     def _filtered_options(self, kwargs: dict) -> dict:
         if self.api_format == "anthropic":
             extra: dict[str, Any] = {}
@@ -585,6 +677,132 @@ class LLM:
         if ignored:
             logger.debug(f"Ignoring unsupported LLM option(s): {', '.join(ignored)}")
         return {key: value for key, value in kwargs.items() if key in _CHAT_COMPLETIONS_OPTION_KEYS}
+
+
+def _openai_completion_to_response(response, on_token=None, on_thinking=None) -> LLMResponse:
+    choices = _raw_delta_value(response, "choices") or []
+    usage = _raw_delta_value(response, "usage")
+    prompt_tok = int(_raw_delta_value(usage, "prompt_tokens") or 0) if usage else 0
+    completion_tok = int(_raw_delta_value(usage, "completion_tokens") or 0) if usage else 0
+
+    if not choices:
+        return LLMResponse(prompt_tokens=prompt_tok, completion_tokens=completion_tok)
+
+    choice = choices[0]
+    message = _raw_delta_value(choice, "message") or choice
+    raw_content = _delta_value(message, "content")
+    visible_content, tagged_reasoning = _split_thinking_text(
+        raw_content,
+        on_token=on_token,
+        on_thinking=on_thinking,
+    )
+
+    reasoning_content = (
+        _delta_reasoning_text(message) + _delta_reasoning_text(choice) + tagged_reasoning
+    )
+    if reasoning_content and on_thinking:
+        on_thinking(reasoning_content)
+
+    tool_calls = [
+        _openai_tool_call_to_tool_call(raw, idx)
+        for idx, raw in enumerate(_raw_delta_value(message, "tool_calls") or [])
+    ]
+
+    return LLMResponse(
+        content=visible_content,
+        reasoning_content=reasoning_content,
+        tool_calls=tool_calls,
+        prompt_tokens=prompt_tok,
+        completion_tokens=completion_tok,
+    )
+
+
+def _openai_tool_call_to_tool_call(raw, idx: int) -> ToolCall:
+    function = _raw_delta_value(raw, "function") or {}
+    raw_args = _raw_delta_value(function, "arguments") or "{}"
+    try:
+        args = json.loads(raw_args)
+    except (TypeError, json.JSONDecodeError):
+        args = {}
+    return ToolCall(
+        id=_raw_delta_value(raw, "id") or f"call_{idx}",
+        name=_raw_delta_value(function, "name") or "",
+        arguments=args if isinstance(args, dict) else {},
+    )
+
+
+def _anthropic_message_to_response(data: dict, on_token=None, on_thinking=None) -> LLMResponse:
+    usage = data.get("usage") or {}
+    prompt_tok = int(usage.get("input_tokens") or 0)
+    completion_tok = int(usage.get("output_tokens") or 0)
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    content_blocks: dict[int, dict] = {}
+    tool_calls: list[ToolCall] = []
+
+    for idx, block in enumerate(data.get("content") or []):
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text") or ""
+            if text:
+                content_parts.append(text)
+                content_blocks[idx] = {"type": "text", "text": text}
+                if on_token:
+                    on_token(text)
+        elif block_type == "thinking":
+            thinking = block.get("thinking") or ""
+            if thinking:
+                reasoning_parts.append(thinking)
+                content_blocks[idx] = {"type": "thinking", "thinking": thinking}
+                if block.get("signature"):
+                    content_blocks[idx]["signature"] = block["signature"]
+                if on_thinking:
+                    on_thinking(thinking)
+        elif block_type == "redacted_thinking":
+            content_blocks[idx] = {
+                key: value for key, value in block.items() if key in {"type", "data"}
+            }
+        elif block_type == "tool_use":
+            raw_input = block.get("input")
+            args = raw_input if isinstance(raw_input, dict) else {}
+            content_blocks[idx] = {
+                "type": "tool_use",
+                "id": block.get("id") or f"toolu_{idx}",
+                "name": block.get("name") or "",
+                "input": args,
+            }
+            tool_calls.append(
+                ToolCall(
+                    id=block.get("id") or f"toolu_{idx}",
+                    name=block.get("name") or "",
+                    arguments=args,
+                )
+            )
+
+    return LLMResponse(
+        content="".join(content_parts),
+        reasoning_content="".join(reasoning_parts),
+        anthropic_content=_finalize_anthropic_content(content_blocks),
+        tool_calls=tool_calls,
+        prompt_tokens=prompt_tok,
+        completion_tokens=completion_tok,
+    )
+
+
+def _split_thinking_text(text: str, on_token=None, on_thinking=None) -> tuple[str, str]:
+    if not text:
+        return "", ""
+    splitter = _ThinkingTagSplitter()
+    visible_content, tagged_reasoning = splitter.feed(text)
+    remaining_content, remaining_reasoning = splitter.finish()
+    visible_content += remaining_content
+    tagged_reasoning += remaining_reasoning
+    if visible_content and on_token:
+        on_token(visible_content)
+    return visible_content, tagged_reasoning
 
 
 def _raw_delta_value(delta, key: str):
@@ -763,7 +981,7 @@ def _messages_to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
         content = msg.get("content")
 
         if role == "system":
-            text = _content_to_text(content)
+            text = content_to_text(content)
             if text:
                 system_parts.append(text)
             continue
@@ -775,7 +993,7 @@ def _messages_to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_call_id,
-                        "content": _content_to_text(content),
+                        "content": content_to_text(content),
                     }
                 )
             continue
@@ -796,7 +1014,7 @@ def _messages_to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
                     continue
 
             blocks = []
-            text = _content_to_text(content)
+            text = content_to_text(content)
             if text:
                 blocks.append({"type": "text", "text": text})
             for tool_call in msg.get("tool_calls") or []:
@@ -844,34 +1062,50 @@ def _content_to_anthropic_blocks(content) -> list[dict]:
                 if part:
                     blocks.append({"type": "text", "text": part})
             elif isinstance(part, dict):
-                blocks.append(part)
+                block = _content_part_to_anthropic_block(part)
+                if isinstance(block, list):
+                    blocks.extend(block)
+                elif block:
+                    blocks.append(block)
             else:
                 blocks.append({"type": "text", "text": str(part)})
         return blocks
     return [{"type": "text", "text": str(content)}]
 
 
-def _content_to_text(content) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                if item.get("type") == "text" and isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-                elif "content" in item:
-                    parts.append(_content_to_text(item["content"]))
-                else:
-                    parts.append(json.dumps(item, ensure_ascii=False))
-            else:
-                parts.append(str(item))
-        return "".join(parts)
-    return str(content)
+def _content_part_to_anthropic_block(part: dict):
+    block_type = part.get("type")
+    if block_type == "text":
+        text = part.get("text")
+        return {"type": "text", "text": text} if isinstance(text, str) and text else None
+    if block_type == "image_url":
+        image = _image_url_to_anthropic_block(part.get("image_url"))
+        return image or {"type": "text", "text": "[Image attachment]"}
+    if block_type == "image":
+        return _clean_anthropic_content_block(part)
+    return part
+
+
+def _image_url_to_anthropic_block(image_url):
+    url = image_url if isinstance(image_url, str) else (image_url or {}).get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    if not url.startswith("data:") or "," not in url:
+        return None
+
+    header, data = url.split(",", 1)
+    meta = header[5:].split(";")
+    media_type = (meta[0] or "image/png").lower()
+    if "base64" not in {part.lower() for part in meta[1:]}:
+        return None
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        },
+    }
 
 
 def _tools_to_anthropic(tools: list[dict]) -> list[dict]:
@@ -905,6 +1139,20 @@ def _clean_anthropic_content_block(block: dict) -> dict:
     if block_type == "text":
         text = block.get("text") or ""
         return {"type": "text", "text": text} if text else {}
+    if block_type == "image":
+        source = block.get("source")
+        if not isinstance(source, dict):
+            return {}
+        if source.get("type") == "base64" and source.get("data") and source.get("media_type"):
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": source["media_type"],
+                    "data": source["data"],
+                },
+            }
+        return {}
     if block_type == "thinking":
         thinking = block.get("thinking") or ""
         if not thinking:

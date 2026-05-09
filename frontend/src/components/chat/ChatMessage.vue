@@ -10,7 +10,28 @@
     <div class="msg-body">
       <template v-if="message.role === 'user'">
         <div class="user-bubble">
-          <pre class="msg-text user-text">{{ message.content }}</pre>
+          <div class="user-content">
+            <pre
+              v-if="message.content"
+              class="msg-text user-text"
+            >{{ message.content }}</pre>
+            <div
+              v-if="userAttachments.length"
+              class="user-attachments"
+            >
+              <figure
+                v-for="image in userAttachments"
+                :key="image.id || image.src"
+                class="user-image"
+              >
+                <img
+                  :src="safeImageSrc(image.src)"
+                  :alt="image.name || 'Attached image'"
+                >
+                <figcaption>{{ image.name || 'image' }}</figcaption>
+              </figure>
+            </div>
+          </div>
           <span
             class="user-action"
             aria-hidden="true"
@@ -57,6 +78,12 @@ import hljs from 'highlight.js'
 const props = defineProps({
   message: { type: Object, required: true },
 })
+
+const userAttachments = computed(() => (
+  Array.isArray(props.message.attachments)
+    ? props.message.attachments.filter((image) => safeImageSrc(image.src))
+    : []
+))
 
 const timeStr = computed(() => {
   const d = props.message.time ? new Date(props.message.time) : new Date()
@@ -144,6 +171,20 @@ function isSafeUrl(url) {
   }
 }
 
+function safeImageSrc(url) {
+  const value = String(url || '').trim()
+  if (!value) return ''
+  if (/^data:image\/(?:png|jpe?g|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(value)) {
+    return value
+  }
+  try {
+    const parsed = new URL(value, window.location.origin)
+    return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : ''
+  } catch {
+    return ''
+  }
+}
+
 function normalizeLanguage(value) {
   const firstToken = String(value || 'text').trim().split(/\s+/)[0].toLowerCase()
   if (!firstToken || firstToken.length > 40) return 'text'
@@ -223,7 +264,7 @@ async function handleMarkdownClick(event) {
 
 .user-bubble {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   max-width: 100%;
   min-height: 42px;
@@ -235,12 +276,52 @@ async function handleMarkdownClick(event) {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+.user-content {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
 .user-text {
   flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   font-size: 14px;
   line-height: 1.45;
+}
+
+.user-attachments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+  max-width: min(560px, 72vw);
+}
+
+.user-image {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(15, 15, 15, 0.5);
+}
+
+.user-image img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.user-image figcaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 6px 5px;
+  color: var(--t3);
+  font-family: var(--mono);
+  font-size: 10px;
 }
 
 .user-action {

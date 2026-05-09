@@ -95,7 +95,7 @@ export function useApi() {
     deleteSession: (id) => request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
     // Chat
-    sendMessage: (message, sessionId) => request('/api/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId }) }),
+    sendMessage: (message, sessionId, images = []) => request('/api/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, images }) }),
     cancelChat: (sessionId) => request('/api/chat/cancel', { method: 'POST', body: JSON.stringify({ session_id: sessionId || '' }) }),
     getAgentMode: () => request('/api/agent-mode'),
     setAgentMode: (mode, reason = '') => request('/api/agent-mode', { method: 'POST', body: JSON.stringify({ mode, reason }) }),

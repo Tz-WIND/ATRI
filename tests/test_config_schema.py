@@ -23,6 +23,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["max_tokens"] == 256
     assert config["temperature"] == 0.75
     assert config["agent_mode"] == DEFAULT_CONFIG["agent_mode"]
+    assert config["image_transcription"] == DEFAULT_CONFIG["image_transcription"]
     assert config["onebot11"]["enabled"] is False
     assert config["onebot11"]["ws_reverse_port"] == 6200
     assert config["workspace"] == DEFAULT_CONFIG["workspace"]
@@ -76,6 +77,26 @@ def test_normalize_config_accepts_uppercase_agent_mode():
 
     assert changed is True
     assert config["agent_mode"] == "plan"
+
+
+def test_normalize_config_coerces_image_transcription_settings():
+    config, changed = normalize_config(
+        {
+            "image_transcription": {
+                "enabled": "true",
+                "model": "vision-test",
+                "max_tokens": "2048",
+                "temperature": "0.2",
+            }
+        }
+    )
+
+    assert changed is True
+    assert config["image_transcription"]["enabled"] is True
+    assert config["image_transcription"]["model"] == "vision-test"
+    assert config["image_transcription"]["max_tokens"] == 2048
+    assert config["image_transcription"]["temperature"] == 0.2
+    assert config["image_transcription"]["prompt"]
 
 
 def test_normalize_config_removes_legacy_auth_token_when_dashboard_is_disabled():

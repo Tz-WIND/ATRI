@@ -11,7 +11,7 @@ from asyncio import Queue
 from core import logger
 
 from .base import Platform, PlatformMeta, PlatformStatus
-from .message import MessageChain, MessageEvent, MessageType, Plain, Sender
+from .message import Image, MessageChain, MessageEvent, MessageType, Plain, Sender
 
 
 class WebChatAdapter(Platform):
@@ -23,14 +23,35 @@ class WebChatAdapter(Platform):
         self._pending: dict[str, asyncio.Future] = {}
         self._status = PlatformStatus.RUNNING
 
-    def create_event(self, message: str, session_id: str) -> tuple[MessageEvent, asyncio.Future]:
+    def create_event(
+        self,
+        message: str,
+        session_id: str,
+        *,
+        images: list[dict] | None = None,
+    ) -> tuple[MessageEvent, asyncio.Future]:
         """Create a MessageEvent from a WebUI chat message.
 
         Returns (event, future) -- await the future to get the response text.
         """
+        chain: MessageChain = []
+        if message:
+            chain.append(Plain(text=message))
+        for item in images or []:
+            chain.append(
+                Image(
+                    url=str(item.get("url") or ""),
+                    file=str(item.get("file") or ""),
+                    mime_type=str(item.get("mime_type") or ""),
+                    size=int(item.get("size") or 0),
+                )
+            )
+        message_outline = message or (
+            f"[{len(images or [])} image attachment(s)]" if images else ""
+        )
         event = MessageEvent(
-            message_str=message,
-            message_chain=[Plain(text=message)],
+            message_str=message_outline,
+            message_chain=chain,
             message_type=MessageType.FRIEND_MESSAGE,
             sender=Sender(user_id="webui_user", nickname="WebUI"),
             session_id=session_id,

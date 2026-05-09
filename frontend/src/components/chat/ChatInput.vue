@@ -103,7 +103,7 @@
     >
       <span class="queue-count">{{ queuedDrafts.length }}</span>
       <span class="queue-label">Queued</span>
-      <span class="queue-preview">{{ queuedDrafts[0].text }}</span>
+      <span class="queue-preview">{{ nextQueuedPreview }}</span>
       <button
         v-if="!sending"
         class="queue-action"
@@ -184,10 +184,52 @@
         :placeholder="placeholderText"
         rows="1"
         spellcheck="false"
+        @paste="onPaste"
         @keydown="onKeydown"
         @input="onInput"
         @focus="updateInlinePanel"
       />
+      <div
+        v-if="attachments.length"
+        class="attachment-row"
+      >
+        <div
+          v-for="image in attachments"
+          :key="image.id"
+          class="attachment-chip"
+          :title="`${image.name} (${formatSize(image.size)})`"
+        >
+          <img
+            :src="image.dataUrl"
+            :alt="image.name"
+          >
+          <span class="attachment-name">{{ image.name }}</span>
+          <span class="attachment-size">{{ formatSize(image.size) }}</span>
+          <button
+            class="attachment-remove"
+            type="button"
+            title="Remove image"
+            @click="removeAttachment(image.id)"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <input
+        ref="imageInput"
+        class="attachment-input"
+        type="file"
+        :accept="IMAGE_ACCEPT"
+        multiple
+        @change="onImageSelected"
+      >
       <div class="input-toolbar">
         <div class="tools-left">
           <ModelSelector />
@@ -284,9 +326,10 @@
           </button>
           <button
             class="icon-btn"
+            :class="{ active: attachments.length }"
             type="button"
-            title="Attach image"
-            @click="$emit('attach')"
+            :title="attachments.length ? `${attachments.length} image attached` : 'Attach image'"
+            @click="openImagePicker"
           >
             <svg
               viewBox="0 0 24 24"
@@ -363,6 +406,10 @@ const MAX_STASH_ENTRIES = 200
 const MAX_FILE_INDEX = 500
 const MAX_FILE_DIRS = 80
 const MAX_FILE_DEPTH = 5
+const MAX_IMAGE_ATTACHMENTS = 4
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif'
+const IMAGE_TYPES = new Set(IMAGE_ACCEPT.split(','))
 
 const props = defineProps({
   sending: { type: Boolean, default: false },
@@ -370,11 +417,12 @@ const props = defineProps({
   modePending: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['send', 'attach', 'cancel', 'set-mode'])
+const emit = defineEmits(['send', 'cancel', 'set-mode'])
 const api = useApi()
 
 const text = ref('')
 const textarea = ref(null)
+const imageInput = ref(null)
 const popover = ref(null)
 const modePicker = ref(null)
 const panelSearch = ref(null)
@@ -386,6 +434,7 @@ const statusMessage = ref('')
 const queuedDrafts = ref([])
 const history = ref([])
 const stash = ref([])
+const attachments = ref([])
 const fileIndex = ref([])
 const filesLoading = ref(false)
 const fileIndexLoaded = ref(false)
@@ -539,7 +588,7 @@ const currentMode = computed(() => (props.agentMode === 'plan' ? 'plan' : 'agent
 const currentModeLabel = computed(() => currentMode.value.toUpperCase())
 const modeOptions = ['plan', 'agent']
 
-const hasDraft = computed(() => Boolean(text.value.trim()))
+const hasDraft = computed(() => Boolean(text.value.trim() || attachments.value.length))
 
 const hasPanelSearch = computed(() => ['palette', 'history', 'stash'].includes(activePanel.value))
 
@@ -636,6 +685,15 @@ const panelItems = computed(() => {
   }
 
   return []
+})
+
+const nextQueuedPreview = computed(() => {
+  const next = queuedDrafts.value[0]
+  if (!next) return ''
+  const draft = compactText(next.text || '')
+  const count = next.images?.length || 0
+  if (!count) return draft
+  return `${draft || '(image only)'} · ${formatImageCount(count)}`
 })
 
 const panelEmptyText = computed(() => {
@@ -761,6 +819,105 @@ function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatImageCount(count) {
+  return `${count} image${count === 1 ? '' : 's'}`
+}
+
+function openImagePicker() {
+  imageInput.value?.click()
+}
+
+function onImageSelected(event) {
+  addImageFiles(event.target?.files)
+}
+
+function onPaste(event) {
+  const files = Array.from(event.clipboardData?.files || [])
+    .filter((file) => file.type?.startsWith('image/'))
+  if (!files.length) return
+  event.preventDefault()
+  addImageFiles(files)
+}
+
+async function addImageFiles(fileList) {
+  const files = Array.from(fileList || [])
+  if (!files.length) return
+
+  const slots = MAX_IMAGE_ATTACHMENTS - attachments.value.length
+  if (slots <= 0) {
+    showStatus(`Limit ${MAX_IMAGE_ATTACHMENTS} images`)
+    resetImageInput()
+    return
+  }
+
+  let added = 0
+  for (const file of files.slice(0, slots)) {
+    if (!IMAGE_TYPES.has(file.type)) {
+      showStatus('Use PNG, JPEG, WebP, or GIF images')
+      continue
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      showStatus(`Image must be ${formatSize(MAX_IMAGE_BYTES)} or smaller`)
+      continue
+    }
+    try {
+      const dataUrl = await readImageFile(file)
+      attachments.value.push({
+        id: makeId(),
+        name: file.name || `image-${attachments.value.length + 1}`,
+        type: file.type,
+        size: file.size,
+        dataUrl,
+      })
+      added += 1
+    } catch {
+      showStatus('Unable to read image')
+    }
+  }
+
+  if (files.length > slots) {
+    showStatus(`Attached ${added}, limit ${MAX_IMAGE_ATTACHMENTS}`)
+  } else if (added) {
+    showStatus(`Attached ${formatImageCount(added)}`)
+  }
+  resetImageInput()
+}
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+}
+
+function removeAttachment(id) {
+  attachments.value = attachments.value.filter((image) => image.id !== id)
+  resetImageInput()
+}
+
+function resetImageInput() {
+  if (imageInput.value) {
+    imageInput.value.value = ''
+  }
+}
+
+function clearAttachments() {
+  attachments.value = []
+  resetImageInput()
+}
+
+function cloneAttachments(images = attachments.value) {
+  return images.map((image) => ({
+    id: image.id,
+    name: image.name,
+    type: image.type,
+    size: image.size,
+    dataUrl: image.dataUrl,
+  }))
 }
 
 function filterItems(items, query) {
@@ -1196,18 +1353,21 @@ function replaceInlineTrigger(replacement) {
 
 function submitDraft() {
   const draft = text.value.trim()
-  if (!draft) return
+  const images = cloneAttachments()
+  if (!draft && !images.length) return
   closePanel({ focus: false })
-  if (runComposerCommand(draft)) {
+  if (!images.length && runComposerCommand(draft)) {
     return
   }
   if (props.sending) {
-    queueDraft(text.value)
+    queueDraft(text.value, images)
     setComposerText('')
+    clearAttachments()
     return
   }
-  dispatchDraft(text.value)
+  dispatchDraft(text.value, images)
   setComposerText('')
+  clearAttachments()
 }
 
 function runComposerCommand(draft) {
@@ -1245,6 +1405,7 @@ function runComposerCommand(draft) {
   if (command === '/clear') {
     showStatus('Draft cleared')
     setComposerText('')
+    clearAttachments()
     return true
   }
   return false
@@ -1255,27 +1416,28 @@ function clearComposerWithoutFocus() {
   autoResize()
 }
 
-function queueDraft(draft) {
+function queueDraft(draft, images = []) {
   queuedDrafts.value.push({
     id: makeId(),
     text: draft,
+    images,
     ts: Date.now(),
   })
   showStatus(`Queued draft ${queuedDrafts.value.length}`)
 }
 
-function dispatchDraft(draft) {
+function dispatchDraft(draft, images = []) {
   const value = draft.trim()
-  if (!value) return
-  pushHistory(value)
-  emit('send', draft)
+  if (!value && !images.length) return
+  if (value) pushHistory(value)
+  emit('send', { text: draft, images })
 }
 
 function flushNextQueuedDraft() {
   if (props.sending || !queuedDrafts.value.length) return
   const next = queuedDrafts.value.shift()
   if (!next) return
-  dispatchDraft(next.text)
+  dispatchDraft(next.text || '', next.images || [])
   showStatus(queuedDrafts.value.length ? `Sent queued draft, ${queuedDrafts.value.length} left` : 'Sent queued draft')
 }
 
@@ -1716,6 +1878,90 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 1px 0 2px;
+}
+
+.attachment-chip {
+  width: 188px;
+  min-width: 188px;
+  height: 54px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 24px;
+  grid-template-rows: 1fr 1fr;
+  align-items: center;
+  gap: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: rgba(20, 20, 20, 0.56);
+  padding: 6px;
+}
+
+.attachment-chip img {
+  grid-row: 1 / 3;
+  width: 42px;
+  height: 42px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.attachment-name,
+.attachment-size {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-name {
+  align-self: end;
+  color: var(--t2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.attachment-size {
+  align-self: start;
+  color: var(--t3);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.attachment-remove {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--t3);
+  cursor: pointer;
+}
+
+.attachment-remove:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--t1);
+}
+
+.attachment-remove svg {
+  width: 13px;
+  height: 13px;
+}
+
+.attachment-input {
+  display: none;
+}
+
 textarea {
   width: 100%;
   background: transparent;
@@ -1869,6 +2115,11 @@ textarea::placeholder {
   color: var(--t1);
 }
 
+.icon-btn.active {
+  background: rgba(55, 148, 255, 0.13);
+  color: var(--acc2);
+}
+
 .icon-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
@@ -1977,6 +2228,11 @@ textarea::placeholder {
 
   .context-chip {
     max-width: 160px;
+  }
+
+  .attachment-chip {
+    width: 160px;
+    min-width: 160px;
   }
 }
 </style>

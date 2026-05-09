@@ -55,6 +55,124 @@
         </div>
       </section>
 
+      <!-- Image Transcription -->
+      <section class="form-section vision-section">
+        <div class="section-title-row">
+          <div class="section-heading">
+            <button
+              type="button"
+              class="collapse-button"
+              :class="{ open: imageTranscriptionExpanded }"
+              :aria-expanded="imageTranscriptionExpanded"
+              aria-controls="image-transcription-settings"
+              title="Toggle image transcription settings"
+              @click="imageTranscriptionExpanded = !imageTranscriptionExpanded"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
+            <div>
+              <h3>Image Transcription Model</h3>
+              <p class="section-desc">
+                Route image attachments through a dedicated vision model before the main agent sees them.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="switch-field"
+            :class="{ active: form.image_transcription.enabled }"
+            role="switch"
+            :aria-checked="form.image_transcription.enabled"
+            @click="form.image_transcription.enabled = !form.image_transcription.enabled"
+          >
+            <span class="switch-track">
+              <span class="switch-thumb" />
+            </span>
+            <span class="switch-label">
+              {{ form.image_transcription.enabled ? 'Enabled' : 'Off' }}
+            </span>
+          </button>
+        </div>
+        <div
+          v-show="imageTranscriptionExpanded"
+          id="image-transcription-settings"
+          class="vision-settings"
+        >
+          <div class="field-row">
+            <div class="field">
+              <label>Model</label>
+              <input
+                v-model="form.image_transcription.model"
+                placeholder="gpt-4o-mini"
+              >
+            </div>
+            <div class="field">
+              <label>API Format</label>
+              <select v-model="form.image_transcription.api_format">
+                <option value="openai">
+                  OpenAI Compatible
+                </option>
+                <option value="anthropic">
+                  Anthropic
+                </option>
+              </select>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Base URL</label>
+              <input
+                v-model="form.image_transcription.base_url"
+                placeholder="https://api.openai.com/v1"
+              >
+            </div>
+            <div class="field">
+              <label>API Key</label>
+              <input
+                v-model="form.image_transcription.api_key"
+                type="password"
+                :placeholder="form.image_transcription.api_key ? '•••••••• (unchanged)' : 'sk-...'"
+              >
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Max Tokens</label>
+              <input
+                v-model.number="form.image_transcription.max_tokens"
+                type="number"
+                min="1"
+              >
+            </div>
+            <div class="field">
+              <label>Temperature</label>
+              <input
+                v-model.number="form.image_transcription.temperature"
+                type="number"
+                step="0.1"
+              >
+            </div>
+          </div>
+          <div class="field">
+            <label>Transcription Prompt</label>
+            <textarea
+              v-model="form.image_transcription.prompt"
+              rows="4"
+              placeholder="Describe the image for the main agent..."
+            />
+          </div>
+        </div>
+      </section>
+
       <!-- Agent Behavior -->
       <section class="form-section">
         <h3>Agent Behavior</h3>
@@ -168,7 +286,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ProviderWorkbench from './ProviderWorkbench.vue'
 import ActiveModelsList from './ActiveModelsList.vue'
@@ -187,11 +305,22 @@ const form = ref({
   persona: '',
   extra_instructions: '',
   tavily_api_key: '',
+  image_transcription: {
+    enabled: false,
+    model: '',
+    api_key: '',
+    base_url: '',
+    api_format: 'openai',
+    prompt: '',
+    max_tokens: 1024,
+    temperature: 0,
+  },
 })
 
 const saving = ref(false)
 const savingMusic = ref(false)
 const musicDirs = ref([''])
+const imageTranscriptionExpanded = ref(false)
 
 async function loadSettings() {
   try {
@@ -204,7 +333,21 @@ async function loadSettings() {
     form.value.persona = d.persona || ''
     form.value.extra_instructions = d.extra_instructions || ''
     form.value.tavily_api_key = d.tavily_api_key || ''
+    form.value.image_transcription = normalizeImageTranscription(d.image_transcription)
   } catch {}
+}
+
+function normalizeImageTranscription(value = {}) {
+  return {
+    enabled: Boolean(value.enabled),
+    model: value.model || '',
+    api_key: value.api_key || '',
+    base_url: value.base_url || '',
+    api_format: value.api_format || 'openai',
+    prompt: value.prompt || '',
+    max_tokens: Number(value.max_tokens || 1024),
+    temperature: Number(value.temperature || 0),
+  }
 }
 
 async function loadMusicDirs() {
@@ -227,6 +370,7 @@ async function saveMusicDirs() {
 }
 
 async function saveSettings() {
+  if (saving.value) return
   saving.value = true
   try {
     await api.saveSettings({
@@ -238,6 +382,13 @@ async function saveSettings() {
       persona: form.value.persona,
       extra_instructions: form.value.extra_instructions,
       tavily_api_key: form.value.tavily_api_key,
+      image_transcription: {
+        ...form.value.image_transcription,
+        model: form.value.image_transcription.model.trim(),
+        base_url: form.value.image_transcription.base_url.trim(),
+        api_key: form.value.image_transcription.api_key.trim(),
+        prompt: form.value.image_transcription.prompt.trim(),
+      },
     })
     await loadStatus()
   } finally {
@@ -245,8 +396,23 @@ async function saveSettings() {
   }
 }
 
+function handleSettingsShortcut(event) {
+  const isSaveShortcut = (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === 's'
+  if (!isSaveShortcut) return
+
+  event.preventDefault()
+  void saveSettings()
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', handleSettingsShortcut)
   await Promise.all([loadProviders(), loadStatus(), loadSettings(), loadMusicDirs()])
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleSettingsShortcut)
 })
 </script>
 
@@ -280,6 +446,124 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--t3);
   margin-bottom: 10px;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.section-title-row h3 {
+  margin-bottom: 4px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.collapse-button {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: -2px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--t3);
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.collapse-button:hover,
+.collapse-button:focus-visible {
+  color: var(--t1);
+  background: var(--bg2);
+  border-color: var(--border);
+  outline: none;
+}
+
+.collapse-button svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 0.12s;
+}
+
+.collapse-button.open svg {
+  transform: rotate(90deg);
+}
+
+.vision-section {
+  border-left: 2px solid rgba(55, 148, 255, 0.34);
+  padding-left: 14px;
+}
+
+.vision-settings {
+  padding-left: 32px;
+}
+
+.switch-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--t2);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-track {
+  width: 42px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg0);
+  padding: 2px;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.switch-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--t3);
+  transition: transform 0.12s, background 0.12s;
+}
+
+.switch-field.active .switch-track {
+  border-color: rgba(137, 209, 133, 0.45);
+  background: var(--green-bg);
+}
+
+.switch-field.active .switch-track .switch-thumb {
+  background: var(--green);
+  transform: translateX(20px);
+}
+
+.switch-field:focus-visible .switch-track {
+  outline: 1px solid var(--acc);
+  outline-offset: 2px;
+}
+
+.switch-label {
+  min-width: 48px;
+  text-align: left;
 }
 
 .field {
@@ -325,6 +609,21 @@ onMounted(async () => {
 
 .field-row .field {
   flex: 1;
+}
+
+@media (max-width: 720px) {
+  .section-title-row,
+  .field-row {
+    flex-direction: column;
+  }
+
+  .vision-settings {
+    padding-left: 0;
+  }
+
+  .switch-field {
+    align-self: flex-start;
+  }
 }
 
 .btn {
