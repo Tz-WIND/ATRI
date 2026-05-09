@@ -41,68 +41,51 @@
       </button>
 
       <div class="fp-content">
-        <!-- Left: artwork + controls -->
+        <!-- Left: artwork + info + controls -->
         <div class="fp-left">
-          <div class="fp-cover-wrap">
-            <img
-              v-if="currentSong?.has_cover"
-              :src="coverUrl(currentSong.id)"
-              class="fp-cover"
-              :class="{ playing }"
-            >
-            <div
-              v-else
-              class="fp-cover placeholder"
-              :class="{ playing }"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                opacity="0.25"
-              ><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg>
+          <!-- Album artwork -->
+          <div class="fp-artwork-wrap">
+            <div class="fp-cover-wrap">
+              <img
+                v-if="currentSong?.has_cover"
+                :src="coverUrl(currentSong.id)"
+                class="fp-cover"
+                :class="{ playing }"
+              >
+              <div
+                v-else
+                class="fp-cover placeholder"
+                :class="{ playing }"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  opacity="0.25"
+                ><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z" /></svg>
+              </div>
             </div>
           </div>
 
-          <div class="fp-song-info">
-            <h2 class="fp-title">
-              {{ currentSong?.title || 'No Song' }}
-            </h2>
-            <p class="fp-artist">
-              {{ currentSong?.artist || '' }}
-            </p>
-            <p class="fp-album">
-              {{ currentSong?.album || '' }}
-            </p>
-          </div>
-
+          <!-- Song info -->
           <div
             v-if="currentSong"
-            class="fp-quality-row"
+            class="fp-song-info"
           >
-            <span class="fp-format">{{ currentSong.format }}</span>
-            <span
-              v-if="currentSong.sample_rate"
-              class="fp-spec"
-            >{{ (currentSong.sample_rate/1000).toFixed(1) }}kHz</span>
-            <span
-              v-if="currentSong.bit_depth"
-              class="fp-spec"
-            >{{ currentSong.bit_depth }}bit</span>
-            <span
-              v-if="currentSong.channels"
-              class="fp-spec"
-            >{{ currentSong.channels }}ch</span>
-            <span
-              v-if="currentSong.bit_depth >= 24 || currentSong.sample_rate > 48000"
-              class="fp-hires-badge"
-            >Hi-Res Lossless</span>
-            <span
-              v-else-if="currentSong.lossless"
-              class="fp-lossless-badge"
-            >Lossless</span>
+            <h2 class="fp-title">
+              {{ currentSong.title || 'No Song' }}
+            </h2>
+            <p class="fp-artist">
+              {{ currentSong.artist || '' }}
+            </p>
+            <p
+              v-if="currentSong.album"
+              class="fp-album"
+            >
+              {{ currentSong.album }}
+            </p>
           </div>
 
-          <!-- Progress -->
+          <!-- Progress bar -->
           <div class="fp-progress-wrap">
             <div
               ref="fpProgressTrack"
@@ -120,105 +103,190 @@
               <span>{{ currentTimeStr }}</span>
               <span>-{{ remainingStr }}</span>
             </div>
+            <!-- Quality indicator — minimal, below progress -->
+            <div
+              v-if="currentSong"
+              class="fp-quality"
+            >
+              <span
+                v-if="currentSong.sample_rate > 44100"
+                class="fp-quality-hires"
+              >HIRES</span>
+              <span
+                v-else-if="currentSong.lossless"
+                class="fp-quality-lossless"
+              >Lossless</span>
+              <span class="fp-quality-detail">
+                {{ currentSong.format }} {{ currentSong.bit_depth }}bit / {{ (currentSong.sample_rate / 1000).toFixed(1) }}kHz
+              </span>
+            </div>
           </div>
 
-          <!-- Controls -->
+          <!-- Playback controls — 3-zone: mode | transport | playlist -->
           <div class="fp-controls">
-            <button
-              class="fp-ctrl fp-mode"
-              :class="{ active: playMode !== 'sequential' }"
-              :title="modeLabel"
-              @click="cyclePlayMode"
-            >
-              <svg
-                v-if="playMode === 'sequential'"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              ><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /></svg>
-              <svg
-                v-else-if="playMode === 'shuffle'"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              ><polyline points="16 3 21 3 21 8" /><line
-                x1="4"
-                y1="20"
-                x2="21"
-                y2="3"
-              /><polyline points="21 16 21 21 16 21" /><line
-                x1="15"
-                y1="15"
-                x2="21"
-                y2="21"
-              /><line
-                x1="4"
-                y1="4"
-                x2="9"
-                y2="9"
-              /></svg>
-              <svg
-                v-else
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              ><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /><text
-                x="10"
-                y="16"
-                font-size="9"
-                fill="currentColor"
-                stroke="none"
-                font-weight="bold"
-              >1</text></svg>
-            </button>
-            <button
-              class="fp-ctrl"
-              @click="prev"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              ><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
-            </button>
-            <button
-              class="fp-ctrl fp-play"
-              @click="togglePlay"
-            >
-              <svg
-                v-if="playing"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              ><rect
-                x="6"
-                y="4"
-                width="4"
-                height="16"
-                rx="1"
-              /><rect
-                x="14"
-                y="4"
-                width="4"
-                height="16"
-                rx="1"
-              /></svg>
-              <svg
-                v-else
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              ><polygon points="5,3 19,12 5,21" /></svg>
-            </button>
-            <button
-              class="fp-ctrl"
-              @click="next"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              ><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
-            </button>
+            <!-- Zone 1: shuffle / repeat -->
+            <div class="fp-ctrl-zone fp-ctrl-zone--left">
+              <button
+                class="fp-ctrl fp-mode"
+                :class="{ active: playMode !== 'sequential' }"
+                :title="modeLabel"
+                @click="cyclePlayMode"
+              >
+                <svg
+                  v-if="playMode === 'sequential'"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                ><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /></svg>
+                <svg
+                  v-else-if="playMode === 'shuffle'"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                ><polyline points="16 3 21 3 21 8" /><line
+                  x1="4"
+                  y1="20"
+                  x2="21"
+                  y2="3"
+                /><polyline points="21 16 21 21 16 21" /><line
+                  x1="15"
+                  y1="15"
+                  x2="21"
+                  y2="21"
+                /><line
+                  x1="4"
+                  y1="4"
+                  x2="9"
+                  y2="9"
+                /></svg>
+                <svg
+                  v-else
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                ><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /><text
+                  x="10"
+                  y="16"
+                  font-size="9"
+                  fill="currentColor"
+                  stroke="none"
+                  font-weight="bold"
+                >1</text></svg>
+              </button>
+            </div>
+
+            <!-- Zone 2: prev / play / next — centered -->
+            <div class="fp-ctrl-zone fp-ctrl-zone--center">
+              <button
+                class="fp-ctrl"
+                @click="prev"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                ><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+              </button>
+
+              <button
+                class="fp-ctrl fp-play"
+                @click="togglePlay"
+              >
+                <svg
+                  v-if="playing"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                ><rect
+                  x="6"
+                  y="4"
+                  width="4"
+                  height="16"
+                  rx="1"
+                /><rect
+                  x="14"
+                  y="4"
+                  width="4"
+                  height="16"
+                  rx="1"
+                /></svg>
+                <svg
+                  v-else
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                ><polygon points="6,3 20,12 6,21" /></svg>
+              </button>
+
+              <button
+                class="fp-ctrl"
+                @click="next"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                ><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+              </button>
+            </div>
+
+            <!-- Zone 3: playlist -->
+            <div class="fp-ctrl-zone fp-ctrl-zone--right">
+              <button
+                class="fp-ctrl fp-playlist-btn"
+                :class="{ active: showPlaylist }"
+                title="Playlist"
+                @click.stop="showPlaylist = !showPlaylist"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                ><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>
+              </button>
+
+              <!-- Playlist dropdown -->
+              <Transition name="playlist-drop">
+                <div
+                  v-if="showPlaylist"
+                  class="fp-playlist-drop"
+                  @click.stop
+                >
+                  <div class="fp-playlist-head">
+                    <span>Playlist ({{ queue.length }})</span>
+                    <button
+                      class="fp-playlist-close"
+                      @click="showPlaylist = false"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      ><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                    </button>
+                  </div>
+                  <div class="fp-playlist-body">
+                    <div
+                      v-for="(song, i) in queue"
+                      :key="song.id"
+                      :class="['fp-playlist-item', { active: i === currentIndex }]"
+                      @click="playSongAt(i)"
+                    >
+                      <span class="fp-playlist-idx">{{ i + 1 }}</span>
+                      <span class="fp-playlist-title">{{ song.title }}</span>
+                      <span class="fp-playlist-artist">{{ song.artist }}</span>
+                    </div>
+                    <div
+                      v-if="queue.length === 0"
+                      class="fp-playlist-empty"
+                    >
+                      Playlist is empty
+                    </div>
+                  </div>
+                </div>
+              </Transition>
+            </div>
           </div>
 
           <!-- Volume -->
@@ -257,7 +325,6 @@
               <div
                 v-for="(line, i) in lyrics"
                 :key="i"
-                :ref="el => { if (i === activeLyricIndex) activeLyricEl = el }"
                 :class="['lyric-line', { active: i === activeLyricIndex, past: i < activeLyricIndex }]"
                 @click="seekToLyric(line.time)"
               >
@@ -297,9 +364,9 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { useMusic } from '@/composables/useMusic.js'
 
 const {
-  currentSong, playing, progress, volume, lyrics, playMode,
+  currentSong, playing, progress, volume, lyrics, playMode, queue, currentIndex,
   currentTime, duration, currentTimeStr, showFullPlayer,
-  togglePlay, next, prev, seek, setVolume, coverUrl, formatTime, cyclePlayMode,
+  togglePlay, next, prev, seek, setVolume, coverUrl, formatTime, cyclePlayMode, playSongAt,
 } = useMusic()
 
 const modeLabel = computed(() => {
@@ -309,7 +376,7 @@ const modeLabel = computed(() => {
 
 const fpProgressTrack = ref(null)
 const lyricsContainer = ref(null)
-const activeLyricEl = ref(null)
+const showPlaylist = ref(false)
 
 const remainingStr = computed(() => {
   const rem = (duration.value || 0) - (currentTime.value || 0)
@@ -327,16 +394,21 @@ const activeLyricIndex = computed(() => {
   return idx
 })
 
-watch(activeLyricIndex, () => {
-  nextTick(() => {
-    if (activeLyricEl.value && lyricsContainer.value) {
-      const container = lyricsContainer.value
-      const el = activeLyricEl.value
-      const containerH = container.clientHeight
-      const targetScroll = el.offsetTop - containerH / 2 + el.clientHeight / 2
-      container.scrollTo({ top: targetScroll, behavior: 'smooth' })
-    }
-  })
+watch(activeLyricIndex, async () => {
+  await nextTick()
+  if (!lyricsContainer.value) return
+  const activeEl = lyricsContainer.value.querySelector('.lyric-line.active')
+  if (!activeEl) return
+  const container = lyricsContainer.value
+  const containerH = container.clientHeight
+  // Offset the active line slightly above true center for visual balance
+  const targetScroll = activeEl.offsetTop - containerH * 0.42 + activeEl.clientHeight / 2
+  container.scrollTo({ top: targetScroll, behavior: 'smooth' })
+})
+
+// Close playlist when changing song
+watch(currentIndex, () => {
+  showPlaylist.value = false
 })
 
 function onProgressClick(e) {
@@ -354,13 +426,21 @@ function seekToLyric(time) {
 </script>
 
 <style scoped>
+/* ============================================
+   Apple Music–style full player
+   ============================================ */
+
 .full-player {
   position: fixed;
   inset: 0;
   z-index: 200;
   display: flex;
   flex-direction: column;
+  isolation: isolate;
+  background: #121212;
 }
+
+/* ---- Background layers ---- */
 
 .fp-bg {
   position: absolute;
@@ -368,15 +448,15 @@ function seekToLyric(time) {
   z-index: 0;
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(24, 24, 24, 0.18), rgba(24, 24, 24, 0.76)),
-    var(--app-bg);
+    radial-gradient(circle at 28% 22%, rgba(210, 162, 255, 0.28), transparent 34%),
+    radial-gradient(circle at 82% 32%, rgba(255, 173, 209, 0.18), transparent 34%),
+    linear-gradient(135deg, #1a1525 0%, #2d1f33 46%, #241a29 100%);
 }
 
 .fp-bg.no-cover {
   background:
-    linear-gradient(180deg, rgba(24, 24, 24, 0.96), rgba(24, 24, 24, 0.98)),
-    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 16px),
-    var(--bg0);
+    radial-gradient(circle at 30% 20%, rgba(158, 191, 255, 0.12), transparent 32%),
+    linear-gradient(135deg, #15141a 0%, #1f1a26 52%, #1a151e 100%);
 }
 
 .fp-bg-img {
@@ -394,8 +474,8 @@ function seekToLyric(time) {
   inset: -22%;
   width: 144%;
   height: 144%;
-  filter: blur(86px) saturate(1.9) brightness(0.84) contrast(1.08);
-  opacity: 0.92;
+  filter: blur(92px) saturate(1.5) brightness(0.78);
+  opacity: 0.72;
   transform: scale(1.08);
 }
 
@@ -403,41 +483,18 @@ function seekToLyric(time) {
   inset: -7%;
   width: 114%;
   height: 114%;
-  filter: blur(34px) saturate(1.36) brightness(0.48) contrast(1.08);
-  opacity: 0.54;
+  filter: blur(42px) saturate(1.24) brightness(0.38) contrast(1.06);
+  opacity: 0.32;
   transform: scale(1.14);
-  mix-blend-mode: screen;
-}
-
-.fp-bg::before,
-.fp-bg::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.fp-bg::before {
-  background:
-    linear-gradient(90deg, rgba(24, 24, 24, 0.72) 0%, rgba(24, 24, 24, 0.16) 42%, rgba(24, 24, 24, 0.64) 100%),
-    linear-gradient(180deg, rgba(24, 24, 24, 0.28) 0%, rgba(24, 24, 24, 0.12) 38%, rgba(24, 24, 24, 0.68) 100%);
-}
-
-.fp-bg::after {
-  opacity: 0.18;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 3px 3px;
-  mix-blend-mode: overlay;
+  mix-blend-mode: soft-light;
 }
 
 .fp-bg-frost {
   position: absolute;
   inset: 0;
-  background: rgba(24, 24, 24, 0.22);
-  backdrop-filter: blur(24px) saturate(1.28);
-  -webkit-backdrop-filter: blur(24px) saturate(1.28);
+  background: rgba(18, 16, 22, 0.36);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
 }
 
 .fp-overlay {
@@ -445,169 +502,188 @@ function seekToLyric(time) {
   inset: 0;
   z-index: 1;
   background:
-    linear-gradient(180deg, rgba(24, 24, 24, 0.34), rgba(24, 24, 24, 0.72)),
-    radial-gradient(ellipse at 50% 24%, rgba(255, 255, 255, 0.14), transparent 44%);
-  box-shadow: inset 0 0 180px rgba(0, 0, 0, 0.82);
+    radial-gradient(ellipse at 38% 20%, rgba(255, 255, 255, 0.06), transparent 42%),
+    linear-gradient(180deg, rgba(10, 9, 15, 0.1), rgba(8, 7, 12, 0.5));
+  box-shadow: inset 0 0 160px rgba(0, 0, 0, 0.5);
 }
+
+/* ---- Close button ---- */
 
 .fp-close {
   position: absolute;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 20px;
+  right: 24px;
   z-index: 10;
-  width: 40px;
-  height: 24px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   border: none;
-  border-radius: 12px;
-  color: rgba(212, 212, 212, 0.62);
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.55);
   cursor: pointer;
-  backdrop-filter: blur(10px);
-  transition: all 0.15s;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition: all 0.2s;
 }
-.fp-close:hover { background: rgba(255, 255, 255, 0.2); color: var(--t1); }
-.fp-close svg { width: 20px; height: 20px; }
+.fp-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: white;
+  transform: scale(1.05);
+}
+.fp-close svg { width: 18px; height: 18px; }
+
+/* ---- Content grid ---- */
 
 .fp-content {
   position: relative;
   z-index: 5;
   flex: 1;
-  display: flex;
-  padding: 60px 40px 40px;
-  gap: 40px;
+  display: grid;
+  grid-template-columns: minmax(300px, 400px) minmax(360px, 600px);
+  grid-template-rows: 1fr;
+  align-items: stretch;
+  justify-content: center;
+  gap: clamp(56px, 7vw, 100px);
+  padding: clamp(50px, 7vh, 90px) clamp(32px, 6vw, 100px);
   overflow: hidden;
 }
 
+/* ---- Left panel ---- */
+
 .fp-left {
-  width: 380px;
-  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
+  justify-content: center;
+  gap: 18px;
+  min-width: 0;
+  height: 100%;
+}
+
+/* ---- Album artwork ---- */
+
+.fp-artwork-wrap {
+  width: 100%;
+  max-width: 340px;
+  padding: 10px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 28px 60px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .fp-cover-wrap {
-  width: 300px;
-  height: 300px;
-  border-radius: 12px;
+  aspect-ratio: 1;
+  border-radius: 10px;
   overflow: hidden;
-  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.06);
 }
 
 .fp-cover {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.3s;
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .fp-cover.playing {
-  animation: none;
+  transform: scale(1.02);
 }
 .fp-cover.placeholder {
   width: 100%;
   height: 100%;
-  background: rgba(255,255,255,0.05);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.04);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .fp-cover.placeholder svg { width: 80px; height: 80px; }
 
+/* ---- Song info ---- */
+
 .fp-song-info {
   text-align: center;
+  min-width: 0;
   max-width: 340px;
 }
+
 .fp-title {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--t1);
-  margin-bottom: 4px;
-  line-height: 1.3;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0 0 4px;
 }
+
 .fp-artist {
-  font-size: 14px;
-  color: rgba(212, 212, 212, 0.62);
-  margin-bottom: 2px;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
 }
+
 .fp-album {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.32);
   font-size: 12px;
-  color: rgba(212, 212, 212, 0.42);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 2px 0 0;
 }
 
-.fp-quality-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-.fp-format {
-  font-size: 11px;
-  font-weight: 600;
-  font-family: var(--mono);
-  color: rgba(212, 212, 212, 0.5);
-}
-.fp-spec {
-  font-size: 10px;
-  font-family: var(--mono);
-  color: rgba(212, 212, 212, 0.35);
-}
-.fp-hires-badge {
-  font-size: 9px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  background: linear-gradient(135deg, rgba(175, 130, 255, 0.25), rgba(100, 210, 255, 0.25));
-  color: #c4a0ff;
-  border: 1px solid rgba(175, 130, 255, 0.35);
-}
-.fp-lossless-badge {
-  font-size: 9px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  background: rgba(50, 215, 75, 0.15);
-  color: #6eff88;
-  border: 1px solid rgba(50, 215, 75, 0.3);
-}
+/* ---- Progress bar ---- */
 
-/* Progress */
 .fp-progress-wrap {
   width: 100%;
   max-width: 340px;
 }
+
 .fp-progress-track {
   height: 4px;
-  background: rgba(255,255,255,0.12);
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 2px;
   cursor: pointer;
   position: relative;
+  transition: height 0.15s;
 }
-.fp-progress-track:hover { height: 6px; margin-top: -1px; }
+.fp-progress-track:hover { height: 6px; margin: -1px 0; }
+
 .fp-progress-fill {
   height: 100%;
-  background: var(--acc2);
+  background: rgba(255, 255, 255, 0.82);
   border-radius: 2px;
   position: relative;
   transition: width 0.3s linear;
 }
+
 .fp-progress-knob {
   position: absolute;
-  right: -5px;
+  right: -6px;
   top: 50%;
   transform: translateY(-50%);
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: white;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -616,124 +692,351 @@ function seekToLyric(time) {
 .fp-time-row {
   display: flex;
   justify-content: space-between;
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 11px;
-  font-family: var(--mono);
-  color: rgba(212, 212, 212, 0.42);
+  font-family: var(--mono, 'SF Mono', monospace);
+  color: rgba(255, 255, 255, 0.38);
+  font-weight: 500;
 }
 
-/* Controls */
-.fp-controls {
+/* ---- Quality indicator (below progress) ---- */
+
+.fp-quality {
   display: flex;
   align-items: center;
-  gap: 24px;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+  min-height: 16px;
+  font-size: 10px;
+  font-family: var(--mono, 'SF Mono', monospace);
+  color: rgba(255, 255, 255, 0.28);
+  font-weight: 500;
+  letter-spacing: 0.03em;
 }
+
+.fp-quality-hires {
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+}
+
+.fp-quality-lossless {
+  color: rgba(255, 255, 255, 0.32);
+  font-weight: 600;
+}
+
+.fp-quality-detail {
+  opacity: 1;
+  white-space: nowrap;
+}
+
+/* ---- Controls — 3-zone grid ---- */
+
+.fp-controls {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  width: 100%;
+  max-width: 340px;
+  margin: 10px 0;
+}
+
+.fp-ctrl-zone {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fp-ctrl-zone--left {
+  justify-self: start;
+}
+
+.fp-ctrl-zone--center {
+  justify-self: center;
+  gap: 14px;
+}
+
+.fp-ctrl-zone--right {
+  position: relative;
+  justify-self: end;
+}
+
+/* Base ctrl button */
 .fp-ctrl {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: none;
   border: none;
-  color: rgba(212, 212, 212, 0.82);
+  color: rgba(255, 255, 255, 0.7);
   cursor: pointer;
   border-radius: 50%;
-  transition: all 0.12s;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
 }
-.fp-ctrl:hover { color: var(--t1); background: rgba(255,255,255,0.08); }
-.fp-ctrl svg { width: 24px; height: 24px; }
+.fp-ctrl:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.08);
+  transform: scale(1.06);
+}
+.fp-ctrl svg { width: 22px; height: 22px; }
 
+/* Play mode toggle */
 .fp-mode {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
 }
-.fp-mode svg { width: 18px; height: 18px; }
-.fp-mode.active { color: var(--acc2); }
+.fp-mode svg { width: 17px; height: 17px; }
+.fp-mode.active { color: rgba(255, 255, 255, 0.92); }
 
+/* Play/pause — center star */
 .fp-play {
-  width: 56px;
-  height: 56px;
-  background: var(--acc-bg);
-  color: var(--acc2);
+  width: 52px;
+  height: 52px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #18141e;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
 }
-.fp-play:hover { background: var(--acc-bg-strong); color: var(--acc2); }
-.fp-play svg { width: 28px; height: 28px; }
+.fp-play:hover {
+  background: white;
+  color: #100d16;
+  transform: scale(1.08);
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.4);
+}
+.fp-play svg { width: 26px; height: 26px; }
 
-/* Volume */
+/* Playlist toggle button */
+.fp-playlist-btn {
+  width: 32px;
+  height: 32px;
+}
+.fp-playlist-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.fp-playlist-btn.active {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ---- Playlist dropdown ---- */
+
+.fp-playlist-drop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  width: 300px;
+  max-height: 380px;
+  background: rgba(30, 26, 40, 0.96);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 20;
+}
+
+.fp-playlist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  font-size: 13px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.7);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.fp-playlist-close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  border-radius: 50%;
+  transition: all 0.15s;
+}
+.fp-playlist-close:hover { color: white; background: rgba(255, 255, 255, 0.08); }
+.fp-playlist-close svg { width: 14px; height: 14px; }
+
+.fp-playlist-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+.fp-playlist-item {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.fp-playlist-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.fp-playlist-item.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+.fp-playlist-item.active .fp-playlist-title {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.fp-playlist-idx {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.25);
+  text-align: center;
+}
+
+.fp-playlist-title {
+  font-size: 13px;
+  font-weight: 550;
+  color: rgba(255, 255, 255, 0.82);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fp-playlist-artist {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+}
+
+.fp-playlist-empty {
+  padding: 28px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.28);
+}
+
+/* Playlist dropdown transition */
+.playlist-drop-enter-active,
+.playlist-drop-leave-active {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.playlist-drop-enter-from,
+.playlist-drop-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+/* ---- Volume ---- */
+
 .fp-volume {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  max-width: 300px;
+  max-width: 240px;
 }
+
 .vol-icon {
   width: 16px;
   height: 16px;
-  color: rgba(212, 212, 212, 0.42);
+  color: rgba(255, 255, 255, 0.3);
   flex-shrink: 0;
+  transition: color 0.15s;
 }
+.fp-volume:hover .vol-icon { color: rgba(255, 255, 255, 0.5); }
+
 .fp-vol-slider {
   flex: 1;
-  height: 4px;
+  height: 3px;
   -webkit-appearance: none;
   appearance: none;
-  background: rgba(255,255,255,0.12);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 2px;
   outline: none;
 }
 .fp-vol-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: white;
   cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: transform 0.12s;
+}
+.fp-vol-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
 }
 
-/* Lyrics */
+/* ---- Lyrics (right panel) ---- */
+
 .fp-right {
-  flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  height: 100%;
 }
 
 .lyrics-container {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 80px 20px;
-  mask-image: linear-gradient(transparent, black 15%, black 85%, transparent);
-  -webkit-mask-image: linear-gradient(transparent, black 15%, black 85%, transparent);
+  padding: 0 12px 0 0;
+  mask-image: linear-gradient(transparent, black 14%, black 86%, transparent);
+  -webkit-mask-image: linear-gradient(transparent, black 14%, black 86%, transparent);
+  scrollbar-width: none;
+}
+
+.lyrics-container::-webkit-scrollbar {
+  display: none;
 }
 
 .lyrics-scroll {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 24px;
+  padding: 42% 0;
 }
 
 .lyric-line {
-  font-size: 22px;
-  font-weight: 600;
-  color: rgba(212, 212, 212, 0.25);
-  line-height: 1.5;
+  max-width: 620px;
+  font-size: clamp(24px, 3vw, 38px);
+  font-weight: 720;
+  letter-spacing: -0.03em;
+  color: rgba(255, 255, 255, 0.14);
+  line-height: 1.16;
   cursor: pointer;
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  padding: 4px 0;
+  transition: color 0.4s ease, transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 3px 0;
+  text-wrap: balance;
 }
 .lyric-line:hover {
-  color: rgba(212, 212, 212, 0.45);
+  color: rgba(255, 255, 255, 0.4);
 }
 .lyric-line.active {
-  color: var(--t1);
-  font-size: 26px;
-  transform: scale(1.02);
+  color: rgba(255, 255, 255, 0.92);
+  transform: translateX(6px);
   transform-origin: left center;
 }
 .lyric-line.past {
-  color: rgba(212, 212, 212, 0.35);
+  color: rgba(255, 255, 255, 0.18);
 }
 
 .lyrics-empty {
@@ -742,20 +1045,66 @@ function seekToLyric(time) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  color: rgba(212, 212, 212, 0.25);
+  gap: 14px;
+  color: rgba(255, 255, 255, 0.28);
 }
 .lyrics-empty svg { width: 48px; height: 48px; }
-.lyrics-empty p { font-size: 14px; }
+.lyrics-empty p { font-size: 14px; font-weight: 500; }
 
-/* Transition */
+/* ---- Responsive ---- */
+
+@media (max-width: 920px) {
+  .fp-content {
+    grid-template-columns: minmax(240px, 380px);
+    align-content: start;
+    gap: 28px;
+    overflow-y: auto;
+    padding: clamp(36px, 5vh, 56px) clamp(20px, 5vw, 40px);
+  }
+
+  .fp-left {
+    height: auto;
+    gap: 14px;
+  }
+
+  .fp-artwork-wrap {
+    max-width: 280px;
+  }
+
+  .fp-right {
+    height: auto;
+    flex: 1 1 auto;
+  }
+
+  .lyrics-container {
+    padding: 0 4px 0;
+  }
+
+  .lyric-line {
+    font-size: clamp(20px, 6.5vw, 30px);
+  }
+
+  .fp-play {
+    width: 46px;
+    height: 46px;
+  }
+  .fp-play svg { width: 22px; height: 22px; }
+
+  .fp-playlist-drop {
+    width: 260px;
+    right: -60px;
+  }
+}
+
+/* ---- Transitions ---- */
+
 .fullplayer-enter-active,
 .fullplayer-leave-active {
-  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .fullplayer-enter-from,
 .fullplayer-leave-to {
   opacity: 0;
-  transform: translateY(40px);
+  transform: translateY(32px);
 }
 </style>
