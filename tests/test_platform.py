@@ -16,7 +16,6 @@ from core.platform.message import (
 )
 from core.platform.webchat import WebChatAdapter
 
-
 # ── MessageEvent ────────────────────────────────────────────────────
 
 

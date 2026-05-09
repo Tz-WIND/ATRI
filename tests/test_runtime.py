@@ -13,7 +13,6 @@ from core.pipeline.stages.process import ProcessStage, _RuntimeTurnRecorder
 from core.platform.message import MessageEvent
 from core.runtime.timeline import RuntimeEvent, RuntimeTimelineStore, summarize_text
 
-
 # ── RuntimeTimelineStore ────────────────────────────────────────────
 
 
