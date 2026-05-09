@@ -8,7 +8,7 @@ import os
 import subprocess
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 # Ordered by preference
 _LINTERS: list[dict[str, Any]] = [
@@ -56,6 +56,11 @@ class LintTool(Tool):
         },
         "required": ["path"],
     }
+    capabilities = ToolCapabilities(
+        capability="code.lint",
+        writes_files=True,
+        executes_shell=True,
+    )
 
     def execute(self, path: str, fix: bool = False, **kwargs: Any) -> str:
         target = self.resolve_path(path)

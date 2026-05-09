@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 if TYPE_CHECKING:
     from core.runtime import TaskEvent, TaskStore
@@ -38,6 +38,11 @@ class TaskResultTool(Tool):
         },
         "required": [],
     }
+    capabilities = ToolCapabilities(
+        capability="task.read",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def __init__(self, workspace: str = ".", task_store: TaskStore | None = None):
         super().__init__(workspace)

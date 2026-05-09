@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class ReadFileTool(Tool):
@@ -20,6 +20,11 @@ class ReadFileTool(Tool):
         },
         "required": ["file_path"],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.read",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def execute(self, file_path: str, offset: int = 1, limit: int = 2000, **kwargs: Any) -> str:
         try:

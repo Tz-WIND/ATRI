@@ -225,25 +225,21 @@ class Agent:
 
             self.messages.append(resp.message)
 
-            if len(resp.tool_calls) == 1:
-                tc = resp.tool_calls[0]
-                if on_tool:
-                    on_tool(tc.name, tc.arguments)
-                if on_tool_start:
-                    on_tool_start(tc.id, tc.name, tc.arguments)
-                result = self._exec_tool_for_context(tc)
-                if on_tool_end:
-                    on_tool_end(tc.id, tc.name, tc.arguments, result)
-                self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            else:
+            if len(resp.tool_calls) > 1 and self._all_tools_support_parallel(resp.tool_calls):
                 results = self._exec_tools_parallel(
                     resp.tool_calls,
                     on_tool,
                     on_tool_start,
                     on_tool_end,
                 )
-                for tc, result in zip(resp.tool_calls, results, strict=False):
-                    self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            else:
+                results = self._exec_tools_serial(
+                    resp.tool_calls,
+                    on_tool,
+                    on_tool_start,
+                    on_tool_end,
+                )
+            self._append_tool_results(resp.tool_calls, results)
 
             # After tool execution, check for cancellation before next round
             if self._cancel_event.is_set():
@@ -312,6 +308,42 @@ class Agent:
             output=result,
         ).content
 
+    def _all_tools_support_parallel(self, tool_calls) -> bool:
+        for tc in tool_calls:
+            tool = get_tool(tc.name, self.tools)
+            if tool is None or not tool.capabilities.supports_parallel:
+                return False
+        return True
+
+    def _append_tool_results(self, tool_calls, results: list[str]) -> None:
+        for tc, result in zip(tool_calls, results, strict=False):
+            self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+    def _notify_tool_started(self, tc, on_tool=None, on_tool_start=None) -> None:
+        if on_tool:
+            on_tool(tc.name, tc.arguments)
+        if on_tool_start:
+            on_tool_start(tc.id, tc.name, tc.arguments)
+
+    def _notify_tool_finished(self, tc, result: str, on_tool_end=None) -> None:
+        if on_tool_end:
+            on_tool_end(tc.id, tc.name, tc.arguments, result)
+
+    def _exec_tools_serial(
+        self,
+        tool_calls,
+        on_tool=None,
+        on_tool_start=None,
+        on_tool_end=None,
+    ) -> list[str]:
+        results = []
+        for tc in tool_calls:
+            self._notify_tool_started(tc, on_tool, on_tool_start)
+            result = self._exec_tool_for_context(tc)
+            self._notify_tool_finished(tc, result, on_tool_end)
+            results.append(result)
+        return results
+
     def _exec_tools_parallel(
         self,
         tool_calls,
@@ -321,15 +353,11 @@ class Agent:
     ) -> list[str]:
         """Run multiple tool calls concurrently using threads."""
         for tc in tool_calls:
-            if on_tool:
-                on_tool(tc.name, tc.arguments)
-            if on_tool_start:
-                on_tool_start(tc.id, tc.name, tc.arguments)
+            self._notify_tool_started(tc, on_tool, on_tool_start)
 
         def _run_and_notify(tc):
             result = self._exec_tool_for_context(tc)
-            if on_tool_end:
-                on_tool_end(tc.id, tc.name, tc.arguments, result)
+            self._notify_tool_finished(tc, result, on_tool_end)
             return result
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:

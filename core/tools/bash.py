@@ -17,7 +17,7 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 # Shared marker string — also used by process.py for detection/parsing
 CONFIRM_MARKER = "CONFIRMATION REQUIRED"
@@ -101,6 +101,13 @@ class BashTool(Tool):
         },
         "required": ["command"],
     }
+    capabilities = ToolCapabilities(
+        capability="shell.execute",
+        writes_files=True,
+        executes_shell=True,
+        network=True,
+        requires_approval=True,
+    )
 
     def __init__(self, workspace: str = "."):
         super().__init__(workspace)

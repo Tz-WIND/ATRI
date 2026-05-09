@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ._constants import SKIP_DIRS
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class GrepTool(Tool):
@@ -30,6 +30,11 @@ class GrepTool(Tool):
         },
         "required": ["pattern"],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.search",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def execute(
         self, pattern: str, path: str = ".", include: str | None = None, **kwargs: Any

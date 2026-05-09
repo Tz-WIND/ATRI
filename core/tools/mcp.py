@@ -22,7 +22,7 @@ from typing import Any
 
 from core import logger
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 _MCP_PROTOCOL_VERSION = "2025-11-25"
 _DEFAULT_TIMEOUT = 20.0
@@ -944,6 +944,11 @@ class MCPRegistry:
 
 
 class MCPTool(Tool):
+    capabilities = ToolCapabilities(
+        capability="mcp.external",
+        network=True,
+    )
+
     def __init__(self, workspace: str, registry: MCPRegistry, info: MCPDiscoveredTool):
         super().__init__(workspace)
         self._registry = registry

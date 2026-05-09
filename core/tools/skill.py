@@ -6,7 +6,7 @@ from typing import Any
 
 from core.skills import SkillInfo, SkillManager
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class LoadSkillTool(Tool):
@@ -32,6 +32,11 @@ class LoadSkillTool(Tool):
         },
         "required": ["name"],
     }
+    capabilities = ToolCapabilities(
+        capability="skill.read",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def __init__(self, workspace: str = ".", skill_manager: SkillManager | None = None):
         super().__init__(workspace)

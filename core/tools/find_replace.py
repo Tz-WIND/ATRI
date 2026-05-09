@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ._constants import SKIP_DIRS, TEXT_EXTS
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class FindReplaceTool(Tool):
@@ -39,6 +39,10 @@ class FindReplaceTool(Tool):
         },
         "required": ["find", "replace"],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.bulk_edit",
+        writes_files=True,
+    )
 
     def execute(
         self,

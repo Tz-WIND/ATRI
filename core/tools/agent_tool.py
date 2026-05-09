@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from core import logger
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 if TYPE_CHECKING:
     from core.agent.agent import Agent
@@ -292,6 +292,12 @@ class AgentTool(Tool):
         },
         "required": [],
     }
+    capabilities = ToolCapabilities(
+        capability="agent.spawn",
+        writes_files=True,
+        executes_shell=True,
+        network=True,
+    )
 
     _parent_agent: Agent | None = None
 
@@ -667,6 +673,11 @@ class AgentResultTool(Tool):
         },
         "required": [],
     }
+    capabilities = ToolCapabilities(
+        capability="agent.read",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def __init__(self, workspace: str = ".", task_store: TaskStore | None = None):
         super().__init__(workspace)

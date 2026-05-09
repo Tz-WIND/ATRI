@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class GlobTool(Tool):
@@ -27,6 +27,11 @@ class GlobTool(Tool):
         },
         "required": ["pattern"],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.search",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def execute(self, pattern: str, path: str = ".", **kwargs: Any) -> str:
         try:

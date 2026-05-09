@@ -6,7 +6,7 @@ from typing import Any
 
 from core.agent.context import ToolResultStore
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class RetrieveToolResultTool(Tool):
@@ -46,6 +46,11 @@ class RetrieveToolResultTool(Tool):
         },
         "required": ["result_id"],
     }
+    capabilities = ToolCapabilities(
+        capability="tool_result.read",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def __init__(self, workspace: str = ".", tool_result_store: ToolResultStore | None = None):
         super().__init__(workspace)

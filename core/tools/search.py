@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ._constants import SKIP_DIRS, TEXT_EXTS
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class SearchTool(Tool):
@@ -34,6 +34,11 @@ class SearchTool(Tool):
         },
         "required": ["query"],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.search",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def execute(self, query: str, path: str = ".", file_only: bool = False, **kwargs: Any) -> str:
         try:

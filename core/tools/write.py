@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 from .edit import _unified_diff
 
 
@@ -23,6 +23,10 @@ class WriteFileTool(Tool):
         },
         "required": ["file_path", "content"],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.write",
+        writes_files=True,
+    )
 
     def execute(self, file_path: str, content: str, **kwargs: Any) -> str:
         try:

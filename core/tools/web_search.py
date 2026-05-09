@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 # ---------------------------------------------------------------------------
 # Tavily API key — set by lifecycle on startup / config hot-reload
@@ -107,6 +107,12 @@ class WebSearchTool(Tool):
         },
         "required": ["query"],
     }
+    capabilities = ToolCapabilities(
+        capability="network.search",
+        read_only=True,
+        network=True,
+        supports_parallel=True,
+    )
 
     def execute(self, query: str, max_results: int = 5, **kwargs: Any) -> str:
         max_results = min(max(1, max_results), 10)
@@ -256,6 +262,12 @@ class WebFetchTool(Tool):
         },
         "required": ["url"],
     }
+    capabilities = ToolCapabilities(
+        capability="network.fetch",
+        read_only=True,
+        network=True,
+        supports_parallel=True,
+    )
 
     def execute(self, url: str, max_chars: int = 8000, **kwargs: Any) -> str:
         max_chars = min(max(500, max_chars), 30000)

@@ -1335,7 +1335,16 @@ class Dashboard:
                 ws,
                 mcp_servers=self.lifecycle.config.get("mcp_servers", {}),
             )
-            return jsonify([{"name": t.name, "description": t.description} for t in tools])
+            return jsonify(
+                [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "metadata": t.metadata(),
+                    }
+                    for t in tools
+                ]
+            )
 
         # ── Dangerous command approval ──
         @app.route("/api/approve-command", methods=["POST"])

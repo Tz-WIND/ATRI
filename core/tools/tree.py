@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from ._constants import SKIP_DIRS
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class TreeTool(Tool):
@@ -26,6 +26,11 @@ class TreeTool(Tool):
         },
         "required": [],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.list",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def execute(self, path: str = ".", max_depth: int = 3, **kwargs: Any) -> str:
         try:

@@ -9,7 +9,7 @@ import os
 import subprocess
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 from .bash import (
     CONFIRM_MARKER,
     DangerLevel,
@@ -45,6 +45,13 @@ class TerminalTool(Tool):
         },
         "required": ["command"],
     }
+    capabilities = ToolCapabilities(
+        capability="shell.session",
+        writes_files=True,
+        executes_shell=True,
+        network=True,
+        requires_approval=True,
+    )
 
     _sessions: dict[str, "_ShellSession"] = {}  # noqa: RUF012
 

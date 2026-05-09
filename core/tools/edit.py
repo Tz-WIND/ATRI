@@ -8,7 +8,7 @@ safe and reviewable. A unified diff is generated for every edit.
 import difflib
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class EditFileTool(Tool):
@@ -34,6 +34,10 @@ class EditFileTool(Tool):
         },
         "required": ["file_path", "old_string", "new_string"],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.edit",
+        writes_files=True,
+    )
 
     def execute(self, file_path: str, old_string: str, new_string: str, **kwargs: Any) -> str:
         if not old_string:

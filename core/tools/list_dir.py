@@ -7,7 +7,7 @@ from typing import Any
 from core.utils import format_bytes
 
 from ._constants import SKIP_DIRS
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class ListDirTool(Tool):
@@ -30,6 +30,11 @@ class ListDirTool(Tool):
         },
         "required": [],
     }
+    capabilities = ToolCapabilities(
+        capability="filesystem.list",
+        read_only=True,
+        supports_parallel=True,
+    )
 
     def execute(self, path: str = ".", show_hidden: bool = False, **kwargs: Any) -> str:
         try:

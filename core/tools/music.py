@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .base import Tool
+from .base import Tool, ToolCapabilities
 
 
 class MusicTool(Tool):
@@ -44,6 +44,9 @@ class MusicTool(Tool):
         },
         "required": ["action"],
     }
+    capabilities = ToolCapabilities(
+        capability="media.control",
+    )
 
     _broadcast_fn = None
 
