@@ -65,6 +65,36 @@
       </div>
       <div
         v-if="activeTab"
+        class="file-meta-bar"
+      >
+        <div class="file-meta-main">
+          <span class="file-meta-icon">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+          </span>
+          <span
+            class="file-meta-path"
+            :title="activeTab.path"
+          >{{ activeTab.path }}</span>
+        </div>
+        <div class="file-meta-stats">
+          <span>{{ activeLanguageLabel }}</span>
+          <span>{{ lineCount }} lines</span>
+          <span
+            v-if="activeTab.modified"
+            class="file-state-modified"
+          >modified</span>
+        </div>
+      </div>
+      <div
+        v-if="activeTab"
         class="editor-content"
       >
         <div class="code-wrapper">
@@ -136,6 +166,7 @@ const EDITOR_PADDING_TOP = 12
 const EDITOR_LINE_HEIGHT = 28
 
 const activeTab = computed(() => tabs.value.find(t => t.path === activeTabPath.value))
+const activeLanguageLabel = computed(() => detectLang(activeTab.value?.name || '') || 'text')
 
 const lineCount = computed(() => {
   if (!activeTab.value) return 0
@@ -357,7 +388,8 @@ defineExpose({ openFile })
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg0);
+  min-width: 0;
+  background: rgba(24, 24, 24, 0.22);
 }
 
 .editor-empty {
@@ -367,18 +399,22 @@ defineExpose({ openFile })
   align-items: center;
   justify-content: center;
   color: var(--t3);
-  gap: 8px;
+  gap: 7px;
+  padding: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 36%),
+    rgba(24, 24, 24, 0.18);
 }
 
 .empty-icon {
-  width: 48px;
-  height: 48px;
-  color: var(--bg3);
+  width: 42px;
+  height: 42px;
+  color: var(--t4);
 }
 
 .empty-icon svg {
-  width: 48px;
-  height: 48px;
+  width: 42px;
+  height: 42px;
 }
 
 .empty-text {
@@ -393,7 +429,10 @@ defineExpose({ openFile })
 
 .tab-bar {
   display: flex;
-  background: var(--bg1);
+  align-items: center;
+  min-height: 40px;
+  padding: 5px 6px;
+  background: rgba(24, 24, 24, 0.58);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   overflow: hidden;
@@ -403,6 +442,7 @@ defineExpose({ openFile })
   display: flex;
   overflow-x: auto;
   flex: 1;
+  gap: 4px;
 }
 
 .tab-list::-webkit-scrollbar {
@@ -413,36 +453,37 @@ defineExpose({ openFile })
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  height: 29px;
+  min-width: 0;
+  max-width: 220px;
+  padding: 0 8px 0 10px;
   font-size: 12px;
   font-family: var(--mono);
   color: var(--t3);
-  border-right: 1px solid var(--border);
+  border: 1px solid transparent;
+  border-radius: 7px;
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background 0.1s, color 0.1s;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
   position: relative;
 }
 
 .tab:hover {
-  background: var(--bg2);
+  background: var(--bg-050);
   color: var(--t2);
 }
 
 .tab.active {
-  background: var(--bg0);
+  background: var(--bg-100);
+  border-color: var(--border-light);
   color: var(--t1);
 }
 
-.tab.active::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: var(--bg0);
+.tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tab.modified .tab-name::after {
@@ -457,8 +498,8 @@ defineExpose({ openFile })
 }
 
 .tab-close {
-  width: 18px;
-  height: 18px;
+  width: 19px;
+  height: 19px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -466,7 +507,7 @@ defineExpose({ openFile })
   border: none;
   color: var(--t3);
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 5px;
   opacity: 0;
   transition: all 0.1s;
 }
@@ -477,13 +518,81 @@ defineExpose({ openFile })
 }
 
 .tab-close:hover {
-  background: var(--bg3);
+  background: var(--bg-100);
   color: var(--t1);
 }
 
 .tab-close svg {
-  width: 12px;
-  height: 12px;
+  width: 11px;
+  height: 11px;
+}
+
+.file-meta-bar {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: rgba(24, 24, 24, 0.32);
+  flex-shrink: 0;
+}
+
+.file-meta-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.file-meta-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--t3);
+}
+
+.file-meta-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.file-meta-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.file-meta-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  color: var(--t4);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.file-meta-stats span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+}
+
+.file-state-modified {
+  padding: 0 6px;
+  border: 1px solid rgba(214, 183, 109, 0.24);
+  border-radius: 999px;
+  background: rgba(214, 183, 109, 0.1);
+  color: var(--orange);
 }
 
 .editor-content {
@@ -498,7 +607,9 @@ defineExpose({ openFile })
   position: relative;
   overflow: hidden;
   display: flex;
-  background: var(--bg0);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.014), transparent 180px),
+    rgba(24, 24, 24, 0.5);
   --editor-gutter-w: 48px;
   --editor-line-height: 28px;
   --editor-pad-y: 12px;
@@ -509,8 +620,8 @@ defineExpose({ openFile })
   width: var(--editor-gutter-w);
   flex-shrink: 0;
   overflow: hidden;
-  background: transparent;
-  border-right: 0;
+  background: rgba(255, 255, 255, 0.018);
+  border-right: 1px solid var(--border-light);
   user-select: none;
   position: relative;
 }
@@ -523,10 +634,10 @@ defineExpose({ openFile })
   height: var(--editor-line-height);
   line-height: var(--editor-line-height);
   text-align: right;
-  padding-right: 10px;
+  padding-right: 11px;
   font-size: 12px;
   font-family: var(--mono);
-  color: rgba(133, 133, 133, 0.72);
+  color: var(--t4);
 }
 
 .current-line-highlight {
@@ -534,14 +645,14 @@ defineExpose({ openFile })
   left: var(--editor-gutter-w);
   right: 0;
   height: var(--editor-line-height);
-  background: rgba(255, 255, 255, 0.055);
+  background: rgba(255, 255, 255, 0.045);
   pointer-events: none;
   z-index: 2;
 }
 
 .line-num.active {
   color: var(--t2);
-  background: rgba(255, 255, 255, 0.055);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .code-editor {
@@ -659,7 +770,7 @@ defineExpose({ openFile })
 .code-highlight .hljs-property { color: var(--code-variable); }
 .code-highlight .hljs-subst { color: var(--code-text); }
 .code-highlight .hljs-formula { color: var(--code-keyword); }
-.code-highlight .hljs-addition { color: var(--acc2); background: rgba(55,148,255,0.1); }
+.code-highlight .hljs-addition { color: var(--acc2); background: var(--acc-bg); }
 .code-highlight .hljs-deletion { color: var(--code-string); background: rgba(244,135,113,0.1); }
 .code-highlight .hljs-punctuation { color: var(--code-text); }
 </style>

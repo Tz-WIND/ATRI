@@ -185,12 +185,13 @@ async function handleDeactivateModel(provider, model) {
 <style scoped>
 .prov-workbench {
   display: grid;
-  grid-template-columns: 260px 1px 1fr;
+  grid-template-columns: 248px 1px 1fr;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg1);
-  min-height: 520px;
+  background: rgba(255, 255, 255, 0.026);
+  min-height: 540px;
   overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
 .prov-divider {
@@ -207,24 +208,27 @@ async function handleDeactivateModel(provider, model) {
   font-size: 13px;
   gap: 8px;
   padding: 20px;
+  background: rgba(24, 24, 24, 0.18);
 }
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(24, 24, 24, 0.38);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 500;
+  backdrop-filter: blur(4px);
 }
 
 .modal-card {
-  background: var(--bg1);
+  background: var(--glass-strong);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   width: 420px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
 }
 
 .card-header {
@@ -258,9 +262,9 @@ async function handleDeactivateModel(provider, model) {
 .field input,
 .field select {
   width: 100%;
-  background: var(--bg0);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: rgba(24, 24, 24, 0.68);
+  border: 1px solid var(--border-input);
+  border-radius: 7px;
   color: var(--t1);
   padding: 8px 12px;
   font-size: 13px;
@@ -270,7 +274,8 @@ async function handleDeactivateModel(provider, model) {
 
 .field input:focus,
 .field select:focus {
-  border-color: var(--acc);
+  border-color: rgba(158, 191, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12);
 }
 
 .form-actions {
@@ -281,7 +286,7 @@ async function handleDeactivateModel(provider, model) {
 
 .btn {
   padding: 6px 16px;
-  border-radius: 6px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   cursor: pointer;
   font-size: 12px;
@@ -293,10 +298,10 @@ async function handleDeactivateModel(provider, model) {
 .btn-primary {
   background: var(--acc-bg);
   color: var(--acc2);
-  border-color: rgba(55, 148, 255, 0.3);
+  border-color: rgba(125, 168, 232, 0.3);
 }
 
-.btn-primary:hover { background: rgba(55, 148, 255, 0.22); }
+.btn-primary:hover { background: var(--acc-bg-strong); }
 
 .btn-ghost {
   background: none;
@@ -304,7 +309,7 @@ async function handleDeactivateModel(provider, model) {
 }
 
 .btn-ghost:hover {
-  background: var(--bg2);
+  background: var(--bg-100);
   color: var(--t1);
 }
 

@@ -21,9 +21,10 @@ defineProps({
 <style scoped>
 .page-header {
   height: var(--header-h);
-  padding: 0 16px;
+  padding: 0 20px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg1);
+  background: rgba(24, 24, 24, 0.68);
+  backdrop-filter: blur(18px);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -31,12 +32,11 @@ defineProps({
 }
 
 .header-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  font-family: var(--mono);
+  font-family: var(--sans);
   color: var(--t1);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0;
 }
 
 .header-left,

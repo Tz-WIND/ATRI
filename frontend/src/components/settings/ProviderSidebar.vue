@@ -63,7 +63,7 @@ defineEmits(['select', 'add', 'delete'])
 }
 
 .sidebar-head {
-  padding: 14px 16px 10px;
+  padding: 14px 14px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -72,16 +72,14 @@ defineEmits(['select', 'add', 'delete'])
 
 .sidebar-title {
   font-size: 13px;
-  font-weight: 700;
-  font-family: var(--mono);
-  color: var(--t2);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+  font-weight: 650;
+  color: var(--t1);
+  letter-spacing: 0;
 }
 
 .btn {
-  padding: 3px 10px;
-  border-radius: 6px;
+  padding: 4px 10px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   cursor: pointer;
   font-size: 11px;
@@ -96,17 +94,17 @@ defineEmits(['select', 'add', 'delete'])
 }
 
 .btn-ghost:hover {
-  background: var(--bg2);
+  background: var(--bg-100);
   color: var(--t1);
 }
 
 .sidebar-list {
   flex: 1;
   overflow-y: auto;
-  padding: 6px 10px 12px;
+  padding: 6px 9px 12px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .sidebar-empty {
@@ -120,25 +118,33 @@ defineEmits(['select', 'add', 'delete'])
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  min-height: 54px;
+  padding: 9px 10px;
   border-radius: 8px;
   cursor: pointer;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: inherit;
   text-align: left;
   width: 100%;
-  transition: background 0.1s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.prov-source:hover { background: var(--bg2); }
-.prov-source.active { background: var(--bg3); }
+.prov-source:hover {
+  background: var(--bg-050);
+}
+
+.prov-source.active {
+  background: var(--bg-100);
+  border-color: var(--border-strong);
+}
 
 .prov-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.035);
 }
 
 .prov-info {
@@ -148,7 +154,7 @@ defineEmits(['select', 'add', 'delete'])
 
 .prov-name {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--t1);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -179,7 +185,7 @@ defineEmits(['select', 'add', 'delete'])
   cursor: pointer;
   font-size: 14px;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 5px;
 }
 
 .btn-delete:hover {

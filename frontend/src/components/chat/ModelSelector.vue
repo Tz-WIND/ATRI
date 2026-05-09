@@ -167,10 +167,11 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
   bottom: calc(100% + 8px);
   left: 0;
   width: 320px;
-  background: var(--bg1);
-  border: 1px solid var(--border);
+  background: var(--glass-strong);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(18px);
   z-index: 200;
   overflow: hidden;
 }
@@ -183,9 +184,9 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 
 .menu-search input {
   width: 100%;
-  background: var(--bg0);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: rgba(24, 24, 24, 0.66);
+  border: 1px solid var(--border-input);
+  border-radius: 7px;
   padding: 7px 10px 7px 32px;
   color: var(--t1);
   font-size: 13px;
@@ -194,7 +195,8 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 }
 
 .menu-search input:focus {
-  border-color: var(--acc);
+  border-color: rgba(158, 191, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12);
 }
 
 .menu-search svg {
@@ -225,11 +227,11 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 }
 
 .menu-item:hover {
-  background: var(--bg2);
+  background: var(--bg-100);
 }
 
 .menu-item.active {
-  background: rgba(55, 148, 255, 0.1);
+  background: var(--acc-bg);
 }
 
 .mi-check {

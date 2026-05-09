@@ -66,8 +66,13 @@ const icons = {
 <style scoped>
 .activity-bar {
   width: var(--activity-w);
-  background: var(--bg1);
-  border-right: 1px solid var(--border);
+  margin: 8px;
+  margin-right: 7px;
+  background: rgba(24, 24, 24, 0.82);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -77,17 +82,20 @@ const icons = {
 }
 
 .activity-top {
-  padding: 12px 0 8px;
+  padding: 11px 0 9px;
 }
 
 .activity-logo {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--acc);
+  color: var(--acc2);
+  background: var(--acc-bg);
+  border: 1px solid rgba(125, 168, 232, 0.22);
   border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
 .activity-logo svg {
@@ -100,7 +108,7 @@ const icons = {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   padding: 4px 0;
 }
 
@@ -109,51 +117,56 @@ const icons = {
 }
 
 .activity-item {
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--t3);
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: 8px;
   position: relative;
-  transition: color 0.12s, background 0.12s;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
 }
 
 .activity-item:hover {
-  color: var(--t1);
-  background: var(--bg2);
+  color: var(--t2);
+  background: var(--bg-100);
+  border-color: var(--border-light);
 }
 
 .activity-item.active {
-  color: var(--acc2);
+  color: var(--t1);
+  background: var(--bg-100);
+  border-color: var(--border-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 .activity-item.active::before {
   content: '';
   position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
+  left: -7px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
   background: var(--acc2);
-  border-radius: 0 2px 2px 0;
+  border-radius: 999px;
+  box-shadow: 0 0 14px rgba(158, 191, 255, 0.32);
 }
 
 .activity-icon {
-  width: 22px;
-  height: 22px;
+  width: 19px;
+  height: 19px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .activity-icon :deep(svg) {
-  width: 22px;
-  height: 22px;
+  width: 19px;
+  height: 19px;
 }
 
 .activity-badge {

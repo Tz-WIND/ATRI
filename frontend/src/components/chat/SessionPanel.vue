@@ -120,7 +120,7 @@ onMounted(() => loadList())
 .session-toolbar {
   display: flex;
   justify-content: flex-end;
-  padding: 6px 8px;
+  padding: 7px 8px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -130,9 +130,9 @@ onMounted(() => loadList())
   border: 1px solid transparent;
   color: var(--t3);
   cursor: pointer;
-  border-radius: 5px;
-  width: 26px;
-  height: 26px;
+  border-radius: 7px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -140,9 +140,9 @@ onMounted(() => loadList())
 }
 
 .icon-btn:hover {
-  background: var(--bg2);
+  background: var(--bg-100);
   color: var(--t1);
-  border-color: var(--border);
+  border-color: var(--border-light);
 }
 
 .icon-btn svg {
@@ -153,12 +153,13 @@ onMounted(() => loadList())
 .session-list {
   flex: 1;
   overflow-y: auto;
-  padding: 6px;
+  padding: 8px;
 }
 
 .session-item {
-  padding: 10px 12px;
-  border-radius: 6px;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   cursor: pointer;
   margin-bottom: 2px;
   transition: all 0.12s;
@@ -168,13 +169,13 @@ onMounted(() => loadList())
 .session-item:hover { background: var(--bg2); }
 
 .session-item.active {
-  background: var(--bg3);
-  border-left: 2px solid var(--acc);
+  background: var(--bg-100);
+  border-color: var(--border-strong);
 }
 
 .si-title {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 650;
   font-family: var(--mono);
   color: var(--t1);
   white-space: nowrap;
@@ -208,7 +209,7 @@ onMounted(() => loadList())
   font-size: 10px;
   color: var(--t3);
   font-family: var(--mono);
-  background: var(--bg2);
+  background: var(--bg-100);
   padding: 1px 5px;
   border-radius: 8px;
 }
@@ -230,7 +231,7 @@ onMounted(() => loadList())
 .session-item:hover .si-delete { display: block; }
 .si-delete:hover {
   color: var(--red);
-  background: rgba(244, 135, 113, 0.1);
+  background: var(--red-bg);
 }
 
 .panel-empty {

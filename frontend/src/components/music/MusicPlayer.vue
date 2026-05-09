@@ -293,12 +293,12 @@ function toggleMute() {
 .music-player {
   position: fixed;
   bottom: 0;
-  left: var(--activity-w);
+  left: calc(var(--activity-w) + 16px);
   right: 0;
-  background: rgba(30, 30, 30, 0.85);
+  background: rgba(24, 24, 24, 0.88);
   backdrop-filter: blur(30px) saturate(180%);
   -webkit-backdrop-filter: blur(30px) saturate(180%);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--border);
   z-index: 100;
   cursor: pointer;
 }
@@ -313,9 +313,9 @@ function toggleMute() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(30, 30, 30, 0.85);
+  background: rgba(24, 24, 24, 0.9);
   backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
   border-bottom: none;
   border-radius: 6px 6px 0 0;
   color: var(--t3);
@@ -355,7 +355,7 @@ function toggleMute() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(30, 30, 30, 0.8);
+  background: rgba(24, 24, 24, 0.9);
   backdrop-filter: blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-bottom: none;
@@ -366,7 +366,7 @@ function toggleMute() {
 }
 .peek-pill:hover {
   color: var(--t1);
-  background: rgba(50, 50, 50, 0.9);
+  background: var(--bg3);
 }
 .peek-pill svg {
   width: 14px;
@@ -385,7 +385,7 @@ function toggleMute() {
 }
 .player-progress-fill {
   height: 100%;
-  background: #ff2d55;
+  background: var(--acc2);
   border-radius: 0 2px 2px 0;
   transition: width 0.3s linear;
 }
@@ -492,17 +492,17 @@ function toggleMute() {
 .ctrl-btn.small svg { width: 16px; height: 16px; }
 
 .mode-btn.active {
-  color: #ff2d55;
+  color: var(--acc2);
 }
 
 .play-btn {
   width: 40px;
   height: 40px;
-  background: rgba(255, 45, 85, 0.15);
-  color: #ff2d55;
+  background: var(--acc-bg);
+  color: var(--acc2);
 }
 .play-btn:hover {
-  background: rgba(255, 45, 85, 0.25);
+  background: var(--acc-bg-strong);
 }
 .play-btn svg { width: 22px; height: 22px; }
 

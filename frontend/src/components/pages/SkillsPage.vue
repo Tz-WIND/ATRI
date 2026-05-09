@@ -196,7 +196,7 @@ async function onFileSelected(e) {
 
 <style scoped>
 .page { display: flex; flex-direction: column; height: 100%; }
-.page-body { flex: 1; overflow-y: auto; padding: 20px; }
+.page-body { flex: 1; overflow-y: auto; padding: 22px 24px; }
 
 .desc { font-size: 13px; color: var(--t2); margin-bottom: 12px; }
 .desc code { color: var(--acc2); }
@@ -210,20 +210,20 @@ async function onFileSelected(e) {
 .upload-msg.err { color: var(--red, #e0556a); }
 
 .card {
-  background: var(--bg1); border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.032); border: 1px solid var(--border);
   border-radius: 8px; padding: 14px 16px; margin-bottom: 10px;
 }
 
 .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .card-title {
-  font-size: 13px; font-weight: 600; font-family: var(--mono); color: var(--t1);
+  font-size: 13px; font-weight: 650; font-family: var(--mono); color: var(--t1);
   cursor: pointer;
 }
 .card-title:hover { color: var(--acc2); }
 .card-meta { font-size: 11px; color: var(--t3); margin-top: 2px; }
 .card-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .tag {
-  font-size: 10px; color: var(--t2); background: var(--bg2);
+  font-size: 10px; color: var(--t2); background: rgba(24, 24, 24, 0.54);
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 7px;
   font-family: var(--mono);
 }
@@ -242,22 +242,22 @@ async function onFileSelected(e) {
   font-size: 11px; font-family: var(--mono); color: var(--t2);
   white-space: pre-wrap; word-break: break-all;
   max-height: 400px; overflow-y: auto;
-  background: var(--bg2); padding: 10px; border-radius: 6px;
+  background: rgba(24, 24, 24, 0.54); padding: 10px; border-radius: 7px;
 }
 .loading { font-size: 12px; color: var(--t3); }
 
 .empty { color: var(--t3); font-size: 13px; }
 
 .btn {
-  padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border);
+  padding: 6px 16px; border-radius: 7px; border: 1px solid var(--border);
   cursor: pointer; font-size: 12px; font-weight: 600; font-family: var(--mono);
   transition: all 0.12s;
 }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn:disabled:hover { background: none; color: var(--t2); border-color: var(--border); }
-.btn-primary { background: var(--acc2); color: #fff; border-color: var(--acc2); }
-.btn-primary:hover { opacity: 0.85; }
+.btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(125,168,232,0.3); }
+.btn-primary:hover { background: var(--acc-bg-strong); }
 .btn-ghost { background: none; color: var(--t2); }
-.btn-ghost:hover { background: var(--bg2); color: var(--t1); }
+.btn-ghost:hover { background: var(--bg-100); color: var(--t1); }
 .btn-danger:hover { color: var(--red, #e0556a); border-color: var(--red, #e0556a); }
 </style>

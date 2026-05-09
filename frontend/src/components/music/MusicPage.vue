@@ -321,15 +321,19 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg0);
+  background: transparent;
 }
 
 .music-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 24px 16px;
+  min-height: var(--header-h);
+  padding: 0 20px;
   flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: rgba(24, 24, 24, 0.68);
+  backdrop-filter: blur(18px);
 }
 
 .music-header-left {
@@ -339,8 +343,8 @@ onMounted(() => {
 }
 
 .music-title {
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 650;
   color: var(--t1);
   font-family: var(--sans);
 }
@@ -357,9 +361,9 @@ onMounted(() => {
 }
 
 .music-search {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: rgba(24, 24, 24, 0.66);
+  border: 1px solid var(--border-input);
+  border-radius: 7px;
   color: var(--t1);
   padding: 6px 12px;
   font-size: 13px;
@@ -368,7 +372,8 @@ onMounted(() => {
   transition: border-color 0.15s;
 }
 .music-search:focus {
-  border-color: var(--acc);
+  border-color: rgba(158, 191, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12);
 }
 .music-search::placeholder {
   color: var(--t3);
@@ -380,14 +385,14 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg2);
+  background: rgba(255, 255, 255, 0.035);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--t2);
   cursor: pointer;
   transition: all 0.15s;
 }
-.btn-icon:hover { color: var(--t1); background: var(--bg3); }
+.btn-icon:hover { color: var(--t1); background: var(--bg-100); }
 .btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-icon svg { width: 16px; height: 16px; }
 
@@ -401,23 +406,23 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 16px;
-  background: rgba(255, 45, 85, 0.12);
-  color: #ff2d55;
-  border: 1px solid rgba(255, 45, 85, 0.25);
-  border-radius: 20px;
+  background: var(--acc-bg);
+  color: var(--acc2);
+  border: 1px solid rgba(125, 168, 232, 0.3);
+  border-radius: 7px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
 }
-.btn-play-all:hover { background: rgba(255, 45, 85, 0.22); }
+.btn-play-all:hover { background: var(--acc-bg-strong); }
 .btn-play-all svg { width: 12px; height: 12px; }
 
 /* Table */
 .music-table-wrap {
   flex: 1;
   overflow-y: auto;
-  padding: 0 24px 120px;
+  padding: 18px 24px 120px;
 }
 
 .music-table {
@@ -429,7 +434,7 @@ onMounted(() => {
 .music-table thead th {
   position: sticky;
   top: 0;
-  background: var(--bg0);
+  background: rgba(24, 24, 24, 0.94);
   text-align: left;
   font-size: 11px;
   text-transform: uppercase;
@@ -453,14 +458,14 @@ onMounted(() => {
   transition: background 0.1s;
 }
 .music-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-050);
 }
 .music-table tbody tr.active {
-  background: rgba(255, 45, 85, 0.08);
+  background: var(--acc-bg);
 }
 .music-table tbody tr.active .song-name,
 .music-table tbody tr.active .now-playing {
-  color: #ff2d55;
+  color: var(--acc2);
 }
 
 .music-table td {
@@ -475,7 +480,7 @@ onMounted(() => {
 
 .col-num { text-align: center; }
 .row-num { color: var(--t3); font-size: 12px; }
-.now-playing { color: #ff2d55; }
+.now-playing { color: var(--acc2); }
 .now-playing svg { width: 16px; height: 16px; }
 
 .song-title-cell {
@@ -487,7 +492,7 @@ onMounted(() => {
 .song-thumb {
   width: 36px;
   height: 36px;
-  border-radius: 4px;
+  border-radius: 6px;
   object-fit: cover;
   flex-shrink: 0;
   background: var(--bg2);
@@ -524,7 +529,7 @@ onMounted(() => {
 .tag {
   font-size: 9px;
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: 999px;
   font-weight: 700;
   letter-spacing: 0.3px;
   text-transform: uppercase;
@@ -535,9 +540,9 @@ onMounted(() => {
   border: 1px solid rgba(175, 130, 255, 0.3);
 }
 .tag.lossless {
-  background: rgba(50, 215, 75, 0.12);
-  color: #32d74b;
-  border: 1px solid rgba(50, 215, 75, 0.25);
+  background: var(--ok-bg);
+  color: var(--ok);
+  border: 1px solid rgba(143, 216, 199, 0.25);
 }
 
 .format-badge {
@@ -592,7 +597,7 @@ onMounted(() => {
   width: 20px;
   height: 20px;
   border: 2px solid var(--border);
-  border-top-color: #ff2d55;
+  border-top-color: var(--acc2);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }

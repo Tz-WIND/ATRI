@@ -1,61 +1,82 @@
-/* VS Code / Cursor dark theme variables */
+/* ATRI workbench theme: restrained, dense, OpenCodeUI-inspired. */
 :root {
+  color-scheme: dark;
+
   /* Backgrounds */
-  --bg0: #1e1e1e;
-  --bg1: #252526;
-  --bg2: #2d2d30;
-  --bg3: #3e3e42;
+  --bg0: #181818;
+  --bg1: #1d1d1d;
+  --bg2: #232323;
+  --bg3: #2c2c2c;
+  --bg4: #363636;
+  --bg-000: #181818;
+  --bg-050: rgba(255, 255, 255, 0.035);
+  --bg-100: rgba(255, 255, 255, 0.065);
+  --bg-200: rgba(255, 255, 255, 0.095);
+  --glass: rgba(24, 24, 24, 0.82);
+  --glass-strong: rgba(28, 28, 28, 0.94);
+  --app-bg:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 34%),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 14px),
+    var(--bg0);
 
   /* Borders */
-  --border: #3c3c3c;
-  --border-light: rgba(255, 255, 255, 0.08);
-  --border-input: rgba(255, 255, 255, 0.12);
+  --border: rgba(222, 229, 238, 0.105);
+  --border-light: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(229, 236, 245, 0.18);
+  --border-input: rgba(229, 236, 245, 0.15);
 
   /* Text */
   --t1: #d4d4d4;
-  --t2: #cccccc;
-  --t3: #858585;
+  --t2: #b9bec4;
+  --t3: #858b92;
+  --t4: #656b72;
 
   /* Accent */
-  --acc: #007acc;
-  --acc2: #3794ff;
-  --acc-bg: rgba(0, 122, 204, 0.15);
+  --acc: #7da8e8;
+  --acc2: #9ebfff;
+  --acc1: var(--acc2);
+  --acc-bg: rgba(125, 168, 232, 0.13);
+  --acc-bg-strong: rgba(125, 168, 232, 0.22);
 
   /* Semantic */
-  --ok: #82b8ff;
-  --ok-bg: rgba(130, 184, 255, 0.12);
+  --ok: #8fd8c7;
+  --ok-bg: rgba(143, 216, 199, 0.12);
   --green: var(--ok);
   --green-bg: var(--ok-bg);
-  --red: #f48771;
-  --red-bg: rgba(244, 135, 113, 0.12);
-  --orange: #cca700;
-  --purple: #c586c0;
-  --yellow: #c8903f;
-  --acc1: var(--acc2);
+  --red: #ff8d7f;
+  --red-bg: rgba(255, 141, 127, 0.12);
+  --orange: #d6b76d;
+  --yellow: #d6b76d;
+  --purple: #c7a8ff;
 
-  /* Syntax colors - intentionally avoid green hues */
-  --code-keyword: #c586c0;
-  --code-built-in: #dcdcaa;
-  --code-type: #7fb4ff;
-  --code-literal: #6aa9ff;
-  --code-number: #b8a9ff;
-  --code-string: #ce9178;
-  --code-regexp: #d16969;
-  --code-variable: #9cdcfe;
-  --code-selector: #d7ba7d;
-  --code-comment: #8a8f98;
-  --code-meta: #9b9b9b;
+  /* Syntax colors */
+  --code-keyword: #c7a8ff;
+  --code-built-in: #e3d58d;
+  --code-type: #9dc8ff;
+  --code-literal: #8db8ff;
+  --code-number: #cfb5ff;
+  --code-string: #e5a189;
+  --code-regexp: #ff9b8e;
+  --code-variable: #a4d8ff;
+  --code-selector: #e2c379;
+  --code-comment: #7b8490;
+  --code-meta: #969fa9;
   --code-text: #d4d4d4;
 
   /* Fonts */
-  --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
-  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Cascadia Mono', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  --sans: 'Bahnschrift', 'Aptos', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
 
   /* Layout */
-  --activity-w: 48px;
-  --sidebar-w: 240px;
+  --activity-w: 60px;
+  --sidebar-w: 250px;
   --status-h: 26px;
-  --header-h: 40px;
+  --header-h: 52px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-panel: 0 18px 50px rgba(0, 0, 0, 0.32);
+  --shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.22);
 }
 
 * {
@@ -64,59 +85,88 @@
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   overflow: hidden;
 }
 
 body {
-  background: var(--bg0);
+  background: var(--app-bg);
   color: var(--t1);
   font-family: var(--sans);
   font-size: 13px;
   line-height: 1.5;
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: inherit;
 }
 
 #app {
   height: 100%;
 }
 
-/* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: var(--bg3);
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.13);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: rgba(255, 255, 255, 0.24);
+  background-clip: content-box;
 }
+
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-/* Selection */
 ::selection {
-  background: rgba(0, 122, 204, 0.3);
+  background: rgba(125, 168, 232, 0.32);
   color: inherit;
 }
 
-/* Focus styles */
 :focus-visible {
-  outline: 1px solid var(--acc);
-  outline-offset: -1px;
+  outline: 1px solid var(--acc2);
+  outline-offset: 2px;
 }
 
-/* Transitions */
+input,
+select,
+textarea {
+  caret-color: var(--acc2);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--t4);
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.15s ease;
 }
+
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
@@ -126,21 +176,28 @@ body {
 .slide-leave-active {
   transition: transform 0.2s ease, opacity 0.2s ease;
 }
+
 .slide-enter-from {
   transform: translateX(-10px);
   opacity: 0;
 }
+
 .slide-leave-to {
   transform: translateX(10px);
   opacity: 0;
 }
 
-/* Utility */
 .mono {
   font-family: var(--mono);
 }
 
-/* highlight.js workbench theme */
+.glass-panel {
+  background: var(--glass);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px);
+}
+
 .hljs-keyword,
 .hljs-formula {
   color: var(--code-keyword);
@@ -212,5 +269,5 @@ body {
 
 .hljs-addition {
   color: var(--acc2);
-  background: rgba(55, 148, 255, 0.1);
+  background: rgba(125, 168, 232, 0.1);
 }

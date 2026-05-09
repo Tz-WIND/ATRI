@@ -52,6 +52,7 @@ function handleDeactivate(provider, model) {
 .empty {
   color: var(--t3);
   font-size: 12px;
+  padding: 8px 0;
 }
 
 .model-row {
@@ -59,8 +60,8 @@ function handleDeactivate(provider, model) {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .model-row:last-child { border-bottom: none; }
@@ -69,7 +70,7 @@ function handleDeactivate(provider, model) {
 
 .model-name {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 650;
   font-family: var(--mono);
   color: var(--t1);
   overflow: hidden;
@@ -99,8 +100,8 @@ function handleDeactivate(provider, model) {
 }
 
 .btn {
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 3px 8px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   cursor: pointer;
   font-size: 10px;
@@ -110,12 +111,12 @@ function handleDeactivate(provider, model) {
 }
 
 .btn-remove {
-  background: rgba(248, 81, 73, 0.1);
+  background: var(--red-bg);
   color: var(--red);
-  border-color: rgba(248, 81, 73, 0.25);
+  border-color: rgba(255, 141, 127, 0.25);
 }
 
 .btn-remove:hover {
-  background: rgba(248, 81, 73, 0.2);
+  background: rgba(255, 141, 127, 0.18);
 }
 </style>

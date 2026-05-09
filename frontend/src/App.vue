@@ -165,7 +165,8 @@ onUnmounted(() => {
 .app-shell {
   display: flex;
   height: 100vh;
-  background: var(--bg0);
+  background: var(--app-bg);
+  color: var(--t1);
 }
 
 .app-main {
@@ -173,6 +174,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  padding: 8px 8px 8px 0;
 }
 
 .app-content {
@@ -181,6 +183,11 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  background: rgba(24, 24, 24, 0.72);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px);
 }
 
 .app-content.has-player {
@@ -192,7 +199,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg0);
+  background: var(--app-bg);
   color: var(--t2);
 }
 
@@ -200,6 +207,11 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--glass);
+  box-shadow: var(--shadow-soft);
   font-family: var(--mono);
   font-size: 12px;
 }
@@ -211,6 +223,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   color: var(--acc2);
+  background: var(--acc-bg);
+  border: 1px solid rgba(125, 168, 232, 0.22);
+  border-radius: var(--radius-sm);
 }
 
 .auth-loading-logo svg {

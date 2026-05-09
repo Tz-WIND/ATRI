@@ -128,7 +128,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg0);
+  background: var(--app-bg);
   color: var(--t1);
   padding: 24px;
 }
@@ -139,10 +139,11 @@ onMounted(() => {
   flex-direction: column;
   gap: 12px;
   padding: 24px;
-  background: var(--bg1);
+  background: var(--glass-strong);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24);
+  border-radius: 10px;
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(18px);
 }
 
 .auth-mark {
@@ -152,6 +153,9 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   color: var(--acc2);
+  background: var(--acc-bg);
+  border: 1px solid rgba(125, 168, 232, 0.24);
+  border-radius: 8px;
 }
 
 .auth-mark svg {
@@ -175,8 +179,8 @@ label {
 input {
   height: 34px;
   border: 1px solid var(--border-input);
-  border-radius: 6px;
-  background: var(--bg0);
+  border-radius: 7px;
+  background: rgba(24, 24, 24, 0.66);
   color: var(--t1);
   padding: 0 10px;
   font-family: var(--mono);
@@ -184,8 +188,9 @@ input {
 }
 
 input:focus {
-  outline: 1px solid var(--acc);
-  border-color: var(--acc);
+  outline: none;
+  border-color: rgba(158, 191, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12);
 }
 
 .auth-error {
@@ -196,18 +201,18 @@ input:focus {
 
 button {
   height: 34px;
-  border: 1px solid var(--acc);
-  border-radius: 6px;
-  background: var(--acc);
-  color: white;
+  border: 1px solid rgba(125, 168, 232, 0.3);
+  border-radius: 7px;
+  background: var(--acc-bg);
+  color: var(--acc2);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
 button:hover:not(:disabled) {
-  background: var(--acc2);
-  border-color: var(--acc2);
+  background: var(--acc-bg-strong);
+  border-color: rgba(125, 168, 232, 0.42);
 }
 
 button:disabled {

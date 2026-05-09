@@ -204,10 +204,11 @@ function handleFetchModels() {
   flex-direction: column;
   min-width: 0;
   overflow-y: auto;
+  background: rgba(24, 24, 24, 0.12);
 }
 
 .detail-head {
-  padding: 16px 20px 12px;
+  padding: 16px 18px 13px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -217,8 +218,7 @@ function handleFetchModels() {
 
 .detail-title {
   font-size: 18px;
-  font-weight: 700;
-  font-family: var(--mono);
+  font-weight: 650;
   color: var(--t1);
 }
 
@@ -235,19 +235,17 @@ function handleFetchModels() {
 }
 
 .detail-body {
-  padding: 16px 20px;
+  padding: 17px 18px 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 
 .section-title {
   font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-weight: 650;
+  letter-spacing: 0;
   color: var(--t3);
-  font-family: var(--mono);
   margin-bottom: 10px;
 }
 
@@ -260,15 +258,15 @@ function handleFetchModels() {
   font-size: 12px;
   color: var(--t2);
   margin-bottom: 4px;
-  font-family: var(--mono);
+  font-weight: 600;
 }
 
 .field input,
 .field select {
   width: 100%;
-  background: var(--bg0);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: rgba(24, 24, 24, 0.66);
+  border: 1px solid var(--border-input);
+  border-radius: 7px;
   color: var(--t1);
   padding: 8px 12px;
   font-size: 13px;
@@ -278,7 +276,8 @@ function handleFetchModels() {
 
 .field input:focus,
 .field select:focus {
-  border-color: var(--acc);
+  border-color: rgba(158, 191, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12);
 }
 
 .models-section {
@@ -308,9 +307,9 @@ function handleFetchModels() {
 
 .search-input {
   width: 140px;
-  background: var(--bg0);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: rgba(24, 24, 24, 0.66);
+  border: 1px solid var(--border-input);
+  border-radius: 7px;
   padding: 5px 10px;
   color: var(--t1);
   font-size: 12px;
@@ -318,7 +317,10 @@ function handleFetchModels() {
   outline: none;
 }
 
-.search-input:focus { border-color: var(--acc); }
+.search-input:focus {
+  border-color: rgba(158, 191, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12);
+}
 
 .models-list {
   margin-top: 10px;
@@ -334,9 +336,9 @@ function handleFetchModels() {
 .models-error {
   margin-top: 8px;
   padding: 8px 10px;
-  border: 1px solid rgba(248, 81, 73, 0.25);
-  border-radius: 6px;
-  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(255, 141, 127, 0.25);
+  border-radius: 7px;
+  background: var(--red-bg);
   color: var(--red);
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -347,8 +349,8 @@ function handleFetchModels() {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .model-row:last-child { border-bottom: none; }
@@ -357,7 +359,7 @@ function handleFetchModels() {
 
 .model-name {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 650;
   font-family: var(--mono);
   color: var(--t1);
   overflow: hidden;
@@ -383,7 +385,7 @@ function handleFetchModels() {
 
 .btn {
   padding: 4px 12px;
-  border-radius: 6px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   cursor: pointer;
   font-size: 11px;
@@ -400,18 +402,18 @@ function handleFetchModels() {
 .btn-primary {
   background: var(--acc-bg);
   color: var(--acc2);
-  border-color: rgba(55, 148, 255, 0.3);
+  border-color: rgba(125, 168, 232, 0.3);
 }
 
-.btn-primary:hover { background: rgba(55, 148, 255, 0.22); }
+.btn-primary:hover { background: var(--acc-bg-strong); }
 
 .btn-danger {
-  background: rgba(248, 81, 73, 0.1);
+  background: var(--red-bg);
   color: var(--red);
-  border-color: rgba(248, 81, 73, 0.25);
+  border-color: rgba(255, 141, 127, 0.25);
   font-size: 10px;
   padding: 2px 6px;
 }
 
-.btn-danger:hover { background: rgba(248, 81, 73, 0.2); }
+.btn-danger:hover { background: rgba(255, 141, 127, 0.18); }
 </style>

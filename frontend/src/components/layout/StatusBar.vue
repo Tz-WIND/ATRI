@@ -49,7 +49,7 @@ const sessionCount = computed(() => sessions.value.length || null)
 .status-bar {
   height: var(--status-h);
   background: var(--acc);
-  color: #fff;
+  color: rgba(24, 24, 24, 0.86);
   display: flex;
   align-items: center;
   justify-content: space-between;

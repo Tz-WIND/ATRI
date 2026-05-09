@@ -440,7 +440,7 @@ function normalizeToolName(value) {
 .tool-spinner {
   width: 13px;
   height: 13px;
-  border: 1px solid rgba(55, 148, 255, 0.22);
+  border: 1px solid rgba(125, 168, 232, 0.22);
   border-top-color: var(--acc2);
   border-radius: 50%;
   animation: tool-spin 0.9s linear infinite;
@@ -621,7 +621,7 @@ function normalizeToolName(value) {
   gap: 8px;
   margin-bottom: 8px;
   padding-left: 10px;
-  border-left: 1px solid rgba(55, 148, 255, 0.24);
+  border-left: 1px solid rgba(125, 168, 232, 0.24);
   color: var(--t2);
   font-family: var(--mono);
   font-size: 12px;

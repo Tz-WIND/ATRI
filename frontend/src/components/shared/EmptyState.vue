@@ -56,7 +56,7 @@ defineEmits(['action'])
 
 .btn {
   padding: 5px 14px;
-  border-radius: 6px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   cursor: pointer;
   font-size: 12px;
@@ -69,10 +69,10 @@ defineEmits(['action'])
 .btn-primary {
   background: var(--acc-bg);
   color: var(--acc2);
-  border-color: rgba(0, 122, 204, 0.3);
+  border-color: rgba(125, 168, 232, 0.3);
 }
 
 .btn-primary:hover {
-  background: rgba(0, 122, 204, 0.22);
+  background: var(--acc-bg-strong);
 }
 </style>

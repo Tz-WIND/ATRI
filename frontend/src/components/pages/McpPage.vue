@@ -465,7 +465,7 @@ function resourceLabel(resource) {
 
 <style scoped>
 .page { display: flex; flex-direction: column; height: 100%; }
-.page-body { flex: 1; overflow-y: auto; padding: 20px; }
+.page-body { flex: 1; overflow-y: auto; padding: 22px 24px; }
 
 .summary-strip {
   display: grid;
@@ -479,7 +479,7 @@ function resourceLabel(resource) {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
-  background: var(--bg1);
+  background: rgba(255, 255, 255, 0.032);
 }
 
 .metric-value {
@@ -499,12 +499,11 @@ function resourceLabel(resource) {
 
 .form-section { margin-bottom: 4px; }
 .form-section h3 {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--t3);
+  font-size: 14px;
+  letter-spacing: 0;
+  color: var(--t1);
   margin-bottom: 12px;
-  font-family: var(--mono);
+  font-weight: 650;
 }
 
 .field { margin-bottom: 12px; min-width: 0; }
@@ -518,9 +517,9 @@ function resourceLabel(resource) {
 .field input,
 .field select {
   width: 100%;
-  background: var(--bg0);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: rgba(24, 24, 24, 0.66);
+  border: 1px solid var(--border-input);
+  border-radius: 7px;
   color: var(--t1);
   padding: 8px 12px;
   font-size: 13px;
@@ -528,7 +527,10 @@ function resourceLabel(resource) {
   outline: none;
 }
 .field input:focus,
-.field select:focus { border-color: var(--acc); }
+.field select:focus {
+  border-color: rgba(158, 191, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12);
+}
 
 .inline-fields {
   display: grid;
@@ -537,7 +539,7 @@ function resourceLabel(resource) {
 }
 
 .card {
-  background: var(--bg1);
+  background: rgba(255, 255, 255, 0.032);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px 16px;
@@ -574,7 +576,7 @@ function resourceLabel(resource) {
   font-family: var(--mono);
 }
 .inventory span {
-  background: var(--bg0);
+  background: rgba(24, 24, 24, 0.54);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 2px 8px;
@@ -594,7 +596,7 @@ function resourceLabel(resource) {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
   gap: 8px;
   align-items: center;
-  background: var(--bg0);
+  background: rgba(24, 24, 24, 0.54);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 7px 9px;
@@ -612,7 +614,7 @@ function resourceLabel(resource) {
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   max-width: 100%;
-  background: var(--bg0);
+  background: rgba(24, 24, 24, 0.54);
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--t2);
@@ -626,7 +628,7 @@ function resourceLabel(resource) {
 
 .notice {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 7px;
   padding: 9px 11px;
   margin-bottom: 12px;
   font-size: 12px;
@@ -638,7 +640,7 @@ function resourceLabel(resource) {
 .notice.error {
   color: var(--red);
   background: var(--red-bg);
-  border-color: rgba(248,81,73,0.28);
+  border-color: rgba(255,141,127,0.28);
 }
 .notice.ok {
   color: var(--ok);
@@ -655,7 +657,7 @@ function resourceLabel(resource) {
 
 .btn {
   padding: 6px 14px;
-  border-radius: 6px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   cursor: pointer;
   font-size: 12px;
@@ -664,11 +666,11 @@ function resourceLabel(resource) {
   transition: all 0.12s;
 }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(55,148,255,0.3); }
-.btn-primary:hover:not(:disabled) { background: rgba(55,148,255,0.22); }
+.btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(125,168,232,0.3); }
+.btn-primary:hover:not(:disabled) { background: var(--acc-bg-strong); }
 .btn-ghost { background: none; color: var(--t2); }
-.btn-ghost:hover:not(:disabled) { background: var(--bg2); color: var(--t1); }
-.btn-danger { background: none; color: var(--red); border-color: rgba(248,81,73,0.25); }
+.btn-ghost:hover:not(:disabled) { background: var(--bg-100); color: var(--t1); }
+.btn-danger { background: none; color: var(--red); border-color: rgba(255,141,127,0.25); }
 .btn-danger:hover { background: var(--red-bg); }
 
 @media (max-width: 720px) {

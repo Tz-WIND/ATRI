@@ -214,7 +214,7 @@ async function handleMarkdownClick(event) {
 
 <style scoped>
 .message {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
   max-width: 900px;
   margin-left: auto;
   margin-right: auto;
@@ -276,9 +276,9 @@ async function handleMarkdownClick(event) {
   gap: 12px;
   max-width: 100%;
   min-height: 42px;
-  padding: 8px 12px;
-  color: #f0f0f0;
-  background: rgba(37, 37, 38, 0.86);
+  padding: 9px 12px;
+  color: var(--t1);
+  background: rgba(255, 255, 255, 0.055);
   border: 1px solid var(--border-input);
   border-radius: 8px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
@@ -309,9 +309,9 @@ async function handleMarkdownClick(event) {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
-  background: rgba(15, 15, 15, 0.5);
+  background: rgba(24, 24, 24, 0.5);
 }
 
 .user-image img {
@@ -398,11 +398,11 @@ async function handleMarkdownClick(event) {
 .markdown-body :deep(a) { color: var(--acc2); }
 
 .markdown-body :deep(blockquote) {
-  border-left: 3px solid var(--acc);
+  border-left: 2px solid var(--acc);
   padding: 4px 12px;
   margin: 8px 0;
   color: var(--t2);
-  background: rgba(55, 148, 255, 0.04);
+  background: var(--acc-bg);
   border-radius: 0 4px 4px 0;
 }
 
@@ -432,7 +432,7 @@ async function handleMarkdownClick(event) {
 
 .markdown-body :deep(pre) {
   margin: 8px 0;
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--border);
 }
@@ -456,7 +456,7 @@ async function handleMarkdownClick(event) {
   justify-content: space-between;
   align-items: center;
   padding: 5px 12px;
-  background: var(--bg2);
+  background: rgba(255, 255, 255, 0.045);
   font-size: 11px;
   font-family: var(--mono);
   color: var(--t3);
@@ -468,7 +468,7 @@ async function handleMarkdownClick(event) {
   border: 1px solid var(--border);
   color: var(--t3);
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 10px;
   font-family: var(--mono);
@@ -476,6 +476,6 @@ async function handleMarkdownClick(event) {
 
 .markdown-body :deep(.btn-copy:hover) {
   color: var(--t1);
-  background: var(--bg3);
+  background: var(--bg-100);
 }
 </style>

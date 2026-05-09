@@ -5,13 +5,25 @@
       class="full-player"
       @click.self="showFullPlayer = false"
     >
-      <!-- Blurred background -->
-      <div class="fp-bg">
+      <!-- Cover-driven glass background -->
+      <div
+        class="fp-bg"
+        :class="{ 'no-cover': !currentSong?.has_cover }"
+        aria-hidden="true"
+      >
         <img
           v-if="currentSong?.has_cover"
           :src="coverUrl(currentSong.id)"
-          class="fp-bg-img"
+          class="fp-bg-img fp-bg-img-soft"
+          alt=""
         >
+        <img
+          v-if="currentSong?.has_cover"
+          :src="coverUrl(currentSong.id)"
+          class="fp-bg-img fp-bg-img-main"
+          alt=""
+        >
+        <div class="fp-bg-frost" />
       </div>
       <div class="fp-overlay" />
 
@@ -352,23 +364,90 @@ function seekToLyric(time) {
 
 .fp-bg {
   position: absolute;
-  inset: -40px;
+  inset: 0;
   z-index: 0;
   overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(24, 24, 24, 0.18), rgba(24, 24, 24, 0.76)),
+    var(--app-bg);
 }
+
+.fp-bg.no-cover {
+  background:
+    linear-gradient(180deg, rgba(24, 24, 24, 0.96), rgba(24, 24, 24, 0.98)),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 16px),
+    var(--bg0);
+}
+
 .fp-bg-img {
+  position: absolute;
+  inset: -12%;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: blur(60px) brightness(0.35) saturate(150%);
-  transform: scale(1.2);
+  transform-origin: center;
+  user-select: none;
+  pointer-events: none;
+}
+
+.fp-bg-img-soft {
+  inset: -22%;
+  width: 144%;
+  height: 144%;
+  filter: blur(86px) saturate(1.9) brightness(0.84) contrast(1.08);
+  opacity: 0.92;
+  transform: scale(1.08);
+}
+
+.fp-bg-img-main {
+  inset: -7%;
+  width: 114%;
+  height: 114%;
+  filter: blur(34px) saturate(1.36) brightness(0.48) contrast(1.08);
+  opacity: 0.54;
+  transform: scale(1.14);
+  mix-blend-mode: screen;
+}
+
+.fp-bg::before,
+.fp-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.fp-bg::before {
+  background:
+    linear-gradient(90deg, rgba(24, 24, 24, 0.72) 0%, rgba(24, 24, 24, 0.16) 42%, rgba(24, 24, 24, 0.64) 100%),
+    linear-gradient(180deg, rgba(24, 24, 24, 0.28) 0%, rgba(24, 24, 24, 0.12) 38%, rgba(24, 24, 24, 0.68) 100%);
+}
+
+.fp-bg::after {
+  opacity: 0.18;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 3px 3px;
+  mix-blend-mode: overlay;
+}
+
+.fp-bg-frost {
+  position: absolute;
+  inset: 0;
+  background: rgba(24, 24, 24, 0.22);
+  backdrop-filter: blur(24px) saturate(1.28);
+  -webkit-backdrop-filter: blur(24px) saturate(1.28);
 }
 
 .fp-overlay {
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: rgba(0, 0, 0, 0.55);
+  background:
+    linear-gradient(180deg, rgba(24, 24, 24, 0.34), rgba(24, 24, 24, 0.72)),
+    radial-gradient(ellipse at 50% 24%, rgba(255, 255, 255, 0.14), transparent 44%);
+  box-shadow: inset 0 0 180px rgba(0, 0, 0, 0.82);
 }
 
 .fp-close {
@@ -385,12 +464,12 @@ function seekToLyric(time) {
   background: rgba(255, 255, 255, 0.1);
   border: none;
   border-radius: 12px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(212, 212, 212, 0.62);
   cursor: pointer;
   backdrop-filter: blur(10px);
   transition: all 0.15s;
 }
-.fp-close:hover { background: rgba(255, 255, 255, 0.2); color: white; }
+.fp-close:hover { background: rgba(255, 255, 255, 0.2); color: var(--t1); }
 .fp-close svg { width: 20px; height: 20px; }
 
 .fp-content {
@@ -446,18 +525,18 @@ function seekToLyric(time) {
 .fp-title {
   font-size: 20px;
   font-weight: 700;
-  color: white;
+  color: var(--t1);
   margin-bottom: 4px;
   line-height: 1.3;
 }
 .fp-artist {
   font-size: 14px;
-  color: rgba(255,255,255,0.6);
+  color: rgba(212, 212, 212, 0.62);
   margin-bottom: 2px;
 }
 .fp-album {
   font-size: 12px;
-  color: rgba(255,255,255,0.4);
+  color: rgba(212, 212, 212, 0.42);
 }
 
 .fp-quality-row {
@@ -471,12 +550,12 @@ function seekToLyric(time) {
   font-size: 11px;
   font-weight: 600;
   font-family: var(--mono);
-  color: rgba(255,255,255,0.5);
+  color: rgba(212, 212, 212, 0.5);
 }
 .fp-spec {
   font-size: 10px;
   font-family: var(--mono);
-  color: rgba(255,255,255,0.35);
+  color: rgba(212, 212, 212, 0.35);
 }
 .fp-hires-badge {
   font-size: 9px;
@@ -514,7 +593,7 @@ function seekToLyric(time) {
 .fp-progress-track:hover { height: 6px; margin-top: -1px; }
 .fp-progress-fill {
   height: 100%;
-  background: #ff2d55;
+  background: var(--acc2);
   border-radius: 2px;
   position: relative;
   transition: width 0.3s linear;
@@ -540,7 +619,7 @@ function seekToLyric(time) {
   margin-top: 6px;
   font-size: 11px;
   font-family: var(--mono);
-  color: rgba(255,255,255,0.4);
+  color: rgba(212, 212, 212, 0.42);
 }
 
 /* Controls */
@@ -557,12 +636,12 @@ function seekToLyric(time) {
   justify-content: center;
   background: none;
   border: none;
-  color: rgba(255,255,255,0.8);
+  color: rgba(212, 212, 212, 0.82);
   cursor: pointer;
   border-radius: 50%;
   transition: all 0.12s;
 }
-.fp-ctrl:hover { color: white; background: rgba(255,255,255,0.08); }
+.fp-ctrl:hover { color: var(--t1); background: rgba(255,255,255,0.08); }
 .fp-ctrl svg { width: 24px; height: 24px; }
 
 .fp-mode {
@@ -570,15 +649,15 @@ function seekToLyric(time) {
   height: 36px;
 }
 .fp-mode svg { width: 18px; height: 18px; }
-.fp-mode.active { color: #ff2d55; }
+.fp-mode.active { color: var(--acc2); }
 
 .fp-play {
   width: 56px;
   height: 56px;
-  background: rgba(255, 45, 85, 0.2);
-  color: #ff2d55;
+  background: var(--acc-bg);
+  color: var(--acc2);
 }
-.fp-play:hover { background: rgba(255, 45, 85, 0.35); color: #ff2d55; }
+.fp-play:hover { background: var(--acc-bg-strong); color: var(--acc2); }
 .fp-play svg { width: 28px; height: 28px; }
 
 /* Volume */
@@ -592,7 +671,7 @@ function seekToLyric(time) {
 .vol-icon {
   width: 16px;
   height: 16px;
-  color: rgba(255,255,255,0.4);
+  color: rgba(212, 212, 212, 0.42);
   flex-shrink: 0;
 }
 .fp-vol-slider {
@@ -638,23 +717,23 @@ function seekToLyric(time) {
 .lyric-line {
   font-size: 22px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(212, 212, 212, 0.25);
   line-height: 1.5;
   cursor: pointer;
   transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   padding: 4px 0;
 }
 .lyric-line:hover {
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(212, 212, 212, 0.45);
 }
 .lyric-line.active {
-  color: white;
+  color: var(--t1);
   font-size: 26px;
   transform: scale(1.02);
   transform-origin: left center;
 }
 .lyric-line.past {
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(212, 212, 212, 0.35);
 }
 
 .lyrics-empty {
@@ -664,7 +743,7 @@ function seekToLyric(time) {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(212, 212, 212, 0.25);
 }
 .lyrics-empty svg { width: 48px; height: 48px; }
 .lyrics-empty p { font-size: 14px; }

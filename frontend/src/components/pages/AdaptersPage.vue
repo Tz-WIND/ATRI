@@ -109,12 +109,19 @@ async function save() {
 
 <style scoped>
 .page { display: flex; flex-direction: column; height: 100%; }
-.page-body { flex: 1; overflow-y: auto; padding: 20px; }
+.page-body { flex: 1; overflow-y: auto; padding: 22px 24px; }
 
-.form-section { margin-bottom: 24px; }
+.form-section {
+  max-width: 820px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.032);
+  padding: 16px;
+}
 .form-section h3 {
-  font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
-  color: var(--t3); margin-bottom: 12px; font-family: var(--mono);
+  font-size: 14px; letter-spacing: 0;
+  color: var(--t1); margin-bottom: 6px; font-weight: 650;
 }
 
 .desc { font-size: 13px; color: var(--t2); margin-bottom: 12px; }
@@ -122,11 +129,11 @@ async function save() {
 .field { margin-bottom: 12px; }
 .field label { display: block; font-size: 12px; color: var(--t2); margin-bottom: 4px; font-family: var(--mono); }
 .field input, .field select {
-  width: 100%; background: var(--bg0); border: 1px solid var(--border);
-  border-radius: 6px; color: var(--t1); padding: 8px 12px; font-size: 13px;
+  width: 100%; background: rgba(24, 24, 24, 0.66); border: 1px solid var(--border-input);
+  border-radius: 7px; color: var(--t1); padding: 8px 12px; font-size: 13px;
   font-family: var(--mono); outline: none;
 }
-.field input:focus, .field select:focus { border-color: var(--acc); }
+.field input:focus, .field select:focus { border-color: rgba(158, 191, 255, 0.5); box-shadow: 0 0 0 1px rgba(158, 191, 255, 0.12); }
 
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
@@ -138,6 +145,6 @@ async function save() {
   cursor: pointer; font-size: 12px; font-weight: 600; font-family: var(--mono);
   transition: all 0.12s;
 }
-.btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(55,148,255,0.3); }
-.btn-primary:hover { background: rgba(55,148,255,0.22); }
+.btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(125,168,232,0.3); }
+.btn-primary:hover { background: var(--acc-bg-strong); }
 </style>
