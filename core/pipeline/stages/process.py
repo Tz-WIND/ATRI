@@ -609,9 +609,9 @@ class _RuntimeTurnRecorder:
         self.turn_id = self._start_turn()
         self.tool_events: list[dict] = []
         self.pending_futures: list[concurrent.futures.Future[Any]] = []
-        self.thinking_done_sent = False
         self.thinking_content_parts: list[str] = []
         self.thinking_item_id: str | None = None
+        self._thinking_finalized = False
         self.response_started = False
         self.response_item_id: str | None = None
         self.response_content_parts: list[str] = []
@@ -805,14 +805,15 @@ class _RuntimeTurnRecorder:
         )
 
     def mark_thinking_done(self) -> None:
-        if self.thinking_done_sent:
+        current_item = self.thinking_item_id
+        if current_item is None and not self.thinking_content_parts:
             return
-        self.thinking_done_sent = True
-        if self.thinking_item_id is not None:
+        if current_item is not None:
             self.finish_item(
-                self.thinking_item_id,
+                current_item,
                 detail="".join(self.thinking_content_parts),
             )
+            self._thinking_finalized = True
         self.broadcast_sync(
             self.record_event(
                 "thinking_done",
@@ -820,12 +821,14 @@ class _RuntimeTurnRecorder:
                     "type": "thinking_done",
                     "session_id": self.session_id,
                 },
-                item_id=self.thinking_item_id,
+                item_id=current_item,
             )
         )
+        self.thinking_item_id = None
+        self.thinking_content_parts = []
 
     def on_thinking_done(self, full_content: str) -> None:
-        if full_content and not self.thinking_content_parts:
+        if full_content and not self.thinking_content_parts and not self._thinking_finalized:
             if self.thinking_item_id is None:
                 self.thinking_item_id = self.create_item(
                     kind="agent_reasoning",

@@ -301,7 +301,12 @@ export function useChat() {
       if (m.role === 'user' && m.content) {
         const parsed = parseUserContent(m.content)
         addMessage('user', parsed.text, false, { attachments: parsed.attachments })
-        addRuntimeThinkingForNextTurn()
+        // Tool-result user messages are continuations of the current turn,
+        // not new user requests -- skip inserting runtime thinking here.
+        const isToolResult = Array.isArray(m.content) && m.content.some(part => part?.type === 'tool_result')
+        if (!isToolResult) {
+          addRuntimeThinkingForNextTurn()
+        }
       } else if (m.role === 'assistant' && m.content) {
         addMessage('assistant', m.content, true)
       } else if (m.role === 'tool') {
