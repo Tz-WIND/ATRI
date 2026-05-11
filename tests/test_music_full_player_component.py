@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 COMPONENT = (
     Path(__file__).resolve().parents[1]
     / "frontend"
