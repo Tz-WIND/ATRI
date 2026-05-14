@@ -120,36 +120,184 @@
           </button>
         </div>
 
-        <button
+        <div
+          class="track-lane-spacer"
+          aria-hidden="true"
+        />
+
+        <template
           v-for="track in tracks"
           :key="track.id"
-          :class="['track-row', { active: activeTrack?.id === track.id }]"
-          @click="selectTrack(track.id)"
         >
-          <span
-            class="track-color"
-            :style="{ background: track.color }"
-          />
-          <span class="track-main">
-            <strong>{{ track.name }}</strong>
-            <small>{{ track.clips?.length || 0 }} clips / {{ track.notes.length }} notes</small>
-          </span>
-          <span class="track-buttons">
+          <div
+            :class="['track-row', { active: activeTrack?.id === track.id }]"
+            role="button"
+            tabindex="0"
+            @click="selectTrack(track.id)"
+            @keydown="onTrackRowKeydown($event, track.id)"
+          >
+            <span
+              class="track-color"
+              :style="{ background: track.color }"
+            />
+            <span class="track-main">
+              <span class="track-title-line">
+                <strong>{{ track.name }}</strong>
+                <small>{{ track.clips?.length || 0 }} clips / {{ track.notes.length }} notes</small>
+              </span>
+              <span
+                class="track-plugin-bar"
+                @click.stop
+              >
+                <select
+                  class="track-plugin-select"
+                  :value="pluginSlotValue(track, 'instrument')"
+                  :title="pluginSlotLabel(track, 'instrument')"
+                  @change="onPluginSelect(track, 'instrument', $event.target.value)"
+                >
+                  <option value="builtin::ATRI Basic Synth">
+                    ATRI Basic Synth
+                  </option>
+                  <option
+                    v-if="selectedPluginMissing(track, 'instrument')"
+                    :value="pluginSlotValue(track, 'instrument')"
+                  >
+                    {{ pluginSlot(track, 'instrument').name }}
+                  </option>
+                  <option
+                    v-for="plugin in pluginOptions.vst3"
+                    :key="`track-vst3-${track.id}-${plugin.path}`"
+                    :value="`vst3::${plugin.path}`"
+                  >
+                    {{ plugin.name }}
+                  </option>
+                  <option
+                    v-for="plugin in pluginOptions.vst2"
+                    :key="`track-vst2-${track.id}-${plugin.path}`"
+                    :value="`vst2::${plugin.path}`"
+                    disabled
+                  >
+                    {{ plugin.name }} (VST2)
+                  </option>
+                </select>
+                <button
+                  :class="['track-plugin-open', { active: isPluginEditorOpen(track.id) }]"
+                  :title="isPluginEditorOpen(track.id) ? 'Close VST instance' : 'Open VST instance'"
+                  @click.stop="togglePluginEditor(track)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                  ><path d="M4 7h10" /><path d="M18 7h2" /><path d="M4 17h2" /><path d="M10 17h10" /><circle
+                    cx="16"
+                    cy="7"
+                    r="2"
+                  /><circle
+                    cx="8"
+                    cy="17"
+                    r="2"
+                  /></svg>
+                </button>
+              </span>
+            </span>
+            <span class="track-buttons">
+              <button
+                :class="['track-flag', { on: track.mute }]"
+                title="Mute"
+                @click.stop="updateTrack(track.id, { mute: !track.mute })"
+              >M</button>
+              <button
+                :class="['track-flag', { on: track.solo }]"
+                title="Solo"
+                @click.stop="updateTrack(track.id, { solo: !track.solo })"
+              >S</button>
+            </span>
+          </div>
+        </template>
+
+        <div
+          v-if="pluginEditorTrack"
+          class="track-plugin-panel"
+        >
+          <div class="plugin-panel-head">
+            <div>
+              <span>Instance</span>
+              <strong>{{ pluginEditorTrack.name }}</strong>
+            </div>
             <button
-              :class="['track-flag', { on: track.mute }]"
-              title="Mute"
-              @click.stop="updateTrack(track.id, { mute: !track.mute })"
-            >M</button>
+              class="mini-btn"
+              title="Close instance"
+              @click="closePluginEditor"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              ><path d="M18 6 6 18M6 6l12 12" /></svg>
+            </button>
+          </div>
+          <div class="plugin-instance-name">
+            {{ pluginSlot(pluginEditorTrack, 'instrument').name }}
+          </div>
+          <dl class="plugin-instance-meta">
+            <div>
+              <dt>Format</dt>
+              <dd>{{ pluginSlotFormat(pluginEditorTrack, 'instrument') }}</dd>
+            </div>
+            <div>
+              <dt>Vendor</dt>
+              <dd>{{ pluginSlot(pluginEditorTrack, 'instrument').vendor || 'Internal' }}</dd>
+            </div>
+            <div>
+              <dt>Category</dt>
+              <dd>{{ pluginSlot(pluginEditorTrack, 'instrument').category || 'Instrument' }}</dd>
+            </div>
+            <div>
+              <dt>Host</dt>
+              <dd>{{ host.running ? 'Loaded' : 'Offline' }}</dd>
+            </div>
+          </dl>
+          <div
+            v-if="pluginSlot(pluginEditorTrack, 'instrument').path"
+            class="plugin-instance-path mono"
+          >
+            {{ pluginSlot(pluginEditorTrack, 'instrument').path }}
+          </div>
+          <div class="plugin-instance-actions">
             <button
-              :class="['track-flag', { on: track.solo }]"
-              title="Solo"
-              @click.stop="updateTrack(track.id, { solo: !track.solo })"
-            >S</button>
-          </span>
-        </button>
+              class="mini-btn text"
+              :disabled="pluginsLoading"
+              @click="loadPlugins()"
+            >
+              Scan
+            </button>
+            <button
+              class="mini-btn text"
+              :disabled="!host.running"
+              @click="reloadPluginInstance(pluginEditorTrack)"
+            >
+              Reload
+            </button>
+            <button
+              class="mini-btn text"
+              :disabled="pluginSlot(pluginEditorTrack, 'instrument').type === 'builtin'"
+              @click="onPluginSelect(pluginEditorTrack, 'instrument', 'builtin::ATRI Basic Synth')"
+            >
+              Basic
+            </button>
+          </div>
+        </div>
       </aside>
 
-      <section class="editor-stack">
+      <section
+        ref="editorStack"
+        class="editor-stack"
+        :style="editorStackStyle"
+      >
         <div class="arrangement">
           <div class="arrangement-toolbar">
             <div>
@@ -213,8 +361,18 @@
 
         <div
           v-if="pianoVisible && activeMidiClip"
+          ref="pianoPanel"
           class="piano-panel"
         >
+          <div
+            class="piano-resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            title="Resize piano roll"
+            @pointerdown="startPianoResize"
+          >
+            <span />
+          </div>
           <div class="piano-head">
             <div>
               <span>Piano Roll</span>
@@ -418,6 +576,12 @@
                     Empty
                   </option>
                   <option
+                    v-if="selectedPluginMissing(track, slot.id)"
+                    :value="pluginSlotValue(track, slot.id)"
+                  >
+                    {{ pluginSlot(track, slot.id).name }}
+                  </option>
+                  <option
                     v-for="plugin in pluginOptions.vst3"
                     :key="`${slot.id}-vst3-${plugin.path}`"
                     :value="`vst3::${plugin.path}`"
@@ -481,12 +645,15 @@ const {
 
 const arrangementWrap = ref(null)
 const arrangementCanvas = ref(null)
+const editorStack = ref(null)
+const pianoPanel = ref(null)
 const pianoWrap = ref(null)
 const pianoCanvas = ref(null)
 
 const pxPerBeat = 56
 const arrangementRulerH = 30
-const arrangementTrackH = 62
+const arrangementToolbarH = 34
+const arrangementTrackH = 72
 const pianoKeyW = 76
 const pianoRowH = 12
 const minPitch = 36
@@ -501,7 +668,9 @@ const draftNote = ref(null)
 const selectionBox = ref(null)
 const activeClipId = ref(null)
 const pianoVisible = ref(false)
+const pianoPanelHeight = ref(null)
 const inspectorVisible = ref(true)
+const pluginEditor = ref({ trackId: null })
 const rackSlots = [
   { id: 'instrument', label: 'Instrument' },
   { id: 'insert_1', label: 'Insert 1' },
@@ -514,9 +683,12 @@ let resizeObserver = null
 let raf = 0
 let lastFrame = 0
 let pianoDrag = null
+let pianoResizeDrag = null
 let arrangementDrag = null
 
 const snapStep = 0.25
+const minArrangementPanelHeight = arrangementToolbarH + arrangementRulerH
+const minPianoPanelHeight = 140
 
 const tempo = computed(() => Number(project.value?.tempo || 120))
 const meterBeats = computed(() => Number(project.value?.time_signature?.[0] || 4))
@@ -533,6 +705,15 @@ const activeMidiClip = computed(() => {
     }
   }
   return null
+})
+const pluginEditorTrack = computed(() => (
+  tracks.value.find(track => track.id === pluginEditor.value.trackId) || null
+))
+const editorStackStyle = computed(() => {
+  if (!pianoVisible.value || !activeMidiClip.value || !pianoPanelHeight.value) return {}
+  return {
+    gridTemplateRows: `minmax(${minArrangementPanelHeight}px, 1fr) ${pianoPanelHeight.value}px`,
+  }
 })
 const positionLabel = computed(() => {
   const beats = Math.max(0, visualPositionBeats.value)
@@ -976,6 +1157,61 @@ function unbindPianoDrag() {
   window.removeEventListener('pointerup', onPianoPointerUp)
 }
 
+function currentPianoPanelHeight() {
+  const panelHeight = pianoPanel.value?.getBoundingClientRect?.().height
+  if (panelHeight) return clampPianoPanelHeight(panelHeight)
+  const stackHeight = editorStack.value?.clientHeight || 0
+  return clampPianoPanelHeight(stackHeight * 0.42)
+}
+
+function clampPianoPanelHeight(height) {
+  const stackHeight = editorStack.value?.clientHeight || 0
+  if (!stackHeight) {
+    return Math.round(Math.max(minPianoPanelHeight, Number(height || 0)))
+  }
+  const maxHeight = Math.max(1, stackHeight - minArrangementPanelHeight)
+  const minHeight = Math.min(minPianoPanelHeight, maxHeight)
+  return Math.round(clamp(Number(height || minHeight), minHeight, maxHeight))
+}
+
+function startPianoResize(event) {
+  event.preventDefault()
+  event.stopPropagation()
+  const startHeight = currentPianoPanelHeight()
+  pianoPanelHeight.value = startHeight
+  pianoResizeDrag = {
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    startHeight,
+  }
+  bindPianoResize()
+}
+
+function bindPianoResize() {
+  window.addEventListener('pointermove', onPianoResizeMove)
+  window.addEventListener('pointerup', onPianoResizeEnd)
+}
+
+function unbindPianoResize() {
+  window.removeEventListener('pointermove', onPianoResizeMove)
+  window.removeEventListener('pointerup', onPianoResizeEnd)
+}
+
+function onPianoResizeMove(event) {
+  if (!pianoResizeDrag) return
+  event.preventDefault()
+  const deltaY = event.clientY - pianoResizeDrag.startY
+  pianoPanelHeight.value = clampPianoPanelHeight(pianoResizeDrag.startHeight - deltaY)
+  drawAll()
+}
+
+function onPianoResizeEnd() {
+  if (!pianoResizeDrag) return
+  pianoResizeDrag = null
+  unbindPianoResize()
+  nextTick(drawAll)
+}
+
 function onPianoPointerMove(event) {
   if (!pianoDrag) return
   const point = pianoPoint(event)
@@ -1174,6 +1410,21 @@ async function deleteSelectedNotes() {
   await persistActiveClipNotes(remaining)
 }
 
+function isInteractiveTarget(event) {
+  const target = event.target
+  const tag = String(target?.tagName || '').toLowerCase()
+  return ['input', 'textarea', 'select', 'button', 'a'].includes(tag)
+    || Boolean(target?.closest?.('input, textarea, select, button, a'))
+}
+
+function onTrackRowKeydown(event, trackId) {
+  if (isInteractiveTarget(event)) return
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    selectTrack(trackId)
+  }
+}
+
 function onStudioKeydown(event) {
   const tag = String(event.target?.tagName || '').toLowerCase()
   if (['input', 'textarea', 'select', 'button'].includes(tag)) return
@@ -1234,7 +1485,24 @@ function closePiano() {
   selectedNoteIds.value = new Set()
   draftNote.value = null
   selectionBox.value = null
+  pianoResizeDrag = null
+  unbindPianoResize()
   drawAll()
+}
+
+function isPluginEditorOpen(trackId) {
+  return pluginEditor.value.trackId === trackId
+}
+
+function togglePluginEditor(track) {
+  selectTrack(track.id)
+  pluginEditor.value = isPluginEditorOpen(track.id)
+    ? { trackId: null }
+    : { trackId: track.id }
+}
+
+function closePluginEditor() {
+  pluginEditor.value = { trackId: null }
 }
 
 function pluginSlot(track, slotId = 'instrument') {
@@ -1260,6 +1528,21 @@ function pluginSlotValue(track, slotId = 'instrument') {
   if (slot.type === 'vst2' && slot.path) return `vst2::${slot.path}`
   if (slot.type === 'empty') return 'empty::'
   return 'builtin::ATRI Basic Synth'
+}
+
+function selectedPluginMissing(track, slotId = 'instrument') {
+  const slot = pluginSlot(track, slotId)
+  if (!['vst3', 'vst2'].includes(slot.type) || !slot.path) return false
+  const list = slot.type === 'vst3' ? pluginOptions.value.vst3 : pluginOptions.value.vst2
+  return !list.some(plugin => plugin.path === slot.path)
+}
+
+function pluginSlotFormat(track, slotId = 'instrument') {
+  const type = pluginSlot(track, slotId).type
+  if (type === 'vst3') return 'VST3'
+  if (type === 'vst2') return 'VST2'
+  if (type === 'empty') return 'Empty'
+  return 'Built-in'
 }
 
 function pluginSlotLabel(track, slotId = 'instrument') {
@@ -1305,6 +1588,10 @@ async function onPluginSelect(track, slotId, value) {
     id: slotId,
     type,
   }, slotId)
+}
+
+async function reloadPluginInstance(track) {
+  await onPluginSelect(track, 'instrument', pluginSlotValue(track, 'instrument'))
 }
 
 function animationLoop(now) {
@@ -1608,7 +1895,13 @@ onMounted(async () => {
   await refreshHostStatus()
   await loadPlugins()
   await nextTick()
-  resizeObserver = new ResizeObserver(drawAll)
+  resizeObserver = new ResizeObserver(() => {
+    if (pianoPanelHeight.value) {
+      pianoPanelHeight.value = clampPianoPanelHeight(pianoPanelHeight.value)
+    }
+    drawAll()
+  })
+  if (editorStack.value) resizeObserver.observe(editorStack.value)
   if (arrangementWrap.value) resizeObserver.observe(arrangementWrap.value)
   if (pianoWrap.value) resizeObserver.observe(pianoWrap.value)
   raf = requestAnimationFrame(animationLoop)
@@ -1617,6 +1910,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if (resizeObserver) resizeObserver.disconnect()
   unbindPianoDrag()
+  unbindPianoResize()
   unbindArrangementDrag()
   cancelAnimationFrame(raf)
 })
@@ -1626,6 +1920,9 @@ watch(project, () => {
     activeClipId.value = null
     pianoVisible.value = false
     selectedNoteIds.value = new Set()
+  }
+  if (pluginEditor.value.trackId && !tracks.value.some(track => track.id === pluginEditor.value.trackId)) {
+    closePluginEditor()
   }
   drawAll()
 })
@@ -1898,24 +2195,36 @@ watch(positionBeats, (value) => {
   gap: 6px;
 }
 
+.track-lane-spacer {
+  height: 30px;
+  border-bottom: 1px solid rgba(229, 236, 245, 0.08);
+  background: #1b1f23;
+}
+
 .track-row {
   width: 100%;
-  height: 62px;
+  min-height: 72px;
   display: grid;
   grid-template-columns: 4px minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 9px;
   align-items: center;
-  padding: 0 9px;
+  padding: 8px 9px;
   border: 0;
   border-bottom: 1px solid rgba(229, 236, 245, 0.08);
   background: transparent;
   color: var(--t2);
   cursor: pointer;
+  text-align: left;
 }
 
 .track-row.active {
   background: rgba(158, 191, 255, 0.11);
   color: var(--t1);
+}
+
+.track-row:focus-visible {
+  outline: 1px solid rgba(240, 209, 122, 0.42);
+  outline-offset: -2px;
 }
 
 .track-color {
@@ -1930,6 +2239,16 @@ watch(positionBeats, (value) => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  gap: 5px;
+}
+
+.track-title-line {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .track-main strong,
@@ -1941,7 +2260,12 @@ watch(positionBeats, (value) => {
   font-size: 13px;
 }
 
+.track-main strong {
+  min-width: 0;
+}
+
 .track-main small {
+  flex: 0 0 auto;
   color: var(--t4);
   font-size: 11px;
 }
@@ -1949,6 +2273,50 @@ watch(positionBeats, (value) => {
 .track-buttons {
   display: flex;
   gap: 4px;
+}
+
+.track-plugin-bar {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  gap: 5px;
+}
+
+.track-plugin-select {
+  min-width: 0;
+  width: 100%;
+  height: 26px;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 5px;
+  background: #101215;
+  color: var(--t2);
+  font-size: 11px;
+}
+
+.track-plugin-open {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 5px;
+  background: #181b1f;
+  color: var(--t4);
+  cursor: pointer;
+}
+
+.track-plugin-open:hover,
+.track-plugin-open.active {
+  color: #f0d17a;
+  border-color: rgba(240, 209, 122, 0.34);
+  background: rgba(240, 209, 122, 0.1);
+}
+
+.track-plugin-open svg {
+  width: 14px;
+  height: 14px;
 }
 
 .track-flag {
@@ -1967,6 +2335,105 @@ watch(positionBeats, (value) => {
   color: #f0d17a;
   border-color: rgba(240, 209, 122, 0.32);
   background: rgba(240, 209, 122, 0.12);
+}
+
+.track-plugin-panel {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 8px;
+  padding: 9px;
+  border: 1px solid rgba(240, 209, 122, 0.24);
+  border-radius: 6px;
+  background: #171a1e;
+  box-shadow: 0 -12px 26px rgba(0, 0, 0, 0.28);
+}
+
+.plugin-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.plugin-panel-head div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-panel-head span {
+  color: var(--t4);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.plugin-panel-head strong,
+.plugin-instance-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-panel-head strong {
+  color: var(--t1);
+  font-size: 12px;
+}
+
+.plugin-instance-name {
+  margin-top: 8px;
+  color: #f0d17a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.plugin-instance-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 9px 0 0;
+  background: rgba(229, 236, 245, 0.06);
+}
+
+.plugin-instance-meta div {
+  min-width: 0;
+  padding: 7px;
+  background: #202428;
+}
+
+.plugin-instance-meta dt {
+  color: var(--t4);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.plugin-instance-meta dd {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--t2);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-instance-path {
+  margin-top: 8px;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(229, 236, 245, 0.08);
+  border-radius: 5px;
+  background: #101215;
+  color: var(--t4);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-instance-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
 }
 
 .editor-stack {
@@ -2012,6 +2479,37 @@ watch(positionBeats, (value) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.piano-resize-handle {
+  position: relative;
+  flex: 0 0 8px;
+  border-top: 1px solid rgba(229, 236, 245, 0.14);
+  border-bottom: 1px solid rgba(229, 236, 245, 0.08);
+  background: #202428;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.piano-resize-handle::before {
+  content: '';
+  position: absolute;
+  inset: -5px 0;
+}
+
+.piano-resize-handle span {
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 42px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(229, 236, 245, 0.22);
+  transform: translateX(-50%);
+}
+
+.piano-resize-handle:hover span {
+  background: rgba(240, 209, 122, 0.72);
 }
 
 .piano-canvas-wrap {
@@ -2209,7 +2707,7 @@ watch(positionBeats, (value) => {
   }
 
   .studio-body {
-    grid-template-columns: 190px minmax(0, 1fr);
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 
   .inspector {
