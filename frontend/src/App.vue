@@ -63,18 +63,22 @@ import AdaptersPage from './components/pages/AdaptersPage.vue'
 import McpPage from './components/pages/McpPage.vue'
 import SkillsPage from './components/pages/SkillsPage.vue'
 import SettingsPage from './components/settings/SettingsPage.vue'
+import MusicStudio from './components/music/MusicStudio.vue'
 import MusicPage from './components/music/MusicPage.vue'
 import MusicPlayer from './components/music/MusicPlayer.vue'
 import MusicFullPlayer from './components/music/MusicFullPlayer.vue'
 import { useAuth } from './composables/useAuth.js'
+import { useDawHost } from './composables/useDawHost.js'
 import { useMusic } from './composables/useMusic.js'
 import { clearWsInstance } from './composables/useWebSocket.js'
 
 const { auth, initAuth } = useAuth()
 const { currentSong, playerCollapsed, handleWsControl } = useMusic()
+const { handleProjectBroadcast } = useDawHost()
 
 const navPages = [
   { id: 'chat', label: 'Chat', icon: 'chat' },
+  { id: 'studio', label: 'Studio', icon: 'studio' },
   { id: 'music', label: 'Music', icon: 'music' },
   { id: 'workspace', label: 'Workspace', icon: 'folder' },
   { id: 'adapters', label: 'Adapters', icon: 'plug' },
@@ -87,6 +91,7 @@ const activePage = ref('chat')
 
 const pageMap = {
   chat: markRaw(ChatPage),
+  studio: markRaw(MusicStudio),
   music: markRaw(MusicPage),
   workspace: markRaw(WorkspacePage),
   adapters: markRaw(AdaptersPage),
@@ -117,6 +122,8 @@ function connectWs() {
       const msg = JSON.parse(event.data)
       if (msg.type === 'music_control') {
         handleWsControl(msg)
+      } else if (msg.type === 'music_project') {
+        handleProjectBroadcast(msg)
       }
     } catch {}
   }

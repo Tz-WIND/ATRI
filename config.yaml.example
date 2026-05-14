@@ -58,6 +58,13 @@ plugins_dir: plugins
 vst3_plugin_paths: []
 vst2_plugin_paths: []
 
+# Rust audio host process. Leave binary_path empty to use atri-host/target/{release,debug}.
+audio_host:
+  binary_path: ''
+  sample_rate: 48000
+  buffer_size: 256
+  auto_start: true
+
 # Dashboard Web 控制台
 dashboard:
   enabled: true

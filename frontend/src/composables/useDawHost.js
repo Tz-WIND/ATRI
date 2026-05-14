@@ -1,0 +1,340 @@
+import { computed, ref, shallowRef } from 'vue'
+import { useApi } from './useApi.js'
+
+const api = useApi()
+
+const project = shallowRef(null)
+const host = ref({ running: false, sample_rate: 48000, buffer_size: 256, binary_path: '' })
+const engine = ref(null)
+const activeTrackId = ref(1)
+const loading = ref(false)
+const syncing = ref(false)
+const hostError = ref('')
+const audioConnected = ref(false)
+const audioReady = ref(false)
+const playing = ref(false)
+const positionSeconds = ref(0)
+const plugins = ref({ vst3: [], vst2: [], priority: ['vst3', 'vst2'] })
+const pluginsLoading = ref(false)
+
+let audioContext = null
+let playerNode = null
+let audioWs = null
+let pendingAudioHeader = null
+let reconnectTimer = null
+let statusTimer = null
+
+const tracks = computed(() => project.value?.tracks || [])
+const activeTrack = computed(() => (
+  tracks.value.find(track => track.id === activeTrackId.value) || tracks.value[0] || null
+))
+const tempo = computed(() => Number(project.value?.tempo || 120))
+const positionBeats = computed(() => (positionSeconds.value * tempo.value) / 60)
+const totalNotes = computed(() => tracks.value.reduce((sum, track) => sum + track.notes.length, 0))
+
+function setProject(nextProject) {
+  if (!nextProject) return
+  project.value = nextProject
+  if (!tracks.value.some(track => track.id === activeTrackId.value) && tracks.value.length) {
+    activeTrackId.value = tracks.value[0].id
+  }
+}
+
+async function loadProject() {
+  loading.value = true
+  hostError.value = ''
+  try {
+    const res = await api.studioProject()
+    setProject(res.project)
+    if (res.host) host.value = res.host
+    if (host.value.running) startStatusPolling()
+  } catch (err) {
+    hostError.value = err.message || 'Failed to load project'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function saveProject(nextProject, options = {}) {
+  loading.value = true
+  hostError.value = ''
+  try {
+    const res = await api.saveStudioProject(nextProject, { broadcast: true, ...options })
+    if (res.project) setProject(res.project)
+    if (res.sync?.host_running) {
+      host.value = { ...host.value, running: true }
+      startStatusPolling()
+    }
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to save project'
+    return null
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshHostStatus() {
+  try {
+    const res = await api.hostStatus()
+    if (res.host) host.value = res.host
+    if (res.engine) {
+      engine.value = res.engine
+      playing.value = res.engine.transport === 'playing'
+      positionSeconds.value = Number(res.engine.position || 0)
+    } else if (!host.value.running) {
+      playing.value = false
+    }
+  } catch {}
+}
+
+async function syncProject(options = {}) {
+  syncing.value = true
+  hostError.value = ''
+  try {
+    const res = await api.studioSync(options)
+    if (res.host) host.value = res.host
+    if (res.sync?.project) setProject(res.sync.project)
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to sync project'
+    return null
+  } finally {
+    syncing.value = false
+  }
+}
+
+async function resetDemo() {
+  loading.value = true
+  try {
+    const res = await api.studioDemo()
+    setProject(res.project)
+    if (res.sync?.host_running) {
+      host.value = { ...host.value, running: true }
+      startStatusPolling()
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+async function transport(action, payload = {}) {
+  if (!host.value.running) {
+    await refreshHostStatus()
+  }
+  if (!host.value.running) {
+    const message = 'Audio host is not running. Restart ATRI or check the audio host binary.'
+    hostError.value = message
+    throw new Error(message)
+  }
+  await ensureAudio()
+  if (audioContext?.state === 'suspended') {
+    await audioContext.resume()
+  }
+  connectAudioStream()
+  const res = await api.studioTransport(action, payload)
+  if (action === 'play') playing.value = true
+  if (action === 'pause' || action === 'stop') playing.value = false
+  if (action === 'stop') positionSeconds.value = 0
+  refreshHostStatus()
+  return res
+}
+
+async function addNote(trackId, note) {
+  const res = await api.studioMidiWrite({
+    track_id: trackId,
+    mode: 'append',
+    notes: [note],
+  })
+  setProject(res.project)
+  return res
+}
+
+async function writeNotes(payload) {
+  const res = await api.studioMidiWrite(payload)
+  setProject(res.project)
+  return res
+}
+
+async function replaceTrackNotes(trackId, notes) {
+  const length = Number(project.value?.length_beats || 16)
+  return writeNotes({
+    track_id: trackId,
+    start: 0,
+    end: Math.max(length, ...notes.map(note => Number(note.start || 0) + Number(note.duration || 0))),
+    mode: 'replace',
+    notes,
+  })
+}
+
+async function updateTrack(trackId, data) {
+  const res = await api.studioUpdateTrack(trackId, data)
+  setProject(res.project)
+  return res
+}
+
+async function createTrack(name = 'Instrument') {
+  const res = await api.studioCreateTrack(name)
+  setProject(res.project)
+  if (res.track?.id) activeTrackId.value = res.track.id
+  return res
+}
+
+async function loadPlugins(options = null) {
+  pluginsLoading.value = true
+  hostError.value = ''
+  try {
+    const res = await api.studioPlugins(options)
+    plugins.value = {
+      vst3: Array.isArray(res.plugins?.vst3) ? res.plugins.vst3 : [],
+      vst2: Array.isArray(res.plugins?.vst2) ? res.plugins.vst2 : [],
+      priority: Array.isArray(res.plugins?.priority) ? res.plugins.priority : ['vst3', 'vst2'],
+    }
+    if (res.host) host.value = res.host
+    return plugins.value
+  } catch (err) {
+    hostError.value = err.message || 'Failed to scan plugins'
+    return plugins.value
+  } finally {
+    pluginsLoading.value = false
+  }
+}
+
+async function setTrackPlugin(trackId, plugin, slotId = 'instrument') {
+  const res = await api.studioSetTrackPlugin(trackId, plugin, slotId)
+  if (res.project) setProject(res.project)
+  if (res.host) host.value = res.host
+  if (res.load?.type === 'error') {
+    hostError.value = res.load.message || 'Plugin load failed'
+  }
+  return res
+}
+
+function selectTrack(trackId) {
+  activeTrackId.value = trackId
+}
+
+async function ensureAudio() {
+  if (audioReady.value && audioContext && playerNode) return
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+  if (!AudioContextCtor || !window.AudioWorkletNode) {
+    throw new Error('AudioWorklet is not supported by this browser')
+  }
+  audioContext = new AudioContextCtor({ latencyHint: 'interactive', sampleRate: 48000 })
+  await audioContext.audioWorklet.addModule(
+    new URL('../worklets/pcm-player-worklet.js', import.meta.url)
+  )
+  playerNode = new AudioWorkletNode(audioContext, 'atri-pcm-player', {
+    numberOfInputs: 0,
+    numberOfOutputs: 1,
+    outputChannelCount: [2],
+  })
+  playerNode.connect(audioContext.destination)
+  audioReady.value = true
+}
+
+function connectAudioStream() {
+  if (audioWs || !host.value.running) return
+  clearTimeout(reconnectTimer)
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  audioWs = new WebSocket(`${protocol}//${location.host}/ws/audio`)
+  audioWs.binaryType = 'arraybuffer'
+  audioWs.onopen = () => {
+    audioConnected.value = true
+  }
+  audioWs.onmessage = async (event) => {
+    if (typeof event.data === 'string') {
+      try {
+        pendingAudioHeader = JSON.parse(event.data)
+      } catch {
+        pendingAudioHeader = null
+      }
+      return
+    }
+    if (!playerNode) return
+    const buffer = event.data instanceof Blob ? await event.data.arrayBuffer() : event.data
+    const header = pendingAudioHeader || {}
+    pendingAudioHeader = null
+    playerNode.port.postMessage(
+      {
+        type: 'samples',
+        buffer,
+        channels: Number(header.channels || 2),
+        sampleRate: Number(header.sample_rate || 48000),
+      },
+      [buffer]
+    )
+  }
+  audioWs.onclose = () => {
+    audioConnected.value = false
+    audioWs = null
+    if (host.value.running) {
+      reconnectTimer = setTimeout(connectAudioStream, 1200)
+    }
+  }
+  audioWs.onerror = () => {
+    if (audioWs) audioWs.close()
+  }
+}
+
+function disconnectAudioStream() {
+  clearTimeout(reconnectTimer)
+  reconnectTimer = null
+  if (audioWs) {
+    audioWs.onclose = null
+    audioWs.close()
+    audioWs = null
+  }
+  audioConnected.value = false
+  pendingAudioHeader = null
+}
+
+function startStatusPolling() {
+  if (statusTimer) return
+  statusTimer = setInterval(refreshHostStatus, 1000)
+}
+
+function handleProjectBroadcast(msg) {
+  if (msg?.project) {
+    setProject(msg.project)
+  }
+}
+
+export function useDawHost() {
+  return {
+    project,
+    host,
+    engine,
+    tracks,
+    activeTrack,
+    activeTrackId,
+    loading,
+    syncing,
+    hostError,
+    audioConnected,
+    audioReady,
+    playing,
+    positionSeconds,
+    positionBeats,
+    totalNotes,
+    plugins,
+    pluginsLoading,
+    loadProject,
+    saveProject,
+    refreshHostStatus,
+    syncProject,
+    resetDemo,
+    transport,
+    addNote,
+    writeNotes,
+    replaceTrackNotes,
+    updateTrack,
+    createTrack,
+    loadPlugins,
+    setTrackPlugin,
+    selectTrack,
+    connectAudioStream,
+    disconnectAudioStream,
+    handleProjectBroadcast,
+  }
+}

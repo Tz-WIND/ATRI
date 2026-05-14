@@ -10,6 +10,7 @@ from .grep import GrepTool
 from .lint import LintTool
 from .list_dir import ListDirTool
 from .mcp import create_mcp_tools
+from .midi import MidiDiffTool, MidiWriteTool
 from .mode import AgentModeTool
 from .music import MusicTool
 from .read import ReadFileTool
@@ -52,6 +53,8 @@ def create_tools(
         AgentModeTool(workspace, mode_controller=mode_controller),
         LintTool(workspace),
         MusicTool(workspace),
+        MidiWriteTool(workspace),
+        MidiDiffTool(workspace),
         WebSearchTool(workspace),
         WebFetchTool(workspace),
     ]

@@ -8,9 +8,11 @@ frontend via WebSocket broadcast.
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("atri.host")
 
@@ -24,13 +26,15 @@ class HostManager:
         sample_rate: int = 48000,
         buffer_size: int = 256,
     ):
-        self.binary_path = self._resolve_binary(binary_path)
+        self.binary_path = binary_path
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
         self._process: subprocess.Popen | None = None
-        self._audio_callback: Callable[[bytes, int, int], None] | None = None
+        self._audio_callback: Callable[[bytes, int, int, int], None] | None = None
         self._running = False
         self._response_queue: asyncio.Queue = asyncio.Queue()
+        self._command_lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task] = set()
 
     @staticmethod
     def _resolve_binary(binary_path: str | None) -> str:
@@ -47,12 +51,29 @@ class HostManager:
         for c in candidates:
             if c.exists():
                 return str(c)
-        raise FileNotFoundError("atri-host binary not found. Build with: cargo build --release")
+        raise FileNotFoundError("atri-host binary not found. Build with: cargo build -p atri-host")
 
-    def set_audio_callback(self, callback: Callable[[bytes, int, int], None]):
+    def configure(
+        self,
+        *,
+        binary_path: str | None = None,
+        sample_rate: int | None = None,
+        buffer_size: int | None = None,
+    ) -> None:
+        """Update host configuration while the process is stopped."""
+        if self.is_running:
+            return
+        if binary_path is not None:
+            self.binary_path = binary_path or None
+        if sample_rate is not None:
+            self.sample_rate = sample_rate
+        if buffer_size is not None:
+            self.buffer_size = buffer_size
+
+    def set_audio_callback(self, callback: Callable[[bytes, int, int, int], None]):
         """Set a callback that receives PCM audio chunks.
         Args:
-            callback: fn(pcm_bytes: bytes, nframes: int, channels: int) -> None
+            callback: fn(pcm_bytes, nframes, channels, sample_rate) -> None
         """
         self._audio_callback = callback
 
@@ -62,69 +83,95 @@ class HostManager:
             logger.warning("Host process already running")
             return
 
-        logger.info("Starting atri-host: %s", self.binary_path)
+        binary_path = self._resolve_binary(self.binary_path)
+        project_root = Path(__file__).parent.parent
+        env = os.environ.copy()
+        config_path = project_root / "config.yaml"
+        if config_path.exists():
+            env.setdefault("ATRI_CONFIG", str(config_path))
+
+        logger.info("Starting atri-host: %s", binary_path)
         try:
-            self._process = subprocess.Popen(
-                [self.binary_path],
+            self._process = subprocess.Popen(  # noqa: ASYNC220,S603
+                [binary_path],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                cwd=str(project_root),
+                env=env,
             )
         except FileNotFoundError:
-            logger.error("Host binary not found at %s", self.binary_path)
+            logger.error("Host binary not found at %s", binary_path)
             raise
         except OSError as e:
             logger.error("Failed to start host process: %s", e)
             raise
 
         self._running = True
-        # Start background tasks for reading stdout and stderr
-        asyncio.create_task(self._read_stdout())
-        asyncio.create_task(self._read_stderr())
+        self._tasks = {
+            asyncio.create_task(self._read_stdout()),
+            asyncio.create_task(self._read_stderr()),
+        }
+        for task in self._tasks:
+            task.add_done_callback(self._tasks.discard)
         logger.info("atri-host started (pid=%d)", self._process.pid)
 
     async def stop(self) -> None:
-        """Stop the Rust host process."""
-        if self._process is None:
+        """Stop the Rust host process gracefully, with terminate/kill fallback."""
+        process = self._process
+        if process is None:
             return
 
         logger.info("Stopping atri-host...")
         try:
             await self.send_command("shutdown")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Host shutdown command failed: %s", e)
 
         self._running = False
         try:
-            self._process.stdin.close()  # type: ignore[union-attr]
-        except Exception:
-            pass
+            if process.stdin:
+                process.stdin.close()
+        except Exception as e:
+            logger.debug("Host stdin close failed: %s", e)
 
         try:
-            self._process.wait(timeout=5)
+            await asyncio.to_thread(process.wait, timeout=5)
         except subprocess.TimeoutExpired:
-            logger.warning("Host process did not exit, killing...")
-            self._process.kill()
-            self._process.wait()
+            logger.warning("Host process did not exit after shutdown, terminating...")
+            process.terminate()
+            try:
+                await asyncio.to_thread(process.wait, timeout=2)
+            except subprocess.TimeoutExpired:
+                logger.warning("Host process did not terminate, killing...")
+                process.kill()
+                await asyncio.to_thread(process.wait)
 
         self._process = None
+        for task in list(self._tasks):
+            if not task.done():
+                task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
         logger.info("atri-host stopped")
 
     async def send_command(self, cmd: str, params: dict | None = None) -> dict:
         """Send a JSON command to the host and wait for the response."""
-        if self._process is None or self._process.stdin is None:
-            raise RuntimeError("Host process not running")
+        async with self._command_lock:
+            if self._process is None or self._process.stdin is None or not self.is_running:
+                raise RuntimeError("Host process not running")
 
-        message = {"cmd": cmd}
-        if params:
-            message.update(params)
+            message: dict[str, Any] = {"cmd": cmd}
+            if params:
+                message.update(params)
 
-        line = json.dumps(message, ensure_ascii=False) + "\n"
-        self._process.stdin.write(line.encode())
-        self._process.stdin.flush()
+            line = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
+            self._process.stdin.write(line.encode())
+            self._process.stdin.flush()
 
-        # Read response (non-audio JSON line)
-        return await self._read_response()
+            # Read response (non-audio JSON line)
+            return await self._read_response()
 
     async def _read_response(self) -> dict:
         """Read a single JSON response line from the response queue."""
@@ -162,6 +209,7 @@ class HostManager:
                     # Read raw PCM bytes following the header
                     nframes = msg.get("samples", 0)
                     channels = msg.get("channels", 2)
+                    sample_rate = msg.get("sample_rate", self.sample_rate)
                     expected_bytes = nframes * channels * 4  # f32 = 4 bytes
 
                     if expected_bytes > 0:
@@ -169,7 +217,7 @@ class HostManager:
                             None, reader.read, expected_bytes
                         )
                         if len(pcm) == expected_bytes and self._audio_callback:
-                            self._audio_callback(pcm, nframes, channels)
+                            self._audio_callback(pcm, nframes, channels, sample_rate)
                 else:
                     # Regular JSON response (ack, error, status)
                     self._response_queue.put_nowait(msg)
@@ -207,3 +255,14 @@ def get_host_manager() -> HostManager:
     if _host_manager is None:
         _host_manager = HostManager()
     return _host_manager
+
+
+def configure_host_manager(
+    *,
+    binary_path: str | None = None,
+    sample_rate: int | None = None,
+    buffer_size: int | None = None,
+) -> HostManager:
+    host = get_host_manager()
+    host.configure(binary_path=binary_path, sample_rate=sample_rate, buffer_size=buffer_size)
+    return host

@@ -69,6 +69,15 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "password": {"type": "string", "default": ""},
             },
         },
+        "audio_host": {
+            "type": "object",
+            "properties": {
+                "binary_path": {"type": "string", "default": ""},
+                "sample_rate": {"type": "integer", "default": 48000, "minimum": 1},
+                "buffer_size": {"type": "integer", "default": 256, "minimum": 1},
+                "auto_start": {"type": "boolean", "default": True},
+            },
+        },
         "plugins_dir": {"type": "string", "default": "plugins"},
         "vst3_plugin_paths": {"type": "array", "default": []},
         "vst2_plugin_paths": {"type": "array", "default": []},

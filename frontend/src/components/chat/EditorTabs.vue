@@ -31,7 +31,7 @@
           <div
             v-for="tab in tabs"
             :key="tab.path"
-            :class="['tab', { active: tab.path === activeTabPath, modified: tab.modified }]"
+            :class="['tab', { active: tab.path === activeTabPath, modified: tab.modified, workstation: tab.type === 'workstation' }]"
             @click="activateTab(tab.path)"
             @auxclick.prevent="closeTab(tab.path)"
           >
@@ -62,85 +62,125 @@
             </button>
           </div>
         </div>
+        <button
+          v-if="activeTab?.type === 'workstation'"
+          class="tab-action"
+          :title="props.expanded ? 'Restore Workstation' : 'Expand Workstation'"
+          @click="emit('request-expand', !props.expanded)"
+        >
+          <svg
+            v-if="props.expanded"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M8 3v5H3" />
+            <path d="M16 3v5h5" />
+            <path d="M8 21v-5H3" />
+            <path d="M16 21v-5h5" />
+          </svg>
+          <svg
+            v-else
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M3 9V3h6" />
+            <path d="M21 9V3h-6" />
+            <path d="M3 15v6h6" />
+            <path d="M21 15v6h-6" />
+          </svg>
+          <span>{{ props.expanded ? 'Restore' : 'Expand' }}</span>
+        </button>
       </div>
       <div
-        v-if="activeTab"
-        class="file-meta-bar"
+        v-if="activeTab?.type === 'workstation'"
+        :class="['workstation-tab-shell', { expanded: props.expanded }]"
       >
-        <div class="file-meta-main">
-          <span class="file-meta-icon">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-            </svg>
-          </span>
-          <span
-            class="file-meta-path"
-            :title="activeTab.path"
-          >{{ activeTab.path }}</span>
-        </div>
-        <div class="file-meta-stats">
-          <span>{{ activeLanguageLabel }}</span>
-          <span>{{ lineCount }} lines</span>
-          <span
-            v-if="activeTab.modified"
-            class="file-state-modified"
-          >modified</span>
-        </div>
+        <MusicStudio />
       </div>
-      <div
-        v-if="activeTab"
-        class="editor-content"
-      >
-        <div class="code-wrapper">
-          <div class="line-numbers">
-            <div
-              ref="lineNumbersRef"
-              class="line-numbers-inner"
-            >
-              <div
-                v-for="n in lineCount"
-                :key="n"
-                :class="['line-num', { active: n === currentLine }]"
+      <template v-else>
+        <div
+          v-if="activeTab"
+          class="file-meta-bar"
+        >
+          <div class="file-meta-main">
+            <span class="file-meta-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
               >
-                {{ n }}
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+            </span>
+            <span
+              class="file-meta-path"
+              :title="activeTab.path"
+            >{{ activeTab.path }}</span>
+          </div>
+          <div class="file-meta-stats">
+            <span>{{ activeLanguageLabel }}</span>
+            <span>{{ lineCount }} lines</span>
+            <span
+              v-if="activeTab.modified"
+              class="file-state-modified"
+            >modified</span>
+          </div>
+        </div>
+        <div
+          v-if="activeTab"
+          class="editor-content"
+        >
+          <div class="code-wrapper">
+            <div class="line-numbers">
+              <div
+                ref="lineNumbersRef"
+                class="line-numbers-inner"
+              >
+                <div
+                  v-for="n in lineCount"
+                  :key="n"
+                  :class="['line-num', { active: n === currentLine }]"
+                >
+                  {{ n }}
+                </div>
               </div>
             </div>
+            <div
+              class="current-line-highlight"
+              :style="currentLineStyle"
+            />
+            <textarea
+              ref="editorRef"
+              class="code-editor"
+              :value="activeTab.content"
+              spellcheck="false"
+              wrap="off"
+              @input="onInput"
+              @scroll="syncScroll"
+              @keydown="onKeydown"
+              @click="updateCursorState"
+              @mouseup="updateCursorState"
+              @select="updateCursorState"
+              @keyup="updateCursorState"
+              @focus="updateCursorState"
+            />
+            <pre
+              ref="highlightRef"
+              class="code-highlight"
+            ><code v-html="highlightedCode" /></pre>
+            <pre
+              ref="wordHighlightsRef"
+              class="word-highlights"
+            ><code v-html="wordHighlightsHtml" /></pre>
           </div>
-          <div
-            class="current-line-highlight"
-            :style="currentLineStyle"
-          />
-          <textarea
-            ref="editorRef"
-            class="code-editor"
-            :value="activeTab.content"
-            spellcheck="false"
-            wrap="off"
-            @input="onInput"
-            @scroll="syncScroll"
-            @keydown="onKeydown"
-            @click="updateCursorState"
-            @mouseup="updateCursorState"
-            @select="updateCursorState"
-            @keyup="updateCursorState"
-            @focus="updateCursorState"
-          />
-          <pre
-            ref="highlightRef"
-            class="code-highlight"
-          ><code v-html="highlightedCode" /></pre>
-          <pre
-            ref="wordHighlightsRef"
-            class="word-highlights"
-          ><code v-html="wordHighlightsHtml" /></pre>
         </div>
-      </div>
+      </template>
     </template>
   </div>
 </template>
@@ -149,8 +189,15 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import hljs from 'highlight.js'
 import { useApi } from '@/composables/useApi.js'
+import MusicStudio from '@/components/music/MusicStudio.vue'
+
+const props = defineProps({
+  expanded: { type: Boolean, default: false },
+})
+const emit = defineEmits(['request-expand', 'active-tab-type-change'])
 
 const api = useApi()
+const WORKSTATION_PATH = 'atri://music-workstation'
 const tabs = ref([])
 const activeTabPath = ref('')
 const saving = ref(false)
@@ -291,6 +338,21 @@ async function openFile(fileInfo) {
   }
 }
 
+function openWorkstation() {
+  const existing = tabs.value.find(t => t.path === WORKSTATION_PATH)
+  if (existing) {
+    activeTabPath.value = existing.path
+    return
+  }
+  tabs.value.push({
+    type: 'workstation',
+    path: WORKSTATION_PATH,
+    name: 'Workstation',
+    modified: false,
+  })
+  activeTabPath.value = WORKSTATION_PATH
+}
+
 function activateTab(path) {
   activeTabPath.value = path
 }
@@ -358,7 +420,7 @@ function onKeydown(e) {
 }
 
 async function saveFile() {
-  if (!activeTab.value || !activeTab.value.modified) return
+  if (!activeTab.value || activeTab.value.type === 'workstation' || !activeTab.value.modified) return
   saving.value = true
   try {
     await api.writeFile(activeTab.value.path, activeTab.value.content)
@@ -380,7 +442,13 @@ watch(activeTabPath, () => {
   })
 })
 
-defineExpose({ openFile })
+watch(
+  () => activeTab.value?.type || '',
+  (type) => emit('active-tab-type-change', type),
+  { immediate: true },
+)
+
+defineExpose({ openFile, openWorkstation })
 </script>
 
 <style scoped>
@@ -388,7 +456,9 @@ defineExpose({ openFile })
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
   background: rgba(24, 24, 24, 0.22);
 }
 
@@ -442,6 +512,7 @@ defineExpose({ openFile })
   display: flex;
   overflow-x: auto;
   flex: 1;
+  min-width: 0;
   gap: 4px;
 }
 
@@ -478,6 +549,15 @@ defineExpose({ openFile })
   background: var(--bg-100);
   border-color: var(--border-light);
   color: var(--t1);
+}
+
+.tab.workstation {
+  color: #f0d17a;
+}
+
+.tab.workstation.active {
+  border-color: rgba(240, 209, 122, 0.24);
+  background: rgba(240, 209, 122, 0.1);
 }
 
 .tab-name {
@@ -525,6 +605,35 @@ defineExpose({ openFile })
 .tab-close svg {
   width: 11px;
   height: 11px;
+}
+
+.tab-action {
+  height: 29px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 9px;
+  border: 1px solid rgba(240, 209, 122, 0.2);
+  border-radius: 7px;
+  background: rgba(240, 209, 122, 0.08);
+  color: #f0d17a;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.tab-action:hover {
+  border-color: rgba(240, 209, 122, 0.36);
+  background: rgba(240, 209, 122, 0.14);
+  color: #ffe1a0;
+}
+
+.tab-action svg {
+  width: 14px;
+  height: 14px;
 }
 
 .file-meta-bar {
@@ -593,6 +702,29 @@ defineExpose({ openFile })
   border-radius: 999px;
   background: rgba(214, 183, 109, 0.1);
   color: var(--orange);
+}
+
+.workstation-tab-shell {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  overflow: auto;
+  background: #17191c;
+}
+
+.workstation-tab-shell.expanded {
+  background: #17191c;
+}
+
+.workstation-tab-shell :deep(.studio-page) {
+  flex: 1 1 auto;
+  min-width: 860px;
+  min-height: 0;
+}
+
+.workstation-tab-shell.expanded :deep(.studio-page) {
+  min-width: 0;
 }
 
 .editor-content {

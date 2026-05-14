@@ -108,6 +108,21 @@ impl Session {
             .is_ok()
     }
 
+    pub fn set_processor_slot(
+        &mut self,
+        track_id: u32,
+        slot_index: usize,
+        processor: Option<Arc<Mutex<dyn Processor>>>,
+    ) -> bool {
+        self.with_route(track_id, |route| {
+            route.set_processor_slot(slot_index, processor);
+        })
+    }
+
+    pub fn clear_processor_slot(&mut self, track_id: u32, slot_index: usize) -> bool {
+        self.with_route(track_id, |route| route.clear_processor_slot(slot_index))
+    }
+
     pub fn set_track_notes(&mut self, track_id: u32, notes: Vec<MidiNote>) -> bool {
         let capacity = notes.len() * 2;
         let Some(index) = self.route_index(track_id) else {
@@ -320,5 +335,86 @@ mod tests {
         assert_eq!(route.pan.value, 0.25);
         assert!(route.mute);
         assert!(route.solo);
+    }
+
+    #[test]
+    fn processor_slots_replace_and_clear_without_growing_chain() {
+        let mut session = Session::new(48_000, 128);
+        let track = session.add_track("Keys".into());
+
+        assert!(session.set_processor_slot(
+            track,
+            0,
+            Some(Arc::new(Mutex::new(TestProcessor::new("first")))),
+        ));
+        assert!(session.set_processor_slot(
+            track,
+            0,
+            Some(Arc::new(Mutex::new(TestProcessor::new("second")))),
+        ));
+        assert!(session.set_processor_slot(
+            track,
+            2,
+            Some(Arc::new(Mutex::new(TestProcessor::new("insert")))),
+        ));
+        assert!(session.clear_processor_slot(track, 2));
+
+        let route = session.routes[0].lock().unwrap();
+        assert_eq!(route.processors.len(), 3);
+        assert!(route.processors[0].is_some());
+        assert!(route.processors[1].is_none());
+        assert!(route.processors[2].is_none());
+    }
+
+    struct TestProcessor {
+        name: &'static str,
+        active: bool,
+    }
+
+    impl TestProcessor {
+        fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                active: false,
+            }
+        }
+    }
+
+    impl Processor for TestProcessor {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut BufferSet,
+            _midi: &[ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+        }
+
+        fn activate(&mut self) {
+            self.active = true;
+        }
+
+        fn deactivate(&mut self) {
+            self.active = false;
+        }
+
+        fn is_active(&self) -> bool {
+            self.active
+        }
+
+        fn input_channels(&self) -> u16 {
+            2
+        }
+
+        fn output_channels(&self) -> u16 {
+            2
+        }
     }
 }

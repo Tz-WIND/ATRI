@@ -37,11 +37,14 @@ class Dashboard:
         self._sync_auth_from_config()
         self.auth_session_token = secrets.token_urlsafe(32)
         self._mcp_push_fingerprint = ""
+        self._loop = asyncio.get_running_loop()
 
         static_dir = str(Path(__file__).parent / "static")
         self.app = Quart("atri-dashboard", static_folder=static_dir, static_url_path="/static")
         self.app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
         self._ws_clients: set = set()
+        self._audio_clients: set = set()
+        self._wire_audio_host()
         self._register_routes()
 
         from dashboard.music import bp as music_bp
@@ -52,6 +55,26 @@ class Dashboard:
 
         if lifecycle.process_stage:
             lifecycle.process_stage.broadcast_fn = self.broadcast
+
+    def _wire_audio_host(self) -> None:
+        """Route Rust host PCM chunks into the dashboard audio WebSocket."""
+        from core.host import configure_host_manager
+
+        audio_cfg = self.lifecycle.config.get("audio_host", {})
+        host = configure_host_manager(
+            binary_path=audio_cfg.get("binary_path") or None,
+            sample_rate=int(audio_cfg.get("sample_rate", 48000) or 48000),
+            buffer_size=int(audio_cfg.get("buffer_size", 256) or 256),
+        )
+
+        def schedule_audio(pcm_bytes: bytes, nframes: int, channels: int, sample_rate: int) -> None:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(
+                    self.broadcast_audio(pcm_bytes, nframes, channels, sample_rate)
+                )
+            )
+
+        host.set_audio_callback(schedule_audio)
 
     # ── Config / auth state ──
 
@@ -288,9 +311,15 @@ class Dashboard:
             except Exception:
                 self._ws_clients.discard(ws)
 
-    async def broadcast_audio(self, pcm_bytes: bytes, nframes: int, channels: int):
+    async def broadcast_audio(
+        self,
+        pcm_bytes: bytes,
+        nframes: int,
+        channels: int,
+        sample_rate: int = 48000,
+    ):
         """Send raw PCM audio to all connected audio WebSocket clients."""
-        audio_clients = getattr(self, "_audio_clients", set())
+        audio_clients = self._audio_clients
         if not audio_clients:
             return
         # Prepend a JSON header line followed by raw PCM bytes
@@ -299,7 +328,8 @@ class Dashboard:
                 "type": "audio",
                 "samples": nframes,
                 "channels": channels,
-                "sample_rate": 48000,
+                "sample_rate": sample_rate,
+                "format": "f32_le_interleaved",
             }
         )
         for ws in list(audio_clients):

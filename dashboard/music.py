@@ -13,6 +13,23 @@ from typing import TYPE_CHECKING, Any, cast
 
 from quart import Blueprint, Response, jsonify, request
 
+from core.music_project import (
+    create_track as create_project_track,
+)
+from core.music_project import (
+    default_project,
+    find_track,
+    load_project,
+    midi_diff,
+    midi_write,
+    project_summary,
+    save_project,
+    set_track_plugin,
+)
+from core.music_project import (
+    update_track as update_project_track,
+)
+
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
 
@@ -444,7 +461,439 @@ async def get_lyrics(song_id: str):
     return jsonify({"lyrics": lyrics})
 
 
+# ─── AI Music Workstation / Rust Host ───
+
+
+async def _json_payload() -> dict[str, Any]:
+    data = await request.get_json()
+    return data if isinstance(data, dict) else {}
+
+
+def _host_manager():
+    from core.host import get_host_manager
+
+    return get_host_manager()
+
+
+def _host_snapshot() -> dict[str, Any]:
+    host = _host_manager()
+    return {
+        "running": host.is_running,
+        "sample_rate": host.sample_rate,
+        "buffer_size": host.buffer_size,
+        "binary_path": host.binary_path or "",
+    }
+
+
+def _track_slot(track: dict[str, Any], slot_id: str) -> dict[str, Any]:
+    for slot in track.get("plugin_slots", []):
+        if slot.get("id") == slot_id:
+            return slot
+    if slot_id == "instrument":
+        return {
+            "id": "instrument",
+            "type": "builtin",
+            "name": track.get("instrument") or "ATRI Basic Synth",
+        }
+    return {"id": slot_id, "type": "empty", "name": "Empty"}
+
+
+def _instrument_slot(track: dict[str, Any]) -> dict[str, Any]:
+    return _track_slot(track, "instrument")
+
+
+def _slot_index(slot_id: str) -> int:
+    if slot_id == "instrument":
+        return 0
+    match = re.fullmatch(r"insert_(\d+)", slot_id)
+    if match:
+        return min(255, max(1, int(match.group(1))))
+    return 255
+
+
+async def _load_track_slot(
+    host,
+    host_track_id: int,
+    slot: dict[str, Any],
+) -> dict[str, Any]:
+    slot_id = str(slot.get("id") or "instrument")
+    slot_index = _slot_index(slot_id)
+    slot_type = str(slot.get("type") or "empty")
+
+    if slot.get("type") == "vst3" and slot.get("path"):
+        return await host.send_command(
+            "load_vst3",
+            {
+                "track_id": int(host_track_id),
+                "slot_index": slot_index,
+                "path": str(slot.get("path") or ""),
+                "name": str(slot.get("name") or "") or None,
+            },
+        )
+    if slot_type == "vst2":
+        clear_response = await host.send_command(
+            "clear_processor_slot",
+            {"track_id": int(host_track_id), "slot_index": slot_index},
+        )
+        return {
+            "type": "error",
+            "cmd": "load_vst2",
+            "slot_id": slot_id,
+            "slot_index": slot_index,
+            "message": "VST2 scan is available, but VST2 loading is not implemented yet",
+            "clear": clear_response,
+        }
+    if slot_id == "instrument":
+        return await host.send_command(
+            "load_builtin_synth",
+            {"track_id": int(host_track_id), "slot_index": slot_index},
+        )
+    return await host.send_command(
+        "clear_processor_slot",
+        {"track_id": int(host_track_id), "slot_index": slot_index},
+    )
+
+
+async def _load_track_slots(
+    host,
+    host_track_id: int,
+    track: dict[str, Any],
+) -> list[dict[str, Any]]:
+    slots = track.get("plugin_slots") or [_instrument_slot(track)]
+    commands = []
+    for slot in slots:
+        if isinstance(slot, dict):
+            commands.append(await _load_track_slot(host, host_track_id, slot))
+    return commands
+
+
+async def _broadcast_project(project: dict[str, Any]) -> None:
+    dashboard = getattr(_lifecycle, "dashboard", None) if _lifecycle else None
+    if dashboard:
+        await dashboard.broadcast(
+            {
+                "type": "music_project",
+                "project": project,
+                "summary": project_summary(project),
+            }
+        )
+
+
+async def _sync_project_to_host(
+    project: dict[str, Any],
+    *,
+    broadcast: bool = False,
+) -> dict[str, Any]:
+    host = _host_manager()
+    if not host.is_running:
+        if broadcast:
+            await _broadcast_project(project)
+        return {"host_running": False, "commands": []}
+
+    commands: list[dict[str, Any]] = []
+    status = await host.send_command("get_status")
+    host_track_ids = {
+        int(track.get("id", -1)) for track in status.get("tracks", []) if isinstance(track, dict)
+    }
+
+    meter = project.get("time_signature") or [4, 4]
+    commands.append(
+        await host.send_command(
+            "set_tempo",
+            {"bpm": float(project.get("tempo", 120.0)), "time_sig": meter},
+        )
+    )
+
+    project_changed = False
+    for track in project.get("tracks", []):
+        host_track_id = track.get("host_track_id")
+        if host_track_id is None or int(host_track_id) not in host_track_ids:
+            response = await host.send_command("add_track", {"name": track.get("name", "Track")})
+            commands.append(response)
+            host_track_id = response.get("data", {}).get("track_id")
+            if host_track_id is None:
+                continue
+            track["host_track_id"] = int(host_track_id)
+            host_track_ids.add(int(host_track_id))
+            project_changed = True
+            commands.extend(await _load_track_slots(host, int(host_track_id), track))
+
+        host_track_id = int(host_track_id)
+        notes = [
+            {
+                "pitch": int(note["pitch"]),
+                "start": float(note["start"]),
+                "duration": float(note["duration"]),
+                "velocity": int(note["velocity"]),
+            }
+            for note in track.get("notes", [])
+        ]
+        commands.append(
+            await host.send_command("set_midi", {"track_id": host_track_id, "notes": notes})
+        )
+        commands.append(
+            await host.send_command(
+                "set_volume",
+                {"track_id": host_track_id, "value": float(track.get("volume", 0.8))},
+            )
+        )
+        commands.append(
+            await host.send_command(
+                "set_pan",
+                {"track_id": host_track_id, "value": float(track.get("pan", 0.0))},
+            )
+        )
+        commands.append(
+            await host.send_command(
+                "set_mute",
+                {"track_id": host_track_id, "value": bool(track.get("mute", False))},
+            )
+        )
+        commands.append(
+            await host.send_command(
+                "set_solo",
+                {"track_id": host_track_id, "value": bool(track.get("solo", False))},
+            )
+        )
+
+    if project_changed:
+        project = save_project(project)
+    if broadcast:
+        await _broadcast_project(project)
+
+    return {
+        "host_running": True,
+        "commands": commands,
+        "project": project,
+        "summary": project_summary(project),
+    }
+
+
+async def sync_current_project_to_host(*, broadcast: bool = False) -> dict[str, Any]:
+    return await _sync_project_to_host(load_project(), broadcast=broadcast)
+
+
+@bp.route("/studio/project", methods=["GET"])
+async def studio_project():
+    project = load_project()
+    return jsonify(
+        {
+            "project": project,
+            "summary": project_summary(project),
+            "host": _host_snapshot(),
+        }
+    )
+
+
+@bp.route("/studio/project", methods=["PUT"])
+async def save_studio_project():
+    data = await _json_payload()
+    project = save_project(data.get("project") or {})
+    sync = await _sync_project_to_host(
+        project,
+        broadcast=True,
+    )
+    return jsonify({"ok": True, "project": project, "sync": sync})
+
+
+@bp.route("/studio/demo", methods=["POST"])
+async def reset_studio_demo():
+    await _json_payload()
+    project = save_project(default_project())
+    sync = await _sync_project_to_host(
+        project,
+        broadcast=True,
+    )
+    return jsonify({"ok": True, "project": project, "sync": sync})
+
+
+@bp.route("/studio/host/start", methods=["POST"])
+async def start_audio_host():
+    data = await _json_payload()
+    host = _host_manager()
+    try:
+        await host.start()
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e), "host": _host_snapshot()}), 409
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e), "host": _host_snapshot()}), 500
+
+    sync = None
+    if data.get("sync", True):
+        sync = await _sync_project_to_host(load_project(), broadcast=True)
+    return jsonify({"ok": True, "host": _host_snapshot(), "sync": sync})
+
+
+@bp.route("/studio/host/stop", methods=["POST"])
+async def stop_audio_host():
+    host = _host_manager()
+    await host.stop()
+    return jsonify({"ok": True, "host": _host_snapshot()})
+
+
+@bp.route("/studio/host/status", methods=["GET"])
+async def audio_host_status():
+    host = _host_manager()
+    engine = None
+    if host.is_running:
+        engine = await host.send_command("get_status")
+    return jsonify({"host": _host_snapshot(), "engine": engine})
+
+
+@bp.route("/studio/host/command", methods=["POST"])
+async def audio_host_command():
+    data = await _json_payload()
+    cmd = str(data.get("cmd") or "").strip()
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    if not cmd:
+        return jsonify({"error": "cmd is required"}), 400
+    host = _host_manager()
+    if not host.is_running:
+        return jsonify({"error": "host process not running", "host": _host_snapshot()}), 409
+    response = await host.send_command(cmd, params)
+    return jsonify({"response": response, "host": _host_snapshot()})
+
+
+@bp.route("/studio/plugins", methods=["GET", "POST"])
+async def studio_plugins():
+    host = _host_manager()
+    if not host.is_running:
+        return jsonify(
+            {
+                "plugins": {"vst3": [], "vst2": [], "priority": ["vst3", "vst2"]},
+                "host": _host_snapshot(),
+            }
+        )
+
+    data = await _json_payload() if request.method == "POST" else {}
+    params = {}
+    if isinstance(data.get("paths"), list):
+        params["paths"] = data["paths"]
+    if isinstance(data.get("vst2_paths"), list):
+        params["vst2_paths"] = data["vst2_paths"]
+    response = await host.send_command("scan_plugins", params)
+    return jsonify(
+        {
+            "plugins": response.get("data") or {},
+            "response": response,
+            "host": _host_snapshot(),
+        }
+    )
+
+
+@bp.route("/studio/transport", methods=["POST"])
+async def studio_transport():
+    data = await _json_payload()
+    action = str(data.get("action") or "").strip()
+    command_map = {"play": "play", "pause": "pause", "stop": "stop", "seek": "seek"}
+    if action not in command_map:
+        return jsonify({"error": "action must be play, pause, stop, or seek"}), 400
+    host = _host_manager()
+    if not host.is_running:
+        return jsonify({"error": "host process not running", "host": _host_snapshot()}), 409
+    params = {}
+    if action == "seek":
+        params["position"] = float(data.get("position", 0.0) or 0.0)
+    response = await host.send_command(command_map[action], params)
+    return jsonify({"ok": True, "response": response})
+
+
+@bp.route("/studio/sync", methods=["POST"])
+async def sync_studio_project():
+    data = await _json_payload()
+    project = load_project()
+    sync = await _sync_project_to_host(
+        project,
+        broadcast=bool(data.get("broadcast", False)),
+    )
+    return jsonify({"ok": True, "sync": sync, "host": _host_snapshot()})
+
+
+@bp.route("/studio/midi/write", methods=["POST"])
+async def studio_midi_write():
+    data = await _json_payload()
+    try:
+        project, summary = midi_write(
+            int(data.get("track_id", 1)),
+            data.get("notes") or [],
+            start=data.get("start"),
+            end=data.get("end"),
+            mode=str(data.get("mode") or "replace"),
+        )
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/midi/diff", methods=["POST"])
+async def studio_midi_diff():
+    data = await _json_payload()
+    try:
+        project, summary = midi_diff(int(data.get("track_id", 1)), data.get("operations") or [])
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/tracks", methods=["POST"])
+async def studio_create_track():
+    data = await _json_payload()
+    project, track = create_project_track(str(data.get("name") or "Instrument"))
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
+
+
+@bp.route("/studio/tracks/<int:track_id>", methods=["PATCH"])
+async def studio_update_track(track_id: int):
+    data = await _json_payload()
+    try:
+        project, track = update_project_track(track_id, data)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
+
+
 # ── Agent control endpoint (receives commands from MusicTool) ──
+
+
+@bp.route("/studio/tracks/<int:track_id>/plugin", methods=["POST"])
+async def studio_set_track_plugin(track_id: int):
+    data = await _json_payload()
+    plugin = data.get("plugin") if isinstance(data.get("plugin"), dict) else None
+    slot_id = str(data.get("slot_id") or "instrument")
+    try:
+        project, track = set_track_plugin(track_id, plugin, slot_id=slot_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+
+    load_response = None
+    sync = None
+    host = _host_manager()
+    if host.is_running and track.get("host_track_id") is None:
+        sync = await _sync_project_to_host(project, broadcast=False)
+        project = sync.get("project", project)
+        track = find_track(project, track_id)
+
+    host_track_id = track.get("host_track_id")
+    if host.is_running and host_track_id is not None:
+        slot = _track_slot(track, slot_id)
+        load_response = await _load_track_slot(host, int(host_track_id), slot)
+
+    await _broadcast_project(project)
+    return jsonify(
+        {
+            "ok": True,
+            "project": project,
+            "track": track,
+            "plugin": _track_slot(track, slot_id),
+            "load": load_response,
+            "sync": sync,
+            "host": _host_snapshot(),
+        }
+    )
 
 
 @bp.route("/control", methods=["POST"])

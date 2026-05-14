@@ -40,10 +40,13 @@
     </PageHeader>
     <div
       ref="chatBodyRef"
-      class="chat-body"
+      :class="['chat-body', { 'editor-expanded': editorExpanded }]"
     >
       <!-- Left: Chat -->
-      <div class="chat-main">
+      <div
+        v-show="!editorExpanded"
+        class="chat-main"
+      >
         <div
           ref="chatArea"
           class="chat-messages"
@@ -100,21 +103,27 @@
 
       <!-- Resize handle: chat <-> editor -->
       <div
+        v-show="!editorExpanded"
         class="resize-handle"
         @pointerdown="startResize('editor', $event)"
       />
 
       <!-- Center: Editor Tabs -->
       <div
-        class="editor-pane"
-        :style="{ width: `${editorWidth}px` }"
+        :class="['editor-pane', { expanded: editorExpanded }]"
+        :style="editorPaneStyle"
       >
-        <EditorTabs ref="editorTabsRef" />
+        <EditorTabs
+          ref="editorTabsRef"
+          :expanded="editorExpanded"
+          @request-expand="setEditorExpanded"
+          @active-tab-type-change="handleActiveTabTypeChange"
+        />
       </div>
 
       <Transition name="side-panel-slide">
         <div
-          v-if="panelOpen"
+          v-if="panelOpen && !editorExpanded"
           class="side-panel-wrap"
           :style="{ width: `${panelWidth}px` }"
         >
@@ -141,7 +150,10 @@
               </button>
             </div>
             <div class="panel-content">
-              <SessionPanel v-if="sideTab === 'sessions'" />
+              <SessionPanel
+                v-if="sideTab === 'sessions'"
+                @open-workstation="handleOpenWorkstation"
+              />
               <FilePanel
                 v-else
                 @open-file="handleOpenFile"
@@ -187,9 +199,10 @@ const editorTabsRef = ref(null)
 const agentMode = ref('agent')
 const modePending = ref(false)
 const panelOpen = ref(true)
-const sideTab = ref('files')
+const sideTab = ref('sessions')
 const panelWidth = ref(280)
 const editorWidth = ref(500)
+const editorExpanded = ref(false)
 const autoScroll = ref(true)
 let handledEventCount = 0
 let processingEvents = false
@@ -240,8 +253,19 @@ const displayItems = computed(() => {
   return items
 })
 
+const editorPaneStyle = computed(() => (
+  editorExpanded.value
+    ? { width: '100%' }
+    : { width: `${editorWidth.value}px` }
+))
+
 function togglePanel() {
   panelOpen.value = !panelOpen.value
+}
+
+function setEditorExpanded(expanded) {
+  editorExpanded.value = Boolean(expanded)
+  nextTick(() => window.dispatchEvent(new Event('resize')))
 }
 
 function onScroll() {
@@ -309,6 +333,19 @@ function stopResize() {
 function handleOpenFile(fileInfo) {
   if (editorTabsRef.value) {
     editorTabsRef.value.openFile(fileInfo)
+  }
+}
+
+function handleOpenWorkstation() {
+  if (editorTabsRef.value) {
+    editorTabsRef.value.openWorkstation()
+    setEditorExpanded(true)
+  }
+}
+
+function handleActiveTabTypeChange(type) {
+  if (type !== 'workstation' && editorExpanded.value) {
+    setEditorExpanded(false)
   }
 }
 
@@ -435,6 +472,10 @@ onUnmounted(() => {
   background: rgba(24, 24, 24, 0.12);
 }
 
+.chat-body.editor-expanded {
+  background: #17191c;
+}
+
 .chat-main {
   flex: 1;
   display: flex;
@@ -519,12 +560,21 @@ onUnmounted(() => {
 .editor-pane {
   flex-shrink: 0;
   min-width: 280px;
+  min-height: 0;
   max-width: 1200px;
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: rgba(24, 24, 24, 0.48);
+}
+
+.editor-pane.expanded {
+  flex: 1 1 auto;
+  max-width: none;
+  border-left: 0;
+  border-right: 0;
 }
 
 /* Right side panel */

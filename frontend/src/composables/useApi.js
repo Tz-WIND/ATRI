@@ -112,5 +112,55 @@ export function useApi() {
     saveMusicDirs: (directories) => request('/api/music/dirs', { method: 'POST', body: JSON.stringify({ directories }) }),
     musicScan: () => request('/api/music/scan', { method: 'POST' }),
     musicLibrary: () => request('/api/music/library'),
+
+    // AI Music Workstation
+    studioProject: () => request('/api/music/studio/project'),
+    saveStudioProject: (project, options = {}) => request('/api/music/studio/project', {
+      method: 'PUT',
+      body: JSON.stringify({ project, ...options }),
+    }),
+    studioDemo: (options = {}) => request('/api/music/studio/demo', {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
+    hostStatus: () => request('/api/music/studio/host/status'),
+    hostCommand: (cmd, params = {}) => request('/api/music/studio/host/command', {
+      method: 'POST',
+      body: JSON.stringify({ cmd, params }),
+    }),
+    studioPlugins: (options = null) => options
+      ? request('/api/music/studio/plugins', {
+        method: 'POST',
+        body: JSON.stringify(options),
+      })
+      : request('/api/music/studio/plugins'),
+    studioSync: (options = {}) => request('/api/music/studio/sync', {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
+    studioTransport: (action, payload = {}) => request('/api/music/studio/transport', {
+      method: 'POST',
+      body: JSON.stringify({ action, ...payload }),
+    }),
+    studioMidiWrite: (payload) => request('/api/music/studio/midi/write', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+    studioMidiDiff: (payload) => request('/api/music/studio/midi/diff', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+    studioCreateTrack: (name) => request('/api/music/studio/tracks', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+    studioUpdateTrack: (trackId, data) => request(`/api/music/studio/tracks/${encodeURIComponent(trackId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+    studioSetTrackPlugin: (trackId, plugin, slotId = 'instrument') => request(`/api/music/studio/tracks/${encodeURIComponent(trackId)}/plugin`, {
+      method: 'POST',
+      body: JSON.stringify({ plugin, slot_id: slotId }),
+    }),
   }
 }

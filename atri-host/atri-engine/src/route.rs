@@ -10,7 +10,7 @@ use super::processor::{Gain, Pan, Processor};
 pub struct Route {
     pub id: u32,
     pub name: String,
-    pub processors: Vec<Arc<Mutex<dyn Processor>>>,
+    pub processors: Vec<Option<Arc<Mutex<dyn Processor>>>>,
     pub gain: Gain,
     pub pan: Pan,
     pub sequencer: MidiSequencer,
@@ -33,7 +33,29 @@ impl Route {
     }
 
     pub fn add_processor(&mut self, proc: Arc<Mutex<dyn Processor>>) {
-        self.processors.push(proc);
+        self.processors.push(Some(proc));
+    }
+
+    pub fn set_processor_slot(
+        &mut self,
+        slot_index: usize,
+        proc: Option<Arc<Mutex<dyn Processor>>>,
+    ) {
+        if self.processors.len() <= slot_index {
+            self.processors.resize_with(slot_index + 1, || None);
+        }
+
+        if let Some(old_proc) = self.processors[slot_index].take() {
+            if let Ok(mut old_proc) = old_proc.lock() {
+                old_proc.deactivate();
+            }
+        }
+
+        self.processors[slot_index] = proc;
+    }
+
+    pub fn clear_processor_slot(&mut self, slot_index: usize) {
+        self.set_processor_slot(slot_index, None);
     }
 
     pub fn set_notes(&mut self, notes: Vec<MidiNote>) {
@@ -57,6 +79,9 @@ impl Route {
 
         // Run all plugins/processors in chain
         for proc in &self.processors {
+            let Some(proc) = proc else {
+                continue;
+            };
             if let Ok(mut p) = proc.lock() {
                 p.run(bufs, midi, start_sample, end_sample, speed, nframes, true);
             }

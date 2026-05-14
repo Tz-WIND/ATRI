@@ -65,6 +65,7 @@ pub struct TrackStatus {
     solo: bool,
     note_count: usize,
     processors: Vec<String>,
+    processor_slots: Vec<Option<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,11 +114,17 @@ pub enum Command {
     },
     LoadBuiltinSynth {
         track_id: u32,
+        slot_index: Option<u8>,
     },
     LoadVst3 {
         track_id: u32,
         path: String,
         name: Option<String>,
+        slot_index: Option<u8>,
+    },
+    ClearProcessorSlot {
+        track_id: u32,
+        slot_index: u8,
     },
     ScanPlugins {
         paths: Option<Vec<String>>,
@@ -271,18 +278,22 @@ fn execute(
                 CommandResponse::error(Some("set_solo"), "track not found")
             }
         }
-        Command::LoadBuiltinSynth { track_id } => {
+        Command::LoadBuiltinSynth {
+            track_id,
+            slot_index,
+        } => {
+            let slot_index = usize::from(slot_index.unwrap_or(0));
             let sample_rate = engine.lock().unwrap().sample_rate();
             let synth = BasicSynth::new(sample_rate);
             let mut insert = PluginInsert::new(Box::new(synth));
             insert.activate();
 
             if with_session(engine, |session| {
-                session.add_processor(track_id, Arc::new(Mutex::new(insert)))
+                session.set_processor_slot(track_id, slot_index, Some(Arc::new(Mutex::new(insert))))
             }) {
                 CommandResponse::ack_with(
                     "load_builtin_synth",
-                    json!({ "name": "ATRI Basic Synth" }),
+                    json!({ "name": "ATRI Basic Synth", "slot_index": slot_index }),
                 )
             } else {
                 CommandResponse::error(Some("load_builtin_synth"), "track not found")
@@ -292,7 +303,9 @@ fn execute(
             track_id,
             path,
             name,
+            slot_index,
         } => {
+            let slot_index = usize::from(slot_index.unwrap_or(0));
             let path = resolve_vst3_library_path(PathBuf::from(path));
             let factory = match PluginFactory::load(&path) {
                 Ok(factory) => factory,
@@ -304,11 +317,30 @@ fn execute(
             insert.activate();
 
             if with_session(engine, |session| {
-                session.add_processor(track_id, Arc::new(Mutex::new(insert)))
+                session.set_processor_slot(track_id, slot_index, Some(Arc::new(Mutex::new(insert))))
             }) {
-                CommandResponse::ack_with("load_vst3", json!({ "name": plugin_name }))
+                CommandResponse::ack_with(
+                    "load_vst3",
+                    json!({ "name": plugin_name, "slot_index": slot_index }),
+                )
             } else {
                 CommandResponse::error(Some("load_vst3"), "track not found")
+            }
+        }
+        Command::ClearProcessorSlot {
+            track_id,
+            slot_index,
+        } => {
+            let slot_index = usize::from(slot_index);
+            if with_session(engine, |session| {
+                session.clear_processor_slot(track_id, slot_index)
+            }) {
+                CommandResponse::ack_with(
+                    "clear_processor_slot",
+                    json!({ "slot_index": slot_index }),
+                )
+            } else {
+                CommandResponse::error(Some("clear_processor_slot"), "track not found")
             }
         }
         Command::ScanPlugins { paths, vst2_paths } => {
@@ -441,6 +473,81 @@ mod tests {
         );
         assert!(cmd_rx.try_recv().is_err());
     }
+
+    #[test]
+    fn load_builtin_synth_replaces_processor_slot() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track_id = with_session(&engine, |session| session.add_track("Keys".to_string()));
+
+        for _ in 0..2 {
+            let response = execute(
+                Command::LoadBuiltinSynth {
+                    track_id,
+                    slot_index: None,
+                },
+                &engine,
+                &cmd_tx,
+                &streamer,
+                &config,
+            );
+            assert!(
+                matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "load_builtin_synth")
+            );
+        }
+
+        let response = execute(Command::GetStatus, &engine, &cmd_tx, &streamer, &config);
+        let CommandResponse::Status { tracks, .. } = response else {
+            panic!("expected status response");
+        };
+
+        assert_eq!(tracks[0].processors, vec!["ATRI Basic Synth".to_string()]);
+        assert_eq!(
+            tracks[0].processor_slots,
+            vec![Some("ATRI Basic Synth".to_string())]
+        );
+    }
+
+    #[test]
+    fn clear_processor_slot_removes_only_target_slot() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track_id = with_session(&engine, |session| session.add_track("Keys".to_string()));
+
+        let response = execute(
+            Command::LoadBuiltinSynth {
+                track_id,
+                slot_index: Some(2),
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+        );
+        assert!(
+            matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "load_builtin_synth")
+        );
+
+        let response = execute(
+            Command::ClearProcessorSlot {
+                track_id,
+                slot_index: 2,
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+        );
+        assert!(
+            matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "clear_processor_slot")
+        );
+
+        let response = execute(Command::GetStatus, &engine, &cmd_tx, &streamer, &config);
+        let CommandResponse::Status { tracks, .. } = response else {
+            panic!("expected status response");
+        };
+
+        assert!(tracks[0].processors.is_empty());
+        assert_eq!(tracks[0].processor_slots, vec![None, None, None]);
+    }
 }
 
 fn resolve_vst3_library_path(path: PathBuf) -> PathBuf {
@@ -459,6 +566,18 @@ fn status(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
             .iter()
             .filter_map(|route| {
                 let route = route.lock().ok()?;
+                let processor_slots = route
+                    .processors
+                    .iter()
+                    .map(|processor| {
+                        processor.as_ref().and_then(|processor| {
+                            processor
+                                .lock()
+                                .ok()
+                                .map(|processor| processor.name().to_string())
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 Some(TrackStatus {
                     id: route.id,
                     name: route.name.clone(),
@@ -471,12 +590,15 @@ fn status(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
                         .processors
                         .iter()
                         .filter_map(|processor| {
-                            processor
-                                .lock()
-                                .ok()
-                                .map(|processor| processor.name().to_string())
+                            processor.as_ref().and_then(|processor| {
+                                processor
+                                    .lock()
+                                    .ok()
+                                    .map(|processor| processor.name().to_string())
+                            })
                         })
                         .collect(),
+                    processor_slots,
                 })
             })
             .collect();

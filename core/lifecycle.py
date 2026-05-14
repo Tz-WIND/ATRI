@@ -185,6 +185,8 @@ class Lifecycle:
                 asyncio.create_task(self._safe_task(self.dashboard.run(), "Dashboard"))
             )
 
+        await self._start_audio_host()
+
         # Plugin background tasks
         for plugin in self.plugin_manager.plugins:
             for task_func in plugin.get_background_tasks():
@@ -196,6 +198,34 @@ class Lifecycle:
 
         logger.info("ATRI is running. Press Ctrl+C to stop.")
         await asyncio.gather(*self._tasks, return_exceptions=True)
+
+    async def _start_audio_host(self) -> None:
+        audio_cfg = self.config.get("audio_host", {})
+        if not audio_cfg.get("auto_start", True):
+            return
+
+        from core.host import configure_host_manager
+
+        host = configure_host_manager(
+            binary_path=audio_cfg.get("binary_path") or None,
+            sample_rate=int(audio_cfg.get("sample_rate", 48000) or 48000),
+            buffer_size=int(audio_cfg.get("buffer_size", 256) or 256),
+        )
+        try:
+            await host.start()
+        except FileNotFoundError as e:
+            logger.warning("Audio host auto-start skipped: %s", e)
+            return
+        except OSError as e:
+            logger.warning("Audio host auto-start failed: %s", e)
+            return
+
+        try:
+            from dashboard.music import sync_current_project_to_host
+
+            await sync_current_project_to_host(broadcast=False)
+        except Exception as e:
+            logger.warning("Audio host started, but initial project sync failed: %s", e)
 
     def cancel_operation(self, session_id: str | None = None) -> bool:
         """Cancel the currently running agent operation (if any).
@@ -243,7 +273,12 @@ class Lifecycle:
         await self.plugin_manager.terminate()
         if hasattr(self, "dashboard"):
             await self.dashboard.stop()
+        from core.host import get_host_manager
         from core.tools.mcp import get_mcp_registry
+
+        host = get_host_manager()
+        if host.is_running:
+            await host.stop()
 
         get_mcp_registry().close()
 

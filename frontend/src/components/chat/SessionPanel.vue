@@ -70,12 +70,44 @@
         </div>
       </div>
     </div>
+    <div class="workstation-dock">
+      <div class="dock-head">
+        <span>Workstation</span>
+        <span :class="['dock-dot', { on: host.running }]" />
+      </div>
+      <button
+        class="workstation-open"
+        @click="$emit('open-workstation')"
+      >
+        <span class="workstation-icon">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M4 17V7" />
+            <path d="M8 19V5" />
+            <path d="M12 16V8" />
+            <path d="M16 21V3" />
+            <path d="M20 18V6" />
+          </svg>
+        </span>
+        <span class="workstation-copy">
+          <strong>{{ project?.title || 'ATRI Session' }}</strong>
+          <small>{{ tracks.length }} tracks · {{ totalNotes }} notes</small>
+        </span>
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted } from 'vue'
+import { useDawHost } from '@/composables/useDawHost.js'
 import { useSession } from '@/composables/useSession.js'
+
+defineEmits(['open-workstation'])
 
 const {
   currentId,
@@ -86,6 +118,8 @@ const {
   removeSession,
   displayName: _displayName,
 } = useSession()
+
+const { project, tracks, totalNotes, host, loadProject } = useDawHost()
 
 const hasCurrent = computed(() => !!currentId.value)
 const currentInList = computed(() => allSessions.value.some(s => s.id === currentId.value))
@@ -107,7 +141,10 @@ async function deleteSession(id) {
   await removeSession(id)
 }
 
-onMounted(() => loadList())
+onMounted(() => {
+  loadList()
+  loadProject()
+})
 </script>
 
 <style scoped>
@@ -152,6 +189,7 @@ onMounted(() => loadList())
 
 .session-list {
   flex: 1;
+  min-height: 120px;
   overflow-y: auto;
   padding: 8px;
 }
@@ -239,5 +277,95 @@ onMounted(() => loadList())
   text-align: center;
   color: var(--t3);
   font-size: 12px;
+}
+
+.workstation-dock {
+  flex-shrink: 0;
+  padding: 9px 8px 10px;
+  border-top: 1px solid var(--border);
+  background: rgba(24, 24, 24, 0.5);
+}
+
+.dock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: var(--t3);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.dock-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red);
+  box-shadow: 0 0 0 3px rgba(255, 141, 127, 0.1);
+}
+
+.dock-dot.on {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(143, 216, 199, 0.12);
+}
+
+.workstation-open {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-height: 54px;
+  padding: 8px;
+  border: 1px solid rgba(240, 209, 122, 0.18);
+  border-radius: 8px;
+  background: rgba(240, 209, 122, 0.08);
+  color: var(--t1);
+  cursor: pointer;
+  text-align: left;
+}
+
+.workstation-open:hover {
+  background: rgba(240, 209, 122, 0.12);
+  border-color: rgba(240, 209, 122, 0.28);
+}
+
+.workstation-icon {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: #16191c;
+  color: #f0d17a;
+}
+
+.workstation-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.workstation-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.workstation-copy strong,
+.workstation-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workstation-copy strong {
+  font-size: 12px;
+}
+
+.workstation-copy small {
+  color: var(--t3);
+  font-size: 11px;
 }
 </style>

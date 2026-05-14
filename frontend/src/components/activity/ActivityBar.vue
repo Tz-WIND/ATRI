@@ -53,6 +53,7 @@ defineEmits(['navigate', 'toggleSidebar'])
 
 const icons = {
   chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+  studio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17V7"/><path d="M8 19V5"/><path d="M12 16V8"/><path d="M16 21V3"/><path d="M20 18V6"/></svg>',
   music: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>',
   plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11h4m-2-2v4m6-2h4m-2-2v4"/><rect x="2" y="6" width="8" height="8" rx="1"/><rect x="14" y="6" width="8" height="8" rx="1"/><path d="M6 14v4a2 2 0 002 2h8a2 2 0 002-2v-4"/></svg>',
