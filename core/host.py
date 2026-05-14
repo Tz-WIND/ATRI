@@ -51,9 +51,7 @@ class HostManager:
         for c in candidates:
             if c.exists():
                 return str(c)
-        raise FileNotFoundError(
-            "atri-host binary not found. Build with: cargo build --release"
-        )
+        raise FileNotFoundError("atri-host binary not found. Build with: cargo build --release")
 
     def set_audio_callback(self, callback: Callable[[bytes, int, int], None]):
         """Set a callback that receives PCM audio chunks.
@@ -147,9 +145,7 @@ class HostManager:
         reader = self._process.stdout
         while self._running:
             try:
-                line = await asyncio.get_event_loop().run_in_executor(
-                    None, reader.readline
-                )
+                line = await asyncio.get_event_loop().run_in_executor(None, reader.readline)
                 if not line:
                     logger.info("Host stdout closed")
                     break
@@ -194,9 +190,7 @@ class HostManager:
         reader = self._process.stderr
         while self._running:
             try:
-                line = await asyncio.get_event_loop().run_in_executor(
-                    None, reader.readline
-                )
+                line = await asyncio.get_event_loop().run_in_executor(None, reader.readline)
                 if not line:
                     break
                 logger.debug("[host] %s", line.decode(errors="replace").rstrip())

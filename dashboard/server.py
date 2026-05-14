@@ -294,12 +294,14 @@ class Dashboard:
         if not audio_clients:
             return
         # Prepend a JSON header line followed by raw PCM bytes
-        header = json.dumps({
-            "type": "audio",
-            "samples": nframes,
-            "channels": channels,
-            "sample_rate": 48000,
-        })
+        header = json.dumps(
+            {
+                "type": "audio",
+                "samples": nframes,
+                "channels": channels,
+                "sample_rate": 48000,
+            }
+        )
         for ws in list(audio_clients):
             try:
                 await ws.send(header)
