@@ -8,13 +8,9 @@ frontend via WebSocket broadcast.
 import asyncio
 import json
 import logging
-import os
-import struct
 import subprocess
-import sys
-from asyncio import StreamReader, StreamWriter
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
 
 logger = logging.getLogger("atri.host")
 
@@ -134,7 +130,7 @@ class HostManager:
         """Read a single JSON response line from the response queue."""
         try:
             return await asyncio.wait_for(self._response_queue.get(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {"type": "error", "message": "timeout waiting for host response"}
 
     async def _read_stdout(self) -> None:
