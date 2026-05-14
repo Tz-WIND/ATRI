@@ -44,3 +44,6 @@ frontend/dist/
 
 # Dashboard static (generated / local)
 dashboard/static/
+
+# Rust
+atri-host/target/

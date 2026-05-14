@@ -1,0 +1,13 @@
+[package]
+name = "atri-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+atri-core = { path = "../atri-core" }
+crossbeam.workspace = true
+ringbuf.workspace = true
+cpal.workspace = true
+log.workspace = true
+thiserror.workspace = true

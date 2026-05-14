@@ -288,6 +288,25 @@ class Dashboard:
             except Exception:
                 self._ws_clients.discard(ws)
 
+    async def broadcast_audio(self, pcm_bytes: bytes, nframes: int, channels: int):
+        """Send raw PCM audio to all connected audio WebSocket clients."""
+        audio_clients = getattr(self, "_audio_clients", set())
+        if not audio_clients:
+            return
+        # Prepend a JSON header line followed by raw PCM bytes
+        header = json.dumps({
+            "type": "audio",
+            "samples": nframes,
+            "channels": channels,
+            "sample_rate": 48000,
+        })
+        for ws in list(audio_clients):
+            try:
+                await ws.send(header)
+                await ws.send(pcm_bytes)
+            except Exception:
+                audio_clients.discard(ws)
+
     async def run(self):
         from hypercorn.asyncio import serve
         from hypercorn.config import Config

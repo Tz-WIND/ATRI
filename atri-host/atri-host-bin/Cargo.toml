@@ -1,0 +1,22 @@
+[package]
+name = "atri-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "atri-host"
+path = "src/main.rs"
+
+[dependencies]
+atri-core = { path = "../atri-core" }
+atri-engine = { path = "../atri-engine" }
+atri-vst3 = { path = "../atri-vst3" }
+serde.workspace = true
+serde_json.workspace = true
+crossbeam.workspace = true
+ringbuf.workspace = true
+cpal.workspace = true
+log.workspace = true
+env_logger.workspace = true
+thiserror.workspace = true
