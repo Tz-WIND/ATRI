@@ -1,7 +1,10 @@
 use std::sync::{Arc, Mutex};
+
 use atri_core::audio::buffer_set::BufferSet;
+use atri_core::midi::event::ScheduledMidiEvent;
 use atri_core::midi::note::MidiNote;
 use atri_core::midi::sequencer::MidiSequencer;
+
 use super::processor::{Gain, Pan, Processor};
 
 pub struct Route {
@@ -41,6 +44,7 @@ impl Route {
     pub fn process(
         &mut self,
         bufs: &mut BufferSet,
+        midi: &[ScheduledMidiEvent],
         start_sample: i64,
         end_sample: i64,
         speed: f64,
@@ -54,12 +58,14 @@ impl Route {
         // Run all plugins/processors in chain
         for proc in &self.processors {
             if let Ok(mut p) = proc.lock() {
-                p.run(bufs, start_sample, end_sample, speed, nframes, true);
+                p.run(bufs, midi, start_sample, end_sample, speed, nframes, true);
             }
         }
 
         // Apply gain then pan
-        self.gain.run(bufs, start_sample, end_sample, speed, nframes, true);
-        self.pan.run(bufs, start_sample, end_sample, speed, nframes, true);
+        self.gain
+            .run(bufs, &[], start_sample, end_sample, speed, nframes, true);
+        self.pan
+            .run(bufs, &[], start_sample, end_sample, speed, nframes, true);
     }
 }

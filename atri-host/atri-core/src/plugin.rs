@@ -1,4 +1,5 @@
 use crate::audio::buffer_set::BufferSet;
+use crate::midi::event::ScheduledMidiEvent;
 
 /// The Plugin trait — the core abstraction for loadable audio processors
 /// (VST3, VST2, LV2, etc.). Defined in atri-core so both atri-engine
@@ -12,6 +13,7 @@ pub trait Plugin: Send + Sync {
     fn connect_and_run(
         &mut self,
         bufs: &mut BufferSet,
+        midi: &[ScheduledMidiEvent],
         start_sample: i64,
         end_sample: i64,
         speed: f64,

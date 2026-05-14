@@ -4,4 +4,5 @@ pub mod plugin_proc;
 pub mod processor;
 pub mod route;
 pub mod session;
+pub mod synth;
 pub mod transport;

@@ -70,6 +70,8 @@ CONFIG_SCHEMA: dict[str, Any] = {
             },
         },
         "plugins_dir": {"type": "string", "default": "plugins"},
+        "vst3_plugin_paths": {"type": "array", "default": []},
+        "vst2_plugin_paths": {"type": "array", "default": []},
         "music_directories": {"type": "array", "default": []},
         "mcp_servers": {"type": "object", "default": {}},
         "skills_root": {"type": "string", "default": "skills"},

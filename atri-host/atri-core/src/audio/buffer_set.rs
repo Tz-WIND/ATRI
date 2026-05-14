@@ -10,7 +10,9 @@ pub struct BufferSet {
 impl BufferSet {
     pub fn new(num_ports: usize, channels: u16, capacity: usize) -> Self {
         Self {
-            buffers: (0..num_ports).map(|_| AudioBuffer::new(channels, capacity)).collect(),
+            buffers: (0..num_ports)
+                .map(|_| AudioBuffer::new(channels, capacity))
+                .collect(),
         }
     }
 
@@ -29,6 +31,12 @@ impl BufferSet {
     pub fn silence(&mut self, nframes: usize) {
         for buf in &mut self.buffers {
             buf.silence(nframes);
+        }
+    }
+
+    pub fn resize(&mut self, capacity: usize) {
+        for buf in &mut self.buffers {
+            buf.resize(capacity);
         }
     }
 }

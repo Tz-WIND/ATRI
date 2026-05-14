@@ -14,6 +14,7 @@ atri-engine = { path = "../atri-engine" }
 atri-vst3 = { path = "../atri-vst3" }
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 crossbeam.workspace = true
 ringbuf.workspace = true
 cpal.workspace = true

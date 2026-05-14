@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use super::beats::{Beats, PPQN};
 use super::bbt::BBT_Time;
+use super::beats::{Beats, PPQN};
 use super::superclock::Superclock;
 use super::tempo::{Meter, Tempo, TempoMetric};
 
@@ -60,6 +60,12 @@ impl TempoMap {
         self.sample_rate
     }
 
+    pub fn with_sample_rate(&self, sample_rate: u32) -> Self {
+        let mut new = self.clone();
+        new.sample_rate = sample_rate;
+        new
+    }
+
     // ── lookups ──
 
     pub fn tempo_at_superclock(&self, sc: Superclock) -> &TempoPoint {
@@ -101,8 +107,7 @@ impl TempoMap {
 
         let beat_offset = beats.ticks - tp.beat_position.ticks;
         let beats_f64 = beat_offset as f64 / PPQN as f64;
-        let sc_offset =
-            (beats_f64 * tp.tempo.superclocks_per_quarter as f64) as Superclock;
+        let sc_offset = (beats_f64 * tp.tempo.superclocks_per_quarter as f64) as Superclock;
         tp.position + sc_offset
     }
 
@@ -161,8 +166,7 @@ impl TempoMap {
         let beats_diff = (bbt.beats - mp.bbt_position.beats) as i64;
         let ticks_diff = (bbt.ticks - mp.bbt_position.ticks) as i64;
 
-        let total_ticks =
-            bars_diff * tpb * mp.meter.num as i64 + beats_diff * tpb + ticks_diff;
+        let total_ticks = bars_diff * tpb * mp.meter.num as i64 + beats_diff * tpb + ticks_diff;
         let beats = Beats {
             ticks: mp.beat_position.ticks + total_ticks,
         };
@@ -170,10 +174,7 @@ impl TempoMap {
     }
 
     pub fn sample_at_bbt(&self, bbt: BBT_Time) -> i64 {
-        super::superclock::superclock_to_samples(
-            self.superclock_at_bbt(bbt),
-            self.sample_rate,
-        )
+        super::superclock::superclock_to_samples(self.superclock_at_bbt(bbt), self.sample_rate)
     }
 
     // ── mutations (returns new TempoMap) ──
@@ -280,11 +281,7 @@ mod tests {
 
     #[test]
     fn test_default_tempo_map() {
-        let map = TempoMap::new(
-            Tempo::new(120.0, 4),
-            Meter::new(4, 4),
-            48000,
-        );
+        let map = TempoMap::new(Tempo::new(120.0, 4), Meter::new(4, 4), 48000);
 
         // At zero, BBT should be 1|1|0
         let bbt = map.bbt_at_superclock(0);
@@ -297,9 +294,10 @@ mod tests {
         assert_eq!(bar_samples, 96000);
 
         // Round-trip
-        let bbt2 = map.bbt_at_superclock(
-            crate::time::superclock::samples_to_superclock(bar_samples, 48000),
-        );
+        let bbt2 = map.bbt_at_superclock(crate::time::superclock::samples_to_superclock(
+            bar_samples,
+            48000,
+        ));
         assert_eq!(bbt2.bars, 2);
         assert_eq!(bbt2.beats, 1);
         assert_eq!(bbt2.ticks, 0);
@@ -307,11 +305,7 @@ mod tests {
 
     #[test]
     fn test_tempo_change() {
-        let map = TempoMap::new(
-            Tempo::new(120.0, 4),
-            Meter::new(4, 4),
-            48000,
-        );
+        let map = TempoMap::new(Tempo::new(120.0, 4), Meter::new(4, 4), 48000);
 
         // Insert tempo change at beat 4 (end of bar 1)
         let beat_4 = Beats::from_ticks(4 * PPQN as i64);
@@ -325,5 +319,23 @@ mod tests {
         let bar3_start = map.sample_at_bbt(BBT_Time::new(3, 1, 0));
         // Bar 2 at 240bpm = 1 sec = 48000 samples
         assert_eq!(bar3_start, 96000 + 48000);
+    }
+
+    #[test]
+    fn with_sample_rate_preserves_tempo_and_meter_points() {
+        let map = TempoMap::new(Tempo::new(120.0, 4), Meter::new(4, 4), 48000);
+        let beat_4 = Beats::from_ticks(4 * PPQN as i64);
+        let map = map
+            .with_tempo(Tempo::new(90.0, 4), beat_4)
+            .with_meter(Meter::new(3, 4), beat_4)
+            .with_sample_rate(96000);
+
+        assert_eq!(map.sample_rate(), 96000);
+        assert_eq!(map.current_tempo().bpm, 120.0);
+        assert_eq!(map.current_meter().num, 4);
+
+        let metric = map.metric_at_beats(beat_4);
+        assert_eq!(metric.tempo.bpm, 90.0);
+        assert_eq!(metric.meter.num, 3);
     }
 }

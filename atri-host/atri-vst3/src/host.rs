@@ -7,7 +7,9 @@ pub struct Vst3Host {
 
 impl Vst3Host {
     pub fn new() -> Self {
-        Self { name: "ATRI Host".to_string() }
+        Self {
+            name: "ATRI Host".to_string(),
+        }
     }
 
     pub fn with_name(name: impl Into<String>) -> Self {

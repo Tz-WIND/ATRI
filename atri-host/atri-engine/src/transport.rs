@@ -7,8 +7,8 @@ pub enum TransportState {
 
 pub struct Transport {
     pub state: TransportState,
-    pub position: i64,          // current sample position
-    pub speed: f64,             // 0.0, 1.0, -1.0
+    pub position: i64, // current sample position
+    pub speed: f64,    // 0.0, 1.0, -1.0
     pub loop_start: Option<i64>,
     pub loop_end: Option<i64>,
     default_speed: f64,

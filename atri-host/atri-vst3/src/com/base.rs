@@ -84,7 +84,9 @@ mod tests {
     fn as_mut_works() {
         let mut val = 10u32;
         let ptr = ComPtr::new(&mut val as *mut u32);
-        unsafe { *ptr.as_mut() = 20; }
+        unsafe {
+            *ptr.as_mut() = 20;
+        }
         assert_eq!(val, 20);
     }
 

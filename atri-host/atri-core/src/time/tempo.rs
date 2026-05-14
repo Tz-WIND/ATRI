@@ -14,7 +14,11 @@ pub struct Tempo {
 impl Tempo {
     pub fn new(bpm: f64, note_type: u8) -> Self {
         let superclocks_per_quarter = bpm_to_superclocks_per_quarter(bpm);
-        Self { bpm, note_type, superclocks_per_quarter }
+        Self {
+            bpm,
+            note_type,
+            superclocks_per_quarter,
+        }
     }
 }
 

@@ -9,7 +9,10 @@ pub struct TimeCnt {
 
 impl TimeCnt {
     pub fn zero(domain: TimeDomain) -> Self {
-        Self { distance: 0, domain }
+        Self {
+            distance: 0,
+            domain,
+        }
     }
 
     pub fn from_samples(samples: i64) -> Self {
@@ -29,9 +32,7 @@ impl TimeCnt {
 
     pub fn end_position(&self, start: TimePos) -> Option<TimePos> {
         match (start, self.domain) {
-            (TimePos::Audio(s), TimeDomain::AudioTime) => {
-                Some(TimePos::Audio(s + self.distance))
-            }
+            (TimePos::Audio(s), TimeDomain::AudioTime) => Some(TimePos::Audio(s + self.distance)),
             (TimePos::Beats(b), TimeDomain::BeatTime) => {
                 use super::beats::Beats;
                 Some(TimePos::Beats(Beats {

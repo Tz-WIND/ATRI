@@ -45,7 +45,9 @@ impl fmt::Display for Beats {
 impl Add for Beats {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        Self { ticks: self.ticks + rhs.ticks }
+        Self {
+            ticks: self.ticks + rhs.ticks,
+        }
     }
 }
 
@@ -58,7 +60,9 @@ impl AddAssign for Beats {
 impl Sub for Beats {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        Self { ticks: self.ticks - rhs.ticks }
+        Self {
+            ticks: self.ticks - rhs.ticks,
+        }
     }
 }
 
@@ -71,14 +75,18 @@ impl SubAssign for Beats {
 impl Mul<f64> for Beats {
     type Output = Self;
     fn mul(self, rhs: f64) -> Self {
-        Self { ticks: (self.ticks as f64 * rhs) as i64 }
+        Self {
+            ticks: (self.ticks as f64 * rhs) as i64,
+        }
     }
 }
 
 impl Div<f64> for Beats {
     type Output = Self;
     fn div(self, rhs: f64) -> Self {
-        Self { ticks: (self.ticks as f64 / rhs) as i64 }
+        Self {
+            ticks: (self.ticks as f64 / rhs) as i64,
+        }
     }
 }
 

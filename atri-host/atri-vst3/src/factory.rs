@@ -19,14 +19,9 @@ impl PluginFactory {
         }
 
         let plugin_name = path
-            .parent()
-            .and_then(|p| p.file_stem())
+            .file_stem()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| {
-                path.file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string())
-            });
+            .unwrap_or_else(|| "Unknown".to_string());
 
         match unsafe { libloading::Library::new(path) } {
             Ok(lib) => Ok(Self {
@@ -40,11 +35,13 @@ impl PluginFactory {
 
     /// Try to resolve the VST3 entry point `GetPluginFactory` from the loaded library.
     /// Returns the function pointer on success.
-    pub fn get_plugin_factory_fn(&self) -> Result<unsafe extern "system" fn() -> *mut std::ffi::c_void, String> {
+    pub fn get_plugin_factory_fn(
+        &self,
+    ) -> Result<unsafe extern "system" fn() -> *mut std::ffi::c_void, String> {
         let lib = self.library.as_ref().ok_or("Library not loaded")?;
-        let sym: libloading::Symbol<unsafe extern "system" fn() -> *mut std::ffi::c_void> = unsafe {
-            lib.get(b"GetPluginFactory\0")
-        }.map_err(|e| format!("GetPluginFactory not found: {}", e))?;
+        let sym: libloading::Symbol<unsafe extern "system" fn() -> *mut std::ffi::c_void> =
+            unsafe { lib.get(b"GetPluginFactory\0") }
+                .map_err(|e| format!("GetPluginFactory not found: {}", e))?;
         Ok(*sym)
     }
 }
@@ -57,16 +54,14 @@ mod tests {
     /// Real integration test: load a system VST3 plugin and verify it exports GetPluginFactory.
     #[test]
     fn load_real_vst3_dll() {
-        let dll_path = PathBuf::from(
-            "C:/Program Files/Common Files/VST3/VSL/Vienna Synchron Player.vst3",
-        );
+        let dll_path =
+            PathBuf::from("C:/Program Files/Common Files/VST3/VSL/Vienna Synchron Player.vst3");
         if !dll_path.exists() {
             eprintln!("Skipping: VSL plugin not found");
             return;
         }
 
-        let factory = PluginFactory::load(&dll_path)
-            .expect("Should load real VST3 DLL");
+        let factory = PluginFactory::load(&dll_path).expect("Should load real VST3 DLL");
 
         assert!(!factory.plugin_name.is_empty());
         assert!(factory.library.is_some());
@@ -76,10 +71,7 @@ mod tests {
         match entry {
             Ok(_func_ptr) => {
                 // Successfully resolved GetPluginFactory symbol
-                eprintln!(
-                    "GetPluginFactory found in '{}'",
-                    factory.plugin_name
-                );
+                eprintln!("GetPluginFactory found in '{}'", factory.plugin_name);
             }
             Err(e) => {
                 eprintln!(
@@ -110,9 +102,12 @@ mod tests {
         let plugins = scanner.scan();
 
         for info in &plugins {
-            assert!(info.dll_path.exists(),
+            assert!(
+                info.dll_path.exists(),
                 "dll_path should exist for {}: {}",
-                info.name, info.dll_path.display());
+                info.name,
+                info.dll_path.display()
+            );
 
             let factory = PluginFactory::load(&info.dll_path);
             match factory {

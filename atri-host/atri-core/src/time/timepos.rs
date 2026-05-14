@@ -10,8 +10,8 @@ pub enum TimeDomain {
 /// A position on the timeline, either in audio samples or musical beats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimePos {
-    Audio(i64),       // sample position
-    Beats(Beats),    // musical beat position
+    Audio(i64),   // sample position
+    Beats(Beats), // musical beat position
 }
 
 impl TimePos {

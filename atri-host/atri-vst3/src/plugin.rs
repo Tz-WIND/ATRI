@@ -1,5 +1,8 @@
 use atri_core::audio::buffer_set::BufferSet;
+use atri_core::midi::event::ScheduledMidiEvent;
 use atri_core::plugin::Plugin;
+
+use crate::factory::PluginFactory;
 
 /// A VST3 plugin instance wrapping the component and audio processor.
 pub struct Vst3Plugin {
@@ -8,6 +11,7 @@ pub struct Vst3Plugin {
     pub output_channels: u16,
     pub active: bool,
     pub block_size: usize,
+    factory: Option<PluginFactory>,
 }
 
 impl Vst3Plugin {
@@ -18,7 +22,23 @@ impl Vst3Plugin {
             output_channels,
             active: false,
             block_size: 256,
+            factory: None,
         }
+    }
+
+    pub fn from_factory(name: String, factory: PluginFactory) -> Self {
+        Self {
+            name,
+            input_channels: 0,
+            output_channels: 2,
+            active: false,
+            block_size: 256,
+            factory: Some(factory),
+        }
+    }
+
+    pub fn is_library_loaded(&self) -> bool {
+        self.factory.is_some()
     }
 }
 
@@ -44,14 +64,14 @@ impl Plugin for Vst3Plugin {
     fn connect_and_run(
         &mut self,
         _bufs: &mut BufferSet,
+        _midi: &[ScheduledMidiEvent],
         _start_sample: i64,
         _end_sample: i64,
         _speed: f64,
         _nframes: usize,
     ) {
-        // Phase 1 stub: pass audio through unchanged.
-        // When real VST3 COM integration is done, this will call
-        // IAudioProcessor::process() with the plugin's audio buffers.
+        // Phase 1 loads and keeps the VST3 module alive. Full VST3 process
+        // bridging is isolated behind this trait and can replace this body.
     }
 
     fn get_parameter(&self, _index: u32) -> f32 {
@@ -79,6 +99,7 @@ mod tests {
         assert_eq!(p.block_size, 256);
         assert_eq!(p.parameter_count(), 0);
         assert_eq!(p.get_parameter(0), 0.0);
+        assert!(!p.is_library_loaded());
     }
 
     #[test]
@@ -107,7 +128,7 @@ mod tests {
         let mut p = Vst3Plugin::new("Test".into(), 2, 2);
         let mut bufs = BufferSet::new(1, 2, 256);
         // connect_and_run on a stub should not panic
-        p.connect_and_run(&mut bufs, 0, 256, 1.0, 256);
+        p.connect_and_run(&mut bufs, &[], 0, 256, 1.0, 256);
     }
 
     #[test]

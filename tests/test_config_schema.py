@@ -47,6 +47,7 @@ def test_normalize_config_does_not_share_nested_default_state():
         ({"max_rounds": 0}, "max_rounds must be >= 1"),
         ({"dashboard": {"enabled": "yes"}}, "dashboard.enabled must be a boolean"),
         ({"active_models": "gpt-test"}, "active_models must be an array"),
+        ({"vst3_plugin_paths": "D:/VST3"}, "vst3_plugin_paths must be an array"),
         ({"agent_mode": "execute"}, "agent_mode must be one of: plan, agent"),
         ([], "config root must be an object"),
     ],

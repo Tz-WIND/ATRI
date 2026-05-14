@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 /// Information about a discovered VST3 plugin.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PluginInfo {
     pub name: String,
     pub path: PathBuf,
@@ -15,37 +17,89 @@ pub struct PluginInfo {
     pub is_single_file: bool,
 }
 
+/// Information about a discovered legacy VST2 plugin.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Vst2PluginInfo {
+    pub name: String,
+    pub path: PathBuf,
+    pub vendor: String,
+    pub category: String,
+    pub version: String,
+}
+
 /// Scans directories for VST3 plugins.
 pub struct PluginScanner {
-    search_paths: Vec<PathBuf>,
+    vst3_paths: Vec<PathBuf>,
+    vst2_paths: Vec<PathBuf>,
 }
 
 impl PluginScanner {
     pub fn new() -> Self {
-        let mut search_paths = Vec::new();
+        let mut vst3_paths = Vec::new();
+        let mut vst2_paths = Vec::new();
         if let Ok(common) = std::env::var("COMMONPROGRAMFILES") {
-            search_paths.push(PathBuf::from(common).join("VST3"));
+            let common = PathBuf::from(common);
+            vst3_paths.push(common.join("VST3"));
+            vst2_paths.push(common.join("VST2"));
         }
         if let Ok(program) = std::env::var("PROGRAMFILES") {
-            search_paths.push(PathBuf::from(program).join("Common Files").join("VST3"));
+            let program = PathBuf::from(program);
+            vst3_paths.push(program.join("Common Files").join("VST3"));
+            vst2_paths.push(program.join("VSTPlugins"));
+            vst2_paths.push(program.join("Steinberg").join("VSTPlugins"));
         }
-        Self { search_paths }
+        if let Ok(program_x86) = std::env::var("PROGRAMFILES(X86)") {
+            let program_x86 = PathBuf::from(program_x86);
+            vst2_paths.push(program_x86.join("VSTPlugins"));
+            vst2_paths.push(program_x86.join("Steinberg").join("VSTPlugins"));
+        }
+        Self {
+            vst3_paths,
+            vst2_paths,
+        }
     }
 
-    pub fn with_path(mut self, path: PathBuf) -> Self {
-        self.search_paths.push(path);
+    pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.vst3_paths.push(path.into());
         self
     }
 
-    /// All known search paths (standard dirs + any user-added paths).
+    pub fn with_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.vst3_paths.extend(paths.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn with_vst2_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.vst2_paths.push(path.into());
+        self
+    }
+
+    pub fn with_vst2_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.vst2_paths.extend(paths.into_iter().map(Into::into));
+        self
+    }
+
+    /// All known VST3 search paths (standard dirs + any user-added paths).
     pub fn search_paths(&self) -> &[PathBuf] {
-        &self.search_paths
+        &self.vst3_paths
+    }
+
+    pub fn vst2_search_paths(&self) -> &[PathBuf] {
+        &self.vst2_paths
     }
 
     pub fn scan(&self) -> Vec<PluginInfo> {
         let mut plugins = Vec::new();
 
-        for base in &self.search_paths {
+        for base in &self.vst3_paths {
             if !base.exists() {
                 continue;
             }
@@ -72,6 +126,18 @@ impl PluginScanner {
             }
         }
 
+        plugins.sort_by(|a, b| a.path.cmp(&b.path));
+        plugins.dedup_by(|a, b| a.path == b.path);
+        plugins
+    }
+
+    pub fn scan_vst2(&self) -> Vec<Vst2PluginInfo> {
+        let mut plugins = Vec::new();
+        for base in &self.vst2_paths {
+            Self::scan_vst2_dir(base, &mut plugins);
+        }
+        plugins.sort_by(|a, b| a.path.cmp(&b.path));
+        plugins.dedup_by(|a, b| a.path == b.path);
         plugins
     }
 
@@ -97,18 +163,48 @@ impl PluginScanner {
         }
     }
 
+    fn scan_vst2_dir(dir: &Path, plugins: &mut Vec<Vst2PluginInfo>) {
+        if !dir.exists() {
+            return;
+        }
+
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                Self::scan_vst2_dir(&path, plugins);
+                continue;
+            }
+
+            if path.extension().map_or(false, |ext| {
+                ext.to_string_lossy().eq_ignore_ascii_case("dll")
+            }) {
+                if !is_vst2_dll(&path) {
+                    continue;
+                }
+                if let Some(name) = path
+                    .file_stem()
+                    .map(|name| name.to_string_lossy().to_string())
+                {
+                    plugins.push(Vst2PluginInfo {
+                        name,
+                        path,
+                        vendor: String::new(),
+                        category: "VST2".to_string(),
+                        version: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
     /// Parse a VST3 bundle directory (e.g. Plugin.vst3/).
     fn parse_bundle_dir(bundle_path: &Path) -> Option<PluginInfo> {
-        let arch_dir = if cfg!(target_arch = "x86_64") {
-            "x86_64-win"
-        } else {
-            "x86-win"
-        };
         let stem = bundle_path.file_stem()?.to_string_lossy().to_string();
-        let dll_path = bundle_path
-            .join("Contents")
-            .join(arch_dir)
-            .join(&format!("{}.vst3", stem));
+        let dll_path = vst3_bundle_library_path(bundle_path)?;
 
         let module_info = bundle_path.join("moduleinfo.json");
         let (name, vendor, category, version) = if module_info.exists() {
@@ -130,10 +226,7 @@ impl PluginScanner {
 
     /// Parse a single-file VST3 plugin (.vst3 DLL directly).
     fn parse_single_file(file_path: &Path) -> Option<PluginInfo> {
-        let name = file_path
-            .file_stem()?
-            .to_string_lossy()
-            .to_string();
+        let name = file_path.file_stem()?.to_string_lossy().to_string();
 
         Some(PluginInfo {
             name,
@@ -149,10 +242,15 @@ impl PluginScanner {
     fn parse_moduleinfo(path: &Path) -> (String, String, String, String) {
         match std::fs::read_to_string(path) {
             Ok(content) => {
-                let name = extract_json_str(&content, "name");
-                let vendor = extract_json_str(&content, "vendor");
-                let category = extract_json_str(&content, "category");
-                let version = extract_json_str(&content, "version");
+                let value = serde_json::from_str::<serde_json::Value>(&content).ok();
+                let name = json_str(value.as_ref(), "name")
+                    .unwrap_or_else(|| extract_json_str(&content, "name"));
+                let vendor = json_str(value.as_ref(), "vendor")
+                    .unwrap_or_else(|| extract_json_str(&content, "vendor"));
+                let category = json_str(value.as_ref(), "category")
+                    .unwrap_or_else(|| extract_json_str(&content, "category"));
+                let version = json_str(value.as_ref(), "version")
+                    .unwrap_or_else(|| extract_json_str(&content, "version"));
                 (name, vendor, category, version)
             }
             Err(_) => (String::new(), String::new(), String::new(), String::new()),
@@ -164,6 +262,188 @@ impl Default for PluginScanner {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn is_vst2_dll(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    pe_exports_any_symbol(&bytes, &["VSTPluginMain", "main"])
+}
+
+fn pe_exports_any_symbol(bytes: &[u8], symbols: &[&str]) -> bool {
+    let Some(pe_offset) = read_u32(bytes, 0x3c).map(|offset| offset as usize) else {
+        return false;
+    };
+    if bytes.get(0..2) != Some(b"MZ") || bytes.get(pe_offset..pe_offset + 4) != Some(b"PE\0\0") {
+        return false;
+    }
+
+    let coff_offset = pe_offset + 4;
+    let section_count = read_u16(bytes, coff_offset + 2).unwrap_or(0) as usize;
+    let optional_header_size = read_u16(bytes, coff_offset + 16).unwrap_or(0) as usize;
+    let optional_offset = coff_offset + 20;
+    let optional_magic = read_u16(bytes, optional_offset).unwrap_or(0);
+    let data_directory_offset = match optional_magic {
+        0x10b => optional_offset + 96,
+        0x20b => optional_offset + 112,
+        _ => return false,
+    };
+
+    let export_rva = read_u32(bytes, data_directory_offset).unwrap_or(0);
+    if export_rva == 0 {
+        return false;
+    }
+
+    let section_offset = optional_offset + optional_header_size;
+    let export_offset = match rva_to_file_offset(bytes, section_offset, section_count, export_rva) {
+        Some(offset) => offset,
+        None => return false,
+    };
+
+    let name_count = read_u32(bytes, export_offset + 24).unwrap_or(0);
+    let names_rva = read_u32(bytes, export_offset + 32).unwrap_or(0);
+    let Some(names_offset) = rva_to_file_offset(bytes, section_offset, section_count, names_rva)
+    else {
+        return false;
+    };
+
+    for idx in 0..name_count.min(4096) as usize {
+        let Some(name_rva) = read_u32(bytes, names_offset + idx * 4) else {
+            break;
+        };
+        let Some(name_offset) = rva_to_file_offset(bytes, section_offset, section_count, name_rva)
+        else {
+            continue;
+        };
+        if let Some(name) = read_c_string(bytes, name_offset) {
+            if symbols.iter().any(|symbol| *symbol == name) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn rva_to_file_offset(
+    bytes: &[u8],
+    section_offset: usize,
+    section_count: usize,
+    rva: u32,
+) -> Option<usize> {
+    let rva = rva as usize;
+    if rva < section_offset {
+        return Some(rva);
+    }
+
+    for section in 0..section_count.min(96) {
+        let offset = section_offset + section * 40;
+        let virtual_size = read_u32(bytes, offset + 8)? as usize;
+        let virtual_address = read_u32(bytes, offset + 12)? as usize;
+        let raw_size = read_u32(bytes, offset + 16)? as usize;
+        let raw_offset = read_u32(bytes, offset + 20)? as usize;
+        let mapped_size = virtual_size.max(raw_size);
+        if rva >= virtual_address && rva < virtual_address.saturating_add(mapped_size) {
+            return Some(raw_offset + (rva - virtual_address));
+        }
+    }
+
+    None
+}
+
+fn read_c_string(bytes: &[u8], offset: usize) -> Option<&str> {
+    let end = bytes.get(offset..)?.iter().position(|byte| *byte == 0)? + offset;
+    std::str::from_utf8(bytes.get(offset..end)?).ok()
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let data = bytes.get(offset..offset + 2)?;
+    Some(u16::from_le_bytes([data[0], data[1]]))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let data = bytes.get(offset..offset + 4)?;
+    Some(u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+}
+
+pub fn vst3_bundle_library_path(bundle_path: &Path) -> Option<PathBuf> {
+    let stem = bundle_path.file_stem()?.to_string_lossy();
+    let contents = bundle_path.join("Contents");
+
+    #[cfg(target_os = "macos")]
+    {
+        let macos_dir = contents.join("MacOS");
+        let named_binary = macos_dir.join(stem.as_ref());
+        if named_binary.exists() {
+            return Some(named_binary);
+        }
+        if let Ok(entries) = std::fs::read_dir(&macos_dir) {
+            if let Some(entry) = entries.flatten().find(|entry| entry.path().is_file()) {
+                return Some(entry.path());
+            }
+        }
+        Some(named_binary)
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        let platform_dir = vst3_platform_dir()?;
+        Some(
+            contents
+                .join(platform_dir)
+                .join(vst3_binary_name(stem.as_ref())),
+        )
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = contents;
+        let _ = stem;
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn vst3_binary_name(stem: &str) -> String {
+    format!("{stem}.vst3")
+}
+
+#[cfg(target_os = "linux")]
+fn vst3_binary_name(stem: &str) -> String {
+    format!("{stem}.so")
+}
+
+#[cfg(target_os = "windows")]
+fn vst3_platform_dir() -> Option<&'static str> {
+    if cfg!(target_arch = "x86_64") {
+        Some("x86_64-win")
+    } else if cfg!(target_arch = "x86") {
+        Some("x86-win")
+    } else if cfg!(target_arch = "aarch64") {
+        Some("arm64-win")
+    } else if cfg!(target_arch = "arm") {
+        Some("arm-win")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn vst3_platform_dir() -> Option<&'static str> {
+    if cfg!(target_arch = "x86_64") {
+        Some("x86_64-linux")
+    } else if cfg!(target_arch = "x86") {
+        Some("i386-linux")
+    } else if cfg!(target_arch = "aarch64") {
+        Some("aarch64-linux")
+    } else {
+        None
+    }
+}
+
+fn json_str(value: Option<&serde_json::Value>, key: &str) -> Option<String> {
+    value?.get(key)?.as_str().map(|value| value.to_string())
 }
 
 fn extract_json_str(json: &str, key: &str) -> String {
@@ -203,7 +483,10 @@ mod tests {
         for p in &plugins {
             eprintln!(
                 "  - {} (vendor: {}, single_file: {}, dll: {})",
-                p.name, p.vendor, p.is_single_file, p.dll_path.display()
+                p.name,
+                p.vendor,
+                p.is_single_file,
+                p.dll_path.display()
             );
         }
 
@@ -213,8 +496,13 @@ mod tests {
             .iter()
             .map(|p| p.to_string_lossy().to_lowercase())
             .collect();
-        let has_vst3_path = paths.iter().any(|p| p.contains("common files") && p.contains("vst3"));
-        assert!(has_vst3_path, "Scanner should include Common Files VST3 path");
+        let has_vst3_path = paths
+            .iter()
+            .any(|p| p.contains("common files") && p.contains("vst3"));
+        assert!(
+            has_vst3_path,
+            "Scanner should include Common Files VST3 path"
+        );
 
         // VSL Vienna Synchron Player is installed — verify it's found
         let vsl = plugins.iter().find(|p| p.name.contains("Vienna"));
@@ -228,8 +516,10 @@ mod tests {
                 "VSL dll_path should exist: {}",
                 vsl_plugin.dll_path.display()
             );
-            assert_eq!(vsl_plugin.path, vsl_plugin.dll_path,
-                "For single-file format, path should equal dll_path");
+            assert_eq!(
+                vsl_plugin.path, vsl_plugin.dll_path,
+                "For single-file format, path should equal dll_path"
+            );
         } else {
             eprintln!("Note: Vienna Synchron Player not found (may be uninstalled)");
         }
@@ -240,9 +530,8 @@ mod tests {
     #[test]
     fn parse_single_file_vst3() {
         // We test parse_single_file directly with a known file
-        let path = PathBuf::from(
-            "C:/Program Files/Common Files/VST3/VSL/Vienna Synchron Player.vst3",
-        );
+        let path =
+            PathBuf::from("C:/Program Files/Common Files/VST3/VSL/Vienna Synchron Player.vst3");
         if !path.exists() {
             eprintln!("Skipping: VSL plugin not found at expected path");
             return;
@@ -252,23 +541,43 @@ mod tests {
         assert_eq!(info.name, "Vienna Synchron Player");
         assert!(info.is_single_file);
         assert_eq!(info.path, info.dll_path);
-        assert!(info.vendor.is_empty(), "Single-file VST3 has no vendor from moduleinfo");
+        assert!(
+            info.vendor.is_empty(),
+            "Single-file VST3 has no vendor from moduleinfo"
+        );
     }
 
     // ── unit: bundle directory VST3 parsing (with temp dir) ────────
+
+    #[test]
+    fn bundle_library_path_uses_target_platform_layout() {
+        let path = vst3_bundle_library_path(&PathBuf::from("Example.vst3"))
+            .expect("target should have a VST3 layout");
+        let path = path.to_string_lossy();
+
+        #[cfg(target_os = "windows")]
+        assert!(path.ends_with(r"Example.vst3"));
+        #[cfg(target_os = "windows")]
+        assert!(path.contains("-win"));
+
+        #[cfg(target_os = "linux")]
+        assert!(path.ends_with("Example.so"));
+        #[cfg(target_os = "linux")]
+        assert!(path.contains("-linux"));
+
+        #[cfg(target_os = "macos")]
+        assert!(path.ends_with("MacOS/Example") || path.ends_with(r"MacOS\Example"));
+    }
 
     #[test]
     fn parse_bundle_dir_vst3() {
         let tmp = std::env::temp_dir().join("atri-vst3-test-bundle");
         let _ = fs::remove_dir_all(&tmp);
 
-        // Create a fake bundle: TestPlugin.vst3/Contents/x86_64-win/TestPlugin.vst3
+        // Create a fake bundle using this target's VST3 bundle layout.
         let bundle = tmp.join("TestPlugin.vst3");
-        let contents = bundle.join("Contents").join("x86_64-win");
-        fs::create_dir_all(&contents).unwrap();
-
-        // Create the inner DLL file
-        let dll = contents.join("TestPlugin.vst3");
+        let dll = vst3_bundle_library_path(&bundle).expect("target should have a VST3 layout");
+        fs::create_dir_all(dll.parent().unwrap()).unwrap();
         fs::write(&dll, b"fake dll").unwrap();
 
         // Create moduleinfo.json
@@ -297,12 +606,13 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
 
         let bundle = tmp.join("NoMetaPlugin.vst3");
-        let contents = bundle.join("Contents").join("x86_64-win");
-        fs::create_dir_all(&contents).unwrap();
-        fs::write(contents.join("NoMetaPlugin.vst3"), b"fake dll").unwrap();
+        let dll = vst3_bundle_library_path(&bundle).expect("target should have a VST3 layout");
+        fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        fs::write(dll, b"fake dll").unwrap();
         // No moduleinfo.json
 
-        let info = PluginScanner::parse_bundle_dir(&bundle).expect("Should parse without moduleinfo");
+        let info =
+            PluginScanner::parse_bundle_dir(&bundle).expect("Should parse without moduleinfo");
         assert_eq!(info.name, "NoMetaPlugin");
         assert!(info.vendor.is_empty());
         assert!(!info.is_single_file);
@@ -311,6 +621,23 @@ mod tests {
     }
 
     // ── unit: scan temp directory with mixed formats ───────────────
+
+    #[test]
+    fn builder_accepts_path_iterators_without_validation() {
+        let vst3_a = PathBuf::from(r"Z:\missing-vst3-a");
+        let vst3_b = PathBuf::from(r"Z:\missing-vst3-b");
+        let vst2_a = PathBuf::from(r"Z:\missing-vst2-a");
+        let vst2_b = PathBuf::from(r"Z:\missing-vst2-b");
+
+        let scanner = PluginScanner::new()
+            .with_paths([vst3_a.clone(), vst3_b.clone()])
+            .with_vst2_paths([vst2_a.clone(), vst2_b.clone()]);
+
+        assert!(scanner.search_paths().contains(&vst3_a));
+        assert!(scanner.search_paths().contains(&vst3_b));
+        assert!(scanner.vst2_search_paths().contains(&vst2_a));
+        assert!(scanner.vst2_search_paths().contains(&vst2_b));
+    }
 
     #[test]
     fn scan_mixed_formats() {
@@ -326,9 +653,9 @@ mod tests {
         let vendor_dir = tmp.join("FakeVendor");
         fs::create_dir_all(&vendor_dir).unwrap();
         let bundle = vendor_dir.join("BundlePlugin.vst3");
-        let contents = bundle.join("Contents").join("x86_64-win");
-        fs::create_dir_all(&contents).unwrap();
-        fs::write(contents.join("BundlePlugin.vst3"), b"fake bundle dll").unwrap();
+        let dll = vst3_bundle_library_path(&bundle).expect("target should have a VST3 layout");
+        fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        fs::write(dll, b"fake bundle dll").unwrap();
 
         let scanner = PluginScanner::new().with_path(tmp.clone());
         let plugins = scanner.scan();
@@ -343,7 +670,10 @@ mod tests {
         assert!(single_info.unwrap().is_single_file);
 
         let bundle_info = plugins.iter().find(|p| p.name == "BundlePlugin");
-        assert!(bundle_info.is_some(), "Should find BundlePlugin in vendor subdir");
+        assert!(
+            bundle_info.is_some(),
+            "Should find BundlePlugin in vendor subdir"
+        );
         assert!(!bundle_info.unwrap().is_single_file);
 
         let _ = fs::remove_dir_all(&tmp);
@@ -352,19 +682,133 @@ mod tests {
     // ── unit: scanner with non-existent path ───────────────────────
 
     #[test]
-    fn scan_nonexistent_path_does_not_panic() {
+    fn scan_deduplicates_vst3_plugins_by_path() {
+        let tmp = std::env::temp_dir().join("atri-vst3-scan-dedup-test");
+        let _ = fs::remove_dir_all(&tmp);
+
+        let vendor_dir = tmp.join("FakeVendor");
+        fs::create_dir_all(&vendor_dir).unwrap();
+        let bundle = vendor_dir.join("AtriDedupPlugin.vst3");
+        let dll = vst3_bundle_library_path(&bundle).expect("target should have a VST3 layout");
+        fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        fs::write(dll, b"fake bundle dll").unwrap();
+
         let scanner = PluginScanner::new()
-            .with_path(PathBuf::from("Z:/nonexistent/vst3/path"));
+            .with_path(tmp.clone())
+            .with_path(tmp.clone())
+            .with_path(vendor_dir);
+        let plugins = scanner.scan();
+        let matching_plugins: Vec<_> = plugins
+            .iter()
+            .filter(|plugin| plugin.path == bundle)
+            .collect();
+
+        assert_eq!(matching_plugins.len(), 1);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn scan_nonexistent_path_does_not_panic() {
+        let scanner = PluginScanner::new().with_path(PathBuf::from("Z:/nonexistent/vst3/path"));
         let plugins = scanner.scan();
         // Should not panic. May have plugins from standard paths, but
         // none from the nonexistent path.
-        let from_nonexistent = plugins.iter().any(|p| {
-            p.path.to_string_lossy().contains("nonexistent")
-        });
+        let from_nonexistent = plugins
+            .iter()
+            .any(|p| p.path.to_string_lossy().contains("nonexistent"));
         assert!(!from_nonexistent, "No plugins from nonexistent path");
     }
 
+    #[test]
+    fn scan_vst2_temp_directory() {
+        let tmp = std::env::temp_dir().join("atri-vst2-scan-test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("Vendor")).unwrap();
+        fs::write(
+            tmp.join("Vendor").join("Legacy.dll"),
+            fake_pe_with_export("VSTPluginMain"),
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("Vendor").join("Utility.dll"),
+            fake_pe_with_export("NotAPlugin"),
+        )
+        .unwrap();
+        fs::write(tmp.join("Vendor").join("Broken.dll"), b"not a dll").unwrap();
+
+        let scanner = PluginScanner::new().with_vst2_path(tmp.clone());
+        let plugins = scanner.scan_vst2();
+
+        assert!(plugins.iter().any(|plugin| plugin.name == "Legacy"));
+        assert!(!plugins.iter().any(|plugin| plugin.name == "Utility"));
+        assert!(!plugins.iter().any(|plugin| plugin.name == "Broken"));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
     // ── unit: extract_json_str ─────────────────────────────────────
+
+    #[test]
+    fn vst2_export_detection_accepts_main_symbol() {
+        assert!(pe_exports_any_symbol(
+            &fake_pe_with_export("main"),
+            &["VSTPluginMain", "main"]
+        ));
+    }
+
+    fn fake_pe_with_export(export_name: &str) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x400];
+        bytes[0..2].copy_from_slice(b"MZ");
+        write_u32_le(&mut bytes, 0x3c, 0x80);
+
+        let pe_offset = 0x80;
+        bytes[pe_offset..pe_offset + 4].copy_from_slice(b"PE\0\0");
+        let coff_offset = pe_offset + 4;
+        write_u16_le(&mut bytes, coff_offset, 0x8664);
+        write_u16_le(&mut bytes, coff_offset + 2, 1);
+        write_u16_le(&mut bytes, coff_offset + 16, 0xf0);
+
+        let optional_offset = coff_offset + 20;
+        write_u16_le(&mut bytes, optional_offset, 0x20b);
+        write_u32_le(&mut bytes, optional_offset + 112, 0x1000);
+        write_u32_le(&mut bytes, optional_offset + 116, 40);
+
+        let section_offset = optional_offset + 0xf0;
+        bytes[section_offset..section_offset + 6].copy_from_slice(b".edata");
+        write_u32_le(&mut bytes, section_offset + 8, 0x200);
+        write_u32_le(&mut bytes, section_offset + 12, 0x1000);
+        write_u32_le(&mut bytes, section_offset + 16, 0x200);
+        write_u32_le(&mut bytes, section_offset + 20, 0x200);
+
+        let export_offset = 0x200;
+        write_u32_le(&mut bytes, export_offset + 12, 0x1070);
+        write_u32_le(&mut bytes, export_offset + 16, 1);
+        write_u32_le(&mut bytes, export_offset + 20, 1);
+        write_u32_le(&mut bytes, export_offset + 24, 1);
+        write_u32_le(&mut bytes, export_offset + 28, 0x1040);
+        write_u32_le(&mut bytes, export_offset + 32, 0x1050);
+        write_u32_le(&mut bytes, export_offset + 36, 0x1060);
+
+        write_u32_le(&mut bytes, 0x240, 0x1080);
+        write_u32_le(&mut bytes, 0x250, 0x1090);
+        write_u16_le(&mut bytes, 0x260, 0);
+        write_c_string(&mut bytes, 0x270, "FakePlugin");
+        write_c_string(&mut bytes, 0x290, export_name);
+        bytes
+    }
+
+    fn write_c_string(bytes: &mut [u8], offset: usize, value: &str) {
+        bytes[offset..offset + value.len()].copy_from_slice(value.as_bytes());
+        bytes[offset + value.len()] = 0;
+    }
+
+    fn write_u16_le(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
 
     #[test]
     fn test_extract_json_str() {

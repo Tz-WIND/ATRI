@@ -23,6 +23,14 @@ impl AudioBuffer {
         self.capacity
     }
 
+    pub fn resize(&mut self, capacity: usize) {
+        if capacity == self.capacity {
+            return;
+        }
+        self.capacity = capacity;
+        self.data.resize(self.channels as usize * capacity, 0.0);
+    }
+
     /// Get a slice for a specific channel (non-interleaved access).
     pub fn channel(&self, ch: u16) -> &[f32] {
         let offset = ch as usize * self.capacity;
@@ -59,8 +67,8 @@ impl AudioBuffer {
         let n = nframes.min(self.capacity);
         if self.channels == 2 {
             for i in 0..n {
-                output[i * 2] = self.channel(0)[i];
-                output[i * 2 + 1] = self.channel(1)[i];
+                output[i * 2] = self.channel(0)[i].clamp(-1.0, 1.0);
+                output[i * 2 + 1] = self.channel(1)[i].clamp(-1.0, 1.0);
             }
         }
     }
@@ -86,5 +94,19 @@ mod tests {
         let mut output = vec![0.0f32; 8];
         buf.to_interleaved(&mut output, 4);
         assert_eq!(input, output);
+    }
+
+    #[test]
+    fn test_to_interleaved_clamps_final_output() {
+        let mut buf = AudioBuffer::new(2, 2);
+        buf.channel_mut(0)[0] = 1.5;
+        buf.channel_mut(1)[0] = -1.25;
+        buf.channel_mut(0)[1] = 0.5;
+        buf.channel_mut(1)[1] = -0.25;
+
+        let mut output = vec![0.0f32; 4];
+        buf.to_interleaved(&mut output, 2);
+
+        assert_eq!(output, vec![1.0, -1.0, 0.5, -0.25]);
     }
 }

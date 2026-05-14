@@ -125,6 +125,11 @@ workspace: ./workspace
 sessions_dir: data/sessions
 plugins_dir: plugins
 
+# Audio host VST scan paths. Standard system VST2/VST3 locations are always scanned.
+# On Windows, use unquoted paths or single quotes, for example: 'D:\VST3'.
+vst3_plugin_paths: []
+vst2_plugin_paths: []
+
 # Dashboard
 dashboard:
   enabled: true

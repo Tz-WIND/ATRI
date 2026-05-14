@@ -1,10 +1,20 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use atri_core::midi::note::MidiNote;
+use atri_engine::engine::AudioEngine;
+use atri_engine::plugin_proc::PluginInsert;
+use atri_engine::processor::Processor;
+use atri_engine::session::Session;
+use atri_engine::synth::BasicSynth;
+use atri_vst3::factory::PluginFactory;
+use atri_vst3::plugin::Vst3Plugin;
+use atri_vst3::scanner::{PluginScanner, vst3_bundle_library_path};
 use crossbeam::channel::Sender;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use atri_engine::engine::AudioEngine;
-use atri_core::midi::note::MidiNote;
+use serde_json::{Value, json};
 
+use crate::config::HostConfig;
 use crate::stream::AudioStreamer;
 
 #[derive(Debug, Clone)]
@@ -13,17 +23,48 @@ pub enum AppCommand {
     Stop,
     Pause,
     Seek(i64),
+    SetLoop { start: i64, end: i64 },
+    ClearLoop,
     SetTempo { bpm: f64, time_sig: (u8, u8) },
     Shutdown,
 }
 
 #[derive(Debug, Serialize)]
-#[serde(untagged)]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum CommandResponse {
-    Ack { r#type: String, cmd: String, status: String, data: Option<Value> },
-    Error { r#type: String, cmd: Option<String>, message: String },
-    Status { r#type: String, transport: String, position: f64, tempo: f64 },
-    Shutdown,
+    Ack {
+        cmd: String,
+        status: String,
+        data: Option<Value>,
+    },
+    Error {
+        cmd: Option<String>,
+        message: String,
+    },
+    Status {
+        transport: String,
+        position: f64,
+        tempo: f64,
+        meter: (u8, u8),
+        sample_rate: u32,
+        buffer_size: usize,
+        tracks: Vec<TrackStatus>,
+    },
+    Shutdown {
+        status: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrackStatus {
+    id: u32,
+    name: String,
+    volume: f32,
+    pan: f32,
+    mute: bool,
+    solo: bool,
+    note_count: usize,
+    processors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,13 +73,59 @@ pub enum Command {
     Play,
     Stop,
     Pause,
-    Seek { position: f64 },
-    AddTrack { name: String },
-    RemoveTrack { id: u32 },
-    SetMidi { track_id: u32, notes: Vec<MidiNoteData> },
-    SetTempo { bpm: f64, time_sig: Option<(u8, u8)> },
-    SetVolume { track_id: u32, value: f64 },
-    SetPan { track_id: u32, value: f64 },
+    Seek {
+        position: f64,
+    },
+    AddTrack {
+        name: String,
+    },
+    RemoveTrack {
+        id: u32,
+    },
+    SetMidi {
+        track_id: u32,
+        notes: Vec<MidiNoteData>,
+    },
+    SetTempo {
+        bpm: f64,
+        time_sig: Option<(u8, u8)>,
+    },
+    SetLoop {
+        start: f64,
+        end: f64,
+    },
+    ClearLoop,
+    SetVolume {
+        track_id: u32,
+        value: f64,
+    },
+    SetPan {
+        track_id: u32,
+        value: f64,
+    },
+    SetMute {
+        track_id: u32,
+        value: bool,
+    },
+    SetSolo {
+        track_id: u32,
+        value: bool,
+    },
+    LoadBuiltinSynth {
+        track_id: u32,
+    },
+    LoadVst3 {
+        track_id: u32,
+        path: String,
+        name: Option<String>,
+    },
+    ScanPlugins {
+        paths: Option<Vec<String>>,
+        vst2_paths: Option<Vec<String>>,
+    },
+    SetStreaming {
+        enabled: bool,
+    },
     GetStatus,
     Shutdown,
 }
@@ -52,139 +139,387 @@ pub struct MidiNoteData {
 }
 
 pub fn handle_command(
-    cmd_str: &str,
     raw: &Value,
     engine: &Arc<Mutex<AudioEngine>>,
     cmd_tx: &Sender<AppCommand>,
-    _streamer: &Arc<Mutex<AudioStreamer>>,
+    streamer: &Arc<Mutex<AudioStreamer>>,
+    host_config: &HostConfig,
 ) -> CommandResponse {
-    match cmd_str {
-        "play" => {
-            cmd_tx.send(AppCommand::Play).ok();
+    let cmd_name = raw.get("cmd").and_then(Value::as_str).map(str::to_string);
+    let command = match serde_json::from_value::<Command>(raw.clone()) {
+        Ok(command) => command,
+        Err(err) => {
+            return CommandResponse::error(cmd_name.as_deref(), &format!("invalid command: {err}"));
+        }
+    };
+
+    execute(command, engine, cmd_tx, streamer, host_config)
+}
+
+fn execute(
+    command: Command,
+    engine: &Arc<Mutex<AudioEngine>>,
+    cmd_tx: &Sender<AppCommand>,
+    streamer: &Arc<Mutex<AudioStreamer>>,
+    host_config: &HostConfig,
+) -> CommandResponse {
+    match command {
+        Command::Play => {
+            let _ = cmd_tx.send(AppCommand::Play);
             CommandResponse::ack("play")
         }
-        "stop" => {
-            cmd_tx.send(AppCommand::Stop).ok();
+        Command::Stop => {
+            let _ = cmd_tx.send(AppCommand::Stop);
             CommandResponse::ack("stop")
         }
-        "pause" => {
-            cmd_tx.send(AppCommand::Pause).ok();
+        Command::Pause => {
+            let _ = cmd_tx.send(AppCommand::Pause);
             CommandResponse::ack("pause")
         }
-        "seek" => {
-            if let Some(pos) = raw.get("position").and_then(|v| v.as_f64()) {
-                let eng = engine.lock().unwrap();
-                let samples = (pos * eng.sample_rate() as f64) as i64;
-                cmd_tx.send(AppCommand::Seek(samples)).ok();
-                CommandResponse::ack("seek")
-            } else {
-                CommandResponse::error(Some("seek"), "missing 'position' field")
-            }
+        Command::Seek { position } => {
+            let sample_rate = engine.lock().unwrap().sample_rate();
+            let samples = match seconds_to_samples(sample_rate, position) {
+                Ok(samples) => samples,
+                Err(err) => return CommandResponse::error(Some("seek"), err),
+            };
+            let _ = cmd_tx.send(AppCommand::Seek(samples));
+            CommandResponse::ack("seek")
         }
-        "add_track" => {
-            if let Some(name) = raw.get("name").and_then(|v| v.as_str()) {
-                let eng = engine.lock().unwrap();
-                let mut session = eng.session.lock().unwrap();
-                let id = session.add_track(name.to_string());
-                CommandResponse::ack_with("add_track", json!({"track_id": id}))
-            } else {
-                CommandResponse::error(Some("add_track"), "missing 'name' field")
-            }
+        Command::AddTrack { name } => {
+            let id = with_session(engine, |session| session.add_track(name));
+            CommandResponse::ack_with("add_track", json!({ "track_id": id }))
         }
-        "remove_track" => {
-            if let Some(_id) = raw.get("id").and_then(|v| v.as_u64()) {
-                // Phase 1: mark for removal (full implementation in Step 4)
+        Command::RemoveTrack { id } => {
+            if with_session(engine, |session| session.remove_track(id)) {
                 CommandResponse::ack("remove_track")
             } else {
-                CommandResponse::error(Some("remove_track"), "missing 'id' field")
+                CommandResponse::error(Some("remove_track"), "track not found")
             }
         }
-        "set_midi" => {
-            if let (Some(track_id), Some(notes_val)) = (
-                raw.get("track_id").and_then(|v| v.as_u64()),
-                raw.get("notes"),
-            ) {
-                if let Ok(notes) = serde_json::from_value::<Vec<MidiNoteData>>(notes_val.clone()) {
-                    let eng = engine.lock().unwrap();
-                    let mut session = eng.session.lock().unwrap();
-                    let midi_notes: Vec<MidiNote> = notes
-                        .into_iter()
-                        .map(|n| MidiNote::new(n.pitch, n.start, n.duration, n.velocity))
-                        .collect();
-                    session.set_track_notes(track_id as u32, midi_notes);
-                    CommandResponse::ack("set_midi")
-                } else {
-                    CommandResponse::error(Some("set_midi"), "invalid 'notes' format")
-                }
+        Command::SetMidi { track_id, notes } => {
+            let midi_notes = notes
+                .into_iter()
+                .map(|note| MidiNote::new(note.pitch, note.start, note.duration, note.velocity))
+                .collect();
+            if with_session(engine, |session| {
+                session.set_track_notes(track_id, midi_notes)
+            }) {
+                CommandResponse::ack("set_midi")
             } else {
-                CommandResponse::error(Some("set_midi"), "missing 'track_id' or 'notes'")
+                CommandResponse::error(Some("set_midi"), "track not found")
             }
         }
-        "set_tempo" => {
-            if let Some(bpm) = raw.get("bpm").and_then(|v| v.as_f64()) {
-                let time_sig = raw.get("time_sig")
-                    .and_then(|v| {
-                        let arr = v.as_array()?;
-                        Some((arr.first()?.as_u64()? as u8, arr.get(1)?.as_u64()? as u8))
-                    })
-                    .unwrap_or((4, 4));
-                cmd_tx.send(AppCommand::SetTempo { bpm, time_sig }).ok();
-                CommandResponse::ack("set_tempo")
-            } else {
-                CommandResponse::error(Some("set_tempo"), "missing 'bpm' field")
+        Command::SetTempo { bpm, time_sig } => {
+            if bpm <= 0.0 {
+                return CommandResponse::error(Some("set_tempo"), "bpm must be positive");
             }
+            let _ = cmd_tx.send(AppCommand::SetTempo {
+                bpm,
+                time_sig: time_sig.unwrap_or((4, 4)),
+            });
+            CommandResponse::ack("set_tempo")
         }
-        "set_volume" => {
-            if let (Some(track_id), Some(value)) = (
-                raw.get("track_id").and_then(|v| v.as_u64()),
-                raw.get("value").and_then(|v| v.as_f64()),
-            ) {
-                let eng = engine.lock().unwrap();
-                let mut session = eng.session.lock().unwrap();
-                session.set_track_volume(track_id as u32, value as f32);
+        Command::SetLoop { start, end } => {
+            let sample_rate = engine.lock().unwrap().sample_rate();
+            let start = match seconds_to_samples(sample_rate, start) {
+                Ok(samples) => samples,
+                Err(err) => return CommandResponse::error(Some("set_loop"), err),
+            };
+            let end = match seconds_to_samples(sample_rate, end) {
+                Ok(samples) => samples,
+                Err(err) => return CommandResponse::error(Some("set_loop"), err),
+            };
+            if end <= start {
+                return CommandResponse::error(Some("set_loop"), "loop end must be after start");
+            }
+            let _ = cmd_tx.send(AppCommand::SetLoop { start, end });
+            CommandResponse::ack("set_loop")
+        }
+        Command::ClearLoop => {
+            let _ = cmd_tx.send(AppCommand::ClearLoop);
+            CommandResponse::ack("clear_loop")
+        }
+        Command::SetVolume { track_id, value } => {
+            if with_session(engine, |session| {
+                session.set_track_volume(track_id, value.max(0.0) as f32)
+            }) {
                 CommandResponse::ack("set_volume")
             } else {
-                CommandResponse::error(Some("set_volume"), "missing 'track_id' or 'value'")
+                CommandResponse::error(Some("set_volume"), "track not found")
             }
         }
-        "set_pan" => {
-            if let (Some(track_id), Some(value)) = (
-                raw.get("track_id").and_then(|v| v.as_u64()),
-                raw.get("value").and_then(|v| v.as_f64()),
-            ) {
-                let eng = engine.lock().unwrap();
-                let mut session = eng.session.lock().unwrap();
-                session.set_track_pan(track_id as u32, value as f32);
+        Command::SetPan { track_id, value } => {
+            if with_session(engine, |session| {
+                session.set_track_pan(track_id, value as f32)
+            }) {
                 CommandResponse::ack("set_pan")
             } else {
-                CommandResponse::error(Some("set_pan"), "missing 'track_id' or 'value'")
+                CommandResponse::error(Some("set_pan"), "track not found")
             }
         }
-        "get_status" => {
-            let eng = engine.lock().unwrap();
-            let session = eng.session.lock().unwrap();
-            let transport = &session.transport;
-            let tempo_map = session.tempo_map.read();
-            CommandResponse::Status {
-                r#type: "status".to_string(),
-                transport: format!("{:?}", transport.state).to_lowercase(),
-                position: transport.position as f64 / session.sample_rate as f64,
-                tempo: tempo_map.current_tempo().bpm,
+        Command::SetMute { track_id, value } => {
+            if with_session(engine, |session| session.set_track_mute(track_id, value)) {
+                CommandResponse::ack("set_mute")
+            } else {
+                CommandResponse::error(Some("set_mute"), "track not found")
             }
         }
-        "shutdown" => {
-            cmd_tx.send(AppCommand::Shutdown).ok();
-            CommandResponse::Shutdown
+        Command::SetSolo { track_id, value } => {
+            if with_session(engine, |session| session.set_track_solo(track_id, value)) {
+                CommandResponse::ack("set_solo")
+            } else {
+                CommandResponse::error(Some("set_solo"), "track not found")
+            }
         }
-        "" => CommandResponse::error(None, "missing 'cmd' field"),
-        _ => CommandResponse::error(Some(cmd_str), &format!("unknown command: {}", cmd_str)),
+        Command::LoadBuiltinSynth { track_id } => {
+            let sample_rate = engine.lock().unwrap().sample_rate();
+            let synth = BasicSynth::new(sample_rate);
+            let mut insert = PluginInsert::new(Box::new(synth));
+            insert.activate();
+
+            if with_session(engine, |session| {
+                session.add_processor(track_id, Arc::new(Mutex::new(insert)))
+            }) {
+                CommandResponse::ack_with(
+                    "load_builtin_synth",
+                    json!({ "name": "ATRI Basic Synth" }),
+                )
+            } else {
+                CommandResponse::error(Some("load_builtin_synth"), "track not found")
+            }
+        }
+        Command::LoadVst3 {
+            track_id,
+            path,
+            name,
+        } => {
+            let path = resolve_vst3_library_path(PathBuf::from(path));
+            let factory = match PluginFactory::load(&path) {
+                Ok(factory) => factory,
+                Err(err) => return CommandResponse::error(Some("load_vst3"), &err),
+            };
+            let plugin_name = name.unwrap_or_else(|| factory.plugin_name.clone());
+            let plugin = Vst3Plugin::from_factory(plugin_name.clone(), factory);
+            let mut insert = PluginInsert::new(Box::new(plugin));
+            insert.activate();
+
+            if with_session(engine, |session| {
+                session.add_processor(track_id, Arc::new(Mutex::new(insert)))
+            }) {
+                CommandResponse::ack_with("load_vst3", json!({ "name": plugin_name }))
+            } else {
+                CommandResponse::error(Some("load_vst3"), "track not found")
+            }
+        }
+        Command::ScanPlugins { paths, vst2_paths } => {
+            let scanner = configure_scanner(host_config, paths, vst2_paths);
+            let vst3 = scanner.scan();
+            let vst2 = scanner.scan_vst2();
+            CommandResponse::ack_with(
+                "scan_plugins",
+                json!({
+                    "vst3": vst3,
+                    "vst2": vst2,
+                    "priority": ["vst3", "vst2"]
+                }),
+            )
+        }
+        Command::SetStreaming { enabled } => {
+            if let Ok(mut streamer) = streamer.lock() {
+                streamer.set_enabled(enabled);
+            }
+            CommandResponse::ack("set_streaming")
+        }
+        Command::GetStatus => status(engine),
+        Command::Shutdown => {
+            let _ = cmd_tx.send(AppCommand::Shutdown);
+            CommandResponse::Shutdown {
+                status: "ok".to_string(),
+            }
+        }
     }
+}
+
+fn configure_scanner(
+    host_config: &HostConfig,
+    paths: Option<Vec<String>>,
+    vst2_paths: Option<Vec<String>>,
+) -> PluginScanner {
+    PluginScanner::new()
+        .with_paths(host_config.vst3_plugin_paths.iter().cloned())
+        .with_vst2_paths(host_config.vst2_plugin_paths.iter().cloned())
+        .with_paths(paths.unwrap_or_default())
+        .with_vst2_paths(vst2_paths.unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command_context() -> (
+        Arc<Mutex<AudioEngine>>,
+        Sender<AppCommand>,
+        crossbeam::channel::Receiver<AppCommand>,
+        Arc<Mutex<AudioStreamer>>,
+        HostConfig,
+    ) {
+        let engine = Arc::new(Mutex::new(AudioEngine::new(48_000, 128)));
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        let streamer = Arc::new(Mutex::new(AudioStreamer::new(48_000, 2)));
+        (engine, cmd_tx, cmd_rx, streamer, HostConfig::default())
+    }
+
+    #[test]
+    fn configure_scanner_adds_configured_vst_paths() {
+        let config = HostConfig {
+            vst3_plugin_paths: vec![PathBuf::from(r"D:\ConfiguredVst3")],
+            vst2_plugin_paths: vec![PathBuf::from(r"D:\ConfiguredVst2")],
+        };
+
+        let scanner = configure_scanner(
+            &config,
+            Some(vec![r"E:\RequestVst3".to_string()]),
+            Some(vec![r"E:\RequestVst2".to_string()]),
+        );
+
+        assert!(
+            scanner
+                .search_paths()
+                .contains(&PathBuf::from(r"D:\ConfiguredVst3"))
+        );
+        assert!(
+            scanner
+                .search_paths()
+                .contains(&PathBuf::from(r"E:\RequestVst3"))
+        );
+        assert!(
+            scanner
+                .vst2_search_paths()
+                .contains(&PathBuf::from(r"D:\ConfiguredVst2"))
+        );
+        assert!(
+            scanner
+                .vst2_search_paths()
+                .contains(&PathBuf::from(r"E:\RequestVst2"))
+        );
+    }
+
+    #[test]
+    fn seek_converts_seconds_to_samples() {
+        let (engine, cmd_tx, cmd_rx, streamer, config) = command_context();
+
+        let response = execute(
+            Command::Seek { position: 1.5 },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+        );
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "seek"));
+        match cmd_rx.try_recv().unwrap() {
+            AppCommand::Seek(samples) => assert_eq!(samples, 72_000),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seek_rejects_non_finite_position_without_sending_command() {
+        let (engine, cmd_tx, cmd_rx, streamer, config) = command_context();
+
+        let response = execute(
+            Command::Seek { position: f64::NAN },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+        );
+
+        assert!(
+            matches!(response, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "seek" && message == "position must be finite")
+        );
+        assert!(cmd_rx.try_recv().is_err());
+    }
+}
+
+fn resolve_vst3_library_path(path: PathBuf) -> PathBuf {
+    if !path.is_dir() {
+        return path;
+    }
+
+    vst3_bundle_library_path(&path).unwrap_or(path)
+}
+
+fn status(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
+    with_session(engine, |session| {
+        let tempo_map = session.tempo_map.read();
+        let tracks = session
+            .routes
+            .iter()
+            .filter_map(|route| {
+                let route = route.lock().ok()?;
+                Some(TrackStatus {
+                    id: route.id,
+                    name: route.name.clone(),
+                    volume: route.gain.value,
+                    pan: route.pan.value,
+                    mute: route.mute,
+                    solo: route.solo,
+                    note_count: route.sequencer.note_count(),
+                    processors: route
+                        .processors
+                        .iter()
+                        .filter_map(|processor| {
+                            processor
+                                .lock()
+                                .ok()
+                                .map(|processor| processor.name().to_string())
+                        })
+                        .collect(),
+                })
+            })
+            .collect();
+
+        CommandResponse::Status {
+            transport: format!("{:?}", session.transport.state).to_lowercase(),
+            position: session.transport.position as f64 / session.sample_rate as f64,
+            tempo: tempo_map.current_tempo().bpm,
+            meter: (
+                tempo_map.current_meter().num,
+                tempo_map.current_meter().denom,
+            ),
+            sample_rate: session.sample_rate,
+            buffer_size: session.buffer_size,
+            tracks,
+        }
+    })
+}
+
+fn with_session<T>(engine: &Arc<Mutex<AudioEngine>>, f: impl FnOnce(&mut Session) -> T) -> T {
+    let engine = engine.lock().unwrap();
+    engine.with_session(f)
+}
+
+fn seconds_to_samples(sample_rate: u32, seconds: f64) -> Result<i64, &'static str> {
+    if !seconds.is_finite() {
+        return Err("position must be finite");
+    }
+    if seconds < 0.0 {
+        return Err("position must be non-negative");
+    }
+
+    let samples = seconds * sample_rate as f64;
+    if samples > i64::MAX as f64 {
+        return Err("position is too large");
+    }
+
+    Ok(samples as i64)
 }
 
 impl CommandResponse {
     pub fn ack(cmd: &str) -> Self {
-        CommandResponse::Ack {
-            r#type: "ack".to_string(),
+        Self::Ack {
             cmd: cmd.to_string(),
             status: "ok".to_string(),
             data: None,
@@ -192,8 +527,7 @@ impl CommandResponse {
     }
 
     pub fn ack_with(cmd: &str, data: Value) -> Self {
-        CommandResponse::Ack {
-            r#type: "ack".to_string(),
+        Self::Ack {
             cmd: cmd.to_string(),
             status: "ok".to_string(),
             data: Some(data),
@@ -201,10 +535,13 @@ impl CommandResponse {
     }
 
     pub fn error(cmd: Option<&str>, message: &str) -> Self {
-        CommandResponse::Error {
-            r#type: "error".to_string(),
-            cmd: cmd.map(|s| s.to_string()),
+        Self::Error {
+            cmd: cmd.map(str::to_string),
             message: message.to_string(),
         }
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        matches!(self, Self::Shutdown { .. })
     }
 }

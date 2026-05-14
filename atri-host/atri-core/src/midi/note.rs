@@ -15,7 +15,12 @@ pub struct MidiNote {
 
 impl MidiNote {
     pub fn new(pitch: u8, start_beats: f64, duration_beats: f64, velocity: u8) -> Self {
-        Self { pitch, start_beats, duration_beats, velocity }
+        Self {
+            pitch,
+            start_beats,
+            duration_beats,
+            velocity,
+        }
     }
 
     pub fn end_beats(&self) -> f64 {

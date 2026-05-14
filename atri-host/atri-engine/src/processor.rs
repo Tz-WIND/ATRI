@@ -1,10 +1,29 @@
 use atri_core::audio::buffer_set::BufferSet;
+use atri_core::midi::event::ScheduledMidiEvent;
 
 /// The Processor trait — every signal processing node in a Route chain.
 pub trait Processor: Send + Sync {
+    /// Stable display/debug name for this processor instance.
+    fn name(&self) -> &str;
+
+    /// Process one audio block.
+    ///
+    /// `bufs` contains the route audio buffers to read and/or write.
+    /// `midi` contains events scheduled for this block; each event's `offset`
+    /// is a sample offset relative to the start of this call.
+    /// `start_sample` and `end_sample` are absolute timeline sample positions.
+    /// `speed` is the current transport speed.
+    /// `nframes` is the number of valid frames in `bufs`.
+    ///
+    /// When `result_required` is false, the host only needs state advancement
+    /// for this block. Processors should consume MIDI/automation and update
+    /// internal state as if the block ran, but may skip expensive audio writes.
+    /// Current call sites pass true; this flag exists for future pre-roll,
+    /// offline analysis, or side-chain/state-only processing.
     fn run(
         &mut self,
         bufs: &mut BufferSet,
+        midi: &[ScheduledMidiEvent],
         start_sample: i64,
         end_sample: i64,
         speed: f64,
@@ -12,14 +31,23 @@ pub trait Processor: Send + Sync {
         result_required: bool,
     );
 
+    /// Prepare processor resources before audio processing.
     fn activate(&mut self);
+    /// Release or suspend resources after audio processing stops.
     fn deactivate(&mut self);
+    /// Whether this processor should currently be considered active.
     fn is_active(&self) -> bool;
 
+    /// Number of audio input channels expected by this processor.
     fn input_channels(&self) -> u16;
+    /// Number of audio output channels produced by this processor.
     fn output_channels(&self) -> u16;
-    fn signal_latency(&self) -> usize { 0 }
+    /// Reported latency in samples.
+    fn signal_latency(&self) -> usize {
+        0
+    }
 
+    /// Notify the processor that subsequent blocks may use this block size.
     fn set_block_size(&mut self, _nframes: usize) {}
 }
 
@@ -33,7 +61,12 @@ pub struct Gain {
 
 impl Gain {
     pub fn new(value: f32) -> Self {
-        Self { value, current: value, smooth: 0.0, target: value }
+        Self {
+            value,
+            current: value,
+            smooth: 0.0,
+            target: value,
+        }
     }
 
     pub fn set_value(&mut self, value: f32) {
@@ -43,9 +76,14 @@ impl Gain {
 }
 
 impl Processor for Gain {
+    fn name(&self) -> &str {
+        "gain"
+    }
+
     fn run(
         &mut self,
         bufs: &mut BufferSet,
+        _midi: &[ScheduledMidiEvent],
         _start_sample: i64,
         _end_sample: i64,
         _speed: f64,
@@ -69,14 +107,20 @@ impl Processor for Gain {
 
     fn activate(&mut self) {}
     fn deactivate(&mut self) {}
-    fn is_active(&self) -> bool { true }
-    fn input_channels(&self) -> u16 { 2 }
-    fn output_channels(&self) -> u16 { 2 }
+    fn is_active(&self) -> bool {
+        true
+    }
+    fn input_channels(&self) -> u16 {
+        2
+    }
+    fn output_channels(&self) -> u16 {
+        2
+    }
 }
 
 /// Constant-power stereo pan processor.
 pub struct Pan {
-    pub value: f32,  // -1.0 (full L) .. 0.0 (center) .. 1.0 (full R)
+    pub value: f32, // -1.0 (full L) .. 0.0 (center) .. 1.0 (full R)
 }
 
 impl Pan {
@@ -86,9 +130,14 @@ impl Pan {
 }
 
 impl Processor for Pan {
+    fn name(&self) -> &str {
+        "pan"
+    }
+
     fn run(
         &mut self,
         bufs: &mut BufferSet,
+        _midi: &[ScheduledMidiEvent],
         _start_sample: i64,
         _end_sample: i64,
         _speed: f64,
@@ -116,9 +165,15 @@ impl Processor for Pan {
 
     fn activate(&mut self) {}
     fn deactivate(&mut self) {}
-    fn is_active(&self) -> bool { true }
-    fn input_channels(&self) -> u16 { 2 }
-    fn output_channels(&self) -> u16 { 2 }
+    fn is_active(&self) -> bool {
+        true
+    }
+    fn input_channels(&self) -> u16 {
+        2
+    }
+    fn output_channels(&self) -> u16 {
+        2
+    }
 }
 
 impl Default for Pan {
@@ -140,7 +195,7 @@ mod tests {
         bufs.get_mut(0).unwrap().channel_mut(0)[0] = 0.5;
         bufs.get_mut(0).unwrap().channel_mut(1)[0] = -0.3;
 
-        gain.run(&mut bufs, 0, 4, 1.0, 4, true);
+        gain.run(&mut bufs, &[], 0, 4, 1.0, 4, true);
 
         // Unity gain should not change values
         assert!((bufs.get(0).unwrap().channel(0)[0] - 0.5).abs() < 0.001);
@@ -153,7 +208,7 @@ mod tests {
         let mut bufs = BufferSet::new(1, 2, 4);
         bufs.get_mut(0).unwrap().channel_mut(0)[0] = 1.0;
 
-        gain.run(&mut bufs, 0, 4, 1.0, 4, true);
+        gain.run(&mut bufs, &[], 0, 4, 1.0, 4, true);
 
         assert!((bufs.get(0).unwrap().channel(0)[0] - 0.5).abs() < 0.001);
     }
@@ -166,7 +221,7 @@ mod tests {
         bufs.get_mut(0).unwrap().channel_mut(0)[0] = 0.8;
         bufs.get_mut(0).unwrap().channel_mut(1)[0] = 0.6;
 
-        pan.run(&mut bufs, 0, 4, 1.0, 4, true);
+        pan.run(&mut bufs, &[], 0, 4, 1.0, 4, true);
 
         // Center: angle = (0+1)*0.5*π/2 = π/4
         // left_gain = cos(π/4) = √2/2 ≈ 0.707
@@ -182,7 +237,7 @@ mod tests {
         bufs.get_mut(0).unwrap().channel_mut(0)[0] = 1.0;
         bufs.get_mut(0).unwrap().channel_mut(1)[0] = 1.0;
 
-        pan.run(&mut bufs, 0, 4, 1.0, 4, true);
+        pan.run(&mut bufs, &[], 0, 4, 1.0, 4, true);
 
         // Hard left: angle = 0, left_gain = 1.0, right_gain = 0.0
         assert!((bufs.get(0).unwrap().channel(0)[0] - 1.0).abs() < 0.001);
