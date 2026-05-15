@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import Any
 
 from core.music_project import midi_diff, midi_write, project_summary
 
@@ -19,7 +19,7 @@ class MidiWriteTool(Tool):
         "Use this for generating melodies, chords, basslines, drum patterns, or "
         "replacing a selected time range. Time values are in beats."
     )
-    parameters: ClassVar[dict] = {
+    parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "track_id": {
@@ -84,7 +84,7 @@ class MidiDiffTool(Tool):
         "workstation project. Use this for humanization, note fixes, velocity "
         "changes, transposition by explicit updates, and small variations."
     )
-    parameters: ClassVar[dict] = {
+    parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "track_id": {

@@ -6,6 +6,7 @@ import sqlite3
 import textwrap
 import weakref
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -204,7 +205,7 @@ async def test_runtime_turn_recorder_persists_and_broadcasts_turn_events(tmp_pat
         session_id="test",
     )
     recorder = _RuntimeTurnRecorder(
-        stage,
+        cast(ProcessStage, stage),
         event,
         event.unified_msg_origin,
         "test-model",

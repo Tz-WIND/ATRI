@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 
@@ -13,7 +14,7 @@ from core.platform.message import At, Image, MessageEvent, MessageType, Plain
 
 
 async def _consume(stage: Stage, event: MessageEvent) -> list[None]:
-    yielded = []
+    yielded: list[None] = []
     async for item in stage.process(event):
         yielded.append(item)
     return yielded
@@ -109,7 +110,7 @@ async def test_process_stage_routes_images_through_transcription_when_enabled(mo
 
 
 def test_process_stage_image_transcription_uses_non_stream_llm(monkeypatch):
-    captured = {}
+    captured: dict[str, Any] = {}
 
     class FakeLLM:
         def __init__(self, **kwargs):

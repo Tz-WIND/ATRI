@@ -962,7 +962,7 @@ class MCPTool(Tool):
         return _format_mcp_result(result)
 
 
-def _normalize_parameters(parameters: dict) -> dict:
+def _normalize_parameters(parameters: object) -> dict:
     if not isinstance(parameters, dict):
         return {"type": "object", "properties": {}}
     normalized = dict(parameters)

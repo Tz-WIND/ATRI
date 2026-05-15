@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import ClassVar
 
 import pytest
 
@@ -17,7 +16,7 @@ from core.tools.write import WriteFileTool
 class _ConcreteTool(Tool):
     name = "concrete"
     description = "concrete test tool"
-    parameters: ClassVar[dict] = {}
+    parameters: dict = {}  # noqa: RUF012
 
     def execute(self) -> str:
         return "ok"

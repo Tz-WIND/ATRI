@@ -38,7 +38,7 @@ class Tool(ABC):
 
     name: str
     description: str
-    parameters: dict
+    parameters: dict[str, Any]
     capabilities = ToolCapabilities()
 
     def __init__(self, workspace: str = "."):

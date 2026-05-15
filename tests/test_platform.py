@@ -78,7 +78,7 @@ def test_session_id_display_normalization_round_trip_for_webchat_ids():
 
 @pytest.mark.asyncio
 async def test_webchat_adapter_create_event_commits_to_queue_and_resolves_text_response():
-    queue = asyncio.Queue()
+    queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
     adapter = WebChatAdapter(queue)
 
     event, future = adapter.create_event("hello", "session-1")
@@ -97,7 +97,7 @@ async def test_webchat_adapter_create_event_commits_to_queue_and_resolves_text_r
 
 @pytest.mark.asyncio
 async def test_webchat_adapter_create_event_supports_image_attachments():
-    queue = asyncio.Queue()
+    queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
     adapter = WebChatAdapter(queue)
 
     event, _future = adapter.create_event(
@@ -127,7 +127,7 @@ async def test_webchat_adapter_create_event_supports_image_attachments():
 
 @pytest.mark.asyncio
 async def test_webchat_adapter_resolves_chain_response_and_cancels_pending_on_terminate():
-    queue = asyncio.Queue()
+    queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
     adapter = WebChatAdapter(queue)
     event, future = adapter.create_event("hello", "session-1")
 

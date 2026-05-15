@@ -1,4 +1,4 @@
-from typing import Any, ClassVar
+from typing import Any
 
 from core.agent.agent import Agent
 from core.agent.llm import ToolCall
@@ -10,7 +10,7 @@ from core.tools.read import ReadFileTool
 class _MetadataTool(Tool):
     name = "metadata_tool"
     description = "metadata test tool"
-    parameters: ClassVar[dict] = {
+    parameters: dict[str, Any] = {  # noqa: RUF012
         "required": ["path"],
         "properties": {
             "path": {"description": "Path", "type": "string"},

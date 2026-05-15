@@ -1,7 +1,9 @@
 import re
+from typing import cast
 
 import pytest
 
+from core.agent.agent import Agent
 from core.runtime.tasks import TaskStore
 from core.tools.agent_tool import (
     AgentResultTool,
@@ -32,7 +34,7 @@ def test_agent_background_task_persists_subagent_lifecycle(monkeypatch, tmp_path
     store = TaskStore(tmp_path / "runtime")
     try:
         tool = AgentTool(str(tmp_path), task_store=store)
-        tool._parent_agent = object()
+        tool._parent_agent = cast(Agent, object())
 
         def fake_run(run, task_spec):
             run.set_status("running")
@@ -136,12 +138,15 @@ def test_subagent_text_snapshot_updates_are_throttled(monkeypatch, tmp_path):
         run.add_text("c")
 
         task = store.get_task(task_id)
+        assert task is not None
         assert task["metadata"]["text"] == "a"
         assert [event.event_type for event in store.events(task_id)].count("text_delta") == 3
 
         run.finish("done")
 
-        assert store.get_task(task_id)["metadata"]["text"] == "abc"
+        finished_task = store.get_task(task_id)
+        assert finished_task is not None
+        assert finished_task["metadata"]["text"] == "abc"
     finally:
         store.close()
 

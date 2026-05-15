@@ -60,10 +60,16 @@ def test_runtime_task_store_marks_incomplete_tasks_interrupted(tmp_path):
 
         assert store.mark_incomplete_as_interrupted(reason="process restarted") == 2
 
-        assert store.get_task(queued)["status"] == "interrupted"
-        assert store.get_task(running)["status"] == "interrupted"
-        assert store.get_task(completed)["status"] == "completed"
-        assert store.get_task(running)["metadata"]["interrupted_reason"] == "process restarted"
+        queued_task = store.get_task(queued)
+        running_task = store.get_task(running)
+        completed_task = store.get_task(completed)
+        assert queued_task is not None
+        assert running_task is not None
+        assert completed_task is not None
+        assert queued_task["status"] == "interrupted"
+        assert running_task["status"] == "interrupted"
+        assert completed_task["status"] == "completed"
+        assert running_task["metadata"]["interrupted_reason"] == "process restarted"
     finally:
         store.close()
 

@@ -474,8 +474,8 @@ class RuntimeTimelineStore:
         self,
         *,
         thread_id: str | None = None,
-        since_seq: int | None = None,
-        limit: int = 1000,
+        since_seq: Any = None,
+        limit: Any = 1000,
     ) -> list[RuntimeEvent]:
         since = max(0, _coerce_int(since_seq, 0))
         capped_limit = min(MAX_REPLAY_LIMIT, max(0, _coerce_int(limit, 1000)))

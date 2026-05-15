@@ -13,7 +13,7 @@ import json
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from core.utils import atomic_write_text
@@ -111,7 +111,7 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         project = {}
 
     base = default_project()
-    normalized = {
+    normalized: dict[str, Any] = {
         "version": 1,
         "title": str(project.get("title") or base["title"]),
         "tempo": _positive_float(project.get("tempo"), base["tempo"]),
@@ -185,7 +185,7 @@ def create_track(
     project = load_project()
     existing = [int(track["id"]) for track in project["tracks"]]
     track_id = max(existing, default=0) + 1
-    track = {
+    track: dict[str, Any] = {
         "id": track_id,
         "host_track_id": None,
         "name": name.strip() or f"Track {track_id}",
@@ -317,7 +317,8 @@ def midi_diff(
     for op in operations:
         op_type = str(op.get("op") or op.get("type") or "")
         if op_type == "add_note":
-            note_data = op.get("note") if isinstance(op.get("note"), dict) else op
+            raw_note = op.get("note")
+            note_data = cast(dict[str, Any], raw_note) if isinstance(raw_note, dict) else op
             clip["notes"].append(_normalize_note(note_data))
             changed["added"] += 1
         elif op_type == "delete_note":
@@ -355,10 +356,18 @@ def midi_diff(
 
 def find_track(project: dict[str, Any], track_id: int) -> dict[str, Any]:
     requested_id = int(track_id)
-    for track in project.get("tracks", []):
+    raw_tracks = project.get("tracks", [])
+    tracks = raw_tracks if isinstance(raw_tracks, list) else []
+    for raw_track in tracks:
+        if not isinstance(raw_track, dict):
+            continue
+        track = cast(dict[str, Any], raw_track)
         if int(track.get("id", -1)) == requested_id:
             return track
-    for track in project.get("tracks", []):
+    for raw_track in tracks:
+        if not isinstance(raw_track, dict):
+            continue
+        track = cast(dict[str, Any], raw_track)
         host_track_id = track.get("host_track_id")
         if host_track_id is not None and int(host_track_id) == requested_id:
             return track
@@ -390,11 +399,18 @@ def project_summary(project: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ensure_midi_clip(track: dict[str, Any]) -> dict[str, Any]:
-    clips = track.setdefault("clips", [])
-    for clip in clips:
-        if clip.get("type") == "midi":
-            return clip
-    clip = {
+    raw_clips = track.get("clips")
+    if not isinstance(raw_clips, list):
+        raw_clips = []
+        track["clips"] = raw_clips
+    clips = cast(list[Any], raw_clips)
+    for raw_clip in clips:
+        if not isinstance(raw_clip, dict):
+            continue
+        existing_clip = cast(dict[str, Any], raw_clip)
+        if existing_clip.get("type") == "midi":
+            return existing_clip
+    new_clip: dict[str, Any] = {
         "id": f"clip_{uuid4().hex[:10]}",
         "type": "midi",
         "name": "MIDI Clip",
@@ -404,8 +420,8 @@ def _ensure_midi_clip(track: dict[str, Any]) -> dict[str, Any]:
         "notes": [],
         "events": [],
     }
-    clips.append(clip)
-    return clip
+    clips.append(new_clip)
+    return new_clip
 
 
 def _normalize_clips(
@@ -526,7 +542,12 @@ def _flatten_clip_midi_events(clips: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def _find_note(container: dict[str, Any], op: dict[str, Any]) -> dict[str, Any] | None:
-    for note in container["notes"]:
+    raw_notes = container.get("notes", [])
+    notes = raw_notes if isinstance(raw_notes, list) else []
+    for raw_note in notes:
+        if not isinstance(raw_note, dict):
+            continue
+        note = cast(dict[str, Any], raw_note)
         if _note_matches(note, op):
             return note
     return None
@@ -535,7 +556,7 @@ def _find_note(container: dict[str, Any], op: dict[str, Any]) -> dict[str, Any] 
 def _note_matches(note: dict[str, Any], op: dict[str, Any]) -> bool:
     note_id = op.get("id") or op.get("note_id")
     if note_id:
-        return note.get("id") == note_id
+        return bool(note.get("id") == note_id)
     if "pitch" in op and int(note["pitch"]) != int(op["pitch"]):
         return False
     if "start" in op and abs(float(note["start"]) - float(op["start"])) > 1e-6:
@@ -723,7 +744,9 @@ def _normalize_plugin_slots(track: dict[str, Any]) -> list[dict[str, Any]]:
     return _sort_plugin_slots(slots)
 
 
-def _normalize_plugin_slot(plugin: dict[str, Any] | None, *, slot_id: str = "instrument") -> dict:
+def _normalize_plugin_slot(
+    plugin: dict[str, Any] | None, *, slot_id: str = "instrument"
+) -> dict[str, Any]:
     plugin = plugin if isinstance(plugin, dict) else {}
     slot_id = str(plugin.get("id") or slot_id or "instrument").strip() or "instrument"
     plugin_type = str(plugin.get("type") or plugin.get("format") or "builtin").lower()
@@ -740,7 +763,7 @@ def _normalize_plugin_slot(plugin: dict[str, Any] | None, *, slot_id: str = "ins
         name = str(plugin.get("name") or "ATRI Basic Synth")
     else:
         name = str(plugin.get("name") or "Plugin")
-    slot = {
+    slot: dict[str, Any] = {
         "id": slot_id,
         "type": plugin_type,
         "name": name,

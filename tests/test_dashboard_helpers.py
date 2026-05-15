@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from dashboard.routes import _helpers, chat, models
@@ -31,7 +33,7 @@ def test_dashboard_rate_limit_tracks_failures(monkeypatch):
 
 
 def test_dashboard_masks_provider_api_keys_without_mutating_input():
-    providers = {
+    providers: dict[str, Any] = {
         "openai": {"api_key": "sk-test", "base_url": "https://example.test"},
         "local": {"api_key": ""},
         "bad": "not-a-dict",
