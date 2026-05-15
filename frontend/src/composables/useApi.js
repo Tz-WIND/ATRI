@@ -162,5 +162,9 @@ export function useApi() {
       method: 'POST',
       body: JSON.stringify({ plugin, slot_id: slotId }),
     }),
+    studioOpenPluginEditor: (trackId, slotId = 'instrument') => request(`/api/music/studio/tracks/${encodeURIComponent(trackId)}/plugin/editor`, {
+      method: 'POST',
+      body: JSON.stringify({ slot_id: slotId }),
+    }),
   }
 }

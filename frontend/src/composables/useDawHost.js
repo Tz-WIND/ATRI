@@ -16,13 +16,18 @@ const playing = ref(false)
 const positionSeconds = ref(0)
 const plugins = ref({ vst3: [], vst2: [], priority: ['vst3', 'vst2'] })
 const pluginsLoading = ref(false)
+const editorWindows = ref({})
 
 let audioContext = null
 let playerNode = null
 let audioWs = null
+let commandWs = null
+let commandWsReady = null
+let commandSeq = 0
 let pendingAudioHeader = null
 let reconnectTimer = null
 let statusTimer = null
+const pendingCommandRequests = new Map()
 
 const tracks = computed(() => project.value?.tracks || [])
 const activeTrack = computed(() => (
@@ -210,6 +215,42 @@ async function setTrackPlugin(trackId, plugin, slotId = 'instrument') {
   return res
 }
 
+async function openPluginEditor(trackId, slotId = 'instrument') {
+  hostError.value = ''
+  if (!host.value.running) {
+    await refreshHostStatus()
+  }
+  if (!host.value.running) {
+    const message = 'Audio host is not running. Restart ATRI or check the audio host binary.'
+    hostError.value = message
+    throw new Error(message)
+  }
+
+  try {
+    const result = await sendStudioCommand('open_plugin_editor', {
+      track_id: trackId,
+      slot_id: slotId,
+    })
+    if (!result.ok) {
+      const message = result.response?.message || result.error || 'Plugin editor failed to open'
+      hostError.value = message
+      throw new Error(message)
+    }
+    editorWindows.value = {
+      ...editorWindows.value,
+      [`${trackId}:${slotId}`]: {
+        open: true,
+        title: result.response?.data?.title || result.plugin?.name || 'Plugin Editor',
+      },
+    }
+    if (result.host) host.value = result.host
+    return result
+  } catch (err) {
+    if (!hostError.value) hostError.value = err.message || 'Plugin editor failed to open'
+    throw err
+  }
+}
+
 function selectTrack(trackId) {
   activeTrackId.value = trackId
 }
@@ -289,6 +330,82 @@ function disconnectAudioStream() {
   pendingAudioHeader = null
 }
 
+function ensureCommandWs() {
+  if (commandWs?.readyState === WebSocket.OPEN) return Promise.resolve()
+  if (commandWsReady) return commandWsReady
+
+  commandWsReady = new Promise((resolve, reject) => {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    commandWs = new WebSocket(`${protocol}//${location.host}/ws`)
+
+    commandWs.onopen = () => {
+      commandWsReady = null
+      resolve()
+    }
+    commandWs.onmessage = handleCommandMessage
+    commandWs.onclose = () => {
+      commandWs = null
+      commandWsReady = null
+      for (const [, pending] of pendingCommandRequests) {
+        clearTimeout(pending.timer)
+        pending.reject(new Error('Studio command socket closed'))
+      }
+      pendingCommandRequests.clear()
+    }
+    commandWs.onerror = () => {
+      if (commandWs) commandWs.close()
+      reject(new Error('Studio command socket failed'))
+    }
+  })
+
+  return commandWsReady
+}
+
+async function sendStudioCommand(cmd, payload = {}) {
+  try {
+    await ensureCommandWs()
+  } catch {
+    if (cmd === 'open_plugin_editor') {
+      return api.studioOpenPluginEditor(payload.track_id, payload.slot_id)
+    }
+    throw new Error('Studio command socket failed')
+  }
+  if (!commandWs || commandWs.readyState !== WebSocket.OPEN) {
+    return api.studioOpenPluginEditor(payload.track_id, payload.slot_id)
+  }
+
+  commandSeq += 1
+  const requestId = `studio_${Date.now()}_${commandSeq}`
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingCommandRequests.delete(requestId)
+      reject(new Error('Timed out waiting for studio command response'))
+    }, 6000)
+    pendingCommandRequests.set(requestId, { resolve, reject, timer })
+    commandWs.send(JSON.stringify({
+      type: 'studio_command',
+      cmd,
+      request_id: requestId,
+      ...payload,
+    }))
+  })
+}
+
+function handleCommandMessage(event) {
+  let msg = null
+  try {
+    msg = JSON.parse(event.data)
+  } catch {
+    return
+  }
+  if (msg?.type !== 'studio_command_result') return
+  const pending = pendingCommandRequests.get(msg.request_id)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  pendingCommandRequests.delete(msg.request_id)
+  pending.resolve(msg)
+}
+
 function startStatusPolling() {
   if (statusTimer) return
   statusTimer = setInterval(refreshHostStatus, 1000)
@@ -319,6 +436,7 @@ export function useDawHost() {
     totalNotes,
     plugins,
     pluginsLoading,
+    editorWindows,
     loadProject,
     saveProject,
     refreshHostStatus,
@@ -332,6 +450,7 @@ export function useDawHost() {
     createTrack,
     loadPlugins,
     setTrackPlugin,
+    openPluginEditor,
     selectTrack,
     connectAudioStream,
     disconnectAudioStream,

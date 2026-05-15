@@ -10,11 +10,13 @@ use atri_engine::synth::BasicSynth;
 use atri_vst3::factory::PluginFactory;
 use atri_vst3::plugin::Vst3Plugin;
 use atri_vst3::scanner::{PluginScanner, vst3_bundle_library_path};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossbeam::channel::Sender;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::HostConfig;
+use crate::editor_host::{EditorKey, EditorWindowManager};
 use crate::stream::AudioStreamer;
 
 #[derive(Debug, Clone)]
@@ -126,6 +128,19 @@ pub enum Command {
         track_id: u32,
         slot_index: u8,
     },
+    OpenPluginEditor {
+        track_id: u32,
+        slot_index: Option<u8>,
+    },
+    GetPluginState {
+        track_id: u32,
+        slot_index: Option<u8>,
+    },
+    SetPluginState {
+        track_id: u32,
+        slot_index: Option<u8>,
+        state_b64: String,
+    },
     ScanPlugins {
         paths: Option<Vec<String>>,
         vst2_paths: Option<Vec<String>>,
@@ -151,6 +166,7 @@ pub fn handle_command(
     cmd_tx: &Sender<AppCommand>,
     streamer: &Arc<Mutex<AudioStreamer>>,
     host_config: &HostConfig,
+    editor_manager: Option<&EditorWindowManager>,
 ) -> CommandResponse {
     let cmd_name = raw.get("cmd").and_then(Value::as_str).map(str::to_string);
     let command = match serde_json::from_value::<Command>(raw.clone()) {
@@ -160,7 +176,14 @@ pub fn handle_command(
         }
     };
 
-    execute(command, engine, cmd_tx, streamer, host_config)
+    execute(
+        command,
+        engine,
+        cmd_tx,
+        streamer,
+        host_config,
+        editor_manager,
+    )
 }
 
 fn execute(
@@ -169,6 +192,7 @@ fn execute(
     cmd_tx: &Sender<AppCommand>,
     streamer: &Arc<Mutex<AudioStreamer>>,
     host_config: &HostConfig,
+    editor_manager: Option<&EditorWindowManager>,
 ) -> CommandResponse {
     match command {
         Command::Play => {
@@ -312,7 +336,7 @@ fn execute(
                 Err(err) => return CommandResponse::error(Some("load_vst3"), &err),
             };
             let plugin_name = name.unwrap_or_else(|| factory.plugin_name.clone());
-            let plugin = Vst3Plugin::from_factory(plugin_name.clone(), factory);
+            let plugin = Vst3Plugin::from_factory_deferred(plugin_name.clone(), factory);
             let mut insert = PluginInsert::new(Box::new(plugin));
             insert.activate();
 
@@ -343,6 +367,19 @@ fn execute(
                 CommandResponse::error(Some("clear_processor_slot"), "track not found")
             }
         }
+        Command::OpenPluginEditor {
+            track_id,
+            slot_index,
+        } => open_plugin_editor(engine, editor_manager, track_id, slot_index),
+        Command::GetPluginState {
+            track_id,
+            slot_index,
+        } => get_plugin_state(engine, track_id, slot_index),
+        Command::SetPluginState {
+            track_id,
+            slot_index,
+            state_b64,
+        } => set_plugin_state(engine, track_id, slot_index, &state_b64),
         Command::ScanPlugins { paths, vst2_paths } => {
             let scanner = configure_scanner(host_config, paths, vst2_paths);
             let vst3 = scanner.scan();
@@ -382,6 +419,148 @@ fn configure_scanner(
         .with_vst2_paths(host_config.vst2_plugin_paths.iter().cloned())
         .with_paths(paths.unwrap_or_default())
         .with_vst2_paths(vst2_paths.unwrap_or_default())
+}
+
+fn open_plugin_editor(
+    engine: &Arc<Mutex<AudioEngine>>,
+    editor_manager: Option<&EditorWindowManager>,
+    track_id: u32,
+    slot_index: Option<u8>,
+) -> CommandResponse {
+    let slot_index = usize::from(slot_index.unwrap_or(0));
+    log::info!("open_plugin_editor requested: track_id={track_id}, slot_index={slot_index}");
+    let Some(manager) = editor_manager else {
+        return CommandResponse::error(
+            Some("open_plugin_editor"),
+            "plugin editor window manager is unavailable",
+        );
+    };
+    let Some(processor) = processor_slot(engine, track_id, slot_index) else {
+        return CommandResponse::error(Some("open_plugin_editor"), "plugin instance not found");
+    };
+
+    let title = match processor.lock() {
+        Ok(processor) => format!("{} - ATRI", processor.name()),
+        Err(_) => {
+            return CommandResponse::error(
+                Some("open_plugin_editor"),
+                "plugin instance is unavailable",
+            );
+        }
+    };
+    let key = EditorKey {
+        track_id,
+        slot_index,
+    };
+
+    let window = match manager.open_and_attach(key, title, processor) {
+        Ok(window) => window,
+        Err(err) => {
+            log::warn!("open_plugin_editor failed: {err}");
+            return CommandResponse::error(Some("open_plugin_editor"), &err);
+        }
+    };
+    log::info!(
+        "open_plugin_editor completed: track_id={track_id}, slot_index={slot_index}, already_open={}",
+        window.already_open
+    );
+
+    CommandResponse::ack_with(
+        "open_plugin_editor",
+        json!({
+            "track_id": track_id,
+            "slot_index": slot_index,
+            "title": window.title,
+            "already_open": window.already_open
+        }),
+    )
+}
+
+fn get_plugin_state(
+    engine: &Arc<Mutex<AudioEngine>>,
+    track_id: u32,
+    slot_index: Option<u8>,
+) -> CommandResponse {
+    let slot_index = usize::from(slot_index.unwrap_or(0));
+    let Some(processor) = processor_slot(engine, track_id, slot_index) else {
+        return CommandResponse::error(Some("get_plugin_state"), "plugin instance not found");
+    };
+
+    let chunk = match processor.lock() {
+        Ok(mut processor) => match processor.get_state_chunk() {
+            Ok(chunk) => chunk,
+            Err(err) => return CommandResponse::error(Some("get_plugin_state"), &err),
+        },
+        Err(_) => {
+            return CommandResponse::error(
+                Some("get_plugin_state"),
+                "plugin instance is unavailable",
+            );
+        }
+    };
+
+    CommandResponse::ack_with(
+        "get_plugin_state",
+        json!({
+            "track_id": track_id,
+            "slot_index": slot_index,
+            "state_b64": BASE64.encode(&chunk),
+            "bytes": chunk.len()
+        }),
+    )
+}
+
+fn set_plugin_state(
+    engine: &Arc<Mutex<AudioEngine>>,
+    track_id: u32,
+    slot_index: Option<u8>,
+    state_b64: &str,
+) -> CommandResponse {
+    let slot_index = usize::from(slot_index.unwrap_or(0));
+    let chunk = match BASE64.decode(state_b64) {
+        Ok(chunk) => chunk,
+        Err(err) => {
+            return CommandResponse::error(
+                Some("set_plugin_state"),
+                &format!("invalid state_b64: {err}"),
+            );
+        }
+    };
+    let Some(processor) = processor_slot(engine, track_id, slot_index) else {
+        return CommandResponse::error(Some("set_plugin_state"), "plugin instance not found");
+    };
+
+    match processor.lock() {
+        Ok(mut processor) => {
+            if let Err(err) = processor.set_state_chunk(&chunk) {
+                return CommandResponse::error(Some("set_plugin_state"), &err);
+            }
+        }
+        Err(_) => {
+            return CommandResponse::error(
+                Some("set_plugin_state"),
+                "plugin instance is unavailable",
+            );
+        }
+    }
+
+    CommandResponse::ack_with(
+        "set_plugin_state",
+        json!({
+            "track_id": track_id,
+            "slot_index": slot_index,
+            "bytes": chunk.len()
+        }),
+    )
+}
+
+fn processor_slot(
+    engine: &Arc<Mutex<AudioEngine>>,
+    track_id: u32,
+    slot_index: usize,
+) -> Option<Arc<Mutex<dyn Processor>>> {
+    let engine = engine.lock().ok()?;
+    engine.with_session(|session| session.processor_slot(track_id, slot_index))
 }
 
 #[cfg(test)]
@@ -446,6 +625,7 @@ mod tests {
             &cmd_tx,
             &streamer,
             &config,
+            None,
         );
 
         assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "seek"));
@@ -465,6 +645,7 @@ mod tests {
             &cmd_tx,
             &streamer,
             &config,
+            None,
         );
 
         assert!(
@@ -489,13 +670,21 @@ mod tests {
                 &cmd_tx,
                 &streamer,
                 &config,
+                None,
             );
             assert!(
                 matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "load_builtin_synth")
             );
         }
 
-        let response = execute(Command::GetStatus, &engine, &cmd_tx, &streamer, &config);
+        let response = execute(
+            Command::GetStatus,
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
         let CommandResponse::Status { tracks, .. } = response else {
             panic!("expected status response");
         };
@@ -521,6 +710,7 @@ mod tests {
             &cmd_tx,
             &streamer,
             &config,
+            None,
         );
         assert!(
             matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "load_builtin_synth")
@@ -535,12 +725,20 @@ mod tests {
             &cmd_tx,
             &streamer,
             &config,
+            None,
         );
         assert!(
             matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "clear_processor_slot")
         );
 
-        let response = execute(Command::GetStatus, &engine, &cmd_tx, &streamer, &config);
+        let response = execute(
+            Command::GetStatus,
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
         let CommandResponse::Status { tracks, .. } = response else {
             panic!("expected status response");
         };

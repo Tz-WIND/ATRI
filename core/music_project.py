@@ -614,7 +614,7 @@ def _normalize_plugin_slot(plugin: dict[str, Any] | None, *, slot_id: str = "ins
         name = str(plugin.get("name") or "ATRI Basic Synth")
     else:
         name = str(plugin.get("name") or "Plugin")
-    return {
+    slot = {
         "id": slot_id,
         "type": plugin_type,
         "name": name,
@@ -624,6 +624,10 @@ def _normalize_plugin_slot(plugin: dict[str, Any] | None, *, slot_id: str = "ins
         "category": str(plugin.get("category") or ""),
         "version": str(plugin.get("version") or ""),
     }
+    state_b64 = str(plugin.get("state_b64") or "")
+    if state_b64:
+        slot["state_b64"] = state_b64
+    return slot
 
 
 def _sort_plugin_slots(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:

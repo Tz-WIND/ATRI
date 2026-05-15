@@ -175,6 +175,23 @@ def test_set_track_plugin_updates_instrument_slot(tmp_path, monkeypatch):
     assert project_summary(project)["tracks"][0]["instrument"] == "Example Synth"
 
 
+def test_plugin_slot_preserves_state_chunk(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    _, track = set_track_plugin(
+        1,
+        {
+            "type": "vst3",
+            "name": "Example Synth",
+            "path": "C:/VST3/Example.vst3",
+            "state_b64": "AAECAw==",
+        },
+    )
+
+    assert track["plugin_slots"][0]["state_b64"] == "AAECAw=="
+
+
 def test_set_track_plugin_updates_insert_slot_without_changing_instrument(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     load_project()

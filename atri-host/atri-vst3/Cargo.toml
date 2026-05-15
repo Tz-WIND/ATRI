@@ -11,3 +11,4 @@ log.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+vst3.workspace = true

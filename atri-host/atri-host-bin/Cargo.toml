@@ -21,3 +21,9 @@ cpal.workspace = true
 log.workspace = true
 env_logger.workspace = true
 thiserror.workspace = true
+winit.workspace = true
+raw-window-handle.workspace = true
+base64.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Ole"] }

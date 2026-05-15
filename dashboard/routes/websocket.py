@@ -55,6 +55,39 @@ def register(dashboard: Dashboard) -> None:
                     )
                     for runtime_event in events:
                         await websocket.send(json.dumps(runtime_event.to_wire_payload()))
+                elif msg.get("type") == "studio_command":
+                    cmd = str(msg.get("cmd") or "").strip()
+                    request_id = str(msg.get("request_id") or "")
+                    if cmd != "open_plugin_editor":
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "studio_command_result",
+                                    "cmd": cmd,
+                                    "request_id": request_id,
+                                    "ok": False,
+                                    "error": "unsupported studio command",
+                                }
+                            )
+                        )
+                        continue
+
+                    from dashboard.music import open_plugin_editor_for_track
+
+                    track_id = parse_int(msg.get("track_id"), 0)
+                    slot_id = str(msg.get("slot_id") or "instrument")
+                    result, status = await open_plugin_editor_for_track(track_id, slot_id=slot_id)
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "studio_command_result",
+                                "cmd": cmd,
+                                "request_id": request_id,
+                                "status": status,
+                                **result,
+                            }
+                        )
+                    )
         except asyncio.CancelledError:
             pass
         finally:

@@ -1,5 +1,6 @@
 use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::ScheduledMidiEvent;
+use atri_core::plugin::{EditorParentHandle, PluginEditorContext, PluginEditorHandle};
 
 /// The Processor trait — every signal processing node in a Route chain.
 pub trait Processor: Send + Sync {
@@ -49,6 +50,26 @@ pub trait Processor: Send + Sync {
 
     /// Notify the processor that subsequent blocks may use this block size.
     fn set_block_size(&mut self, _nframes: usize) {}
+
+    fn has_plugin_editor(&self) -> bool {
+        false
+    }
+
+    fn open_plugin_editor(
+        &mut self,
+        _parent: EditorParentHandle,
+        _context: PluginEditorContext,
+    ) -> Result<Box<dyn PluginEditorHandle>, String> {
+        Err(format!("{} does not expose a native editor", self.name()))
+    }
+
+    fn get_state_chunk(&mut self) -> Result<Vec<u8>, String> {
+        Ok(Vec::new())
+    }
+
+    fn set_state_chunk(&mut self, _chunk: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Simple gain processor with smooth ramping.

@@ -123,6 +123,16 @@ impl Session {
         self.with_route(track_id, |route| route.clear_processor_slot(slot_index))
     }
 
+    pub fn processor_slot(
+        &self,
+        track_id: u32,
+        slot_index: usize,
+    ) -> Option<Arc<Mutex<dyn Processor>>> {
+        let route = self.route(track_id)?;
+        let route = route.lock().ok()?;
+        route.processors.get(slot_index)?.as_ref().cloned()
+    }
+
     pub fn set_track_notes(&mut self, track_id: u32, notes: Vec<MidiNote>) -> bool {
         let capacity = notes.len() * 2;
         let Some(index) = self.route_index(track_id) else {

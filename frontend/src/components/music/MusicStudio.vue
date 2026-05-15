@@ -182,7 +182,8 @@
                 </select>
                 <button
                   :class="['track-plugin-open', { active: isPluginEditorOpen(track.id) }]"
-                  :title="isPluginEditorOpen(track.id) ? 'Close VST instance' : 'Open VST instance'"
+                  :disabled="!canOpenPluginEditor(track)"
+                  :title="isPluginEditorOpen(track.id) ? 'Native editor open' : 'Open native plugin editor'"
                   @click.stop="togglePluginEditor(track)"
                 >
                   <svg
@@ -630,6 +631,7 @@ const {
   totalNotes,
   plugins,
   pluginsLoading,
+  editorWindows,
   loadProject,
   saveProject,
   syncProject,
@@ -639,6 +641,7 @@ const {
   createTrack,
   loadPlugins,
   setTrackPlugin,
+  openPluginEditor,
   selectTrack,
   refreshHostStatus,
 } = useDawHost()
@@ -1491,14 +1494,20 @@ function closePiano() {
 }
 
 function isPluginEditorOpen(trackId) {
-  return pluginEditor.value.trackId === trackId
+  return pluginEditor.value.trackId === trackId || Boolean(editorWindows.value?.[`${trackId}:instrument`]?.open)
 }
 
-function togglePluginEditor(track) {
+function canOpenPluginEditor(track) {
+  return pluginSlot(track, 'instrument').type === 'vst3'
+}
+
+async function togglePluginEditor(track) {
   selectTrack(track.id)
-  pluginEditor.value = isPluginEditorOpen(track.id)
-    ? { trackId: null }
-    : { trackId: track.id }
+  pluginEditor.value = { trackId: track.id }
+  if (!canOpenPluginEditor(track)) return
+  try {
+    await openPluginEditor(track.id, 'instrument')
+  } catch {}
 }
 
 function closePluginEditor() {
@@ -2312,6 +2321,11 @@ watch(positionBeats, (value) => {
   color: #f0d17a;
   border-color: rgba(240, 209, 122, 0.34);
   background: rgba(240, 209, 122, 0.1);
+}
+
+.track-plugin-open:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
 }
 
 .track-plugin-open svg {

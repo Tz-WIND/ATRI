@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod driver;
+mod editor_host;
 mod ipc;
 mod stream;
 
@@ -49,6 +50,14 @@ fn main() {
         config.sample_rate, config.buffer_size
     );
     let streamer = Arc::new(Mutex::new(AudioStreamer::new(config.sample_rate, 2)));
+    let (editor_manager, editor_runtime) =
+        match editor_host::EditorWindowManager::start_on_main_thread() {
+            Ok((manager, runtime)) => (Some(Arc::new(manager)), Some(runtime)),
+            Err(err) => {
+                log::warn!("plugin editor windows are unavailable: {err}");
+                (None, None)
+            }
+        };
 
     let streamer_thread = {
         let streamer = Arc::clone(&streamer);
@@ -62,8 +71,35 @@ fn main() {
         })
     };
 
-    ipc::run_ipc_loop(engine, cmd_tx, streamer, stdout, host_config);
+    let ipc_thread = {
+        let engine = Arc::clone(&engine);
+        let streamer = Arc::clone(&streamer);
+        let stdout = Arc::clone(&stdout);
+        let host_config = Arc::clone(&host_config);
+        let editor_manager = editor_manager.clone();
+        thread::spawn(move || {
+            ipc::run_ipc_loop(
+                engine,
+                cmd_tx,
+                streamer,
+                stdout,
+                host_config,
+                editor_manager.clone(),
+            );
+            if let Some(manager) = editor_manager {
+                manager.shutdown();
+            }
+        })
+    };
 
+    if let Some(runtime) = editor_runtime {
+        eprintln!("[atri-host] plugin editor event loop running on main thread");
+        if let Err(err) = runtime.run() {
+            log::error!("{err}");
+        }
+    }
+
+    let _ = ipc_thread.join();
     driver.stop();
     let _ = streamer_thread.join();
     eprintln!("[atri-host] Shutdown complete");

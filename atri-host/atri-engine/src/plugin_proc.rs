@@ -1,6 +1,6 @@
 use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::ScheduledMidiEvent;
-use atri_core::plugin::Plugin;
+use atri_core::plugin::{EditorParentHandle, Plugin, PluginEditorContext, PluginEditorHandle};
 
 use super::processor::Processor;
 
@@ -68,5 +68,25 @@ impl Processor for PluginInsert {
     }
     fn output_channels(&self) -> u16 {
         2
+    }
+
+    fn has_plugin_editor(&self) -> bool {
+        self.plugin.has_editor()
+    }
+
+    fn open_plugin_editor(
+        &mut self,
+        parent: EditorParentHandle,
+        context: PluginEditorContext,
+    ) -> Result<Box<dyn PluginEditorHandle>, String> {
+        self.plugin.open_editor(parent, context)
+    }
+
+    fn get_state_chunk(&mut self) -> Result<Vec<u8>, String> {
+        self.plugin.get_state_chunk()
+    }
+
+    fn set_state_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
+        self.plugin.set_state_chunk(chunk)
     }
 }

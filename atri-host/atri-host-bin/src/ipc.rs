@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::commands::{AppCommand, handle_command};
 use crate::config::HostConfig;
+use crate::editor_host::EditorWindowManager;
 use crate::stream::{AudioStreamer, SharedStdout, write_json};
 
 /// Runs the IPC main loop: reads JSON commands from stdin, dispatches them,
@@ -17,6 +18,7 @@ pub fn run_ipc_loop(
     streamer: Arc<Mutex<AudioStreamer>>,
     stdout: SharedStdout,
     host_config: Arc<HostConfig>,
+    editor_manager: Option<Arc<EditorWindowManager>>,
 ) {
     let stdin = std::io::stdin();
     let mut reader = BufReader::new(stdin.lock());
@@ -40,7 +42,14 @@ pub fn run_ipc_loop(
 
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(raw) => {
-                        let resp = handle_command(&raw, &engine, &cmd_tx, &streamer, &host_config);
+                        let resp = handle_command(
+                            &raw,
+                            &engine,
+                            &cmd_tx,
+                            &streamer,
+                            &host_config,
+                            editor_manager.as_deref(),
+                        );
                         write_json(&stdout, &resp).ok();
 
                         if resp.is_shutdown() {

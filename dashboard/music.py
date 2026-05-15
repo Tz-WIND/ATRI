@@ -487,8 +487,8 @@ def _host_snapshot() -> dict[str, Any]:
 
 def _track_slot(track: dict[str, Any], slot_id: str) -> dict[str, Any]:
     for slot in track.get("plugin_slots", []):
-        if slot.get("id") == slot_id:
-            return slot
+        if isinstance(slot, dict) and slot.get("id") == slot_id:
+            return cast(dict[str, Any], slot)
     if slot_id == "instrument":
         return {
             "id": "instrument",
@@ -521,15 +521,19 @@ async def _load_track_slot(
     slot_type = str(slot.get("type") or "empty")
 
     if slot.get("type") == "vst3" and slot.get("path"):
-        return await host.send_command(
-            "load_vst3",
-            {
-                "track_id": int(host_track_id),
-                "slot_index": slot_index,
-                "path": str(slot.get("path") or ""),
-                "name": str(slot.get("name") or "") or None,
-            },
+        response = cast(
+            dict[str, Any],
+            await host.send_command(
+                "load_vst3",
+                {
+                    "track_id": int(host_track_id),
+                    "slot_index": slot_index,
+                    "path": str(slot.get("path") or ""),
+                    "name": str(slot.get("name") or "") or None,
+                },
+            ),
         )
+        return await _restore_slot_state(host, host_track_id, slot_index, slot, response)
     if slot_type == "vst2":
         clear_response = await host.send_command(
             "clear_processor_slot",
@@ -544,14 +548,45 @@ async def _load_track_slot(
             "clear": clear_response,
         }
     if slot_id == "instrument":
-        return await host.send_command(
-            "load_builtin_synth",
-            {"track_id": int(host_track_id), "slot_index": slot_index},
+        response = cast(
+            dict[str, Any],
+            await host.send_command(
+                "load_builtin_synth",
+                {"track_id": int(host_track_id), "slot_index": slot_index},
+            ),
         )
-    return await host.send_command(
-        "clear_processor_slot",
-        {"track_id": int(host_track_id), "slot_index": slot_index},
+        return await _restore_slot_state(host, host_track_id, slot_index, slot, response)
+    return cast(
+        dict[str, Any],
+        await host.send_command(
+            "clear_processor_slot",
+            {"track_id": int(host_track_id), "slot_index": slot_index},
+        ),
     )
+
+
+async def _restore_slot_state(
+    host,
+    host_track_id: int,
+    slot_index: int,
+    slot: dict[str, Any],
+    load_response: dict[str, Any],
+) -> dict[str, Any]:
+    state_b64 = str(slot.get("state_b64") or "")
+    if not state_b64:
+        return load_response
+    state_response = cast(
+        dict[str, Any],
+        await host.send_command(
+            "set_plugin_state",
+            {
+                "track_id": int(host_track_id),
+                "slot_index": int(slot_index),
+                "state_b64": state_b64,
+            },
+        ),
+    )
+    return {**load_response, "state": state_response}
 
 
 async def _load_track_slots(
@@ -565,6 +600,111 @@ async def _load_track_slots(
         if isinstance(slot, dict):
             commands.append(await _load_track_slot(host, host_track_id, slot))
     return commands
+
+
+async def _capture_plugin_states(
+    project: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    host = _host_manager()
+    if not host.is_running:
+        return project, []
+
+    responses: list[dict[str, Any]] = []
+    for track in project.get("tracks", []):
+        if not isinstance(track, dict):
+            continue
+        host_track_id = track.get("host_track_id")
+        if host_track_id is None:
+            continue
+        slots = track.get("plugin_slots")
+        if not isinstance(slots, list):
+            slots = []
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            if slot.get("type") in {"empty", "vst2"}:
+                continue
+            slot_id = str(slot.get("id") or "instrument")
+            slot_index = _slot_index(slot_id)
+            response = await host.send_command(
+                "get_plugin_state",
+                {"track_id": int(host_track_id), "slot_index": slot_index},
+            )
+            responses.append(
+                {
+                    "track_id": track.get("id"),
+                    "host_track_id": int(host_track_id),
+                    "slot_id": slot_id,
+                    "slot_index": slot_index,
+                    "response": response,
+                }
+            )
+            data = response.get("data") if isinstance(response.get("data"), dict) else {}
+            state_b64 = str(data.get("state_b64") or "")
+            if state_b64:
+                slot["state_b64"] = state_b64
+
+    return project, responses
+
+
+async def open_plugin_editor_for_track(
+    track_id: int,
+    *,
+    slot_id: str = "instrument",
+) -> tuple[dict[str, Any], int]:
+    project = load_project()
+    try:
+        track = find_track(project, track_id)
+    except ValueError as e:
+        return {"ok": False, "error": str(e), "host": _host_snapshot()}, 404
+
+    host = _host_manager()
+    if not host.is_running:
+        return {"ok": False, "error": "host process not running", "host": _host_snapshot()}, 409
+
+    sync = None
+    if track.get("host_track_id") is None:
+        sync = await _sync_project_to_host(project, broadcast=True)
+        project = sync.get("project", project)
+        track = find_track(project, track_id)
+
+    host_track_id = track.get("host_track_id")
+    if host_track_id is None:
+        return {
+            "ok": False,
+            "error": "track is not synced to the host",
+            "host": _host_snapshot(),
+            "sync": sync,
+        }, 409
+
+    slot = _track_slot(track, slot_id)
+    if slot.get("type") in {"empty", "vst2"}:
+        return {
+            "ok": False,
+            "error": "selected plugin slot does not have a native editor",
+            "host": _host_snapshot(),
+            "plugin": slot,
+            "sync": sync,
+        }, 409
+
+    slot_index = _slot_index(slot_id)
+    response = await host.send_command(
+        "open_plugin_editor",
+        {"track_id": int(host_track_id), "slot_index": slot_index},
+    )
+    ok = response.get("type") == "ack"
+    status = 200 if ok else 409
+    return {
+        "ok": ok,
+        "project_track_id": int(track_id),
+        "host_track_id": int(host_track_id),
+        "slot_id": slot_id,
+        "slot_index": slot_index,
+        "plugin": slot,
+        "response": response,
+        "sync": sync,
+        "host": _host_snapshot(),
+    }, status
 
 
 async def _broadcast_project(project: dict[str, Any]) -> None:
@@ -688,12 +828,13 @@ async def studio_project():
 @bp.route("/studio/project", methods=["PUT"])
 async def save_studio_project():
     data = await _json_payload()
-    project = save_project(data.get("project") or {})
+    project, state_capture = await _capture_plugin_states(data.get("project") or {})
+    project = save_project(project)
     sync = await _sync_project_to_host(
         project,
         broadcast=True,
     )
-    return jsonify({"ok": True, "project": project, "sync": sync})
+    return jsonify({"ok": True, "project": project, "sync": sync, "state": state_capture})
 
 
 @bp.route("/studio/demo", methods=["POST"])
@@ -752,6 +893,14 @@ async def audio_host_command():
         return jsonify({"error": "host process not running", "host": _host_snapshot()}), 409
     response = await host.send_command(cmd, params)
     return jsonify({"response": response, "host": _host_snapshot()})
+
+
+@bp.route("/studio/tracks/<int:track_id>/plugin/editor", methods=["POST"])
+async def studio_open_plugin_editor(track_id: int):
+    data = await _json_payload()
+    slot_id = str(data.get("slot_id") or "instrument")
+    result, status = await open_plugin_editor_for_track(track_id, slot_id=slot_id)
+    return jsonify(result), status
 
 
 @bp.route("/studio/plugins", methods=["GET", "POST"])
