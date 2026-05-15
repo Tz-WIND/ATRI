@@ -8,11 +8,15 @@ use crate::time::tempo_map::TempoMap;
 #[derive(Debug, Clone)]
 pub struct MidiSequencer {
     notes: Vec<MidiNote>,
+    events: Vec<MidiEvent>,
 }
 
 impl MidiSequencer {
     pub fn new() -> Self {
-        Self { notes: Vec::new() }
+        Self {
+            notes: Vec::new(),
+            events: Vec::new(),
+        }
     }
 
     pub fn set_notes(&mut self, notes: Vec<MidiNote>) {
@@ -25,16 +29,31 @@ impl MidiSequencer {
         });
     }
 
+    pub fn set_events(&mut self, events: Vec<MidiEvent>) {
+        self.events = events;
+        self.events.sort_by_key(|event| event.tick);
+    }
+
+    pub fn set_midi(&mut self, notes: Vec<MidiNote>, events: Vec<MidiEvent>) {
+        self.set_notes(notes);
+        self.set_events(events);
+    }
+
     pub fn clear(&mut self) {
         self.notes.clear();
+        self.events.clear();
     }
 
     pub fn event_capacity(&self) -> usize {
-        self.notes.len() * 2
+        self.notes.len() * 2 + self.events.len()
     }
 
     pub fn note_count(&self) -> usize {
         self.notes.len()
+    }
+
+    pub fn midi_event_count(&self) -> usize {
+        self.events.len()
     }
 
     /// Collect NoteOn and NoteOff events in the sample range [start, end).
@@ -72,6 +91,10 @@ impl MidiSequencer {
                 tempo_map,
                 out,
             );
+        }
+
+        for event in &self.events {
+            self.push_midi_event(event, start_sample, end_sample, tempo_map, out);
         }
 
         out.sort_by_key(|ev| ev.offset);
@@ -112,6 +135,25 @@ impl MidiSequencer {
             offset,
         ));
     }
+
+    fn push_midi_event(
+        &self,
+        event: &MidiEvent,
+        start_sample: i64,
+        end_sample: i64,
+        tempo_map: &TempoMap,
+        out: &mut Vec<ScheduledMidiEvent>,
+    ) {
+        let sample = tempo_map.sample_at_beats(Beats::from_ticks(event.tick));
+        if sample < start_sample || sample >= end_sample {
+            return;
+        }
+
+        out.push(ScheduledMidiEvent::new(
+            event.clone(),
+            (sample - start_sample) as usize,
+        ));
+    }
 }
 
 impl Default for MidiSequencer {
@@ -149,6 +191,40 @@ mod tests {
                 channel: 0,
                 pitch: 69,
                 velocity: 100
+            }
+        );
+    }
+
+    #[test]
+    fn schedules_arbitrary_midi_events() {
+        let mut sequencer = MidiSequencer::new();
+        sequencer.set_events(vec![MidiEvent::new(
+            PPQN as i64,
+            MidiMessage::ControlChange {
+                channel: 2,
+                controller: 64,
+                value: 127,
+            },
+        )]);
+        let tempo_map = TempoMap::new(Tempo::new(120.0, 4), Meter::new(4, 4), 48_000);
+        let event_sample = tempo_map.sample_at_beats(Beats::from_beats(1.0));
+        let mut events = Vec::new();
+
+        sequencer.collect_events_in_samples(
+            event_sample - 8,
+            event_sample + 8,
+            &tempo_map,
+            &mut events,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].offset, 8);
+        assert_eq!(
+            events[0].event.message,
+            MidiMessage::ControlChange {
+                channel: 2,
+                controller: 64,
+                value: 127
             }
         );
     }

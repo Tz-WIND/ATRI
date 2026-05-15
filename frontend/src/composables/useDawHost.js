@@ -1,5 +1,6 @@
 import { computed, ref, shallowRef } from 'vue'
 import { useApi } from './useApi.js'
+import pcmPlayerWorkletUrl from '../worklets/pcm-player-worklet.js?url'
 
 const api = useApi()
 
@@ -79,6 +80,47 @@ async function saveProject(nextProject, options = {}) {
   }
 }
 
+function slotIdFromSlotIndex(slotIndex) {
+  const index = Number(slotIndex ?? 0)
+  if (!Number.isFinite(index) || index <= 0) return 'instrument'
+  return `insert_${Math.trunc(index)}`
+}
+
+function projectTrackIdFromHostTrackId(hostTrackId) {
+  const id = Number(hostTrackId)
+  if (!Number.isFinite(id)) return null
+  const mapped = tracks.value.find(track => Number(track.host_track_id) === id)
+  if (mapped) return mapped.id
+  return tracks.value.find(track => Number(track.id) === id)?.id ?? id
+}
+
+function editorTitleFor(trackId, slotId) {
+  const key = `${trackId}:${slotId}`
+  const current = editorWindows.value?.[key]?.title
+  if (current) return current
+
+  const track = tracks.value.find(item => Number(item.id) === Number(trackId))
+  const slot = (track?.plugin_slots || []).find(item => item?.id === slotId)
+  const name = slot?.name || (slotId === 'instrument' ? track?.instrument : '')
+  return name ? `${name} - ATRI` : 'Plugin Editor'
+}
+
+function syncEditorWindowsFromEngine(engineStatus) {
+  if (!Array.isArray(engineStatus?.editor_windows)) return
+
+  const next = {}
+  for (const windowStatus of engineStatus.editor_windows) {
+    const trackId = projectTrackIdFromHostTrackId(windowStatus?.track_id)
+    if (trackId == null) continue
+    const slotId = slotIdFromSlotIndex(windowStatus?.slot_index)
+    next[`${trackId}:${slotId}`] = {
+      open: true,
+      title: editorTitleFor(trackId, slotId),
+    }
+  }
+  editorWindows.value = next
+}
+
 async function refreshHostStatus() {
   try {
     const res = await api.hostStatus()
@@ -87,8 +129,12 @@ async function refreshHostStatus() {
       engine.value = res.engine
       playing.value = res.engine.transport === 'playing'
       positionSeconds.value = Number(res.engine.position || 0)
+      syncEditorWindowsFromEngine(res.engine)
     } else if (!host.value.running) {
       playing.value = false
+    }
+    if (!host.value.running) {
+      editorWindows.value = {}
     }
   } catch {}
 }
@@ -123,25 +169,67 @@ async function resetDemo() {
   }
 }
 
+async function startHostForTransport() {
+  let res = null
+  try {
+    res = await api.hostStart({ sync: true })
+  } catch (err) {
+    hostError.value = err.message || 'Audio host failed to start'
+    throw err
+  }
+  if (res.project) setProject(res.project)
+  if (res.sync?.project) setProject(res.sync.project)
+  if (res.host) host.value = res.host
+  if (res.sync?.host_running || res.host?.running) {
+    host.value = { ...host.value, running: true }
+    startStatusPolling()
+  }
+  return res
+}
+
 async function transport(action, payload = {}) {
+  hostError.value = ''
   if (!host.value.running) {
     await refreshHostStatus()
+  }
+  if (!host.value.running && ['play', 'seek'].includes(action)) {
+    await startHostForTransport()
   }
   if (!host.value.running) {
     const message = 'Audio host is not running. Restart ATRI or check the audio host binary.'
     hostError.value = message
     throw new Error(message)
   }
-  await ensureAudio()
-  if (audioContext?.state === 'suspended') {
-    await audioContext.resume()
+  let res = null
+  try {
+    res = await api.studioTransport(action, payload)
+  } catch (err) {
+    hostError.value = err.message || `${action} failed`
+    throw err
   }
-  connectAudioStream()
-  const res = await api.studioTransport(action, payload)
+  if (res.host) host.value = res.host
+  if (host.value.running) startStatusPolling()
+  if (res.response?.type === 'error') {
+    const message = res.response.message || `${action} failed`
+    hostError.value = message
+    throw new Error(message)
+  }
   if (action === 'play') playing.value = true
   if (action === 'pause' || action === 'stop') playing.value = false
   if (action === 'stop') positionSeconds.value = 0
-  refreshHostStatus()
+  if (action === 'seek') positionSeconds.value = Number(payload.position || 0)
+  if (action === 'play') {
+    try {
+      await ensureAudio()
+      if (audioContext?.state === 'suspended') {
+        await audioContext.resume()
+      }
+      connectAudioStream()
+    } catch (err) {
+      hostError.value = `Playback started, but browser audio output failed: ${err.message || err}`
+    }
+  }
+  window.setTimeout(refreshHostStatus, 150)
   return res
 }
 
@@ -236,9 +324,11 @@ async function openPluginEditor(trackId, slotId = 'instrument') {
       hostError.value = message
       throw new Error(message)
     }
+    const editorTrackId = result.project_track_id || trackId
+    const editorSlotId = result.slot_id || slotId
     editorWindows.value = {
       ...editorWindows.value,
-      [`${trackId}:${slotId}`]: {
+      [`${editorTrackId}:${editorSlotId}`]: {
         open: true,
         title: result.response?.data?.title || result.plugin?.name || 'Plugin Editor',
       },
@@ -262,9 +352,7 @@ async function ensureAudio() {
     throw new Error('AudioWorklet is not supported by this browser')
   }
   audioContext = new AudioContextCtor({ latencyHint: 'interactive', sampleRate: 48000 })
-  await audioContext.audioWorklet.addModule(
-    new URL('../worklets/pcm-player-worklet.js', import.meta.url)
-  )
+  await audioContext.audioWorklet.addModule(pcmPlayerWorkletUrl)
   playerNode = new AudioWorkletNode(audioContext, 'atri-pcm-player', {
     numberOfInputs: 0,
     numberOfOutputs: 1,

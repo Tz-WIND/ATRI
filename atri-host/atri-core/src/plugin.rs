@@ -56,6 +56,9 @@ pub trait Plugin: Send + Sync {
     fn activate(&mut self);
     fn deactivate(&mut self);
     fn set_block_size(&mut self, nframes: usize);
+    fn prepare_for_processing(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn connect_and_run(
         &mut self,
         bufs: &mut BufferSet,

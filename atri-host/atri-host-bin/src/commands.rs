@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use atri_core::midi::event::MidiEvent;
+use atri_core::midi::message::MidiMessage;
 use atri_core::midi::note::MidiNote;
+use atri_core::time::beats::PPQN;
 use atri_engine::engine::AudioEngine;
 use atri_engine::plugin_proc::PluginInsert;
 use atri_engine::processor::Processor;
@@ -51,6 +54,7 @@ pub enum CommandResponse {
         sample_rate: u32,
         buffer_size: usize,
         tracks: Vec<TrackStatus>,
+        editor_windows: Vec<EditorWindowStatus>,
     },
     Shutdown {
         status: String,
@@ -66,8 +70,15 @@ pub struct TrackStatus {
     mute: bool,
     solo: bool,
     note_count: usize,
+    midi_event_count: usize,
     processors: Vec<String>,
     processor_slots: Vec<Option<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EditorWindowStatus {
+    track_id: u32,
+    slot_index: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +99,8 @@ pub enum Command {
     SetMidi {
         track_id: u32,
         notes: Vec<MidiNoteData>,
+        #[serde(default)]
+        events: Vec<MidiEventData>,
     },
     SetTempo {
         bpm: f64,
@@ -141,6 +154,17 @@ pub enum Command {
         slot_index: Option<u8>,
         state_b64: String,
     },
+    GetPluginParameter {
+        track_id: u32,
+        slot_index: Option<u8>,
+        index: u32,
+    },
+    SetPluginParameter {
+        track_id: u32,
+        slot_index: Option<u8>,
+        index: u32,
+        value: f32,
+    },
     ScanPlugins {
         paths: Option<Vec<String>>,
         vst2_paths: Option<Vec<String>>,
@@ -158,6 +182,38 @@ pub struct MidiNoteData {
     pub start: f64,
     pub duration: f64,
     pub velocity: u8,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MidiEventData {
+    #[serde(default)]
+    pub start: Option<f64>,
+    #[serde(default)]
+    pub beat: Option<f64>,
+    #[serde(default)]
+    pub tick: Option<i64>,
+    #[serde(default, rename = "type", alias = "kind", alias = "message")]
+    pub message_type: String,
+    #[serde(default)]
+    pub channel: Option<u8>,
+    #[serde(default)]
+    pub pitch: Option<u8>,
+    #[serde(default)]
+    pub velocity: Option<u8>,
+    #[serde(default)]
+    pub controller: Option<u8>,
+    #[serde(default)]
+    pub value: Option<i32>,
+    #[serde(default)]
+    pub program: Option<u8>,
+    #[serde(default)]
+    pub pressure: Option<u8>,
+    #[serde(default)]
+    pub data_b64: Option<String>,
+    #[serde(default)]
+    pub data: Option<Vec<u8>>,
+    #[serde(default)]
+    pub bytes: Option<Vec<u8>>,
 }
 
 pub fn handle_command(
@@ -227,13 +283,21 @@ fn execute(
                 CommandResponse::error(Some("remove_track"), "track not found")
             }
         }
-        Command::SetMidi { track_id, notes } => {
+        Command::SetMidi {
+            track_id,
+            notes,
+            events,
+        } => {
             let midi_notes = notes
                 .into_iter()
                 .map(|note| MidiNote::new(note.pitch, note.start, note.duration, note.velocity))
                 .collect();
+            let midi_events = match midi_events_from_data(events) {
+                Ok(events) => events,
+                Err(err) => return CommandResponse::error(Some("set_midi"), &err),
+            };
             if with_session(engine, |session| {
-                session.set_track_notes(track_id, midi_notes)
+                session.set_track_midi(track_id, midi_notes, midi_events)
             }) {
                 CommandResponse::ack("set_midi")
             } else {
@@ -336,12 +400,37 @@ fn execute(
                 Err(err) => return CommandResponse::error(Some("load_vst3"), &err),
             };
             let plugin_name = name.unwrap_or_else(|| factory.plugin_name.clone());
-            let plugin = Vst3Plugin::from_factory_deferred(plugin_name.clone(), factory);
+            let sample_rate = engine.lock().unwrap().sample_rate();
+            let plugin = Vst3Plugin::from_factory_deferred_with_sample_rate(
+                plugin_name.clone(),
+                factory,
+                f64::from(sample_rate),
+            );
             let mut insert = PluginInsert::new(Box::new(plugin));
             insert.activate();
+            let processor: Arc<Mutex<dyn Processor>> = Arc::new(Mutex::new(insert));
+            if let Ok(mut processor) = processor.lock() {
+                processor.set_block_size(engine.lock().unwrap().buffer_size());
+            }
+
+            let key = EditorKey {
+                track_id,
+                slot_index,
+            };
+            let prepare_result = if let Some(manager) = editor_manager {
+                manager.prepare_processor(key, Arc::clone(&processor))
+            } else {
+                processor
+                    .lock()
+                    .map_err(|_| "plugin instance is unavailable".to_string())
+                    .and_then(|mut processor| processor.prepare_for_processing())
+            };
+            if let Err(err) = prepare_result {
+                return CommandResponse::error(Some("load_vst3"), &err);
+            }
 
             if with_session(engine, |session| {
-                session.set_processor_slot(track_id, slot_index, Some(Arc::new(Mutex::new(insert))))
+                session.set_processor_slot(track_id, slot_index, Some(processor))
             }) {
                 CommandResponse::ack_with(
                     "load_vst3",
@@ -380,6 +469,17 @@ fn execute(
             slot_index,
             state_b64,
         } => set_plugin_state(engine, track_id, slot_index, &state_b64),
+        Command::GetPluginParameter {
+            track_id,
+            slot_index,
+            index,
+        } => get_plugin_parameter(engine, track_id, slot_index, index),
+        Command::SetPluginParameter {
+            track_id,
+            slot_index,
+            index,
+            value,
+        } => set_plugin_parameter(engine, track_id, slot_index, index, value),
         Command::ScanPlugins { paths, vst2_paths } => {
             let scanner = configure_scanner(host_config, paths, vst2_paths);
             let vst3 = scanner.scan();
@@ -399,7 +499,7 @@ fn execute(
             }
             CommandResponse::ack("set_streaming")
         }
-        Command::GetStatus => status(engine),
+        Command::GetStatus => status(engine, editor_manager),
         Command::Shutdown => {
             let _ = cmd_tx.send(AppCommand::Shutdown);
             CommandResponse::Shutdown {
@@ -419,6 +519,105 @@ fn configure_scanner(
         .with_vst2_paths(host_config.vst2_plugin_paths.iter().cloned())
         .with_paths(paths.unwrap_or_default())
         .with_vst2_paths(vst2_paths.unwrap_or_default())
+}
+
+fn midi_events_from_data(events: Vec<MidiEventData>) -> Result<Vec<MidiEvent>, String> {
+    events.into_iter().map(midi_event_from_data).collect()
+}
+
+fn midi_event_from_data(event: MidiEventData) -> Result<MidiEvent, String> {
+    let tick = midi_event_tick(&event)?;
+    let channel = event.channel.unwrap_or(0).min(15);
+    let message_type = event
+        .message_type
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_");
+    let message = match message_type.as_str() {
+        "note_on" | "noteon" => MidiMessage::NoteOn {
+            channel,
+            pitch: event.pitch.unwrap_or(60).min(127),
+            velocity: event.velocity.unwrap_or(96).min(127),
+        },
+        "note_off" | "noteoff" => MidiMessage::NoteOff {
+            channel,
+            pitch: event.pitch.unwrap_or(60).min(127),
+            velocity: event.velocity.unwrap_or(0).min(127),
+        },
+        "control_change" | "cc" | "controller" => MidiMessage::ControlChange {
+            channel,
+            controller: event.controller.unwrap_or(0).min(127),
+            value: midi_value_7bit(event.value, 0),
+        },
+        "pitch_bend" | "pitchbend" => MidiMessage::PitchBend {
+            channel,
+            value: event.value.unwrap_or(0).clamp(-8192, 8191) as i16,
+        },
+        "program_change" | "programchange" => MidiMessage::ProgramChange {
+            channel,
+            program: event
+                .program
+                .unwrap_or_else(|| midi_value_7bit(event.value, 0))
+                .min(127),
+        },
+        "channel_pressure" | "channelpressure" | "aftertouch" => MidiMessage::ChannelPressure {
+            channel,
+            pressure: event
+                .pressure
+                .unwrap_or_else(|| midi_value_7bit(event.value, 0))
+                .min(127),
+        },
+        "polyphonic_key_pressure" | "poly_key_pressure" | "poly_pressure" | "poly_aftertouch" => {
+            MidiMessage::PolyphonicKeyPressure {
+                channel,
+                pitch: event.pitch.unwrap_or(60).min(127),
+                pressure: event
+                    .pressure
+                    .unwrap_or_else(|| midi_value_7bit(event.value, 0))
+                    .min(127),
+            }
+        }
+        "all_notes_off" | "allnotesoff" => MidiMessage::AllNotesOff { channel },
+        "sysex" | "system_exclusive" | "systemexclusive" => {
+            MidiMessage::SystemExclusive(midi_sysex_bytes(&event)?)
+        }
+        "" => return Err("MIDI event type is required".to_string()),
+        other => return Err(format!("unsupported MIDI event type: {other}")),
+    };
+
+    Ok(MidiEvent::new(tick, message))
+}
+
+fn midi_event_tick(event: &MidiEventData) -> Result<i64, String> {
+    if let Some(tick) = event.tick {
+        return Ok(tick.max(0));
+    }
+    let beat = event.start.or(event.beat).unwrap_or(0.0);
+    if !beat.is_finite() || beat < 0.0 {
+        return Err("MIDI event start must be a non-negative beat position".to_string());
+    }
+    let tick = (beat * f64::from(PPQN)).round();
+    if tick > i64::MAX as f64 {
+        return Err("MIDI event start is too large".to_string());
+    }
+    Ok(tick as i64)
+}
+
+fn midi_sysex_bytes(event: &MidiEventData) -> Result<Vec<u8>, String> {
+    if let Some(encoded) = event.data_b64.as_deref().filter(|data| !data.is_empty()) {
+        return BASE64
+            .decode(encoded)
+            .map_err(|err| format!("invalid MIDI SysEx data_b64: {err}"));
+    }
+    Ok(event
+        .data
+        .clone()
+        .or_else(|| event.bytes.clone())
+        .unwrap_or_default())
+}
+
+fn midi_value_7bit(value: Option<i32>, default: u8) -> u8 {
+    value.unwrap_or(i32::from(default)).clamp(0, 127) as u8
 }
 
 fn open_plugin_editor(
@@ -550,6 +749,80 @@ fn set_plugin_state(
             "track_id": track_id,
             "slot_index": slot_index,
             "bytes": chunk.len()
+        }),
+    )
+}
+
+fn get_plugin_parameter(
+    engine: &Arc<Mutex<AudioEngine>>,
+    track_id: u32,
+    slot_index: Option<u8>,
+    index: u32,
+) -> CommandResponse {
+    let slot_index = usize::from(slot_index.unwrap_or(0));
+    let Some(processor) = processor_slot(engine, track_id, slot_index) else {
+        return CommandResponse::error(Some("get_plugin_parameter"), "plugin instance not found");
+    };
+
+    let (value, count) = match processor.lock() {
+        Ok(mut processor) => {
+            let count = processor.parameter_count();
+            let value = processor.get_parameter(index).unwrap_or(0.0);
+            (value, count)
+        }
+        Err(_) => {
+            return CommandResponse::error(
+                Some("get_plugin_parameter"),
+                "plugin instance is unavailable",
+            );
+        }
+    };
+
+    CommandResponse::ack_with(
+        "get_plugin_parameter",
+        json!({
+            "track_id": track_id,
+            "slot_index": slot_index,
+            "index": index,
+            "value": value,
+            "parameter_count": count
+        }),
+    )
+}
+
+fn set_plugin_parameter(
+    engine: &Arc<Mutex<AudioEngine>>,
+    track_id: u32,
+    slot_index: Option<u8>,
+    index: u32,
+    value: f32,
+) -> CommandResponse {
+    let slot_index = usize::from(slot_index.unwrap_or(0));
+    let Some(processor) = processor_slot(engine, track_id, slot_index) else {
+        return CommandResponse::error(Some("set_plugin_parameter"), "plugin instance not found");
+    };
+
+    match processor.lock() {
+        Ok(mut processor) => {
+            if let Err(err) = processor.set_parameter(index, value.clamp(0.0, 1.0)) {
+                return CommandResponse::error(Some("set_plugin_parameter"), &err);
+            }
+        }
+        Err(_) => {
+            return CommandResponse::error(
+                Some("set_plugin_parameter"),
+                "plugin instance is unavailable",
+            );
+        }
+    }
+
+    CommandResponse::ack_with(
+        "set_plugin_parameter",
+        json!({
+            "track_id": track_id,
+            "slot_index": slot_index,
+            "index": index,
+            "value": value.clamp(0.0, 1.0)
         }),
     )
 }
@@ -746,6 +1019,54 @@ mod tests {
         assert!(tracks[0].processors.is_empty());
         assert_eq!(tracks[0].processor_slots, vec![None, None, None]);
     }
+
+    #[test]
+    fn set_midi_accepts_controller_events() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track_id = with_session(&engine, |session| session.add_track("Keys".to_string()));
+
+        let response = execute(
+            Command::SetMidi {
+                track_id,
+                notes: Vec::new(),
+                events: vec![MidiEventData {
+                    start: Some(1.0),
+                    beat: None,
+                    tick: None,
+                    message_type: "cc".to_string(),
+                    channel: Some(3),
+                    pitch: None,
+                    velocity: None,
+                    controller: Some(74),
+                    value: Some(100),
+                    program: None,
+                    pressure: None,
+                    data_b64: None,
+                    data: None,
+                    bytes: None,
+                }],
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "set_midi"));
+        let response = execute(
+            Command::GetStatus,
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        let CommandResponse::Status { tracks, .. } = response else {
+            panic!("expected status response");
+        };
+        assert_eq!(tracks[0].midi_event_count, 1);
+    }
 }
 
 fn resolve_vst3_library_path(path: PathBuf) -> PathBuf {
@@ -756,7 +1077,23 @@ fn resolve_vst3_library_path(path: PathBuf) -> PathBuf {
     vst3_bundle_library_path(&path).unwrap_or(path)
 }
 
-fn status(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
+fn status(
+    engine: &Arc<Mutex<AudioEngine>>,
+    editor_manager: Option<&EditorWindowManager>,
+) -> CommandResponse {
+    let editor_windows = editor_manager
+        .map(|manager| {
+            manager
+                .open_editor_keys()
+                .into_iter()
+                .map(|key| EditorWindowStatus {
+                    track_id: key.track_id,
+                    slot_index: key.slot_index,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     with_session(engine, |session| {
         let tempo_map = session.tempo_map.read();
         let tracks = session
@@ -784,6 +1121,7 @@ fn status(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
                     mute: route.mute,
                     solo: route.solo,
                     note_count: route.sequencer.note_count(),
+                    midi_event_count: route.sequencer.midi_event_count(),
                     processors: route
                         .processors
                         .iter()
@@ -812,6 +1150,7 @@ fn status(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
             sample_rate: session.sample_rate,
             buffer_size: session.buffer_size,
             tracks,
+            editor_windows,
         }
     })
 }

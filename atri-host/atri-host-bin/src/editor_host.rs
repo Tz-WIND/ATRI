@@ -29,8 +29,14 @@ pub struct OpenEditorWindow {
 type SharedEditors = Arc<Mutex<HashMap<EditorKey, Box<dyn PluginEditorHandle>>>>;
 type SharedProcessor = Arc<Mutex<dyn Processor>>;
 type OpenReply = mpsc::Sender<Result<OpenEditorWindow, String>>;
+type PrepareReply = mpsc::Sender<Result<(), String>>;
 
 enum EditorWindowCommand {
+    PrepareProcessor {
+        key: EditorKey,
+        processor: SharedProcessor,
+        reply: PrepareReply,
+    },
     OpenAndAttach {
         key: EditorKey,
         title: String,
@@ -48,6 +54,7 @@ enum EditorWindowCommand {
 #[derive(Clone)]
 pub struct EditorWindowManager {
     proxy: EventLoopProxy<EditorWindowCommand>,
+    editors: SharedEditors,
 }
 
 impl EditorWindowManager {
@@ -57,14 +64,14 @@ impl EditorWindowManager {
         let event_loop = build_editor_event_loop()
             .map_err(|err| format!("failed to create editor event loop: {err}"))?;
         let proxy = event_loop.create_proxy();
-        let app = EditorWindowApp::new(editors, proxy.clone());
+        let app = EditorWindowApp::new(Arc::clone(&editors), proxy.clone());
         let runtime = EditorWindowRuntime {
             event_loop,
             app,
             _thread_init: thread_init,
         };
 
-        Ok((Self { proxy }, runtime))
+        Ok((Self { proxy, editors }, runtime))
     }
 
     pub fn open_and_attach(
@@ -88,8 +95,37 @@ impl EditorWindowManager {
             .map_err(|err| format!("timed out opening plugin editor: {err}"))?
     }
 
+    pub fn prepare_processor(
+        &self,
+        key: EditorKey,
+        processor: SharedProcessor,
+    ) -> Result<(), String> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.proxy
+            .send_event(EditorWindowCommand::PrepareProcessor {
+                key,
+                processor,
+                reply: reply_tx,
+            })
+            .map_err(|_| "editor window event loop is closed".to_string())?;
+
+        reply_rx
+            .recv_timeout(Duration::from_secs(60))
+            .map_err(|err| format!("timed out preparing plugin processor: {err}"))?
+    }
+
     pub fn shutdown(&self) {
         let _ = self.proxy.send_event(EditorWindowCommand::Shutdown);
+    }
+
+    pub fn open_editor_keys(&self) -> Vec<EditorKey> {
+        let mut keys = self
+            .editors
+            .lock()
+            .map(|editors| editors.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort_by_key(|key| (key.track_id, key.slot_index));
+        keys
     }
 }
 
@@ -216,6 +252,23 @@ impl EditorWindowApp {
         let _ = reply.send(Ok(window));
     }
 
+    fn handle_prepare_processor(
+        &mut self,
+        key: EditorKey,
+        processor: SharedProcessor,
+        reply: PrepareReply,
+    ) {
+        log::info!("preparing plugin processor for {key:?} on editor thread");
+        let result = match processor.lock() {
+            Ok(mut processor) => processor.prepare_for_processing(),
+            Err(_) => Err("plugin instance is unavailable".to_string()),
+        };
+        if result.is_ok() {
+            log::info!("prepared plugin processor for {key:?} on editor thread");
+        }
+        let _ = reply.send(result);
+    }
+
     fn create_or_focus_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -333,6 +386,13 @@ impl ApplicationHandler<EditorWindowCommand> for EditorWindowApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: EditorWindowCommand) {
         match event {
+            EditorWindowCommand::PrepareProcessor {
+                key,
+                processor,
+                reply,
+            } => {
+                self.handle_prepare_processor(key, processor, reply);
+            }
             EditorWindowCommand::OpenAndAttach {
                 key,
                 title,

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use atri_core::audio::buffer_set::BufferSet;
-use atri_core::midi::event::ScheduledMidiEvent;
+use atri_core::midi::event::{MidiEvent, ScheduledMidiEvent};
 use atri_core::midi::note::MidiNote;
 use atri_core::midi::sequencer::MidiSequencer;
 
@@ -60,6 +60,10 @@ impl Route {
 
     pub fn set_notes(&mut self, notes: Vec<MidiNote>) {
         self.sequencer.set_notes(notes);
+    }
+
+    pub fn set_midi(&mut self, notes: Vec<MidiNote>, events: Vec<MidiEvent>) {
+        self.sequencer.set_midi(notes, events);
     }
 
     /// Process this route's chain into the given BufferSet.

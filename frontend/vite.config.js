@@ -11,6 +11,7 @@ export default defineConfig({
   build: {
     outDir: '../dashboard/static',
     emptyOutDir: true,
+    assetsInlineLimit: 0,
     rollupOptions: {
       output: {
         manualChunks: {

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use atri_core::audio::buffer::AudioBuffer;
 use atri_core::audio::buffer_set::BufferSet;
-use atri_core::midi::event::ScheduledMidiEvent;
+use atri_core::midi::event::{MidiEvent, ScheduledMidiEvent};
 use atri_core::midi::note::MidiNote;
 use atri_core::time::tempo::{Meter, Tempo};
 use atri_core::time::tempo_map::{SwapLock, TempoMap};
@@ -79,7 +79,9 @@ impl Session {
                 .update(|tempo_map| tempo_map.with_sample_rate(sample_rate));
         }
 
-        self.ensure_buffer_size(buffer_size);
+        if self.resize_buffers(buffer_size) {
+            self.notify_processors_block_size(buffer_size);
+        }
     }
 
     pub fn remove_track(&mut self, track_id: u32) -> bool {
@@ -114,6 +116,11 @@ impl Session {
         slot_index: usize,
         processor: Option<Arc<Mutex<dyn Processor>>>,
     ) -> bool {
+        if let Some(processor) = &processor {
+            if let Ok(mut processor) = processor.lock() {
+                processor.set_block_size(self.buffer_size);
+            }
+        }
         self.with_route(track_id, |route| {
             route.set_processor_slot(slot_index, processor);
         })
@@ -134,13 +141,22 @@ impl Session {
     }
 
     pub fn set_track_notes(&mut self, track_id: u32, notes: Vec<MidiNote>) -> bool {
-        let capacity = notes.len() * 2;
+        self.set_track_midi(track_id, notes, Vec::new())
+    }
+
+    pub fn set_track_midi(
+        &mut self,
+        track_id: u32,
+        notes: Vec<MidiNote>,
+        events: Vec<MidiEvent>,
+    ) -> bool {
+        let capacity = notes.len() * 2 + events.len();
         let Some(index) = self.route_index(track_id) else {
             return false;
         };
 
         if let Ok(mut route) = self.routes[index].lock() {
-            route.set_notes(notes);
+            route.set_midi(notes, events);
             self.midi_events[index].reserve(capacity);
             return true;
         }
@@ -167,7 +183,11 @@ impl Session {
     /// Main processing callback. `output` must be interleaved stereo.
     pub fn process(&mut self, output: &mut [f32]) {
         let nframes = output.len() / 2;
-        self.ensure_buffer_size(nframes);
+        // The audio callback may see a different block size on some backends.
+        // Keep buffer storage valid here, but leave processor block-size
+        // notifications to the control path to avoid locking every processor
+        // from the realtime render path.
+        self.resize_buffers(nframes);
 
         let speed = self.transport.speed;
         let start_sample = self.transport.position;
@@ -240,9 +260,9 @@ impl Session {
             .is_ok()
     }
 
-    fn ensure_buffer_size(&mut self, nframes: usize) {
+    fn resize_buffers(&mut self, nframes: usize) -> bool {
         if nframes == self.buffer_size {
-            return;
+            return false;
         }
 
         self.buffer_size = nframes;
@@ -250,6 +270,20 @@ impl Session {
             bufs.resize(nframes);
         }
         self.master_buf.resize(nframes);
+        true
+    }
+
+    fn notify_processors_block_size(&mut self, nframes: usize) {
+        for route in &self.routes {
+            let Ok(route) = route.lock() else {
+                continue;
+            };
+            for processor in route.processors.iter().flatten() {
+                if let Ok(mut processor) = processor.lock() {
+                    processor.set_block_size(nframes);
+                }
+            }
+        }
     }
 }
 
@@ -265,6 +299,7 @@ fn rescale_sample_position(position: i64, old_sample_rate: u32, new_sample_rate:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn track_ids_remain_stable_after_remove() {
@@ -303,6 +338,33 @@ mod tests {
         let mut output = vec![0.0; 512 * 2];
         session.process(&mut output);
         assert_eq!(session.buffer_size, 512);
+    }
+
+    #[test]
+    fn process_resize_does_not_notify_all_processors() {
+        let mut session = Session::new(48_000, 128);
+        let track = session.add_track("Keys".into());
+        let block_size_calls = Arc::new(AtomicUsize::new(0));
+
+        assert!(session.set_processor_slot(
+            track,
+            0,
+            Some(Arc::new(Mutex::new(CountingBlockSizeProcessor {
+                calls: Arc::clone(&block_size_calls),
+            }))),
+        ));
+        block_size_calls.store(0, Ordering::SeqCst);
+
+        let mut output = vec![0.0; 512 * 2];
+        session.process(&mut output);
+
+        assert_eq!(session.buffer_size, 512);
+        assert_eq!(block_size_calls.load(Ordering::SeqCst), 0);
+
+        session.reconfigure(48_000, 256);
+
+        assert_eq!(session.buffer_size, 256);
+        assert_eq!(block_size_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -387,6 +449,48 @@ mod tests {
                 name,
                 active: false,
             }
+        }
+    }
+
+    struct CountingBlockSizeProcessor {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Processor for CountingBlockSizeProcessor {
+        fn name(&self) -> &str {
+            "counting-block-size"
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut BufferSet,
+            _midi: &[ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+        }
+
+        fn activate(&mut self) {}
+
+        fn deactivate(&mut self) {}
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn input_channels(&self) -> u16 {
+            2
+        }
+
+        fn output_channels(&self) -> u16 {
+            2
+        }
+
+        fn set_block_size(&mut self, _nframes: usize) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
         }
     }
 

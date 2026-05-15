@@ -70,6 +70,14 @@ impl Processor for PluginInsert {
         2
     }
 
+    fn set_block_size(&mut self, nframes: usize) {
+        self.plugin.set_block_size(nframes);
+    }
+
+    fn prepare_for_processing(&mut self) -> Result<(), String> {
+        self.plugin.prepare_for_processing()
+    }
+
     fn has_plugin_editor(&self) -> bool {
         self.plugin.has_editor()
     }
@@ -88,5 +96,18 @@ impl Processor for PluginInsert {
 
     fn set_state_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
         self.plugin.set_state_chunk(chunk)
+    }
+
+    fn get_parameter(&mut self, index: u32) -> Option<f32> {
+        Some(self.plugin.get_parameter(index))
+    }
+
+    fn set_parameter(&mut self, index: u32, value: f32) -> Result<(), String> {
+        self.plugin.set_parameter(index, value);
+        Ok(())
+    }
+
+    fn parameter_count(&mut self) -> u32 {
+        self.plugin.parameter_count()
     }
 }

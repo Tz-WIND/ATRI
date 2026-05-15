@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use super::message::MidiMessage;
 
 /// A MIDI event at a musical timeline position.
@@ -5,7 +7,7 @@ use super::message::MidiMessage;
 /// `tick` is a PPQN tick on the song timeline. It is useful for sequencer
 /// ordering, editing, and converting the event to sample time through a
 /// `TempoMap`; it is not a sample offset inside an audio callback.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MidiEvent {
     pub tick: i64,
     pub message: MidiMessage,

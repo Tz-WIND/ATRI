@@ -10,10 +10,12 @@ use vst3::{
     Steinberg::{
         FUnknown, IPlugFrame, IPlugView, IPlugViewTrait, IPluginBaseTrait, TUID, ViewRect,
         Vst::{
-            BusDirections_, BusInfo, IComponent, IComponent_iid, IComponentHandler,
-            IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
-            IEditController_iid, IEditControllerTrait, MediaTypes_, ParamID, ParameterInfo,
-            ViewType,
+            AudioBusBuffers, AudioBusBuffers__type0, BusDirections_, BusInfo, IAudioProcessor,
+            IAudioProcessorTrait, IComponent, IComponent_iid, IComponentHandler, IComponentTrait,
+            IConnectionPoint, IConnectionPointTrait, IEditController, IEditController_iid,
+            IEditControllerTrait, IoModes_, MediaTypes_, ParamID, ParamValue, ParameterInfo,
+            ProcessContext, ProcessContext_, ProcessData, ProcessModes_, ProcessSetup, SpeakerArr,
+            SpeakerArrangement, SymbolicSampleSizes_, ViewType,
         },
         kResultFalse, kResultOk,
     },
@@ -22,9 +24,11 @@ use vst3::{
 use crate::factory::PluginFactory;
 use crate::runtime::{
     AtriComponentHandler, AtriHostApplication, AtriPlugFrameHandle, MemoryStreamHandle,
-    Vst3EditorHandle, parent_handle_as_ptr, platform_type,
+    ParameterChangePoint, ParameterChangesHandle, Vst3EditorHandle, Vst3EventListHandle,
+    parent_handle_as_ptr, platform_type,
 };
 
+const DEFAULT_SAMPLE_RATE: f64 = 48_000.0;
 const STATE_MAGIC: &[u8; 8] = b"ATRI3ST\0";
 const STATE_VERSION: u32 = 1;
 const STATE_HEADER_LEN: usize = 8 + 4 + 8 + 8;
@@ -36,6 +40,7 @@ pub struct Vst3Plugin {
     pub output_channels: u16,
     pub active: bool,
     pub block_size: usize,
+    sample_rate: f64,
     instance: Option<Vst3Instance>,
     factory: Option<PluginFactory>,
     state_chunk: Vec<u8>,
@@ -49,6 +54,7 @@ impl Vst3Plugin {
             output_channels,
             active: false,
             block_size: 256,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             instance: None,
             factory: None,
             state_chunk: Vec::new(),
@@ -57,8 +63,8 @@ impl Vst3Plugin {
 
     pub fn from_factory(name: String, factory: PluginFactory) -> Result<Self, String> {
         let instance = Vst3Instance::new(&factory, "ATRI Host")?;
-        let input_channels = instance.channel_count(BusDirections_::kInput);
-        let output_channels = instance.channel_count(BusDirections_::kOutput);
+        let input_channels = instance.input_channels;
+        let output_channels = instance.output_channels;
 
         Ok(Self {
             name,
@@ -66,6 +72,7 @@ impl Vst3Plugin {
             output_channels,
             active: false,
             block_size: 256,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             instance: Some(instance),
             factory: Some(factory),
             state_chunk: Vec::new(),
@@ -73,12 +80,21 @@ impl Vst3Plugin {
     }
 
     pub fn from_factory_deferred(name: String, factory: PluginFactory) -> Self {
+        Self::from_factory_deferred_with_sample_rate(name, factory, DEFAULT_SAMPLE_RATE)
+    }
+
+    pub fn from_factory_deferred_with_sample_rate(
+        name: String,
+        factory: PluginFactory,
+        sample_rate: f64,
+    ) -> Self {
         Self {
             name,
             input_channels: 2,
             output_channels: 2,
             active: false,
             block_size: 256,
+            sample_rate: sample_rate.max(1.0),
             instance: None,
             factory: Some(factory),
             state_chunk: Vec::new(),
@@ -100,7 +116,7 @@ impl Plugin for Vst3Plugin {
 
     fn activate(&mut self) {
         self.active = true;
-        if let Some(instance) = &self.instance {
+        if let Some(instance) = &mut self.instance {
             if let Err(err) = instance.set_active(true) {
                 log::warn!("failed to activate VST3 plugin '{}': {err}", self.name);
             }
@@ -110,7 +126,7 @@ impl Plugin for Vst3Plugin {
 
     fn deactivate(&mut self) {
         self.active = false;
-        if let Some(instance) = &self.instance {
+        if let Some(instance) = &mut self.instance {
             if let Err(err) = instance.set_active(false) {
                 log::warn!("failed to deactivate VST3 plugin '{}': {err}", self.name);
             }
@@ -122,17 +138,37 @@ impl Plugin for Vst3Plugin {
         self.block_size = nframes;
     }
 
+    fn prepare_for_processing(&mut self) -> Result<(), String> {
+        self.ensure_instance()
+    }
+
     fn connect_and_run(
         &mut self,
-        _bufs: &mut BufferSet,
-        _midi: &[ScheduledMidiEvent],
-        _start_sample: i64,
+        bufs: &mut BufferSet,
+        midi: &[ScheduledMidiEvent],
+        start_sample: i64,
         _end_sample: i64,
-        _speed: f64,
-        _nframes: usize,
+        speed: f64,
+        nframes: usize,
     ) {
-        // This wrapper now owns real VST3 component/controller/editor objects.
-        // Audio process bridging remains isolated behind the Plugin trait.
+        if !self.active {
+            return;
+        }
+
+        let Some(instance) = &mut self.instance else {
+            return;
+        };
+        if let Err(err) = instance.process_audio(
+            bufs,
+            midi,
+            start_sample,
+            speed,
+            nframes,
+            self.sample_rate,
+            self.block_size,
+        ) {
+            log::warn!("VST3 process failed for '{}': {err}", self.name);
+        }
     }
 
     fn get_parameter(&self, index: u32) -> f32 {
@@ -149,6 +185,13 @@ impl Plugin for Vst3Plugin {
     }
 
     fn set_parameter(&mut self, index: u32, value: f32) {
+        if let Err(err) = self.ensure_instance() {
+            log::warn!(
+                "failed to create VST3 instance for parameter edit '{}': {err}",
+                self.name
+            );
+            return;
+        };
         let Some(factory) = &self.factory else {
             return;
         };
@@ -162,15 +205,8 @@ impl Plugin for Vst3Plugin {
             );
             return;
         }
-        let Some(controller) = instance.controller.as_ref() else {
-            return;
-        };
-        let Some(id) = instance.parameter_id_at(index) else {
-            return;
-        };
-        let value = value.clamp(0.0, 1.0) as f64;
-        unsafe {
-            let _ = controller.setParamNormalized(id, value);
+        if let Err(err) = instance.set_parameter_normalized(index, value) {
+            log::warn!("failed to set VST3 parameter for '{}': {err}", self.name);
         }
     }
 
@@ -278,8 +314,8 @@ impl Vst3Plugin {
             self.name
         );
         let mut instance = Vst3Instance::new(factory, "ATRI Host")?;
-        self.input_channels = instance.channel_count(BusDirections_::kInput);
-        self.output_channels = instance.channel_count(BusDirections_::kOutput);
+        self.input_channels = instance.input_channels;
+        self.output_channels = instance.output_channels;
         if !self.state_chunk.is_empty() {
             let parts = decode_state_chunk(&self.state_chunk)?;
             instance.apply_state(&parts)?;
@@ -298,12 +334,21 @@ impl Vst3Plugin {
 
 struct Vst3Instance {
     component: ComPtr<IComponent>,
+    audio_processor: Option<ComPtr<IAudioProcessor>>,
+    input_channels: u16,
+    output_channels: u16,
+    audio_input_bus_count: i32,
+    audio_output_bus_count: i32,
     controller: Option<ComPtr<IEditController>>,
     component_connection: Option<ComPtr<IConnectionPoint>>,
     controller_connection: Option<ComPtr<IConnectionPoint>>,
     controller_is_component: bool,
     _host_app: ComWrapper<AtriHostApplication>,
     component_handler: Option<ComWrapper<AtriComponentHandler>>,
+    processing_active: bool,
+    processing_sample_rate: f64,
+    processing_max_samples: usize,
+    queued_parameter_changes: Vec<ParameterChangePoint>,
 }
 
 impl Vst3Instance {
@@ -323,43 +368,51 @@ impl Vst3Instance {
         check_result("VST3 component initialize", unsafe {
             component.initialize(host_context.as_ptr())
         })?;
+        let audio_processor = component.cast::<IAudioProcessor>();
+        let input_channels = component_channel_count(&component, BusDirections_::kInput);
+        let output_channels = component_channel_count(&component, BusDirections_::kOutput);
+        let audio_input_bus_count =
+            component_bus_count(&component, MediaTypes_::kAudio, BusDirections_::kInput);
+        let audio_output_bus_count =
+            component_bus_count(&component, MediaTypes_::kAudio, BusDirections_::kOutput);
 
         let instance = Self {
             component,
+            audio_processor,
+            input_channels,
+            output_channels,
+            audio_input_bus_count,
+            audio_output_bus_count,
             controller: None,
             component_connection: None,
             controller_connection: None,
             controller_is_component: false,
             _host_app: host_app,
             component_handler: None,
+            processing_active: false,
+            processing_sample_rate: 0.0,
+            processing_max_samples: 0,
+            queued_parameter_changes: Vec::new(),
         };
         Ok(instance)
     }
 
-    fn set_active(&self, active: bool) -> Result<(), String> {
-        check_result("VST3 component setActive", unsafe {
-            self.component.setActive(if active { 1 } else { 0 })
-        })
-    }
-
-    fn channel_count(&self, direction: i32) -> u16 {
-        let count = unsafe { self.component.getBusCount(MediaTypes_::kAudio, direction) };
-        if count <= 0 {
-            return 0;
+    fn set_active(&mut self, active: bool) -> Result<(), String> {
+        if active {
+            let _ = unsafe { self.component.setIoMode(IoModes_::kSimple) };
+            self.configure_bus_arrangements();
+            self.activate_buses(true);
+            check_result("VST3 component setActive", unsafe {
+                self.component.setActive(1)
+            })
+        } else {
+            self.set_processing(false);
+            check_result("VST3 component setActive", unsafe {
+                self.component.setActive(0)
+            })?;
+            self.activate_buses(false);
+            Ok(())
         }
-
-        let mut channels = 0_i32;
-        for index in 0..count {
-            let mut bus = unsafe { mem::zeroed::<BusInfo>() };
-            let result = unsafe {
-                self.component
-                    .getBusInfo(MediaTypes_::kAudio, direction, index, &mut bus)
-            };
-            if result == kResultOk && bus.channelCount > 0 {
-                channels = channels.saturating_add(bus.channelCount);
-            }
-        }
-        cmp::min(channels, u16::MAX as i32) as u16
     }
 
     fn parameter_id_at(&self, index: u32) -> Option<ParamID> {
@@ -367,6 +420,39 @@ impl Vst3Instance {
         let mut info = unsafe { mem::zeroed::<ParameterInfo>() };
         let result = unsafe { controller.getParameterInfo(index.try_into().ok()?, &mut info) };
         (result == kResultOk).then_some(info.id)
+    }
+
+    fn set_parameter_normalized(&mut self, index: u32, value: f32) -> Result<(), String> {
+        let Some(id) = self.parameter_id_at(index) else {
+            return Err(format!("parameter index {index} is out of range"));
+        };
+        let value = value.clamp(0.0, 1.0) as ParamValue;
+        if let Some(controller) = self.controller.as_ref() {
+            let result = unsafe { controller.setParamNormalized(id, value) };
+            if result != kResultOk {
+                log::debug!("VST3 controller setParamNormalized returned {result}");
+            }
+        }
+        self.queue_parameter_change(id, 0, value);
+        Ok(())
+    }
+
+    fn queue_parameter_change(&mut self, id: ParamID, sample_offset: usize, value: ParamValue) {
+        self.queued_parameter_changes.push(ParameterChangePoint {
+            id,
+            sample_offset,
+            value,
+        });
+    }
+
+    fn drain_parameter_changes(&mut self, nframes: usize) -> Vec<ParameterChangePoint> {
+        let mut changes = Vec::new();
+        std::mem::swap(&mut changes, &mut self.queued_parameter_changes);
+        let max_offset = nframes.saturating_sub(1);
+        for change in &mut changes {
+            change.sample_offset = change.sample_offset.min(max_offset);
+        }
+        changes
     }
 
     fn ensure_controller(&mut self, factory: &PluginFactory) -> Result<bool, String> {
@@ -491,6 +577,107 @@ impl Vst3Instance {
         Ok(Vst3EditorHandle::new(view, frame))
     }
 
+    fn process_audio(
+        &mut self,
+        bufs: &mut BufferSet,
+        midi: &[ScheduledMidiEvent],
+        start_sample: i64,
+        speed: f64,
+        nframes: usize,
+        sample_rate: f64,
+        configured_block_size: usize,
+    ) -> Result<(), String> {
+        if self.audio_processor.is_none() {
+            return Err("VST3 component does not expose IAudioProcessor".to_string());
+        }
+        let Some(buffer) = bufs.get_mut(0) else {
+            return Ok(());
+        };
+        let nframes = nframes.min(buffer.capacity()).max(1);
+        let output_channels =
+            usize::from(buffer.channels()).min(usize::from(self.output_channels.max(1)));
+        if output_channels == 0 {
+            return Ok(());
+        }
+        self.ensure_processing(sample_rate, configured_block_size.max(nframes))?;
+        let audio_processor = self
+            .audio_processor
+            .as_ref()
+            .ok_or_else(|| "VST3 component does not expose IAudioProcessor".to_string())?
+            .clone();
+
+        let input_channels = if self.audio_input_bus_count > 0 && self.input_channels > 0 {
+            usize::from(buffer.channels()).min(usize::from(self.input_channels))
+        } else {
+            0
+        };
+        let mut input_channel_storage = Vec::with_capacity(input_channels);
+        for channel in 0..input_channels {
+            input_channel_storage.push(buffer.channel(channel as u16)[..nframes].to_vec());
+        }
+        let mut input_channel_ptrs = input_channel_storage
+            .iter_mut()
+            .map(|channel| channel.as_mut_ptr())
+            .collect::<Vec<_>>();
+
+        let mut output_channel_ptrs = Vec::with_capacity(output_channels);
+        for channel in 0..output_channels {
+            output_channel_ptrs.push(buffer.channel_mut(channel as u16).as_mut_ptr());
+        }
+
+        let mut output_bus = AudioBusBuffers {
+            numChannels: output_channels as i32,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: output_channel_ptrs.as_mut_ptr(),
+            },
+        };
+        let mut input_bus = AudioBusBuffers {
+            numChannels: input_channels as i32,
+            silenceFlags: 0,
+            __field0: AudioBusBuffers__type0 {
+                channelBuffers32: input_channel_ptrs.as_mut_ptr(),
+            },
+        };
+        let input_buses = if input_channels > 0 {
+            std::slice::from_mut(&mut input_bus)
+        } else {
+            &mut []
+        };
+        let output_buses = std::slice::from_mut(&mut output_bus);
+        let input_events = Vst3EventListHandle::from_midi(midi, nframes);
+        let output_events = Vst3EventListHandle::empty();
+        let input_params =
+            ParameterChangesHandle::from_changes(self.drain_parameter_changes(nframes));
+        let output_params = ParameterChangesHandle::empty();
+        let mut context = self.process_context(start_sample, speed, sample_rate);
+        let mut data = ProcessData {
+            processMode: ProcessModes_::kRealtime,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32,
+            numSamples: nframes as i32,
+            numInputs: input_buses.len() as i32,
+            numOutputs: output_buses.len() as i32,
+            inputs: input_buses.as_mut_ptr(),
+            outputs: output_buses.as_mut_ptr(),
+            inputParameterChanges: input_params.as_ptr(),
+            outputParameterChanges: output_params.as_ptr(),
+            inputEvents: input_events.as_ptr(),
+            outputEvents: output_events.as_ptr(),
+            processContext: &mut context,
+        };
+
+        let result = unsafe { audio_processor.process(&mut data) };
+        check_result("VST3 audio process", result)?;
+
+        if output_channels == 1 && buffer.channels() >= 2 {
+            for frame in 0..nframes {
+                let sample = buffer.channel(0)[frame];
+                buffer.channel_mut(1)[frame] = sample;
+            }
+        }
+        Ok(())
+    }
+
     fn component_state(&self) -> Result<Vec<u8>, String> {
         let stream = MemoryStreamHandle::empty();
         let result = stream.with_stream(|ptr| unsafe { self.component.getState(ptr) });
@@ -574,6 +761,141 @@ impl Vst3Instance {
             }
         }
     }
+
+    fn configure_bus_arrangements(&self) {
+        let Some(audio_processor) = self.audio_processor.as_ref() else {
+            return;
+        };
+        let mut input_arrangement = speaker_arrangement_for_channels(self.input_channels());
+        let mut output_arrangement = speaker_arrangement_for_channels(self.output_channels());
+        let input_count = i32::from(self.audio_input_bus_count > 0 && self.input_channels > 0);
+        let output_count = i32::from(self.audio_output_bus_count > 0 && self.output_channels > 0);
+        let result = unsafe {
+            audio_processor.setBusArrangements(
+                if input_count > 0 {
+                    &mut input_arrangement
+                } else {
+                    ptr::null_mut()
+                },
+                input_count,
+                if output_count > 0 {
+                    &mut output_arrangement
+                } else {
+                    ptr::null_mut()
+                },
+                output_count,
+            )
+        };
+        if result != kResultOk {
+            log::debug!("VST3 setBusArrangements returned {result}");
+        }
+    }
+
+    fn ensure_processing(&mut self, sample_rate: f64, max_samples: usize) -> Result<(), String> {
+        if self.audio_processor.is_none() {
+            return Err("VST3 component does not expose IAudioProcessor".to_string());
+        }
+        let max_samples = max_samples.max(1).min(i32::MAX as usize);
+        if self.processing_active
+            && self.processing_sample_rate == sample_rate
+            && self.processing_max_samples >= max_samples
+        {
+            return Ok(());
+        }
+
+        self.set_processing(false);
+        let audio_processor = self
+            .audio_processor
+            .as_ref()
+            .ok_or_else(|| "VST3 component does not expose IAudioProcessor".to_string())?;
+        let sample_size =
+            unsafe { audio_processor.canProcessSampleSize(SymbolicSampleSizes_::kSample32) };
+        if sample_size == kResultFalse {
+            return Err("VST3 processor does not support 32-bit float processing".to_string());
+        }
+        let mut setup = ProcessSetup {
+            processMode: ProcessModes_::kRealtime,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32,
+            maxSamplesPerBlock: max_samples as i32,
+            sampleRate: sample_rate,
+        };
+        check_result("VST3 setupProcessing", unsafe {
+            audio_processor.setupProcessing(&mut setup)
+        })?;
+        check_result("VST3 setProcessing(true)", unsafe {
+            audio_processor.setProcessing(1)
+        })?;
+        self.processing_active = true;
+        self.processing_sample_rate = sample_rate;
+        self.processing_max_samples = max_samples;
+        Ok(())
+    }
+
+    fn set_processing(&mut self, active: bool) {
+        let Some(audio_processor) = self.audio_processor.as_ref() else {
+            self.processing_active = false;
+            return;
+        };
+        if self.processing_active == active {
+            return;
+        }
+        let result = unsafe { audio_processor.setProcessing(if active { 1 } else { 0 }) };
+        if result != kResultOk {
+            log::debug!("VST3 setProcessing({active}) returned {result}");
+        }
+        self.processing_active = active && result == kResultOk;
+        if !active {
+            self.processing_max_samples = 0;
+        }
+    }
+
+    fn activate_buses(&self, active: bool) {
+        for media_type in [MediaTypes_::kAudio, MediaTypes_::kEvent] {
+            for direction in [BusDirections_::kInput, BusDirections_::kOutput] {
+                let count = unsafe { self.component.getBusCount(media_type, direction) };
+                for index in 0..count.max(0) {
+                    let result = unsafe {
+                        self.component.activateBus(
+                            media_type,
+                            direction,
+                            index,
+                            if active { 1 } else { 0 },
+                        )
+                    };
+                    if result != kResultOk {
+                        log::debug!(
+                            "VST3 activateBus(media={media_type}, dir={direction}, index={index}, active={active}) returned {result}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn input_channels(&self) -> u16 {
+        self.input_channels
+    }
+
+    fn output_channels(&self) -> u16 {
+        self.output_channels
+    }
+
+    fn process_context(&self, start_sample: i64, speed: f64, sample_rate: f64) -> ProcessContext {
+        let mut context = unsafe { mem::zeroed::<ProcessContext>() };
+        context.state = (ProcessContext_::StatesAndFlags_::kPlaying
+            | ProcessContext_::StatesAndFlags_::kSystemTimeValid) as u32;
+        context.sampleRate = sample_rate;
+        context.projectTimeSamples = start_sample;
+        context.continousTimeSamples = start_sample;
+        context.systemTime = current_system_time_nanos();
+        context.tempo = 120.0;
+        context.timeSigNumerator = 4;
+        context.timeSigDenominator = 4;
+        if speed == 0.0 {
+            context.state &= !(ProcessContext_::StatesAndFlags_::kPlaying as u32);
+        }
+        context
+    }
 }
 
 impl Drop for Vst3Instance {
@@ -589,6 +911,7 @@ impl Drop for Vst3Instance {
                     let _ = controller.terminate();
                 }
             }
+            self.set_processing(false);
             let _ = self.component.setActive(0);
             let _ = self.component.terminate();
         }
@@ -693,6 +1016,39 @@ fn rect_width(rect: ViewRect) -> u32 {
 
 fn rect_height(rect: ViewRect) -> u32 {
     rect.bottom.saturating_sub(rect.top).max(1) as u32
+}
+
+fn component_bus_count(component: &ComPtr<IComponent>, media_type: i32, direction: i32) -> i32 {
+    unsafe { component.getBusCount(media_type, direction).max(0) }
+}
+
+fn component_channel_count(component: &ComPtr<IComponent>, direction: i32) -> u16 {
+    let count = component_bus_count(component, MediaTypes_::kAudio, direction);
+    let mut channels = 0_i32;
+    for index in 0..count {
+        let mut bus = unsafe { mem::zeroed::<BusInfo>() };
+        let result =
+            unsafe { component.getBusInfo(MediaTypes_::kAudio, direction, index, &mut bus) };
+        if result == kResultOk && bus.channelCount > 0 {
+            channels = channels.saturating_add(bus.channelCount);
+        }
+    }
+    cmp::min(channels, u16::MAX as i32) as u16
+}
+
+fn speaker_arrangement_for_channels(channels: u16) -> SpeakerArrangement {
+    match channels {
+        0 => SpeakerArr::kEmpty,
+        1 => SpeakerArr::kMono,
+        _ => SpeakerArr::kStereo,
+    }
+}
+
+fn current_system_time_nanos() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 fn check_result(label: &str, result: i32) -> Result<(), String> {

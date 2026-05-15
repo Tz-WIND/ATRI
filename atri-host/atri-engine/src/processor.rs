@@ -51,6 +51,11 @@ pub trait Processor: Send + Sync {
     /// Notify the processor that subsequent blocks may use this block size.
     fn set_block_size(&mut self, _nframes: usize) {}
 
+    /// Prepare plugin resources on the host/control thread before the realtime callback sees it.
+    fn prepare_for_processing(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn has_plugin_editor(&self) -> bool {
         false
     }
@@ -69,6 +74,18 @@ pub trait Processor: Send + Sync {
 
     fn set_state_chunk(&mut self, _chunk: &[u8]) -> Result<(), String> {
         Ok(())
+    }
+
+    fn get_parameter(&mut self, _index: u32) -> Option<f32> {
+        None
+    }
+
+    fn set_parameter(&mut self, _index: u32, _value: f32) -> Result<(), String> {
+        Err(format!("{} does not expose plugin parameters", self.name()))
+    }
+
+    fn parameter_count(&mut self) -> u32 {
+        0
     }
 }
 

@@ -124,6 +124,10 @@ export function useApi() {
       body: JSON.stringify(options),
     }),
     hostStatus: () => request('/api/music/studio/host/status'),
+    hostStart: (options = {}) => request('/api/music/studio/host/start', {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
     hostCommand: (cmd, params = {}) => request('/api/music/studio/host/command', {
       method: 'POST',
       body: JSON.stringify({ cmd, params }),

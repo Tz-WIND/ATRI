@@ -647,6 +647,16 @@ async def _capture_plugin_states(
     return project, responses
 
 
+async def _capture_and_save_plugin_states(
+    project: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    project = project if isinstance(project, dict) else load_project()
+    project, responses = await _capture_plugin_states(project)
+    if responses:
+        project = save_project(project)
+    return project, responses
+
+
 async def open_plugin_editor_for_track(
     track_id: int,
     *,
@@ -768,8 +778,31 @@ async def _sync_project_to_host(
             }
             for note in track.get("notes", [])
         ]
+        midi_events = [
+            {
+                key: event[key]
+                for key in (
+                    "type",
+                    "start",
+                    "channel",
+                    "pitch",
+                    "velocity",
+                    "controller",
+                    "value",
+                    "program",
+                    "pressure",
+                    "data_b64",
+                )
+                if key in event
+            }
+            for event in track.get("midi_events", [])
+            if isinstance(event, dict)
+        ]
         commands.append(
-            await host.send_command("set_midi", {"track_id": host_track_id, "notes": notes})
+            await host.send_command(
+                "set_midi",
+                {"track_id": host_track_id, "notes": notes, "events": midi_events},
+            )
         )
         commands.append(
             await host.send_command(
@@ -867,9 +900,10 @@ async def start_audio_host():
 
 @bp.route("/studio/host/stop", methods=["POST"])
 async def stop_audio_host():
+    _, state_capture = await _capture_and_save_plugin_states()
     host = _host_manager()
     await host.stop()
-    return jsonify({"ok": True, "host": _host_snapshot()})
+    return jsonify({"ok": True, "host": _host_snapshot(), "state": state_capture})
 
 
 @bp.route("/studio/host/status", methods=["GET"])
@@ -944,18 +978,30 @@ async def studio_transport():
     if action == "seek":
         params["position"] = float(data.get("position", 0.0) or 0.0)
     response = await host.send_command(command_map[action], params)
-    return jsonify({"ok": True, "response": response})
+    ok = response.get("type") != "error"
+    status = 200 if ok else 409
+    return (
+        jsonify(
+            {
+                "ok": ok,
+                "error": response.get("message") if not ok else None,
+                "response": response,
+                "host": _host_snapshot(),
+            }
+        ),
+        status,
+    )
 
 
 @bp.route("/studio/sync", methods=["POST"])
 async def sync_studio_project():
     data = await _json_payload()
-    project = load_project()
+    project, state_capture = await _capture_and_save_plugin_states()
     sync = await _sync_project_to_host(
         project,
         broadcast=bool(data.get("broadcast", False)),
     )
-    return jsonify({"ok": True, "sync": sync, "host": _host_snapshot()})
+    return jsonify({"ok": True, "sync": sync, "host": _host_snapshot(), "state": state_capture})
 
 
 @bp.route("/studio/midi/write", methods=["POST"])
@@ -1011,6 +1057,7 @@ async def studio_update_track(track_id: int):
 @bp.route("/studio/tracks/<int:track_id>/plugin", methods=["POST"])
 async def studio_set_track_plugin(track_id: int):
     data = await _json_payload()
+    await _capture_and_save_plugin_states()
     plugin = data.get("plugin") if isinstance(data.get("plugin"), dict) else None
     slot_id = str(data.get("slot_id") or "instrument")
     try:

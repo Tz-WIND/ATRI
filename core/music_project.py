@@ -7,6 +7,8 @@ dashboard, Agent tools, and host sync path all operate on the same data model.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -141,6 +143,7 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         legacy_notes.sort(key=lambda note: (note["start"], note["pitch"], note["duration"]))
         clips = _normalize_clips(raw_track, legacy_notes=legacy_notes, track_color=track_color)
         notes = _flatten_clip_notes(clips)
+        midi_events = _flatten_clip_midi_events(clips)
         normalized["tracks"].append(
             {
                 "id": track_id,
@@ -155,6 +158,7 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
                 "plugin_slots": _normalize_plugin_slots(raw_track),
                 "clips": clips,
                 "notes": notes,
+                "midi_events": midi_events,
             }
         )
 
@@ -193,6 +197,7 @@ def create_track(
         "instrument": "ATRI Basic Synth",
         "clips": [],
         "notes": [],
+        "midi_events": [],
     }
     project["tracks"].append(track)
     project = save_project(project)
@@ -397,6 +402,7 @@ def _ensure_midi_clip(track: dict[str, Any]) -> dict[str, Any]:
         "duration": 4.0,
         "color": track.get("color") or DEFAULT_TRACK_COLORS[0],
         "notes": [],
+        "events": [],
     }
     clips.append(clip)
     return clip
@@ -460,8 +466,15 @@ def _normalize_clip(clip: dict[str, Any], *, track_color: str) -> dict[str, Any]
         if clip_type == "midi" and isinstance(note, dict)
     ]
     notes.sort(key=lambda note: (note["start"], note["pitch"], note["duration"]))
+    events = [
+        _normalize_midi_event(event)
+        for event in clip.get("events", [])
+        if clip_type == "midi" and isinstance(event, dict)
+    ]
+    events.sort(key=_midi_event_sort_key)
     note_end = max((note["start"] + note["duration"] for note in notes), default=0.0)
-    duration = max(_positive_float(clip.get("duration"), 4.0), note_end, 0.25)
+    event_end = max((event["start"] for event in events), default=0.0)
+    duration = max(_positive_float(clip.get("duration"), 4.0), note_end, event_end, 0.25)
     default_name = "MIDI Clip" if clip_type == "midi" else "Audio Clip"
 
     return {
@@ -474,6 +487,7 @@ def _normalize_clip(clip: dict[str, Any], *, track_color: str) -> dict[str, Any]
         "source": str(clip.get("source") or ""),
         "path": str(clip.get("path") or ""),
         "notes": notes,
+        "events": events,
     }
 
 
@@ -492,6 +506,23 @@ def _flatten_clip_notes(clips: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
     notes.sort(key=lambda note: (note["start"], note["pitch"], note["duration"]))
     return notes
+
+
+def _flatten_clip_midi_events(clips: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events = []
+    for clip in clips:
+        if clip.get("type") != "midi":
+            continue
+        clip_start = float(clip.get("start", 0.0) or 0.0)
+        for event in clip.get("events", []):
+            events.append(
+                {
+                    **event,
+                    "start": clip_start + float(event.get("start", 0.0) or 0.0),
+                }
+            )
+    events.sort(key=_midi_event_sort_key)
+    return events
 
 
 def _find_note(container: dict[str, Any], op: dict[str, Any]) -> dict[str, Any] | None:
@@ -520,6 +551,101 @@ def _normalize_note(note: dict[str, Any]) -> dict[str, Any]:
         "duration": _positive_float(note.get("duration"), 0.25),
         "velocity": _bounded_int(note.get("velocity"), 96, 1, 127),
     }
+
+
+def _normalize_midi_event(event: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("type") or event.get("kind") or event.get("message") or "").lower()
+    event_type = event_type.replace("-", "_").replace(" ", "_")
+    aliases = {
+        "noteon": "note_on",
+        "noteoff": "note_off",
+        "cc": "control_change",
+        "controller": "control_change",
+        "pitchbend": "pitch_bend",
+        "programchange": "program_change",
+        "channelpressure": "channel_pressure",
+        "aftertouch": "channel_pressure",
+        "poly_pressure": "polyphonic_key_pressure",
+        "poly_aftertouch": "polyphonic_key_pressure",
+        "allnotesoff": "all_notes_off",
+        "systemexclusive": "sysex",
+        "system_exclusive": "sysex",
+    }
+    event_type = aliases.get(event_type, event_type)
+    if event_type not in {
+        "note_on",
+        "note_off",
+        "control_change",
+        "pitch_bend",
+        "program_change",
+        "channel_pressure",
+        "polyphonic_key_pressure",
+        "all_notes_off",
+        "sysex",
+    }:
+        event_type = "control_change"
+
+    normalized: dict[str, Any] = {
+        "id": str(event.get("id") or f"e_{uuid4().hex[:10]}"),
+        "type": event_type,
+        "start": _non_negative_float(event.get("start", event.get("beat")), 0.0),
+    }
+    if event_type != "sysex":
+        normalized["channel"] = _bounded_int(event.get("channel"), 0, 0, 15)
+
+    if event_type in {"note_on", "note_off", "polyphonic_key_pressure"}:
+        normalized["pitch"] = _bounded_int(event.get("pitch"), 60, 0, 127)
+    if event_type in {"note_on", "note_off"}:
+        default_velocity = 96 if event_type == "note_on" else 0
+        normalized["velocity"] = _bounded_int(event.get("velocity"), default_velocity, 0, 127)
+    if event_type == "control_change":
+        normalized["controller"] = _bounded_int(event.get("controller"), 0, 0, 127)
+        normalized["value"] = _bounded_int(event.get("value"), 0, 0, 127)
+    elif event_type == "pitch_bend":
+        normalized["value"] = _bounded_int(event.get("value"), 0, -8192, 8191)
+    elif event_type == "program_change":
+        normalized["program"] = _bounded_int(event.get("program", event.get("value")), 0, 0, 127)
+    elif event_type == "channel_pressure":
+        normalized["pressure"] = _bounded_int(event.get("pressure", event.get("value")), 0, 0, 127)
+    elif event_type == "polyphonic_key_pressure":
+        normalized["pressure"] = _bounded_int(event.get("pressure", event.get("value")), 0, 0, 127)
+    elif event_type == "sysex":
+        normalized["data_b64"] = _normalize_sysex_b64(event)
+    return normalized
+
+
+def _normalize_sysex_b64(event: dict[str, Any]) -> str:
+    data_b64 = str(event.get("data_b64") or "")
+    if data_b64:
+        try:
+            base64.b64decode(data_b64, validate=True)
+            return data_b64
+        except (ValueError, binascii.Error):
+            pass
+
+    raw = event.get("data", event.get("bytes"))
+    if isinstance(raw, list):
+        payload = bytes(_bounded_int(value, 0, 0, 255) for value in raw)
+    elif isinstance(raw, str):
+        cleaned = raw.replace("0x", "").replace(",", " ").replace("-", " ")
+        parts = [part for part in cleaned.split() if part]
+        try:
+            payload = bytes(int(part, 16) for part in parts)
+        except ValueError:
+            payload = b""
+    else:
+        payload = b""
+    return base64.b64encode(payload).decode("ascii") if payload else ""
+
+
+def _midi_event_sort_key(event: dict[str, Any]) -> tuple[float, str, int, int, str]:
+    return (
+        float(event.get("start", 0.0) or 0.0),
+        str(event.get("type") or ""),
+        int(event.get("channel", -1)),
+        int(event.get("pitch", event.get("controller", -1))),
+        str(event.get("id") or ""),
+    )
 
 
 def _normalize_meter(value: Any) -> list[int]:

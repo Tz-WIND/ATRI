@@ -48,7 +48,7 @@
         <button
           class="tool-btn"
           title="Stop"
-          @click="transport('stop')"
+          @click="stopPlayback"
         >
           <svg
             viewBox="0 0 24 24"
@@ -103,260 +103,192 @@
     </div>
 
     <main class="studio-body">
-      <aside class="track-list">
-        <div class="track-list-head">
-          <span>Tracks</span>
-          <button
-            class="mini-btn"
-            title="Add Track"
-            @click="createTrack('Instrument')"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            ><path d="M12 5v14M5 12h14" /></svg>
-          </button>
-        </div>
-
-        <div
-          class="track-lane-spacer"
-          aria-hidden="true"
-        />
-
-        <template
-          v-for="track in tracks"
-          :key="track.id"
-        >
-          <div
-            :class="['track-row', { active: activeTrack?.id === track.id }]"
-            role="button"
-            tabindex="0"
-            @click="selectTrack(track.id)"
-            @keydown="onTrackRowKeydown($event, track.id)"
-          >
-            <span
-              class="track-color"
-              :style="{ background: track.color }"
-            />
-            <span class="track-main">
-              <span class="track-title-line">
-                <strong>{{ track.name }}</strong>
-                <small>{{ track.clips?.length || 0 }} clips / {{ track.notes.length }} notes</small>
-              </span>
-              <span
-                class="track-plugin-bar"
-                @click.stop
-              >
-                <select
-                  class="track-plugin-select"
-                  :value="pluginSlotValue(track, 'instrument')"
-                  :title="pluginSlotLabel(track, 'instrument')"
-                  @change="onPluginSelect(track, 'instrument', $event.target.value)"
-                >
-                  <option value="builtin::ATRI Basic Synth">
-                    ATRI Basic Synth
-                  </option>
-                  <option
-                    v-if="selectedPluginMissing(track, 'instrument')"
-                    :value="pluginSlotValue(track, 'instrument')"
-                  >
-                    {{ pluginSlot(track, 'instrument').name }}
-                  </option>
-                  <option
-                    v-for="plugin in pluginOptions.vst3"
-                    :key="`track-vst3-${track.id}-${plugin.path}`"
-                    :value="`vst3::${plugin.path}`"
-                  >
-                    {{ plugin.name }}
-                  </option>
-                  <option
-                    v-for="plugin in pluginOptions.vst2"
-                    :key="`track-vst2-${track.id}-${plugin.path}`"
-                    :value="`vst2::${plugin.path}`"
-                    disabled
-                  >
-                    {{ plugin.name }} (VST2)
-                  </option>
-                </select>
-                <button
-                  :class="['track-plugin-open', { active: isPluginEditorOpen(track.id) }]"
-                  :disabled="!canOpenPluginEditor(track)"
-                  :title="isPluginEditorOpen(track.id) ? 'Native editor open' : 'Open native plugin editor'"
-                  @click.stop="togglePluginEditor(track)"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                  ><path d="M4 7h10" /><path d="M18 7h2" /><path d="M4 17h2" /><path d="M10 17h10" /><circle
-                    cx="16"
-                    cy="7"
-                    r="2"
-                  /><circle
-                    cx="8"
-                    cy="17"
-                    r="2"
-                  /></svg>
-                </button>
-              </span>
-            </span>
-            <span class="track-buttons">
-              <button
-                :class="['track-flag', { on: track.mute }]"
-                title="Mute"
-                @click.stop="updateTrack(track.id, { mute: !track.mute })"
-              >M</button>
-              <button
-                :class="['track-flag', { on: track.solo }]"
-                title="Solo"
-                @click.stop="updateTrack(track.id, { solo: !track.solo })"
-              >S</button>
-            </span>
-          </div>
-        </template>
-
-        <div
-          v-if="pluginEditorTrack"
-          class="track-plugin-panel"
-        >
-          <div class="plugin-panel-head">
-            <div>
-              <span>Instance</span>
-              <strong>{{ pluginEditorTrack.name }}</strong>
-            </div>
-            <button
-              class="mini-btn"
-              title="Close instance"
-              @click="closePluginEditor"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              ><path d="M18 6 6 18M6 6l12 12" /></svg>
-            </button>
-          </div>
-          <div class="plugin-instance-name">
-            {{ pluginSlot(pluginEditorTrack, 'instrument').name }}
-          </div>
-          <dl class="plugin-instance-meta">
-            <div>
-              <dt>Format</dt>
-              <dd>{{ pluginSlotFormat(pluginEditorTrack, 'instrument') }}</dd>
-            </div>
-            <div>
-              <dt>Vendor</dt>
-              <dd>{{ pluginSlot(pluginEditorTrack, 'instrument').vendor || 'Internal' }}</dd>
-            </div>
-            <div>
-              <dt>Category</dt>
-              <dd>{{ pluginSlot(pluginEditorTrack, 'instrument').category || 'Instrument' }}</dd>
-            </div>
-            <div>
-              <dt>Host</dt>
-              <dd>{{ host.running ? 'Loaded' : 'Offline' }}</dd>
-            </div>
-          </dl>
-          <div
-            v-if="pluginSlot(pluginEditorTrack, 'instrument').path"
-            class="plugin-instance-path mono"
-          >
-            {{ pluginSlot(pluginEditorTrack, 'instrument').path }}
-          </div>
-          <div class="plugin-instance-actions">
-            <button
-              class="mini-btn text"
-              :disabled="pluginsLoading"
-              @click="loadPlugins()"
-            >
-              Scan
-            </button>
-            <button
-              class="mini-btn text"
-              :disabled="!host.running"
-              @click="reloadPluginInstance(pluginEditorTrack)"
-            >
-              Reload
-            </button>
-            <button
-              class="mini-btn text"
-              :disabled="pluginSlot(pluginEditorTrack, 'instrument').type === 'builtin'"
-              @click="onPluginSelect(pluginEditorTrack, 'instrument', 'builtin::ATRI Basic Synth')"
-            >
-              Basic
-            </button>
-          </div>
-        </div>
-      </aside>
-
       <section
         ref="editorStack"
         class="editor-stack"
         :style="editorStackStyle"
       >
         <div class="arrangement">
-          <div class="arrangement-toolbar">
-            <div>
-              <span>Timeline</span>
-              <strong>{{ selectedClipIds.size }} selected</strong>
+          <div class="arrangement-head-grid">
+            <div class="track-list-head">
+              <span>Tracks</span>
+              <button
+                class="mini-btn"
+                title="Add Track"
+                @click="createTrack('Instrument')"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                ><path d="M12 5v14M5 12h14" /></svg>
+              </button>
             </div>
-            <div class="arrangement-actions">
-              <button
-                class="mini-btn text"
-                title="Create MIDI clip at playhead"
-                @click="createClip('midi')"
-              >
-                MIDI
-              </button>
-              <button
-                class="mini-btn text"
-                title="Create audio clip placeholder at playhead"
-                @click="createClip('audio')"
-              >
-                Audio
-              </button>
-              <button
-                class="mini-btn text"
-                title="Copy selected clips"
-                :disabled="selectedClipIds.size === 0"
-                @click="copySelectedClips"
-              >
-                Copy
-              </button>
-              <button
-                class="mini-btn text"
-                title="Paste clips at playhead"
-                :disabled="clipClipboard.length === 0"
-                @click="pasteClips"
-              >
-                Paste
-              </button>
-              <button
-                class="mini-btn text danger"
-                title="Delete selected clips"
-                :disabled="selectedClipIds.size === 0"
-                @click="deleteSelectedClips"
-              >
-                Del
-              </button>
+
+            <div class="arrangement-toolbar">
+              <div>
+                <span>Timeline</span>
+                <strong>{{ selectedClipIds.size }} selected</strong>
+              </div>
+              <div class="arrangement-actions">
+                <button
+                  class="mini-btn text"
+                  title="Create MIDI clip at playhead"
+                  @click="createClip('midi')"
+                >
+                  MIDI
+                </button>
+                <button
+                  class="mini-btn text"
+                  title="Create audio clip placeholder at playhead"
+                  @click="createClip('audio')"
+                >
+                  Audio
+                </button>
+                <button
+                  class="mini-btn text"
+                  title="Copy selected clips"
+                  :disabled="selectedClipIds.size === 0"
+                  @click="copySelectedClips"
+                >
+                  Copy
+                </button>
+                <button
+                  class="mini-btn text"
+                  title="Paste clips at playhead"
+                  :disabled="clipClipboard.length === 0"
+                  @click="pasteClips"
+                >
+                  Paste
+                </button>
+                <button
+                  class="mini-btn text danger"
+                  title="Delete selected clips"
+                  :disabled="selectedClipIds.size === 0"
+                  @click="deleteSelectedClips"
+                >
+                  Del
+                </button>
+              </div>
             </div>
           </div>
+
           <div
             ref="arrangementWrap"
             class="arrangement-canvas-wrap"
           >
-            <canvas
-              ref="arrangementCanvas"
-              class="editor-canvas"
-              @dblclick="onArrangementDoubleClick"
-              @pointerdown="onArrangementPointerDown"
-              @contextmenu.prevent
-            />
+            <div class="arrangement-scroll-inner">
+              <aside class="track-list">
+                <div
+                  class="track-lane-spacer"
+                  aria-hidden="true"
+                />
+
+                <template
+                  v-for="track in tracks"
+                  :key="track.id"
+                >
+                  <div
+                    :class="['track-row', { active: activeTrack?.id === track.id }]"
+                    role="button"
+                    tabindex="0"
+                    @click="selectTrack(track.id)"
+                    @keydown="onTrackRowKeydown($event, track.id)"
+                  >
+                    <span
+                      class="track-color"
+                      :style="{ background: track.color }"
+                    />
+                    <span class="track-main">
+                      <span class="track-title-line">
+                        <strong>{{ track.name }}</strong>
+                        <small>{{ track.clips?.length || 0 }} clips / {{ track.notes.length }} notes</small>
+                      </span>
+                      <span
+                        class="track-plugin-bar"
+                        @click.stop
+                      >
+                        <select
+                          class="track-plugin-select"
+                          :value="pluginSlotValue(track, 'instrument')"
+                          :title="pluginSlotLabel(track, 'instrument')"
+                          @change="onPluginSelect(track, 'instrument', $event.target.value)"
+                        >
+                          <option value="builtin::ATRI Basic Synth">
+                            ATRI Basic Synth
+                          </option>
+                          <option
+                            v-if="selectedPluginMissing(track, 'instrument')"
+                            :value="pluginSlotValue(track, 'instrument')"
+                          >
+                            {{ pluginSlot(track, 'instrument').name }}
+                          </option>
+                          <option
+                            v-for="plugin in pluginOptions.vst3"
+                            :key="`track-vst3-${track.id}-${plugin.path}`"
+                            :value="`vst3::${plugin.path}`"
+                          >
+                            {{ plugin.name }}
+                          </option>
+                          <option
+                            v-for="plugin in pluginOptions.vst2"
+                            :key="`track-vst2-${track.id}-${plugin.path}`"
+                            :value="`vst2::${plugin.path}`"
+                            disabled
+                          >
+                            {{ plugin.name }} (VST2)
+                          </option>
+                        </select>
+                        <button
+                          :class="['track-plugin-open', { active: isPluginEditorOpen(track.id) }]"
+                          :disabled="!canOpenPluginEditor(track)"
+                          :title="isPluginEditorOpen(track.id) ? 'Native editor open' : 'Open native plugin editor'"
+                          @click.stop="togglePluginEditor(track)"
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                          ><path d="M4 7h10" /><path d="M18 7h2" /><path d="M4 17h2" /><path d="M10 17h10" /><circle
+                            cx="16"
+                            cy="7"
+                            r="2"
+                          /><circle
+                            cx="8"
+                            cy="17"
+                            r="2"
+                          /></svg>
+                        </button>
+                      </span>
+                    </span>
+                    <span class="track-buttons">
+                      <button
+                        :class="['track-flag', { on: track.mute }]"
+                        title="Mute"
+                        @click.stop="updateTrack(track.id, { mute: !track.mute })"
+                      >M</button>
+                      <button
+                        :class="['track-flag', { on: track.solo }]"
+                        title="Solo"
+                        @click.stop="updateTrack(track.id, { solo: !track.solo })"
+                      >S</button>
+                    </span>
+                  </div>
+                </template>
+              </aside>
+
+              <canvas
+                ref="arrangementCanvas"
+                class="editor-canvas arrangement-canvas"
+                @dblclick="onArrangementDoubleClick"
+                @pointerdown="onArrangementPointerDown"
+                @wheel="onArrangementWheel"
+                @contextmenu.prevent
+              />
+            </div>
           </div>
         </div>
 
@@ -454,6 +386,7 @@
               ref="pianoCanvas"
               class="editor-canvas"
               @pointerdown="onPianoPointerDown"
+              @wheel="onPianoWheel"
               @contextmenu.prevent
             />
           </div>
@@ -653,11 +586,21 @@ const pianoPanel = ref(null)
 const pianoWrap = ref(null)
 const pianoCanvas = ref(null)
 
-const pxPerBeat = 56
+const defaultPxPerBeat = 56
+const arrangementPxPerBeat = ref(defaultPxPerBeat)
+const pianoPxPerBeat = ref(defaultPxPerBeat)
+const minArrangementPxPerBeat = 8
+const maxArrangementPxPerBeat = 64
+const minPianoPxPerBeat = 8
+const maxPianoPxPerBeat = 64
+const arrangementEmptyBars = 64
+const pianoEmptyBars = 32
+const trackListW = 246
 const arrangementRulerH = 30
 const arrangementToolbarH = 34
 const arrangementTrackH = 72
 const pianoKeyW = 76
+const pianoRulerH = 24
 const pianoRowH = 12
 const minPitch = 36
 const maxPitch = 84
@@ -673,7 +616,6 @@ const activeClipId = ref(null)
 const pianoVisible = ref(false)
 const pianoPanelHeight = ref(null)
 const inspectorVisible = ref(true)
-const pluginEditor = ref({ trackId: null })
 const rackSlots = [
   { id: 'instrument', label: 'Instrument' },
   { id: 'insert_1', label: 'Insert 1' },
@@ -709,9 +651,6 @@ const activeMidiClip = computed(() => {
   }
   return null
 })
-const pluginEditorTrack = computed(() => (
-  tracks.value.find(track => track.id === pluginEditor.value.trackId) || null
-))
 const editorStackStyle = computed(() => {
   if (!pianoVisible.value || !activeMidiClip.value || !pianoPanelHeight.value) return {}
   return {
@@ -800,6 +739,22 @@ async function togglePlay() {
   await transport(playing.value ? 'pause' : 'play')
 }
 
+async function stopPlayback() {
+  await transport('stop')
+}
+
+async function seekToBeat(beat) {
+  const nextBeat = Math.max(0, Number(beat || 0))
+  const previousBeat = visualPositionBeats.value
+  visualPositionBeats.value = nextBeat
+  try {
+    await transport('seek', { position: (nextBeat * 60) / tempo.value })
+  } catch {
+    visualPositionBeats.value = previousBeat
+  }
+  drawAll()
+}
+
 async function writeMinorFigure() {
   if (!activeMidiClip.value) {
     await createClip('midi')
@@ -827,11 +782,17 @@ async function onArrangementPointerDown(event) {
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
   const y = event.clientY - rect.top
-  const beat = Math.max(0, x / pxPerBeat)
+  const beat = Math.max(0, x / arrangementPxPerBeat.value)
   if (y <= arrangementRulerH) {
-    await transport('seek', { position: (beat * 60) / tempo.value })
-    visualPositionBeats.value = beat
-    drawAll()
+    arrangementDrag = {
+      type: 'pan',
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: arrangementWrap.value?.scrollLeft || 0,
+      startBeat: beat,
+      moved: false,
+    }
+    bindArrangementDrag()
     return
   }
 
@@ -899,6 +860,15 @@ function unbindArrangementDrag() {
 
 function onArrangementPointerMove(event) {
   if (!arrangementDrag || !project.value) return
+  if (arrangementDrag.type === 'pan') {
+    const wrap = arrangementWrap.value
+    if (!wrap) return
+    const deltaX = event.clientX - arrangementDrag.startX
+    if (Math.abs(deltaX) > 3) arrangementDrag.moved = true
+    wrap.scrollLeft = arrangementDrag.startScrollLeft - deltaX
+    return
+  }
+
   const point = arrangementPoint(event)
   if (!point) return
   const deltaBeat = snapBeat(point.beat - arrangementDrag.startBeat)
@@ -934,10 +904,55 @@ function onArrangementPointerMove(event) {
 
 async function onArrangementPointerUp() {
   if (!arrangementDrag) return
+  if (arrangementDrag.type === 'pan') {
+    const drag = arrangementDrag
+    arrangementDrag = null
+    unbindArrangementDrag()
+    if (!drag.moved) {
+      await seekToBeat(drag.startBeat)
+    }
+    return
+  }
+
   arrangementDrag = null
   unbindArrangementDrag()
   await saveProject(project.value, { broadcast: true })
   drawAll()
+}
+
+function onArrangementWheel(event) {
+  const canvas = arrangementCanvas.value
+  const wrap = arrangementWrap.value
+  if (!canvas || !wrap) return
+  const rect = canvas.getBoundingClientRect()
+  const y = event.clientY - rect.top
+  if (y > arrangementRulerH) return
+
+  event.preventDefault()
+  const oldScale = arrangementPxPerBeat.value
+  const zoom = event.deltaY < 0 ? 1.12 : 1 / 1.12
+  const nextScale = clamp(oldScale * zoom, minArrangementPxPerBeat, maxArrangementPxPerBeat)
+  if (nextScale === oldScale) return
+
+  const contentX = event.clientX - rect.left
+  const wrapRect = wrap.getBoundingClientRect()
+  const viewportX = event.clientX - wrapRect.left
+  const canvasOffsetX = arrangementCanvasOffsetX()
+  const beatAtCursor = Math.max(0, contentX / oldScale)
+  arrangementPxPerBeat.value = nextScale
+  drawAll()
+  requestAnimationFrame(() => {
+    const maxScroll = Math.max(0, wrap.scrollWidth - wrap.clientWidth)
+    wrap.scrollLeft = clamp(
+      canvasOffsetX + (beatAtCursor * nextScale) - viewportX,
+      0,
+      maxScroll
+    )
+  })
+}
+
+function arrangementCanvasOffsetX() {
+  return arrangementCanvas.value?.offsetLeft ?? trackListW
 }
 
 function arrangementPoint(event) {
@@ -946,7 +961,7 @@ function arrangementPoint(event) {
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
   const y = event.clientY - rect.top
-  const beat = Math.max(0, (x) / pxPerBeat)
+  const beat = Math.max(0, (x) / arrangementPxPerBeat.value)
   const trackIndex = clamp(
     Math.floor((y - arrangementRulerH) / arrangementTrackH),
     0,
@@ -976,10 +991,11 @@ function hitTestArrangementClip(x, y) {
 }
 
 function clipRect(clip, trackIndex) {
+  const scale = arrangementPxPerBeat.value
   return {
-    x: Number(clip.start || 0) * pxPerBeat + 2,
+    x: Number(clip.start || 0) * scale + 2,
     y: arrangementRulerH + trackIndex * arrangementTrackH + 10,
-    w: Math.max(18, Number(clip.duration || 0.25) * pxPerBeat - 4),
+    w: Math.max(18, Number(clip.duration || 0.25) * scale - 4),
     h: arrangementTrackH - 20,
   }
 }
@@ -1082,13 +1098,25 @@ async function deleteSelectedClips() {
   selectedClipIds.value = new Set()
 }
 
-function onPianoPointerDown(event) {
+async function onPianoPointerDown(event) {
   if (!activeMidiClip.value) return
   const canvas = pianoCanvas.value
   if (!canvas) return
   event.preventDefault()
   const point = pianoPoint(event)
   if (!point || point.x < pianoKeyW) return
+  if (point.ruler) {
+    pianoDrag = {
+      type: 'pan',
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: pianoWrap.value?.scrollLeft || 0,
+      startBeat: point.beat,
+      moved: false,
+    }
+    bindPianoDrag()
+    return
+  }
   const hit = hitTestPianoNote(point.x, point.y)
 
   if (hit) {
@@ -1217,6 +1245,16 @@ function onPianoResizeEnd() {
 
 function onPianoPointerMove(event) {
   if (!pianoDrag) return
+  if (pianoDrag.type === 'pan') {
+    const wrap = pianoWrap.value
+    if (!wrap) return
+    event.preventDefault()
+    const deltaX = event.clientX - pianoDrag.startX
+    if (Math.abs(deltaX) > 3) pianoDrag.moved = true
+    wrap.scrollLeft = pianoDrag.startScrollLeft - deltaX
+    return
+  }
+
   const point = pianoPoint(event)
   if (!point) return
 
@@ -1260,7 +1298,11 @@ async function onPianoPointerUp() {
   pianoDrag = null
   unbindPianoDrag()
 
-  if (drag.type === 'draw' && draftNote.value) {
+  if (drag.type === 'pan') {
+    if (!drag.moved) {
+      await seekToBeat(Number(activeMidiClip.value.clip.start || 0) + drag.startBeat)
+    }
+  } else if (drag.type === 'draw' && draftNote.value) {
     const note = { ...draftNote.value }
     draftNote.value = null
     selectedNoteIds.value = new Set([note.id])
@@ -1277,16 +1319,43 @@ async function onPianoPointerUp() {
   drawAll()
 }
 
+function onPianoWheel(event) {
+  const canvas = pianoCanvas.value
+  const wrap = pianoWrap.value
+  if (!canvas || !wrap) return
+  const rect = canvas.getBoundingClientRect()
+  const x = event.clientX - rect.left
+  const y = event.clientY - rect.top
+  if (y > pianoRulerH || x < pianoKeyW) return
+
+  event.preventDefault()
+  const oldScale = pianoPxPerBeat.value
+  const zoom = event.deltaY < 0 ? 1.12 : 1 / 1.12
+  const nextScale = clamp(oldScale * zoom, minPianoPxPerBeat, maxPianoPxPerBeat)
+  if (nextScale === oldScale) return
+
+  const beatAtCursor = Math.max(0, (x - pianoKeyW) / oldScale)
+  const wrapRect = wrap.getBoundingClientRect()
+  const viewportX = event.clientX - wrapRect.left
+  pianoPxPerBeat.value = nextScale
+  drawAll()
+  requestAnimationFrame(() => {
+    const maxScroll = Math.max(0, wrap.scrollWidth - wrap.clientWidth)
+    wrap.scrollLeft = clamp((pianoKeyW + beatAtCursor * nextScale) - viewportX, 0, maxScroll)
+  })
+}
+
 function pianoPoint(event) {
   const canvas = pianoCanvas.value
   if (!canvas) return null
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
   const y = event.clientY - rect.top
-  const beat = Math.max(0, (x - pianoKeyW) / pxPerBeat)
-  const row = Math.floor(y / pianoRowH)
+  const beat = Math.max(0, (x - pianoKeyW) / pianoPxPerBeat.value)
+  const ruler = y < pianoRulerH
+  const row = Math.floor((y - pianoRulerH) / pianoRowH)
   const pitch = clamp(maxPitch - row, minPitch, maxPitch)
-  return { x, y, beat, pitch }
+  return { x, y, beat, pitch, ruler }
 }
 
 function hitTestPianoNote(x, y) {
@@ -1305,10 +1374,11 @@ function hitTestPianoNote(x, y) {
 }
 
 function noteRect(note) {
+  const scale = pianoPxPerBeat.value
   return {
-    x: pianoKeyW + Number(note.start) * pxPerBeat,
-    y: (maxPitch - Number(note.pitch)) * pianoRowH + 1,
-    w: Math.max(8, Number(note.duration) * pxPerBeat),
+    x: pianoKeyW + Number(note.start) * scale,
+    y: pianoRulerH + (maxPitch - Number(note.pitch)) * pianoRowH + 1,
+    w: Math.max(8, Number(note.duration) * scale),
     h: pianoRowH - 2,
   }
 }
@@ -1431,7 +1501,10 @@ function onTrackRowKeydown(event, trackId) {
 function onStudioKeydown(event) {
   const tag = String(event.target?.tagName || '').toLowerCase()
   if (['input', 'textarea', 'select', 'button'].includes(tag)) return
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+  if (event.code === 'Space' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault()
+    togglePlay()
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
     event.preventDefault()
     if (pianoVisible.value && activeMidiClip.value && selectedNoteIds.value.size) {
       copySelectedNotes()
@@ -1494,7 +1567,7 @@ function closePiano() {
 }
 
 function isPluginEditorOpen(trackId) {
-  return pluginEditor.value.trackId === trackId || Boolean(editorWindows.value?.[`${trackId}:instrument`]?.open)
+  return Boolean(editorWindows.value?.[`${trackId}:instrument`]?.open)
 }
 
 function canOpenPluginEditor(track) {
@@ -1503,15 +1576,10 @@ function canOpenPluginEditor(track) {
 
 async function togglePluginEditor(track) {
   selectTrack(track.id)
-  pluginEditor.value = { trackId: track.id }
   if (!canOpenPluginEditor(track)) return
   try {
     await openPluginEditor(track.id, 'instrument')
   } catch {}
-}
-
-function closePluginEditor() {
-  pluginEditor.value = { trackId: null }
 }
 
 function pluginSlot(track, slotId = 'instrument') {
@@ -1544,14 +1612,6 @@ function selectedPluginMissing(track, slotId = 'instrument') {
   if (!['vst3', 'vst2'].includes(slot.type) || !slot.path) return false
   const list = slot.type === 'vst3' ? pluginOptions.value.vst3 : pluginOptions.value.vst2
   return !list.some(plugin => plugin.path === slot.path)
-}
-
-function pluginSlotFormat(track, slotId = 'instrument') {
-  const type = pluginSlot(track, slotId).type
-  if (type === 'vst3') return 'VST3'
-  if (type === 'vst2') return 'VST2'
-  if (type === 'empty') return 'Empty'
-  return 'Built-in'
 }
 
 function pluginSlotLabel(track, slotId = 'instrument') {
@@ -1599,10 +1659,6 @@ async function onPluginSelect(track, slotId, value) {
   }, slotId)
 }
 
-async function reloadPluginInstance(track) {
-  await onPluginSelect(track, 'instrument', pluginSlotValue(track, 'instrument'))
-}
-
 function animationLoop(now) {
   if (!lastFrame) lastFrame = now
   const delta = (now - lastFrame) / 1000
@@ -1636,27 +1692,41 @@ function drawArrangement() {
   const canvas = arrangementCanvas.value
   const wrap = arrangementWrap.value
   if (!canvas || !wrap) return
-  const width = Math.max(wrap.clientWidth, arrangementLengthBeats() * pxPerBeat + 40)
+  const timelineViewportWidth = Math.max(0, wrap.clientWidth - trackListW)
+  const width = Math.max(
+    timelineViewportWidth,
+    arrangementLengthBeats() * arrangementPxPerBeat.value + 40
+  )
   const height = Math.max(
     220,
     arrangementRulerH + Math.max(1, tracks.value.length) * arrangementTrackH
   )
   const ctx = setupCanvas(canvas, width, height)
-  paintGrid(ctx, width, height, 0, arrangementRulerH)
-  ctx.fillStyle = '#202326'
-  ctx.fillRect(0, 0, width, arrangementRulerH)
-  drawRuler(ctx, width)
+  ctx.fillStyle = '#17191c'
+  ctx.fillRect(0, 0, width, height)
 
   tracks.value.forEach((track, index) => {
     const y = arrangementRulerH + index * arrangementTrackH
     ctx.fillStyle = activeTrack.value?.id === track.id ? 'rgba(158, 191, 255, 0.08)' : '#1b1d20'
     ctx.fillRect(0, y, width, arrangementTrackH)
+  })
+
+  paintGrid(ctx, width, height, 0, arrangementRulerH)
+
+  tracks.value.forEach((track, index) => {
+    const y = arrangementRulerH + index * arrangementTrackH
     ctx.strokeStyle = 'rgba(229, 236, 245, 0.11)'
     ctx.beginPath()
     ctx.moveTo(0, y + arrangementTrackH)
     ctx.lineTo(width, y + arrangementTrackH)
     ctx.stroke()
+  })
 
+  ctx.fillStyle = '#202326'
+  ctx.fillRect(0, 0, width, arrangementRulerH)
+  drawRuler(ctx, width)
+
+  tracks.value.forEach((track, index) => {
     for (const clip of track.clips || []) {
       drawArrangementClip(ctx, track, clip, index)
     }
@@ -1665,13 +1735,23 @@ function drawArrangement() {
 }
 
 function arrangementLengthBeats() {
+  const emptyTailBeats = arrangementEmptyBars * Math.max(1, meterBeats.value)
   const clipEnd = Math.max(
     0,
     ...tracks.value.flatMap(track => (track.clips || []).map((clip) => (
       Number(clip.start || 0) + Number(clip.duration || 0)
     )))
   )
-  return Math.max(Number(project.value?.length_beats || 16), clipEnd + 2)
+  return Math.max(Number(project.value?.length_beats || 16), emptyTailBeats, clipEnd + 2)
+}
+
+function pianoLengthBeats(clip) {
+  const emptyTailBeats = pianoEmptyBars * Math.max(1, meterBeats.value)
+  const noteEnd = Math.max(
+    0,
+    ...(clip.notes || []).map((note) => Number(note.start || 0) + Number(note.duration || 0))
+  )
+  return Math.max(Number(clip.duration || 4), emptyTailBeats, noteEnd + 2)
 }
 
 function drawArrangementClip(ctx, track, clip, trackIndex) {
@@ -1744,16 +1824,17 @@ function drawPiano() {
   const clip = activeMidiClip.value.clip
   const width = Math.max(
     wrap.clientWidth,
-    pianoKeyW + (Number(clip.duration || 4) + 2) * pxPerBeat
+    pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
   )
-  const height = (maxPitch - minPitch + 1) * pianoRowH
+  const height = pianoRulerH + (maxPitch - minPitch + 1) * pianoRowH
   const ctx = setupCanvas(canvas, width, height)
   ctx.fillStyle = '#17191c'
   ctx.fillRect(0, 0, width, height)
+  drawPianoRuler(ctx, width, clip)
 
   for (let pitch = maxPitch; pitch >= minPitch; pitch -= 1) {
     const row = maxPitch - pitch
-    const y = row * pianoRowH
+    const y = pianoRulerH + row * pianoRowH
     const black = [1, 3, 6, 8, 10].includes(pitch % 12)
     ctx.fillStyle = black ? '#111316' : '#202326'
     ctx.fillRect(0, y, pianoKeyW, pianoRowH)
@@ -1770,7 +1851,7 @@ function drawPiano() {
       ctx.fillText(pitchName(pitch), 10, y + 9)
     }
   }
-  paintGrid(ctx, width, height, pianoKeyW, 0)
+  paintPianoGrid(ctx, width, height, clip)
 
   const track = activeMidiClip.value.track
   if (track) {
@@ -1815,19 +1896,95 @@ function drawPiano() {
 }
 
 function drawRuler(ctx, width) {
-  const bars = Math.ceil(width / (pxPerBeat * meterBeats.value))
+  const scale = arrangementPxPerBeat.value
+  const bars = Math.ceil(width / (scale * meterBeats.value))
   ctx.font = '10px Cascadia Mono, Consolas, monospace'
   for (let bar = 0; bar <= bars; bar += 1) {
-    const x = bar * meterBeats.value * pxPerBeat
+    const x = bar * meterBeats.value * scale
     ctx.fillStyle = '#9aa3ad'
     ctx.fillText(String(bar + 1), x + 5, 19)
   }
 }
 
+function drawPianoRuler(ctx, width, clip) {
+  const scale = pianoPxPerBeat.value
+  const clipStart = Number(clip.start || 0)
+  const meter = Math.max(1, meterBeats.value)
+  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
+  const endBeat = clipStart + visibleBeats
+  ctx.fillStyle = '#202326'
+  ctx.fillRect(0, 0, width, pianoRulerH)
+  ctx.fillStyle = '#181b1f'
+  ctx.fillRect(0, 0, pianoKeyW, pianoRulerH)
+  ctx.strokeStyle = 'rgba(229,236,245,0.11)'
+  ctx.beginPath()
+  ctx.moveTo(0, pianoRulerH - 0.5)
+  ctx.lineTo(width, pianoRulerH - 0.5)
+  ctx.stroke()
+
+  ctx.font = '10px Cascadia Mono, Consolas, monospace'
+  for (
+    let barBeat = firstMultipleAtOrAfter(clipStart, meter);
+    barBeat <= endBeat + 0.001;
+    barBeat += meter
+  ) {
+    const x = pianoKeyW + (barBeat - clipStart) * scale
+    ctx.strokeStyle = 'rgba(240, 209, 122, 0.28)'
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, pianoRulerH)
+    ctx.stroke()
+    ctx.fillStyle = '#d9e2ec'
+    ctx.fillText(String(Math.floor(barBeat / meter) + 1), x + 5, 16)
+  }
+}
+
+function paintPianoGrid(ctx, width, height, clip) {
+  const scale = pianoPxPerBeat.value
+  const clipStart = Number(clip.start || 0)
+  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
+
+  for (let beat = 0; beat <= visibleBeats; beat += 1) {
+    const x = pianoKeyW + beat * scale
+    ctx.strokeStyle = 'rgba(229,236,245,0.075)'
+    ctx.lineWidth = 0.5
+    ctx.beginPath()
+    ctx.moveTo(x, pianoRulerH)
+    ctx.lineTo(x, height)
+    ctx.stroke()
+
+    ctx.strokeStyle = 'rgba(229,236,245,0.035)'
+    for (let div = 1; div < 4; div += 1) {
+      const subX = x + (div * scale) / 4
+      ctx.beginPath()
+      ctx.moveTo(subX, pianoRulerH)
+      ctx.lineTo(subX, height)
+      ctx.stroke()
+    }
+  }
+
+  const meter = Math.max(1, meterBeats.value)
+  const endBeat = clipStart + visibleBeats
+  for (
+    let barBeat = firstMultipleAtOrAfter(clipStart, meter);
+    barBeat <= endBeat + 0.001;
+    barBeat += meter
+  ) {
+    const x = pianoKeyW + (barBeat - clipStart) * scale
+    ctx.strokeStyle = 'rgba(240, 209, 122, 0.24)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(x, pianoRulerH)
+    ctx.lineTo(x, height)
+    ctx.stroke()
+  }
+}
+
 function paintGrid(ctx, width, height, offsetX, offsetY) {
-  const beats = Math.ceil((width - offsetX) / pxPerBeat)
+  const scale = arrangementPxPerBeat.value
+  const beats = Math.ceil((width - offsetX) / scale)
   for (let beat = 0; beat <= beats; beat += 1) {
-    const x = offsetX + beat * pxPerBeat
+    const x = offsetX + beat * scale
     const isBar = beat % meterBeats.value === 0
     ctx.strokeStyle = isBar ? 'rgba(229,236,245,0.18)' : 'rgba(229,236,245,0.07)'
     ctx.lineWidth = isBar ? 1 : 0.5
@@ -1838,7 +1995,7 @@ function paintGrid(ctx, width, height, offsetX, offsetY) {
 
     ctx.strokeStyle = 'rgba(229,236,245,0.035)'
     for (let div = 1; div < 4; div += 1) {
-      const subX = x + (div * pxPerBeat) / 4
+      const subX = x + (div * scale) / 4
       ctx.beginPath()
       ctx.moveTo(subX, offsetY)
       ctx.lineTo(subX, height)
@@ -1847,26 +2004,44 @@ function paintGrid(ctx, width, height, offsetX, offsetY) {
   }
 }
 
+function firstMultipleAtOrAfter(value, step) {
+  return Math.ceil((Number(value || 0) - 0.000001) / step) * step
+}
+
 function drawPlayhead(ctx, height, offsetX = 0) {
-  const x = offsetX + visualPositionBeats.value * pxPerBeat
+  const x = offsetX + visualPositionBeats.value * arrangementPxPerBeat.value
   ctx.strokeStyle = '#d7b66f'
   ctx.lineWidth = 1.5
   ctx.beginPath()
   ctx.moveTo(x, 0)
   ctx.lineTo(x, height)
   ctx.stroke()
+  ctx.fillStyle = '#d7b66f'
+  ctx.beginPath()
+  ctx.moveTo(x, arrangementRulerH)
+  ctx.lineTo(x - 5, arrangementRulerH - 8)
+  ctx.lineTo(x + 5, arrangementRulerH - 8)
+  ctx.closePath()
+  ctx.fill()
 }
 
 function drawPianoPlayhead(ctx, height, clip) {
   const localBeat = visualPositionBeats.value - Number(clip.start || 0)
   if (localBeat < 0 || localBeat > Number(clip.duration || 0)) return
-  const x = pianoKeyW + localBeat * pxPerBeat
-  ctx.strokeStyle = '#d7b66f'
-  ctx.lineWidth = 1.5
+  const x = pianoKeyW + localBeat * pianoPxPerBeat.value
+  ctx.strokeStyle = '#f0d17a'
+  ctx.lineWidth = 1.6
   ctx.beginPath()
   ctx.moveTo(x, 0)
   ctx.lineTo(x, height)
   ctx.stroke()
+  ctx.fillStyle = '#f0d17a'
+  ctx.beginPath()
+  ctx.moveTo(x, pianoRulerH)
+  ctx.lineTo(x - 5, pianoRulerH - 8)
+  ctx.lineTo(x + 5, pianoRulerH - 8)
+  ctx.closePath()
+  ctx.fill()
 }
 
 function roundRect(ctx, x, y, width, height, radius) {
@@ -1929,9 +2104,6 @@ watch(project, () => {
     activeClipId.value = null
     pianoVisible.value = false
     selectedNoteIds.value = new Set()
-  }
-  if (pluginEditor.value.trackId && !tracks.value.some(track => track.id === pluginEditor.value.trackId)) {
-    closePluginEditor()
   }
   drawAll()
 })
@@ -2137,15 +2309,14 @@ watch(positionBeats, (value) => {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: 246px minmax(0, 1fr) 286px;
+  grid-template-columns: minmax(0, 1fr) 286px;
   overflow: hidden;
 }
 
 .studio-page.inspector-hidden .studio-body {
-  grid-template-columns: 246px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.track-list,
 .inspector {
   min-height: 0;
   overflow: auto;
@@ -2153,7 +2324,17 @@ watch(positionBeats, (value) => {
 }
 
 .track-list {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
+  width: 246px;
+  min-width: 246px;
+  background: #202428;
   border-right: 1px solid rgba(229, 236, 245, 0.12);
+  box-shadow: 10px 0 20px rgba(0, 0, 0, 0.22);
 }
 
 .inspector {
@@ -2176,8 +2357,20 @@ watch(positionBeats, (value) => {
   background: #262b30;
 }
 
+.arrangement-head-grid {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 246px minmax(0, 1fr);
+}
+
+.track-list-head {
+  border-right: 1px solid rgba(229, 236, 245, 0.12);
+}
+
 .arrangement-toolbar {
   flex: 0 0 auto;
+  min-width: 0;
   text-transform: none;
 }
 
@@ -2351,105 +2544,6 @@ watch(positionBeats, (value) => {
   background: rgba(240, 209, 122, 0.12);
 }
 
-.track-plugin-panel {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  margin: 8px;
-  padding: 9px;
-  border: 1px solid rgba(240, 209, 122, 0.24);
-  border-radius: 6px;
-  background: #171a1e;
-  box-shadow: 0 -12px 26px rgba(0, 0, 0, 0.28);
-}
-
-.plugin-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.plugin-panel-head div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.plugin-panel-head span {
-  color: var(--t4);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.plugin-panel-head strong,
-.plugin-instance-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.plugin-panel-head strong {
-  color: var(--t1);
-  font-size: 12px;
-}
-
-.plugin-instance-name {
-  margin-top: 8px;
-  color: #f0d17a;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.plugin-instance-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
-  margin: 9px 0 0;
-  background: rgba(229, 236, 245, 0.06);
-}
-
-.plugin-instance-meta div {
-  min-width: 0;
-  padding: 7px;
-  background: #202428;
-}
-
-.plugin-instance-meta dt {
-  color: var(--t4);
-  font-size: 9px;
-  text-transform: uppercase;
-}
-
-.plugin-instance-meta dd {
-  margin: 2px 0 0;
-  overflow: hidden;
-  color: var(--t2);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.plugin-instance-path {
-  margin-top: 8px;
-  padding: 6px;
-  overflow: hidden;
-  border: 1px solid rgba(229, 236, 245, 0.08);
-  border-radius: 5px;
-  background: #101215;
-  color: var(--t4);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.plugin-instance-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 9px;
-}
-
 .editor-stack {
   min-width: 0;
   min-height: 0;
@@ -2480,6 +2574,21 @@ watch(positionBeats, (value) => {
 
 .arrangement-canvas-wrap {
   flex: 1 1 auto;
+  position: relative;
+  overscroll-behavior: contain;
+}
+
+.arrangement-scroll-inner {
+  min-width: 100%;
+  display: grid;
+  grid-template-columns: 246px max-content;
+  align-items: start;
+}
+
+.arrangement-canvas {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
 }
 
 .editor-canvas {
@@ -2721,7 +2830,7 @@ watch(positionBeats, (value) => {
   }
 
   .studio-body {
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .inspector {
@@ -2786,7 +2895,6 @@ watch(positionBeats, (value) => {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.studio-page.embedded .track-list,
 .studio-page.embedded .inspector {
   display: none;
 }

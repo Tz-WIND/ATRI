@@ -8,6 +8,60 @@ from core.music_project import (
 )
 
 
+def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    project = save_project(
+        {
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Controller Lane",
+                    "clips": [
+                        {
+                            "id": "midi_1",
+                            "type": "midi",
+                            "start": 4,
+                            "duration": 2,
+                            "events": [
+                                {
+                                    "id": "cc1",
+                                    "type": "cc",
+                                    "start": 0.5,
+                                    "channel": 2,
+                                    "controller": 74,
+                                    "value": 96,
+                                },
+                                {
+                                    "id": "bend1",
+                                    "type": "pitch_bend",
+                                    "start": 1.0,
+                                    "value": -200,
+                                },
+                                {
+                                    "id": "sx1",
+                                    "type": "sysex",
+                                    "start": 1.5,
+                                    "data": [240, 126, 247],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    events = project["tracks"][0]["midi_events"]
+    assert [event["start"] for event in events] == [4.5, 5.0, 5.5]
+    assert events[0]["type"] == "control_change"
+    assert events[0]["channel"] == 2
+    assert events[0]["controller"] == 74
+    assert events[1]["type"] == "pitch_bend"
+    assert events[1]["value"] == -200
+    assert events[2]["data_b64"] == "8H73"
+
+
 def test_midi_write_replaces_overlapping_notes(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     project = load_project()
