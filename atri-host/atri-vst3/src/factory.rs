@@ -4,6 +4,9 @@ use std::mem;
 use std::path::Path;
 use std::ptr;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+
 use vst3::{
     ComPtr, Interface,
     Steinberg::{
@@ -31,13 +34,22 @@ pub struct PluginClassInfo {
 }
 
 /// Loaded VST3 module and its root plugin factory.
+///
+/// Loading is split into two phases so that `InitDll` and
+/// `GetPluginFactory` can run on the same thread as `createView()`
+/// (the main/editor thread), keeping QApplication and Qt widgets
+/// on the same thread for plugins like Kontakt 8.
 pub struct PluginFactory {
     factory: Option<ComPtr<IPluginFactory>>,
     library: libloading::Library,
+    get_factory_fn: GetPluginFactory,
+    #[cfg(target_os = "windows")]
+    init_dll: Option<InitDll>,
     #[cfg(target_os = "windows")]
     exit_dll: Option<ExitDll>,
     pub path: String,
     pub plugin_name: String,
+    initialized: bool,
 }
 
 impl fmt::Debug for PluginFactory {
@@ -50,8 +62,42 @@ impl fmt::Debug for PluginFactory {
     }
 }
 
+/// Windows: add `plugin_dir` to the DLL search path while running `f`,
+/// then restore the default search order. This ensures that the plugin's
+/// own DLLs (e.g. platform interface modules loaded via boost::dll) can
+/// be found by Windows.
+#[cfg(target_os = "windows")]
+fn with_plugin_dll_dir<T>(plugin_dir: &Path, f: impl FnOnce() -> T) -> T {
+    unsafe extern "system" {
+        fn SetDllDirectoryW(lpPathName: *const u16) -> i32;
+    }
+
+    let wide: Vec<u16> = plugin_dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        SetDllDirectoryW(wide.as_ptr());
+    }
+    let result = f();
+    // Restore default DLL search order
+    unsafe {
+        SetDllDirectoryW(ptr::null());
+    }
+    result
+}
+
+#[cfg(not(target_os = "windows"))]
+fn with_plugin_dll_dir<T>(_plugin_dir: &Path, f: impl FnOnce() -> T) -> T {
+    f()
+}
+
 impl PluginFactory {
-    /// Load a VST3 plugin from the given platform-specific shared library.
+    /// Phase 1: load the DLL and resolve entry-point symbols.
+    /// Call this from any thread. Does NOT invoke `InitDll` or
+    /// `GetPluginFactory` yet — those are deferred to [`initialize`].
     pub fn load(path: &Path) -> Result<Self, String> {
         let path_str = path.to_string_lossy().to_string();
         if !path.exists() {
@@ -63,40 +109,64 @@ impl PluginFactory {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "Unknown".to_string());
 
-        let library = unsafe { libloading::Library::new(path) }
-            .map_err(|err| format!("Failed to load plugin {}: {}", path_str, err))?;
+        let plugin_dir = path.parent().unwrap_or(Path::new("."));
 
-        let get_factory: GetPluginFactory = unsafe {
+        let library = with_plugin_dll_dir(plugin_dir, || unsafe {
+            libloading::Library::new(path)
+        })
+        .map_err(|err| format!("Failed to load plugin {}: {}", path_str, err))?;
+
+        let get_factory_fn: GetPluginFactory = unsafe {
             *library
                 .get(b"GetPluginFactory\0")
                 .map_err(|err| format!("GetPluginFactory not found: {err}"))?
         };
 
         #[cfg(target_os = "windows")]
-        let exit_dll = initialize_windows_module(&library, &plugin_name)?;
-
-        let factory = unsafe { get_factory() };
-        let factory = match unsafe { ComPtr::from_raw(factory) } {
-            Some(factory) => factory,
-            None => {
-                #[cfg(target_os = "windows")]
-                if let Some(exit_dll) = exit_dll {
-                    unsafe {
-                        let _ = exit_dll();
-                    }
-                }
-                return Err("GetPluginFactory returned null".to_string());
-            }
-        };
+        let (init_dll, exit_dll) = get_windows_entry_points(&library, &plugin_name)?;
 
         Ok(Self {
-            factory: Some(factory),
+            factory: None,
             library,
+            get_factory_fn,
+            #[cfg(target_os = "windows")]
+            init_dll,
             #[cfg(target_os = "windows")]
             exit_dll,
             path: path_str,
             plugin_name,
+            initialized: false,
         })
+    }
+
+    /// Phase 2: call `InitDll` (Windows) and `GetPluginFactory`.
+    /// Must be called on the main/editor thread — the same thread
+    /// that will later call `createView()` — so that Qt-based
+    /// plugins (Kontakt 8, etc.) initialize QApplication on the
+    /// correct thread.
+    pub fn initialize(&mut self) -> Result<(), String> {
+        if self.initialized {
+            return Ok(());
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Some(init_dll) = self.init_dll {
+            let ok = unsafe { init_dll() };
+            if !ok {
+                return Err(format!(
+                    "VST3 plugin '{}' InitDll returned false",
+                    self.plugin_name
+                ));
+            }
+        }
+
+        let factory = unsafe { (self.get_factory_fn)() };
+        let factory = unsafe { ComPtr::from_raw(factory) }
+            .ok_or_else(|| "GetPluginFactory returned null".to_string())?;
+
+        self.factory = Some(factory);
+        self.initialized = true;
+        Ok(())
     }
 
     /// Resolve the VST3 entry point from the loaded module.
@@ -110,7 +180,7 @@ impl PluginFactory {
     }
 
     pub fn is_loaded(&self) -> bool {
-        self.factory.is_some()
+        self.initialized && self.factory.is_some()
     }
 
     pub fn set_host_context(&self, host_context: *mut FUnknown) {
@@ -226,23 +296,21 @@ impl Drop for PluginFactory {
     }
 }
 
+/// Resolve the optional Windows `InitDll` / `ExitDll` entry points but do
+/// NOT call `InitDll` yet — that is deferred to [`PluginFactory::initialize`]
+/// so it runs on the correct thread.
 #[cfg(target_os = "windows")]
-fn initialize_windows_module(
+fn get_windows_entry_points(
     library: &libloading::Library,
-    plugin_name: &str,
-) -> Result<Option<ExitDll>, String> {
-    if let Ok(init_dll) = unsafe { library.get::<InitDll>(b"InitDll\0") } {
-        let ok = unsafe { init_dll() };
-        if !ok {
-            return Err(format!(
-                "VST3 plugin '{plugin_name}' InitDll returned false"
-            ));
-        }
-    }
-
-    Ok(unsafe { library.get::<ExitDll>(b"ExitDll\0") }
+    _plugin_name: &str,
+) -> Result<(Option<InitDll>, Option<ExitDll>), String> {
+    let init_dll = unsafe { library.get::<InitDll>(b"InitDll\0") }
         .ok()
-        .map(|sym| *sym))
+        .map(|sym| *sym);
+    let exit_dll = unsafe { library.get::<ExitDll>(b"ExitDll\0") }
+        .ok()
+        .map(|sym| *sym);
+    Ok((init_dll, exit_dll))
 }
 
 fn fixed_cstr(field: &[c_char]) -> String {
@@ -266,7 +334,8 @@ mod tests {
             return;
         }
 
-        let factory = PluginFactory::load(&dll_path).expect("Should load real VST3 DLL");
+        let mut factory = PluginFactory::load(&dll_path).expect("Should load real VST3 DLL");
+        factory.initialize().expect("Should initialize factory");
 
         assert!(!factory.plugin_name.is_empty());
         assert!(factory.is_loaded());
@@ -321,8 +390,9 @@ mod tests {
 
             let factory = PluginFactory::load(&info.dll_path);
             match factory {
-                Ok(factory) => {
+                Ok(mut factory) => {
                     eprintln!("Loaded: {} from {}", factory.plugin_name, factory.path);
+                    let _ = factory.initialize();
                     assert!(factory.is_loaded());
                 }
                 Err(err) => {

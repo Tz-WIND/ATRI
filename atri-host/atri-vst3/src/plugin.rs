@@ -307,8 +307,12 @@ impl Vst3Plugin {
 
         let factory = self
             .factory
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| format!("VST3 plugin '{}' factory is not loaded", self.name))?;
+        // Phase 2 of plugin loading: InitDll + GetPluginFactory on the
+        // current thread (main/editor thread), so Qt-based plugins
+        // initialize QApplication on the correct thread.
+        factory.initialize()?;
         log::info!(
             "creating VST3 component for '{}' on host UI thread",
             self.name
@@ -822,9 +826,13 @@ impl Vst3Instance {
         check_result("VST3 setupProcessing", unsafe {
             audio_processor.setupProcessing(&mut setup)
         })?;
-        check_result("VST3 setProcessing(true)", unsafe {
-            audio_processor.setProcessing(1)
-        })?;
+        // setProcessing may return kNotImplemented (0x80004001) for plugins
+        // that don't require explicit processing state toggling (e.g. Vienna Synchron Player).
+        // Treat non-ok as non-fatal here, consistent with set_processing().
+        let sp_result = unsafe { audio_processor.setProcessing(1) };
+        if sp_result != kResultOk {
+            log::debug!("VST3 setProcessing(true) returned {sp_result} (non-fatal)");
+        }
         self.processing_active = true;
         self.processing_sample_rate = sample_rate;
         self.processing_max_samples = max_samples;

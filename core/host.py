@@ -200,7 +200,7 @@ class HostManager:
                 try:
                     msg = json.loads(line_str)
                 except json.JSONDecodeError:
-                    logger.warning("Invalid JSON from host: %s", line_str[:100])
+                    logger.debug("Invalid JSON from host: %s", line_str[:100])
                     continue
 
                 msg_type = msg.get("type", "")
