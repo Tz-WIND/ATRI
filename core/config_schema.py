@@ -76,6 +76,15 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "sample_rate": {"type": "integer", "default": 48000, "minimum": 1},
                 "buffer_size": {"type": "integer", "default": 256, "minimum": 1},
                 "auto_start": {"type": "boolean", "default": True},
+                "audio_engine": {
+                    "type": "string",
+                    "default": "default",
+                },
+                "bit_depth": {
+                    "type": "string",
+                    "default": "f32",
+                    "enum": ["i16", "i24", "f32"],
+                },
             },
         },
         "plugins_dir": {"type": "string", "default": "plugins"},

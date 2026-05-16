@@ -138,6 +138,17 @@ impl Plugin for Vst3Plugin {
         self.block_size = nframes;
     }
 
+    fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate.max(1.0);
+    }
+
+    fn signal_latency(&self) -> usize {
+        self.instance
+            .as_ref()
+            .map(Vst3Instance::signal_latency)
+            .unwrap_or(0)
+    }
+
     fn prepare_for_processing(&mut self) -> Result<(), String> {
         self.ensure_instance()
     }
@@ -158,6 +169,27 @@ impl Plugin for Vst3Plugin {
         let Some(instance) = &mut self.instance else {
             return;
         };
+
+        // Diagnostic: flag buffer size / sample rate mismatches at runtime.
+        if nframes != self.block_size {
+            log::debug!(
+                "[{}] block size mismatch: plugin.block_size={}, actual nframes={}, sample_rate={}",
+                self.name,
+                self.block_size,
+                nframes,
+                self.sample_rate
+            );
+        }
+        if !midi.is_empty() {
+            log::trace!(
+                "[{}] midi events: nframes={}, events={}, start_sample={}",
+                self.name,
+                nframes,
+                midi.len(),
+                start_sample
+            );
+        }
+
         if let Err(err) = instance.process_audio(
             bufs,
             midi,
@@ -603,6 +635,7 @@ impl Vst3Instance {
         if output_channels == 0 {
             return Ok(());
         }
+
         self.ensure_processing(sample_rate, configured_block_size.max(nframes))?;
         let audio_processor = self
             .audio_processor
@@ -807,6 +840,15 @@ impl Vst3Instance {
             return Ok(());
         }
 
+        log::info!(
+            "[VST3] ensure_processing: sample_rate={} (was {}), max_samples={} (was {}), active={}",
+            sample_rate,
+            self.processing_sample_rate,
+            max_samples,
+            self.processing_max_samples,
+            self.processing_active
+        );
+
         self.set_processing(false);
         let audio_processor = self
             .audio_processor
@@ -855,6 +897,13 @@ impl Vst3Instance {
         if !active {
             self.processing_max_samples = 0;
         }
+    }
+
+    fn signal_latency(&self) -> usize {
+        self.audio_processor
+            .as_ref()
+            .map(|audio_processor| unsafe { audio_processor.getLatencySamples() as usize })
+            .unwrap_or(0)
     }
 
     fn activate_buses(&self, active: bool) {

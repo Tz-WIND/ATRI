@@ -437,10 +437,6 @@ def _normalize_clips(
             for clip in raw_clips
             if isinstance(clip, dict)
         ]
-    else:
-        clips = []
-
-    if clips:
         clips.sort(key=lambda clip: (clip["start"], clip["type"], clip["name"]))
         return clips
 

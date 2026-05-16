@@ -1,94 +1,167 @@
 # ATRI
 
-AI Agent Framework — OneBot11 (QQ / Napcat) + WebUI Chat
+ATRI 是一个 **AI 原生音乐工作站** —— 将 DAW、实时音频引擎与 Agent 系统融为一体的本地创作环境。
 
-ATRI 是一个可扩展的 AI Agent 框架，通过 QQ 机器人 (OneBot11 / Napcat) 和 Web 控制台两种渠道接入。
-Agent 拥有完整的工具链——文件读写、代码编辑、Shell 命令、子 Agent、Web 搜索——所有操作限定在工作区沙箱内安全运行。
+它不是聊天机器人外面套一层 DAW 的壳，也不是在 DAW 里塞一个 AI 对话框。ATRI 的 Agent 可以直接读取工程状态、写入 MIDI、操控播放、管理文件，像一名坐在你旁边看着屏幕的合作伙伴，而不是只能隔空给建议的旁观者。
 
-## 功能特性
+项目仍在快速演进中，但核心闭环已经成型：**从创意到 MIDI 到实时音频，Agent 全程参与，不只是动嘴。**
 
-### 平台接入
+## 三大组件
 
-- **OneBot11 反向 WebSocket**：对接 Napcat / Lagrange 等 QQ 机器人，私聊和群聊均支持唤醒词检测
-- **WebUI Chat 控制台**：Vue 3 SPA 内嵌仪表盘，实时流式输出，多会话管理，文件浏览，音乐播放器
-- **统一消息模型**：平台适配器可扩展，新平台接入只需实现 Adapter 基类
+### 1. AI DAW / Studio
 
-### AI Agent
+面向 MIDI 与插件工作流的 Web Studio，包含时间线、piano roll、轨道列表、Mixer、插件 Rack、Transport 控制和工程持久化。
 
-- **完整工具链**：19 个内置工具——文件读写、精确编辑、Grep/Glob 搜索、目录操作、Bash/Terminal、子 Agent、Web 搜索、代码检查等
-- **并行工具执行**：LLM 返回多个工具调用时，线程池并发执行，大幅降低响应延迟
-- **子 Agent 并行**：同时派发多个子 Agent 任务，支持 blocking（等待结果）和 background（异步轮询）两种模式
-- **流式输出**：思考过程和工具调用实时推送到 WebUI / WS，中间结果即时可见
-- **三级上下文压缩**：截断 → LLM 摘要 → 硬折叠，在长对话中保持上下文不爆炸
-- **会话持久化**：按 session 隔离，JSON 存储，支持多会话切换与恢复
-- **优雅取消**：Ctrl+C 首次中断当前操作，再次中断安全退出
+### 2. Rust Audio Host
 
-### 多模型支持
+本地实时音频引擎，负责 CPAL 输出、transport 同步、MIDI 调度、内置合成器、VST 插件加载与管理、原生插件编辑器及音频设备配置。
 
-- **OpenAI 兼容 API**：DeepSeek、Qwen、Kimi、GLM、Ollama 等
-- **Anthropic API 兼容**：Claude 全系列（支持 thinking/reasoning）
-- **多 Provider 管理**：WebUI 中一键添加、切换模型，无需重启
-- **图片转录**：可选视觉模型，自动将图片转换为文本描述再送入聊天模型
+### 3. Agent Runtime
 
-### 扩展系统
+本地优先的多模型 Agent 系统，支持工具调用、会话持久化、文件工作区、MCP、Skills、OneBot11/WebChat 接入，以及专为音乐工程设计的 MIDI 操作工具。
 
-- **Skills 系统**：SKILL.md 指令注入，支持 zip 导入，多目录自动发现
-- **插件系统**：`plugins/` 目录自动发现，可接入管线阶段、注册工具、注册命令
-- **MCP 支持**：Model Context Protocol Server 动态工具生成，WebUI 管理
+## 能力地图
 
-### 安全
+### DAW 与音乐工程
 
-- **工作区沙箱**：所有文件操作限定在 `workspace/` 内，路径穿越检测
-- **两级危险命令拦截**：正则匹配 + 黑名单，拦截 `rm -rf`、格式化、裸设备写等高危操作
-- **Dashboard 认证**：PBKDF2 密码哈希，Cookie 会话，登录限流
+- **Studio 页面** —— 编曲视图、轨道区、时间线、piano roll、inspector 一体化。
+- **MIDI Clip 工作流** —— 以 beat 为时间单位，支持 clip、note、controller/event 等完整 MIDI 数据结构。
+- **Piano Roll 编辑** —— 选择、绘制、复制、粘贴、删除音符，支持旋律、和弦、bassline、鼓 pattern 等编辑。
+- **轨道与 Mixer** —— 独立音量、声像、静音、独奏、颜色、名称，以及乐器/插入式插件槽。
+- **插件 Rack** —— 区分 instrument slot 与 insert slot，保存插件路径、元数据与 state chunk。
+- **Transport 控制** —— 播放、暂停、停止、跳转、速度、拍号、循环，全部由 Host 端实时执行。
+- **工程持久化** —— `data/music_workstation/project.json` 为唯一工程源，Dashboard、Agent、Rust Host 通过同步流程共享同一份状态。
+- **Agent 写入工程** —— 通过 `midi_write` / `midi_diff` 直接生成或修改 MIDI，并请求 Dashboard 同步至 Host。
 
-### 音乐播放器
+### 实时音频引擎
 
-- 本地音乐库扫描（MP3 / FLAC / WAV 等）
-- Agent 可通过工具控制播放（play / pause / skip / volume）
-- WebUI 内嵌播放器，歌词显示，播放模式切换
+- **Rust 音频核心** —— `atri-host` 为独立 Rust workspace，含核心类型、引擎、Host 可执行程序和 VST 封装。
+- **实时渲染** —— 从工程同步轨道、MIDI 与插件链，按当前 transport 状态渲染音频。
+- **内置 Basic Synth** —— 零插件也能播放 MIDI，方便测试与快速草稿。
+- **VST3/VST2 扫描** —— 支持系统默认路径与 `config.yaml` 自定义路径。VST3 为主力加载格式，VST2 扫描信息可展示，加载能力持续完善中。
+- **插件状态管理** —— 读写插件 state chunk，Host 重启后保留声音状态。
+- **原生插件编辑器** —— Host 端管理编辑器窗口，Studio 中可直接打开支持 editor 的插件界面。
+- **音频配置** —— 采样率、缓冲区、位深、输出后端/设备均可配，硬件级变更通过重启 Host 生效。
+
+### Agent 与自动化
+
+- **Chat + 工具调用** —— 读写文件、编辑代码、搜索文件、终端命令、Web 搜索、子任务调度。
+- **音乐工程工具** —— `midi_write` 生成/覆盖 MIDI，`midi_diff` 原子级精确编辑，`music_player` 控制播放。
+- **Plan / Agent 双模式** —— 先讨论方案再动手执行，适合创作类任务。
+- **会话持久化** —— 聊天记录与工具结果可保存，Dashboard 支持多会话切换。
+- **多模态入口** —— 可配置图像转录模型，将截图、谱面、错误信息转为文本上下文输入主模型。
+- **Skills / MCP** —— 本地 `SKILL.md` 技能系统与 MCP server 管理，按需扩展 Agent 能力。
+
+### 音乐库与播放器
+
+- **本地音乐库** —— 扫描 `music_directories`，提取标题、艺术家、专辑、时长、格式、采样率、位深、封面。
+- **Music 页面** —— 搜索、全盘播放、格式标签、Hi-Res/Lossless 标识。
+- **播放体验** —— 底部迷你播放器 + 全屏播放器，支持队列、歌词、封面、进度、音量与播放模式。
+- **Agent 控制播放** —— 搜索音乐、播放指定曲目、暂停、切歌、调节音量。
+
+### Dashboard 工作台
+
+| 页面 | 功能 |
+| ------ | ------ |
+| Chat | 模型对话、工具卡片、thinking block、会话列表、文件上下文 |
+| Studio | DAW 工程编辑、Rust Host 控制 |
+| Music | 本地音乐库与播放器 |
+| Workspace | 工作区文件浏览与编辑 |
+| Adapters | OneBot11 / WebChat 平台接入 |
+| MCP | MCP Server 管理 |
+| Skills | 本地技能查看、编辑、导入 |
+| Settings | Provider、模型、生成参数、视觉转录、Agent 行为、音乐目录、Audio Host |
+
+## 架构
+
+```text
+┌──────────────────────────┐
+│       Dashboard           │
+│   Vue Studio / Chat / UI  │
+└─────────────┬────────────┘
+              │ REST + WebSocket
+┌─────────────▼────────────┐
+│     Python Runtime        │
+│ Agent / Tools / Project   │
+│ Music API / Host Manager  │
+└─────────────┬────────────┘
+              │ JSON IPC + 进程管理
+┌─────────────▼────────────┐
+│     Rust Audio Host       │
+│ CPAL / MIDI / VST / DSP   │
+└─────────────┬────────────┘
+              │ 音频设备输出
+     Speakers / ASIO / WASAPI
+```
+
+Python 侧持有可编辑工程数据，Rust Host 专注实时渲染。三者不争抢同一份状态：Agent 写入 JSON 工程，Dashboard 展示与编辑，Host 接收同步后的轨道与 MIDI 并播放。
+
+## 环境要求
+
+- Python 3.11+
+- uv
+- Node.js 18+
+- Rust stable + Cargo
+- Windows 构建 `atri-host` 建议安装 Visual Studio Build Tools (C++ 桌面开发)
 
 ## 快速开始
 
-### 环境要求
-
-- Python >= 3.11
-- Node.js >= 18（仅构建前端时需要）
-
-### 安装与启动
-
-```bash
-# 克隆
-git clone <repo-url> && cd ATRI
-
-# 安装依赖
+```powershell
+git clone <repo-url>
+cd ATRI
 uv sync
+```
 
-# 配置
-cp config.yaml.example config.yaml
-# 编辑 config.yaml，填入 API Key 等必要配置
+构建前端：
 
-# 构建前端（可选，已预构建在 dashboard/static/）
-cd frontend && npm install && npm run build && cd ..
+```powershell
+cd frontend
+npm install
+npm run build
+cd ..
+```
 
-# 启动
+构建 Rust Audio Host：
+
+```powershell
+cd atri-host
+cargo build -p atri-host
+cd ..
+```
+
+启动 ATRI：
+
+```powershell
 uv run python main.py
 ```
 
-访问 `http://localhost:6185` 进入 Web 控制台。首次启动时设置用户名和密码。
+打开 Dashboard：
 
-### 配置参考
+```text
+http://localhost:6185
+```
+
+首次访问会进入账号初始化流程。
+
+## 首次配置建议
+
+1. `Settings -> Providers` —— 添加 OpenAI 兼容或 Anthropic 兼容的模型 Provider。
+2. `Settings -> Models` —— 激活要使用的模型。
+3. `Settings -> Music` —— 添加本地音乐目录。
+4. `Settings -> Audio` —— 确认采样率、缓冲区、位深与输出设备。
+5. 打开 `Studio`，点击 Demo 或创建轨道，确认 Host Online 后播放。
+6. 如需第三方乐器，先配置 VST 路径，再在 Studio Rack 中扫描并选择插件。
+
+## 配置示例
+
+核心配置位于 `config.yaml`：
 
 ```yaml
-# 当前使用的模型
 model: deepseek-chat
-
-# API 连接
-api_key: sk-your-api-key
+api_format: openai
 base_url: https://api.deepseek.com/v1
-api_format: openai          # openai | anthropic
+api_key: sk-your-api-key
 
-# 模型提供商（可在 WebUI 中管理）
 active_models:
   - model: deepseek-chat
     provider: DeepSeek
@@ -100,171 +173,212 @@ providers:
     api_format: openai
     models:
       - deepseek-chat
-      - deepseek-reasoner
-  Anthropic:
-    base_url: https://api.anthropic.com/v1
-    api_key: sk-ant-your-api-key
-    api_format: anthropic
-    models:
-      - claude-sonnet-4-6
 
-# 生成参数
 max_tokens: 20000
-temperature: 0.5
 max_context_tokens: 1000000
 max_rounds: 50
+temperature: 0.5
 
-# Agent 行为
-wake_words:
-  - atri
-persona: ''
-extra_instructions: ''
-
-# 工作目录（Agent 文件操作沙箱）
 workspace: ./workspace
 sessions_dir: data/sessions
+runtime_dir: data/runtime
 plugins_dir: plugins
 
-# Audio host VST scan paths. Standard system VST2/VST3 locations are always scanned.
-# On Windows, use unquoted paths or single quotes, for example: 'D:\VST3'.
-vst3_plugin_paths: []
-vst2_plugin_paths: []
+agent_mode: agent
+wake_words:
+  - atri
+persona: ""
+extra_instructions: ""
 
-# Dashboard
 dashboard:
   enabled: true
   host: 127.0.0.1
   port: 6185
   username: admin
-  password: ''             # 为空时首次访问进入注册页
+  password: ""
 
-# OneBot11（QQ 机器人）
 onebot11:
-  enabled: true
+  enabled: false
   ws_reverse_host: 0.0.0.0
   ws_reverse_port: 6199
-  ws_reverse_token: ''
+  ws_reverse_token: ""
+  blocked_users: []
 
-# 音乐播放器
+image_transcription:
+  enabled: false
+  model: ""
+  api_key: ""
+  base_url: ""
+  api_format: openai
+
 music_directories:
-  - /path/to/your/music
+  - C:\Users\YourName\Music
 
-# Web 搜索（Tavily API，可选）
-tavily_api_key: ''
+audio_host:
+  auto_start: true
+  binary_path: ""
+  sample_rate: 48000
+  buffer_size: 256
+  audio_engine: default
+  bit_depth: f32
+
+vst3_plugin_paths: []
+vst2_plugin_paths: []
+
+mcp_servers: {}
+skills_root: skills
+skill_search_roots: []
+tavily_api_key: ""
 ```
 
-## 架构
+## DAW 工程模型
+
+工程文件位于 `data/music_workstation/project.json`，包含：
+
+- `title`、`tempo`、`time_signature`、`length_beats`
+- `tracks`（音量、声像、静音、独奏）
+- MIDI clips / audio clip placeholders
+- 展开后的 notes / MIDI events
+- 插件槽与 state chunks
+
+`core/music_project.py` 负责 normalize、保存、迁移旧结构、展开 clip notes，确保 Agent 工具与 Dashboard 始终操作同一种工程格式。
+
+## Agent 与音乐工程
+
+Agent 不只是给文字建议。当前已配备三个专用工具：
+
+- `midi_write` —— 向指定轨道写入一批 MIDI notes，支持 replace 或 append。
+- `midi_diff` —— 对现有 notes 做 add/delete/update 级别的精确修改。
+- `music_player` —— 搜索、播放、暂停、切歌、调音量。
+
+典型对话示例：
 
 ```text
-Platform Adapters        Pipeline (Onion Model)         Agent Core
-+----------------+    +----------------------------+    +-----------------+
-|   OneBot11     |--->| Waking -> Pre -> Process   |--->|  LLM            |
-|   (QQ/Napcat)  |    |                    |       |    |  + Tools (x19)  |
-+----------------+    |                    v       |    |  + Session      |
-|   WebChat      |--->|                 Respond ---|    |  + Context      |
-+----------------+    +----------------------------+    +-----------------+
-        |                          |
-        +------------+-------------+
-                     |
-                 Event Bus
+在 1 号轨道写一个 8 小节 C minor synthwave bassline，速度贴合当前工程。
 ```
 
-消息经平台适配器进入事件总线，由管线调度器按洋葱模型依次执行四个阶段：
+Agent 会生成 beat-based MIDI、写入工程、请求 Dashboard 同步到 Rust Host。你可以在 Studio 里立刻看到 notes，也可以继续要求它做变奏、删掉某一拍、调整 velocity 或换成更稀疏的节奏。
 
-1. **Waking** — 唤醒词检测，决定是否响应
-2. **PreProcess** — 消息预处理（去除 @前缀 等）
-3. **Process** — 核心处理：创建 Agent，执行 LLM + 工具循环
-4. **Respond** — 响应路由回来源平台
+## ASIO 构建 (Windows)
+
+默认构建不启用 ASIO，WASAPI 等 CPAL 默认后端可直接使用：
+
+```powershell
+cd atri-host
+cargo build -p atri-host
+```
+
+如需 Steinberg built-in ASIO 或其他 ASIO 设备：
+
+```powershell
+cargo build -p atri-host --features asio
+```
+
+前置准备：
+
+1. 安装 **Visual Studio Build Tools**（C++ 桌面开发 + Windows SDK）。
+2. 安装 **LLVM/Clang**，确保 `libclang` 可被找到。
+3. 下载并解压 **Steinberg ASIO SDK**。
+4. 设置环境变量：
+
+```powershell
+setx CPAL_ASIO_DIR "C:\SDKs\asiosdk"
+setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"
+```
+
+重开终端后构建。缺少依赖时 `asio-sys` 会在编译阶段报错。
+
+### Audio Host 配置说明
+
+`audio_host.audio_engine` 可选值：
+
+- `default` —— 系统默认输出设备。
+- `<host>` —— 指定 CPAL host 的默认设备，如 `wasapi`。
+- `<host>::<device name>` —— 具体设备，如 `wasapi::Speakers (Realtek USB Audio)`。
+
+`bit_depth` 支持 `f32`、`i16`、`i24`。
+
+注意：CPAL 未直接暴露 24-bit sample format，`i24` 会优先匹配 `I32/U32` 等设备格式，实际可用性取决于声卡驱动。
+
+## 开发命令
+
+Python：
+
+```powershell
+uv run ruff check
+uv run pytest
+```
+
+Windows 临时目录权限异常时的替代方案：
+
+```powershell
+$env:TMP = "$PWD\.pytest-tmp"
+$env:TEMP = "$PWD\.pytest-tmp"
+$env:UV_CACHE_DIR = "$PWD\.uv-cache"
+uv run pytest
+```
+
+前端：
+
+```powershell
+cd frontend
+npm install
+npm run dev      # 开发服务器
+npm run build    # 生产构建
+```
+
+Rust Host：
+
+```powershell
+cd atri-host
+cargo fmt
+cargo test -p atri-host
+cargo build -p atri-host
+```
 
 ## 项目结构
 
 ```text
 ATRI/
-├── main.py                     # 入口
-├── config.yaml                 # 运行时配置
-├── pyproject.toml              # 项目元数据与依赖
-├── Makefile                    # 开发命令（lint/test/format/ci）
-
-├── core/                       # 核心框架
-│   ├── lifecycle.py            #   生命周期管理
-│   ├── event_bus.py            #   事件总线
-│   ├── agent/                  #   AI Agent 子系统
-│   │   ├── agent.py            #     主循环（LLM + Tool）
-│   │   ├── llm.py              #     LLM 适配层（OpenAI/Anthropic，流式）
-│   │   ├── context.py          #     三级上下文压缩
-│   │   ├── prompt.py           #     System Prompt 构建
-│   │   ├── session.py          #     会话持久化
-│   │   └── tools_bridge.py     #     工具发现与注册
-│   ├── platform/               #   平台适配器
-│   │   ├── base.py             #     抽象基类
-│   │   ├── message.py          #     统一消息模型
-│   │   ├── onebot11.py         #     OneBot11
-│   │   └── webchat.py          #     WebChat
-│   ├── pipeline/               #   处理管线
-│   │   ├── scheduler.py        #     调度器
-│   │   ├── stage.py            #     阶段基类
-│   │   └── stages/             #     Waking / PreProcess / Process / Respond
-│   ├── tools/                  #   Agent 工具（全部沙箱化）
-│   ├── skills/                 #   Skills 系统
-│   └── plugin/                 #   插件系统
-
-├── dashboard/                  # Web 控制台
-│   ├── server.py               #   Quart 后端（REST + WebSocket）
-│   ├── music.py                #   音乐 API
-│   └── static/                 #   前端构建产物
-
-├── frontend/                   # Vue 3 前端源码
-│   └── src/
-│       ├── composables/        #   响应式状态
-│       └── components/         #   Chat / Settings / Music / Workspace ...
-
-├── tests/                      # 测试套件
-├── plugins/                    # 用户插件目录
-├── workspace/                  # Agent 工作沙箱
-└── data/                       # 运行时数据（sessions / music_cache）
+├─ main.py                    # Python 入口
+├─ config.yaml                # 运行配置
+├─ core/
+│  ├─ agent/                  # Agent 主循环、LLM、上下文、会话
+│  ├─ tools/                  # 文件、终端、搜索、MIDI、音乐控制等工具
+│  ├─ pipeline/               # 平台消息处理管线
+│  ├─ platform/               # WebChat / OneBot11 适配
+│  ├─ runtime/                # timeline、task store
+│  ├─ plugin/                 # Python 插件系统
+│  ├─ host.py                 # Rust Audio Host 进程管理
+│  └─ music_project.py        # DAW 工程 JSON 模型
+├─ dashboard/
+│  ├─ server.py               # Quart Dashboard
+│  ├─ music.py                # 音乐库、Studio、Host API
+│  ├─ routes/                 # Auth、Chat、Settings、MCP、Skills 等路由
+│  └─ static/                 # 前端构建产物
+├─ frontend/
+│  └─ src/
+│     ├─ components/chat/     # Chat UI
+│     ├─ components/music/    # Music、Player、Studio
+│     ├─ components/settings/ # Provider、Models、Audio Host 设置
+│     ├─ components/pages/    # Workspace、Adapters、MCP、Skills
+│     └─ composables/         # API、DAW Host、Music、Auth、WS 状态
+├─ atri-host/
+│  ├─ atri-core/              # 音频 buffer、MIDI、tempo/time 类型
+│  ├─ atri-engine/            # Session、Route、Transport、Synth、Processor
+│  ├─ atri-host-bin/          # CPAL driver、IPC commands、editor host
+│  └─ atri-vst3/              # VST scanner、factory、plugin wrapper
+├─ tests/                     # Python 测试
+├─ plugins/                   # 用户插件目录
+├─ skills/                    # Skills 根目录
+├─ workspace/                 # Agent 文件工作区
+└─ data/                      # sessions、runtime、music cache、DAW project
 ```
 
-## API
+## 当前状态
 
-| 方法 | 路径 | 说明 |
-| ---- | ---- | ---- |
-| GET | `/api/status` | 系统状态 |
-| GET/POST | `/api/settings` | 生成参数 |
-| GET/POST | `/api/workspace` | 工作目录配置 |
-| GET/POST | `/api/adapter` | OneBot11 配置 |
-| GET/POST/DELETE | `/api/provider/*` | 模型提供商 CRUD |
-| POST | `/api/provider/select` | 切换当前模型 |
-| GET/POST/DELETE | `/api/mcp/servers/*` | MCP Server 管理 |
-| GET/PUT | `/api/skills/<name>` | Skill 管理 |
-| POST | `/api/skills/import` | Skill zip 导入 |
-| GET/DELETE | `/api/sessions/*` | 会话管理 |
-| POST | `/api/chat` | 发送消息 |
-| GET | `/api/tools` | 工具列表 |
-| POST | `/api/approve-command` | 批准危险命令 |
-| WS | `/ws` | 实时事件流（token / tool / thinking） |
-
-## 前端开发
-
-```bash
-cd frontend
-
-# 开发模式（HMR，代理到 :6185）
-npm run dev
-
-# 生产构建（输出到 dashboard/static/）
-npm run build
-```
-
-## 开发命令
-
-```bash
-make lint        # Ruff + ESLint
-make format      # Ruff format
-make typecheck   # mypy
-make test        # pytest
-make ci          # lint + typecheck + test（与 CI 一致）
-```
+ATRI 处于快速开发期，DAW/Host 相关能力仍在频繁迭代。建议将其视为 **"AI 音乐工作站原型 + 可实际使用的 Agent Dashboard"**：Chat、模型管理、音乐库、工程持久化、MIDI 写入、基础播放和 VST3 工作流已形成闭环；更完整的 DAW 能力（复杂音频 clip 编辑、自动化曲线、导出混音、完整 VST2 加载等）仍在持续推进。
 
 ## License
 
-MIT
+[GNU Affero General Public License v3.0](LICENSE)

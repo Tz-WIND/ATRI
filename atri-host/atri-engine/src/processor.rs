@@ -50,6 +50,8 @@ pub trait Processor: Send + Sync {
 
     /// Notify the processor that subsequent blocks may use this block size.
     fn set_block_size(&mut self, _nframes: usize) {}
+    /// Notify the processor of the current sample rate.
+    fn set_sample_rate(&mut self, _sample_rate: f64) {}
 
     /// Prepare plugin resources on the host/control thread before the realtime callback sees it.
     fn prepare_for_processing(&mut self) -> Result<(), String> {

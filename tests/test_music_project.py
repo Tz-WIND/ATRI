@@ -170,6 +170,31 @@ def test_project_migrates_legacy_notes_to_midi_clip(tmp_path, monkeypatch):
     assert [note["start"] for note in track["notes"]] == [4, 5]
 
 
+def test_project_keeps_explicit_empty_clips_when_notes_are_stale(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    project = save_project(
+        {
+            "title": "Deleted Clips",
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Keys",
+                    "clips": [],
+                    "notes": [
+                        {"id": "stale", "pitch": 60, "start": 4, "duration": 1, "velocity": 90},
+                    ],
+                }
+            ],
+        }
+    )
+
+    track = project["tracks"][0]
+    assert track["clips"] == []
+    assert track["notes"] == []
+    assert track["midi_events"] == []
+
+
 def test_project_flattens_midi_clips_and_ignores_audio_clips(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 

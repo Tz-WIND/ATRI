@@ -396,6 +396,92 @@
               </div>
             </div>
           </section>
+
+          <section
+            v-else-if="activeTab === 'audio'"
+            class="settings-section"
+          >
+            <div class="section-heading-row">
+              <div>
+                <h3>Audio Host</h3>
+                <p class="section-desc">
+                  Configure the audio engine, sample rate, and bit depth for playback.
+                  Saving sample rate or buffer changes restarts the audio host when playback is active.
+                </p>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Audio Engine</span>
+                  <select v-model="form.audio_host.audio_engine">
+                    <option value="default">
+                      System Default
+                    </option>
+                    <option
+                      v-if="currentAudioDeviceOption"
+                      :value="currentAudioDeviceOption.value"
+                    >
+                      {{ currentAudioDeviceOption.label }}
+                    </option>
+                    <option
+                      v-for="device in audioDeviceOptions"
+                      :key="device.value"
+                      :value="device.value"
+                    >
+                      {{ device.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="setting-field">
+                  <span>Bit Depth</span>
+                  <select v-model="form.audio_host.bit_depth">
+                    <option
+                      v-for="choice in bitDepthOptions"
+                      :key="choice.value"
+                      :value="choice.value"
+                      :disabled="choice.disabled"
+                    >
+                      {{ choice.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="setting-field">
+                  <span>Sample Rate</span>
+                  <select v-model.number="form.audio_host.sample_rate">
+                    <option
+                      v-for="choice in sampleRateOptions"
+                      :key="choice.value"
+                      :value="choice.value"
+                      :disabled="choice.disabled"
+                    >
+                      {{ choice.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="setting-field">
+                  <span>Buffer Size</span>
+                  <select v-model.number="form.audio_host.buffer_size">
+                    <option :value="64">
+                      64 samples
+                    </option>
+                    <option :value="128">
+                      128 samples
+                    </option>
+                    <option :value="256">
+                      256 samples
+                    </option>
+                    <option :value="512">
+                      512 samples
+                    </option>
+                    <option :value="1024">
+                      1024 samples
+                    </option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </section>
         </div>
       </main>
     </div>
@@ -421,6 +507,7 @@ const icon = {
   agent: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2m16 0h2M9 13h.01M15 13h.01M9 17h6"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
   music: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+  audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z"/><path d="M12 9a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 0v7"/></svg>',
 }
 
 const settingsGroups = [
@@ -444,6 +531,7 @@ const settingsGroups = [
     label: 'Library',
     tabs: [
       { id: 'music', label: 'Music', description: 'Directories scanned by the music library.', icon: icon.music },
+      { id: 'audio', label: 'Audio', description: 'Audio engine, sample rate, and bit depth settings.', icon: icon.audio },
     ],
   },
 ]
@@ -471,12 +559,59 @@ const form = ref({
     max_tokens: 1024,
     temperature: 0,
   },
+  audio_host: {
+    sample_rate: 48000,
+    buffer_size: 256,
+    audio_engine: 'default',
+    bit_depth: 'f32',
+  },
 })
 
 const saving = ref(false)
 const savingMusic = ref(false)
 const musicDirs = ref([''])
 const imageTranscriptionExpanded = ref(false)
+const audioDevices = ref([])
+const audioDeviceOptions = computed(() => (
+  audioDevices.value.map(device => ({
+    value: device.id,
+    label: `${device.host_api} - ${device.name}${device.default ? ' (Default)' : ''}`,
+  }))
+))
+const bitDepthChoices = [
+  { value: 'f32', label: '32-bit Float' },
+  { value: 'i16', label: '16-bit Integer' },
+  { value: 'i24', label: '24-bit Integer' },
+]
+const sampleRateChoices = [
+  { value: 44100, label: '44.1 kHz' },
+  { value: 48000, label: '48 kHz' },
+  { value: 96000, label: '96 kHz' },
+  { value: 192000, label: '192 kHz' },
+]
+const selectedAudioDevice = computed(() => (
+  audioDevices.value.find(device => device.id === form.value.audio_host.audio_engine) || null
+))
+const sampleRateOptions = computed(() => {
+  const supported = selectedAudioDevice.value?.supported_sample_rates
+  return sampleRateChoices.map(choice => ({
+    ...choice,
+    disabled: Array.isArray(supported) && supported.length > 0 && !supported.includes(choice.value),
+  }))
+})
+const bitDepthOptions = computed(() => {
+  const supported = selectedAudioDevice.value?.supported_bit_depths
+  return bitDepthChoices.map(choice => ({
+    ...choice,
+    disabled: Array.isArray(supported) && supported.length > 0 && !supported.includes(choice.value),
+  }))
+})
+const currentAudioDeviceOption = computed(() => {
+  const selected = form.value.audio_host.audio_engine
+  if (!selected || selected === 'default') return null
+  if (audioDeviceOptions.value.some(option => option.value === selected)) return null
+  return { value: selected, label: selected }
+})
 
 async function loadSettings() {
   try {
@@ -491,7 +626,24 @@ async function loadSettings() {
     form.value.tavily_api_key = d.tavily_api_key || ''
     form.value.image_transcription = normalizeImageTranscription(d.image_transcription)
     imageTranscriptionExpanded.value = Boolean(form.value.image_transcription.enabled)
+    if (d.audio_host) {
+      form.value.audio_host = {
+        sample_rate: d.audio_host.sample_rate || 48000,
+        buffer_size: d.audio_host.buffer_size || 256,
+        audio_engine: d.audio_host.audio_engine || 'default',
+        bit_depth: d.audio_host.bit_depth || 'f32',
+      }
+    }
   } catch {}
+}
+
+async function loadAudioDevices() {
+  try {
+    const d = await api.audioDevices()
+    audioDevices.value = Array.isArray(d.devices) ? d.devices : []
+  } catch {
+    audioDevices.value = []
+  }
 }
 
 function normalizeImageTranscription(value = {}) {
@@ -546,8 +698,14 @@ async function saveSettings() {
         api_key: form.value.image_transcription.api_key.trim(),
         prompt: form.value.image_transcription.prompt.trim(),
       },
+      audio_host: {
+        sample_rate: form.value.audio_host.sample_rate,
+        buffer_size: form.value.audio_host.buffer_size,
+        audio_engine: form.value.audio_host.audio_engine,
+        bit_depth: form.value.audio_host.bit_depth,
+      },
     })
-    await loadStatus()
+    await Promise.all([loadStatus(), loadAudioDevices()])
   } finally {
     saving.value = false
   }
@@ -565,7 +723,7 @@ function handleSettingsShortcut(event) {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleSettingsShortcut)
-  await Promise.all([loadProviders(), loadStatus(), loadSettings(), loadMusicDirs()])
+  await Promise.all([loadProviders(), loadStatus(), loadSettings(), loadMusicDirs(), loadAudioDevices()])
 })
 
 onBeforeUnmount(() => {

@@ -31,6 +31,7 @@ export function useApi() {
     // Settings
     getSettings: () => request('/api/settings'),
     saveSettings: (data) => request('/api/settings', { method: 'POST', body: JSON.stringify(data) }),
+    audioDevices: () => request('/api/audio/devices'),
 
     // Providers
     getProviders: () => request('/api/provider/list'),

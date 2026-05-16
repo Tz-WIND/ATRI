@@ -111,10 +111,8 @@ impl PluginFactory {
 
         let plugin_dir = path.parent().unwrap_or(Path::new("."));
 
-        let library = with_plugin_dll_dir(plugin_dir, || unsafe {
-            libloading::Library::new(path)
-        })
-        .map_err(|err| format!("Failed to load plugin {}: {}", path_str, err))?;
+        let library = with_plugin_dll_dir(plugin_dir, || unsafe { libloading::Library::new(path) })
+            .map_err(|err| format!("Failed to load plugin {}: {}", path_str, err))?;
 
         let get_factory_fn: GetPluginFactory = unsafe {
             *library

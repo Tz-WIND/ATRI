@@ -14,13 +14,17 @@ use atri_vst3::factory::PluginFactory;
 use atri_vst3::plugin::Vst3Plugin;
 use atri_vst3::scanner::{PluginScanner, vst3_bundle_library_path};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use cpal::traits::{DeviceTrait, HostTrait};
 use crossbeam::channel::Sender;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::HostConfig;
+use crate::driver::audio_device_id;
 use crate::editor_host::{EditorKey, EditorWindowManager};
 use crate::stream::AudioStreamer;
+
+const VALID_BIT_DEPTHS: &[&str] = &["i16", "i24", "f32"];
 
 #[derive(Debug, Clone)]
 pub enum AppCommand {
@@ -53,12 +57,35 @@ pub enum CommandResponse {
         meter: (u8, u8),
         sample_rate: u32,
         buffer_size: usize,
+        audio_engine: String,
+        bit_depth: String,
         tracks: Vec<TrackStatus>,
         editor_windows: Vec<EditorWindowStatus>,
+    },
+    DeviceList {
+        devices: Vec<AudioDeviceInfo>,
+        current: Option<String>,
+    },
+    AudioConfig {
+        sample_rate: u32,
+        buffer_size: usize,
+        audio_engine: String,
+        bit_depth: String,
     },
     Shutdown {
         status: String,
     },
+}
+
+#[derive(Debug, Serialize)]
+pub struct AudioDeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub host_api: String,
+    pub channels: u16,
+    pub default: bool,
+    pub supported_sample_rates: Vec<u32>,
+    pub supported_bit_depths: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -171,6 +198,13 @@ pub enum Command {
     },
     SetStreaming {
         enabled: bool,
+    },
+    ListAudioDevices,
+    SetAudioConfig {
+        sample_rate: Option<u32>,
+        buffer_size: Option<usize>,
+        audio_engine: Option<String>,
+        bit_depth: Option<String>,
     },
     GetStatus,
     Shutdown,
@@ -499,7 +533,71 @@ fn execute(
             }
             CommandResponse::ack("set_streaming")
         }
-        Command::GetStatus => status(engine, editor_manager),
+        Command::ListAudioDevices => list_audio_devices(engine, host_config),
+        Command::SetAudioConfig {
+            sample_rate,
+            buffer_size,
+            audio_engine,
+            bit_depth,
+        } => {
+            let audio_engine = match audio_engine {
+                Some(value) => Some(normalize_audio_engine_choice(value)),
+                None => None,
+            };
+            let bit_depth = match bit_depth {
+                Some(value) => Some(normalize_audio_config_choice(
+                    "bit_depth",
+                    value,
+                    VALID_BIT_DEPTHS,
+                )),
+                None => None,
+            };
+            let audio_engine = match audio_engine {
+                Some(Ok(value)) => Some(value),
+                Some(Err(err)) => return CommandResponse::error(Some("set_audio_config"), &err),
+                None => None,
+            };
+            let bit_depth = match bit_depth {
+                Some(Ok(value)) => Some(value),
+                Some(Err(err)) => return CommandResponse::error(Some("set_audio_config"), &err),
+                None => None,
+            };
+            if let Err(err) = validate_audio_config_numbers(sample_rate, buffer_size) {
+                return CommandResponse::error(Some("set_audio_config"), err);
+            }
+            if audio_engine.is_some() || bit_depth.is_some() {
+                return CommandResponse::error(
+                    Some("set_audio_config"),
+                    "audio device and bit depth changes require restarting the audio host",
+                );
+            }
+
+            let current = {
+                let eng = engine.lock().unwrap();
+                (eng.sample_rate(), eng.buffer_size())
+            };
+            let new_sample_rate = sample_rate.unwrap_or(current.0);
+            let new_buffer_size = buffer_size.unwrap_or(current.1);
+
+            if new_sample_rate != current.0 || new_buffer_size != current.1 {
+                return CommandResponse::error(
+                    Some("set_audio_config"),
+                    "sample_rate and buffer_size changes require restarting the audio host",
+                );
+            }
+
+            eprintln!(
+                "[atri-host] audio config unchanged at runtime: sample_rate={new_sample_rate}, buffer_size={new_buffer_size}"
+            );
+
+            CommandResponse::AudioConfig {
+                sample_rate: new_sample_rate,
+                buffer_size: new_buffer_size,
+                audio_engine: host_config.audio_host.audio_engine.clone(),
+                bit_depth: host_config.audio_host.bit_depth.clone(),
+            }
+        }
+        Command::GetStatus => status(engine, host_config, editor_manager),
         Command::Shutdown => {
             let _ = cmd_tx.send(AppCommand::Shutdown);
             CommandResponse::Shutdown {
@@ -507,6 +605,83 @@ fn execute(
             }
         }
     }
+}
+
+fn validate_audio_config_numbers(
+    sample_rate: Option<u32>,
+    buffer_size: Option<usize>,
+) -> Result<(), &'static str> {
+    if matches!(sample_rate, Some(0)) {
+        return Err("sample_rate must be positive");
+    }
+    if matches!(buffer_size, Some(0)) {
+        return Err("buffer_size must be positive");
+    }
+    Ok(())
+}
+
+fn normalize_audio_config_choice(
+    field: &str,
+    value: String,
+    allowed_values: &[&str],
+) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if allowed_values.iter().any(|allowed| *allowed == normalized) {
+        return Ok(normalized);
+    }
+    Err(format!("{field} is not supported"))
+}
+
+fn normalize_audio_engine_choice(value: String) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("default") {
+        return Ok("default".to_string());
+    }
+
+    let (host_key, device_name) = value
+        .split_once("::")
+        .map(|(host, name)| (host, Some(name)))
+        .unwrap_or((value, None));
+    let host_id = cpal::available_hosts()
+        .into_iter()
+        .find(|host_id| normalize_audio_key(host_id.name()) == normalize_audio_key(host_key))
+        .ok_or_else(|| "audio_engine is not supported".to_string())?;
+    let host =
+        cpal::host_from_id(host_id).map_err(|_| "audio_engine is not supported".to_string())?;
+
+    let Some(device_name) = device_name else {
+        let default_device = host
+            .default_output_device()
+            .ok_or_else(|| "audio_engine is not supported".to_string())?;
+        default_device
+            .default_output_config()
+            .map_err(|_| "audio_engine is not supported".to_string())?;
+        return Ok(normalize_audio_key(host_id.name()));
+    };
+    if device_name.trim().is_empty() {
+        return Err("audio_engine is not supported".to_string());
+    }
+
+    for device in host
+        .output_devices()
+        .map_err(|_| "audio_engine is not supported".to_string())?
+    {
+        let Ok(name) = device.name() else {
+            continue;
+        };
+        if name == device_name {
+            device
+                .default_output_config()
+                .map_err(|_| "audio_engine is not supported".to_string())?;
+            return Ok(audio_device_id(host_id.name(), device_name));
+        }
+    }
+
+    Err("audio_engine is not supported".to_string())
+}
+
+fn normalize_audio_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(' ', "_")
 }
 
 fn configure_scanner(
@@ -858,6 +1033,7 @@ mod tests {
         let config = HostConfig {
             vst3_plugin_paths: vec![PathBuf::from(r"D:\ConfiguredVst3")],
             vst2_plugin_paths: vec![PathBuf::from(r"D:\ConfiguredVst2")],
+            ..Default::default()
         };
 
         let scanner = configure_scanner(
@@ -1067,6 +1243,126 @@ mod tests {
         };
         assert_eq!(tracks[0].midi_event_count, 1);
     }
+
+    #[test]
+    fn set_audio_config_rejects_zero_values() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+
+        let response = execute(
+            Command::SetAudioConfig {
+                sample_rate: Some(0),
+                buffer_size: Some(128),
+                audio_engine: None,
+                bit_depth: None,
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(
+            matches!(response, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "set_audio_config" && message == "sample_rate must be positive")
+        );
+    }
+
+    #[test]
+    fn set_audio_config_rejects_invalid_choices() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+
+        let response = execute(
+            Command::SetAudioConfig {
+                sample_rate: None,
+                buffer_size: None,
+                audio_engine: Some("not-a-host".to_string()),
+                bit_depth: None,
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        assert!(
+            matches!(response, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "set_audio_config" && message == "audio_engine is not supported")
+        );
+
+        let response = execute(
+            Command::SetAudioConfig {
+                sample_rate: None,
+                buffer_size: None,
+                audio_engine: None,
+                bit_depth: Some("u8".to_string()),
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        assert!(
+            matches!(response, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "set_audio_config" && message == "bit_depth is not supported")
+        );
+    }
+
+    #[test]
+    fn set_audio_config_requires_restart_for_rate_or_buffer_change() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+
+        let response = execute(
+            Command::SetAudioConfig {
+                sample_rate: Some(96_000),
+                buffer_size: Some(256),
+                audio_engine: None,
+                bit_depth: None,
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(
+            matches!(response, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "set_audio_config"
+                    && message == "sample_rate and buffer_size changes require restarting the audio host")
+        );
+        assert_eq!(engine.lock().unwrap().sample_rate(), 48_000);
+        assert_eq!(engine.lock().unwrap().buffer_size(), 128);
+    }
+
+    #[test]
+    fn set_audio_config_noop_reports_configured_device_settings() {
+        let (engine, cmd_tx, _cmd_rx, streamer, mut config) = command_context();
+        config.audio_host.audio_engine = "wasapi::Speakers".to_string();
+        config.audio_host.bit_depth = "i24".to_string();
+
+        let response = execute(
+            Command::SetAudioConfig {
+                sample_rate: Some(48_000),
+                buffer_size: Some(128),
+                audio_engine: None,
+                bit_depth: None,
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(response, CommandResponse::AudioConfig {
+                sample_rate: 48_000,
+                buffer_size: 128,
+                audio_engine,
+                bit_depth,
+            } if audio_engine == "wasapi::Speakers" && bit_depth == "i24"));
+    }
 }
 
 fn resolve_vst3_library_path(path: PathBuf) -> PathBuf {
@@ -1079,6 +1375,7 @@ fn resolve_vst3_library_path(path: PathBuf) -> PathBuf {
 
 fn status(
     engine: &Arc<Mutex<AudioEngine>>,
+    host_config: &HostConfig,
     editor_manager: Option<&EditorWindowManager>,
 ) -> CommandResponse {
     let editor_windows = editor_manager
@@ -1149,10 +1446,121 @@ fn status(
             ),
             sample_rate: session.sample_rate,
             buffer_size: session.buffer_size,
+            audio_engine: host_config.audio_host.audio_engine.clone(),
+            bit_depth: host_config.audio_host.bit_depth.clone(),
             tracks,
             editor_windows,
         }
     })
+}
+
+fn list_audio_devices(
+    engine: &Arc<Mutex<AudioEngine>>,
+    host_config: &HostConfig,
+) -> CommandResponse {
+    let _current_sample_rate = engine.lock().map(|eng| eng.sample_rate()).unwrap_or(48_000);
+    let default_host = cpal::default_host();
+    let default_name = default_host
+        .default_output_device()
+        .as_ref()
+        .and_then(|device| device.name().ok())
+        .unwrap_or_default();
+
+    let mut devices = Vec::new();
+    for host_id in cpal::available_hosts() {
+        let Ok(host) = cpal::host_from_id(host_id) else {
+            continue;
+        };
+        let host_api = host_id.name().to_string();
+        let Ok(output_devices) = host.output_devices() else {
+            continue;
+        };
+
+        for device in output_devices {
+            let Some(info) = audio_device_info(&host_api, &default_name, device) else {
+                continue;
+            };
+            devices.push(info);
+        }
+    }
+    devices.sort_by(|a, b| {
+        b.default
+            .cmp(&a.default)
+            .then_with(|| a.host_api.cmp(&b.host_api))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    CommandResponse::DeviceList {
+        devices,
+        current: Some(host_config.audio_host.audio_engine.clone()),
+    }
+}
+
+fn audio_device_info(
+    host_api: &str,
+    default_name: &str,
+    device: cpal::Device,
+) -> Option<AudioDeviceInfo> {
+    let name = device.name().ok()?;
+    let is_default = normalize_audio_key(host_api)
+        == normalize_audio_key(cpal::default_host().id().name())
+        && name == default_name;
+    let config = device.default_output_config().ok()?;
+    let (supported_rates, supported_bit_depths) = supported_audio_settings(&device, &config);
+
+    Some(AudioDeviceInfo {
+        id: audio_device_id(host_api, &name),
+        name,
+        host_api: host_api.to_string(),
+        channels: config.channels(),
+        default: is_default,
+        supported_sample_rates: supported_rates,
+        supported_bit_depths,
+    })
+}
+
+fn supported_audio_settings(
+    device: &cpal::Device,
+    default_config: &cpal::SupportedStreamConfig,
+) -> (Vec<u32>, Vec<String>) {
+    let mut rates = Vec::new();
+    let mut bit_depths = Vec::new();
+    let configs = device.supported_output_configs();
+    if let Ok(configs) = configs {
+        let configs = configs.collect::<Vec<_>>();
+        rates = [44_100, 48_000, 96_000, 192_000]
+            .into_iter()
+            .filter(|rate| {
+                configs.iter().any(|config| {
+                    config.min_sample_rate().0 <= *rate && config.max_sample_rate().0 >= *rate
+                })
+            })
+            .collect();
+        for config in configs {
+            let bit_depth = sample_format_bit_depth(config.sample_format()).to_string();
+            if !bit_depths.contains(&bit_depth) {
+                bit_depths.push(bit_depth);
+            }
+        }
+    }
+
+    if rates.is_empty() {
+        rates.push(default_config.sample_rate().0);
+    }
+    if bit_depths.is_empty() {
+        bit_depths.push(sample_format_bit_depth(default_config.sample_format()).to_string());
+    }
+    bit_depths.sort();
+    (rates, bit_depths)
+}
+
+fn sample_format_bit_depth(format: cpal::SampleFormat) -> &'static str {
+    match format {
+        cpal::SampleFormat::I16 | cpal::SampleFormat::U16 => "i16",
+        cpal::SampleFormat::I32 | cpal::SampleFormat::U32 => "i24",
+        cpal::SampleFormat::F32 | cpal::SampleFormat::F64 => "f32",
+        _ => "f32",
+    }
 }
 
 fn with_session<T>(engine: &Arc<Mutex<AudioEngine>>, f: impl FnOnce(&mut Session) -> T) -> T {

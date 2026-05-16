@@ -25,10 +25,14 @@ class HostManager:
         binary_path: str | None = None,
         sample_rate: int = 48000,
         buffer_size: int = 256,
+        audio_engine: str = "default",
+        bit_depth: str = "f32",
     ):
         self.binary_path = binary_path
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
+        self.audio_engine = audio_engine
+        self.bit_depth = bit_depth
         self._process: subprocess.Popen | None = None
         self._audio_callback: Callable[[bytes, int, int, int], None] | None = None
         self._running = False
@@ -59,6 +63,8 @@ class HostManager:
         binary_path: str | None = None,
         sample_rate: int | None = None,
         buffer_size: int | None = None,
+        audio_engine: str | None = None,
+        bit_depth: str | None = None,
     ) -> None:
         """Update host configuration while the process is stopped."""
         if self.is_running:
@@ -69,6 +75,10 @@ class HostManager:
             self.sample_rate = sample_rate
         if buffer_size is not None:
             self.buffer_size = buffer_size
+        if audio_engine is not None:
+            self.audio_engine = audio_engine or "default"
+        if bit_depth is not None:
+            self.bit_depth = bit_depth or "f32"
 
     def set_audio_callback(self, callback: Callable[[bytes, int, int, int], None]):
         """Set a callback that receives PCM audio chunks.
@@ -171,7 +181,26 @@ class HostManager:
             self._process.stdin.flush()
 
             # Read response (non-audio JSON line)
-            return await self._read_response()
+            response = await self._read_response()
+            self._sync_audio_config_from_response(response)
+            return response
+
+    def _sync_audio_config_from_response(self, response: dict) -> None:
+        """Keep the Python-side snapshot aligned with host-reported audio config."""
+        if response.get("type") not in {"status", "audio_config"}:
+            return
+        sample_rate = response.get("sample_rate")
+        buffer_size = response.get("buffer_size")
+        if isinstance(sample_rate, int) and sample_rate > 0:
+            self.sample_rate = sample_rate
+        if isinstance(buffer_size, int) and buffer_size > 0:
+            self.buffer_size = buffer_size
+        audio_engine = response.get("audio_engine")
+        bit_depth = response.get("bit_depth")
+        if isinstance(audio_engine, str) and audio_engine:
+            self.audio_engine = audio_engine
+        if isinstance(bit_depth, str) and bit_depth:
+            self.bit_depth = bit_depth
 
     async def _read_response(self) -> dict:
         """Read a single JSON response line from the response queue."""
@@ -262,7 +291,15 @@ def configure_host_manager(
     binary_path: str | None = None,
     sample_rate: int | None = None,
     buffer_size: int | None = None,
+    audio_engine: str | None = None,
+    bit_depth: str | None = None,
 ) -> HostManager:
     host = get_host_manager()
-    host.configure(binary_path=binary_path, sample_rate=sample_rate, buffer_size=buffer_size)
+    host.configure(
+        binary_path=binary_path,
+        sample_rate=sample_rate,
+        buffer_size=buffer_size,
+        audio_engine=audio_engine,
+        bit_depth=bit_depth,
+    )
     return host

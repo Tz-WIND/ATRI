@@ -210,6 +210,8 @@ class Lifecycle:
             binary_path=audio_cfg.get("binary_path") or None,
             sample_rate=int(audio_cfg.get("sample_rate", 48000) or 48000),
             buffer_size=int(audio_cfg.get("buffer_size", 256) or 256),
+            audio_engine=audio_cfg.get("audio_engine") or "default",
+            bit_depth=audio_cfg.get("bit_depth") or "f32",
         )
         try:
             await host.start()

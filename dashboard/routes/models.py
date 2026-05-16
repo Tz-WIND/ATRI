@@ -33,6 +33,115 @@ _PROCESS_STAGE_SETTING_KEYS = {
 }
 
 
+_BIT_DEPTHS = {"i16", "i24", "f32"}
+_AUDIO_HOST_RESTART_MESSAGES = {
+    "audio device and bit depth changes require restarting the audio host",
+    "sample_rate and buffer_size changes require restarting the audio host",
+}
+
+
+def _positive_int(value: Any, field: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{field} must be a positive integer") from e
+    if parsed <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return parsed
+
+
+def _merge_audio_host_config(current: dict, incoming: dict) -> tuple[dict, bool]:
+    """Merge audio_host settings and report whether the running host must restart."""
+    before = dict(current)
+    if "sample_rate" in incoming:
+        current["sample_rate"] = _positive_int(incoming["sample_rate"], "sample_rate")
+    if "buffer_size" in incoming:
+        current["buffer_size"] = _positive_int(incoming["buffer_size"], "buffer_size")
+    if "audio_engine" in incoming:
+        current["audio_engine"] = _normalize_audio_engine(incoming["audio_engine"])
+    if "bit_depth" in incoming:
+        bit_depth = str(incoming["bit_depth"] or "f32")
+        if bit_depth not in _BIT_DEPTHS:
+            raise ValueError("bit_depth is not supported")
+        current["bit_depth"] = bit_depth
+    if "binary_path" in incoming:
+        current["binary_path"] = str(incoming["binary_path"] or "")
+    if "auto_start" in incoming:
+        current["auto_start"] = bool(incoming["auto_start"])
+
+    restart_keys = {"sample_rate", "buffer_size", "audio_engine", "bit_depth", "binary_path"}
+    needs_restart = any(before.get(key) != current.get(key) for key in restart_keys)
+    return current, needs_restart
+
+
+def _normalize_audio_engine(value: Any) -> str:
+    audio_engine = str(value or "default").strip()
+    if not audio_engine:
+        return "default"
+    if "::" in audio_engine:
+        host_key, device_name = audio_engine.split("::", 1)
+        if not host_key.strip() or not device_name.strip():
+            raise ValueError("audio_engine is not supported")
+        return f"{host_key.strip().lower().replace(' ', '_')}::{device_name.strip()}"
+    return audio_engine.lower().replace(" ", "_")
+
+
+async def _restart_audio_host_for_config(audio_cfg: dict) -> dict:
+    """Restart the Rust host so hardware-level audio config is applied."""
+    from core.host import get_host_manager
+    from dashboard.music import _capture_and_save_plugin_states, sync_current_project_to_host
+
+    host = get_host_manager()
+    if not host.is_running:
+        host.configure(
+            binary_path=audio_cfg.get("binary_path") or None,
+            sample_rate=_positive_int(audio_cfg.get("sample_rate", 48000), "sample_rate"),
+            buffer_size=_positive_int(audio_cfg.get("buffer_size", 256), "buffer_size"),
+            audio_engine=audio_cfg.get("audio_engine") or "default",
+            bit_depth=audio_cfg.get("bit_depth") or "f32",
+        )
+        return {"restarted": False, "running": False}
+
+    _, state_capture = await _capture_and_save_plugin_states()
+    await host.stop()
+    host.configure(
+        binary_path=audio_cfg.get("binary_path") or None,
+        sample_rate=_positive_int(audio_cfg.get("sample_rate", 48000), "sample_rate"),
+        buffer_size=_positive_int(audio_cfg.get("buffer_size", 256), "buffer_size"),
+        audio_engine=audio_cfg.get("audio_engine") or "default",
+        bit_depth=audio_cfg.get("bit_depth") or "f32",
+    )
+    await host.start()
+    sync = await sync_current_project_to_host(broadcast=True)
+    return {"restarted": True, "running": host.is_running, "state": state_capture, "sync": sync}
+
+
+async def _validate_running_audio_host_config(audio_cfg: dict) -> None:
+    """Ask the running Rust host to validate audio config before saving it."""
+    from core.host import get_host_manager
+
+    host = get_host_manager()
+    if not host.is_running:
+        return
+
+    response = await host.send_command(
+        "set_audio_config",
+        {
+            "sample_rate": _positive_int(audio_cfg.get("sample_rate", 48000), "sample_rate"),
+            "buffer_size": _positive_int(audio_cfg.get("buffer_size", 256), "buffer_size"),
+            "audio_engine": audio_cfg.get("audio_engine") or "default",
+            "bit_depth": audio_cfg.get("bit_depth") or "f32",
+        },
+    )
+    if response.get("type") != "error":
+        return
+
+    message = str(response.get("message") or "audio host rejected audio config")
+    if message in _AUDIO_HOST_RESTART_MESSAGES:
+        return
+    raise ValueError(message)
+
+
 def _mask_providers(providers: dict) -> dict:
     result = {}
     for name, cfg in (providers or {}).items():
@@ -225,6 +334,7 @@ def register(dashboard: Dashboard) -> None:
     @app.route("/api/settings", methods=["GET"])
     async def get_settings():
         c = dashboard.lifecycle.config
+        audio_host = c.get("audio_host", {})
         return jsonify(
             {
                 "model": c.get("model", ""),
@@ -244,6 +354,14 @@ def register(dashboard: Dashboard) -> None:
                 "skill_search_roots": c.get("skill_search_roots", []),
                 "providers": _mask_providers(c.get("providers", {})),
                 "tavily_api_key": "***" if c.get("tavily_api_key") else "",
+                "audio_host": {
+                    "sample_rate": audio_host.get("sample_rate", 48000),
+                    "buffer_size": audio_host.get("buffer_size", 256),
+                    "audio_engine": audio_host.get("audio_engine", "default"),
+                    "bit_depth": audio_host.get("bit_depth", "f32"),
+                    "binary_path": audio_host.get("binary_path", ""),
+                    "auto_start": audio_host.get("auto_start", True),
+                },
             }
         )
 
@@ -251,6 +369,8 @@ def register(dashboard: Dashboard) -> None:
     async def update_settings():
         data = await request.get_json()
         lc = dashboard.lifecycle
+        audio_host_restart_needed = False
+        audio_host_result = None
         if "agent_mode" in data:
             from core.agent.mode import normalize_agent_mode
 
@@ -292,12 +412,35 @@ def register(dashboard: Dashboard) -> None:
                 data["image_transcription"] = lc.config["image_transcription"]
             except (TypeError, ValueError) as e:
                 return jsonify({"error": str(e)}), 400
+        # audio_host settings
+        if "audio_host" in data and isinstance(data["audio_host"], dict):
+            current_audio_cfg = lc.config.setdefault("audio_host", {})
+            try:
+                data["audio_host"], audio_host_restart_needed = _merge_audio_host_config(
+                    dict(current_audio_cfg),
+                    data["audio_host"],
+                )
+                if audio_host_restart_needed:
+                    await _validate_running_audio_host_config(data["audio_host"])
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+            lc.config["audio_host"] = data["audio_host"]
+
         if lc.process_stage:
             lc.process_stage.update_config(
                 **{k: v for k, v in data.items() if k in _PROCESS_STAGE_SETTING_KEYS}
             )
         lc.save_config()
-        return jsonify({"ok": True})
+        if audio_host_restart_needed:
+            try:
+                audio_host_result = await _restart_audio_host_for_config(
+                    lc.config.get("audio_host", {})
+                )
+            except Exception as e:
+                return jsonify({"ok": False, "error": str(e), "audio_host": audio_host_result}), 500
+        return jsonify({"ok": True, "audio_host": audio_host_result})
 
     # ── Model Providers ──
 
@@ -483,3 +626,19 @@ def register(dashboard: Dashboard) -> None:
         dashboard._apply_model(provider_name, model)
         dashboard.lifecycle.save_config()
         return jsonify({"ok": True})
+
+    # ── Audio Host ──
+
+    @app.route("/api/audio/devices", methods=["GET"])
+    async def list_audio_devices():
+        """Query the Rust host for available audio output devices."""
+        try:
+            from core.host import get_host_manager
+
+            host = get_host_manager()
+            if not host.is_running:
+                return jsonify({"devices": [], "error": "audio host not running"})
+            resp = await host.send_command("list_audio_devices")
+            return jsonify(resp)
+        except Exception as e:
+            return jsonify({"devices": [], "error": str(e)})

@@ -2,17 +2,73 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct HostConfig {
     pub vst3_plugin_paths: Vec<PathBuf>,
     pub vst2_plugin_paths: Vec<PathBuf>,
+    pub audio_host: AudioHostConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct AudioHostConfig {
+    pub binary_path: String,
+    pub sample_rate: u32,
+    pub buffer_size: usize,
+    pub auto_start: bool,
+    #[serde(default = "default_audio_engine")]
+    pub audio_engine: String,
+    #[serde(default = "default_bit_depth")]
+    pub bit_depth: String,
+}
+
+fn default_audio_engine() -> String {
+    "default".to_string()
+}
+
+fn default_bit_depth() -> String {
+    "f32".to_string()
+}
+
+impl Default for AudioHostConfig {
+    fn default() -> Self {
+        Self {
+            binary_path: String::new(),
+            sample_rate: 48_000,
+            buffer_size: 256,
+            auto_start: true,
+            audio_engine: default_audio_engine(),
+            bit_depth: default_bit_depth(),
+        }
+    }
+}
+
+impl Default for HostConfig {
+    fn default() -> Self {
+        Self {
+            vst3_plugin_paths: Vec::new(),
+            vst2_plugin_paths: Vec::new(),
+            audio_host: AudioHostConfig::default(),
+        }
+    }
+}
+
+impl AudioHostConfig {
+    fn normalize(&mut self) {
+        if self.sample_rate == 0 {
+            self.sample_rate = AudioHostConfig::default().sample_rate;
+        }
+        if self.buffer_size == 0 {
+            self.buffer_size = AudioHostConfig::default().buffer_size;
+        }
+    }
 }
 
 impl HostConfig {
     pub fn load() -> Self {
         let Some(path) = find_config_path() else {
-            eprintln!("[atri-host] config.yaml not found; using standard VST scan paths");
+            eprintln!("[atri-host] config.yaml not found; using defaults");
             return Self::default();
         };
 
@@ -20,16 +76,20 @@ impl HostConfig {
             Ok(content) => match parse_host_config(&content) {
                 Ok(config) => {
                     eprintln!(
-                        "[atri-host] loaded VST scan config from {} (vst3_paths={}, vst2_paths={})",
+                        "[atri-host] loaded config from {} (vst3_paths={}, vst2_paths={}, sample_rate={}, buffer_size={}, engine={}, bit_depth={})",
                         path.display(),
                         config.vst3_plugin_paths.len(),
-                        config.vst2_plugin_paths.len()
+                        config.vst2_plugin_paths.len(),
+                        config.audio_host.sample_rate,
+                        config.audio_host.buffer_size,
+                        config.audio_host.audio_engine,
+                        config.audio_host.bit_depth,
                     );
                     config
                 }
                 Err(err) => {
                     eprintln!(
-                        "[atri-host] failed to parse config.yaml at {}: {}; using standard VST scan paths",
+                        "[atri-host] failed to parse config.yaml at {}: {}; using defaults",
                         path.display(),
                         err
                     );
@@ -38,7 +98,7 @@ impl HostConfig {
             },
             Err(err) => {
                 eprintln!(
-                    "[atri-host] failed to read config.yaml at {}: {}; using standard VST scan paths",
+                    "[atri-host] failed to read config.yaml at {}: {}; using defaults",
                     path.display(),
                     err
                 );
@@ -79,7 +139,9 @@ fn find_config_path() -> Option<PathBuf> {
 }
 
 fn parse_host_config(content: &str) -> Result<HostConfig, serde_yaml::Error> {
-    serde_yaml::from_str(content)
+    let mut config: HostConfig = serde_yaml::from_str(content)?;
+    config.audio_host.normalize();
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -114,6 +176,11 @@ providers:
             ]
         );
         assert_eq!(config.vst2_plugin_paths, vec![PathBuf::from(r"D:\VST2")]);
+        // defaults
+        assert_eq!(config.audio_host.sample_rate, 48_000);
+        assert_eq!(config.audio_host.buffer_size, 256);
+        assert_eq!(config.audio_host.audio_engine, "default");
+        assert_eq!(config.audio_host.bit_depth, "f32");
     }
 
     #[test]
@@ -142,6 +209,41 @@ vst2_plugin_paths: ['D:\VST2', 'E:\Plugins\VST2']
             parse_host_config("model: test").unwrap(),
             HostConfig::default()
         );
+    }
+
+    #[test]
+    fn parse_host_config_reads_audio_host_section() {
+        let config = parse_host_config(
+            r#"
+model: test
+audio_host:
+  sample_rate: 96000
+  buffer_size: 512
+  audio_engine: asio
+  bit_depth: i24
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.audio_host.sample_rate, 96_000);
+        assert_eq!(config.audio_host.buffer_size, 512);
+        assert_eq!(config.audio_host.audio_engine, "asio");
+        assert_eq!(config.audio_host.bit_depth, "i24");
+    }
+
+    #[test]
+    fn parse_host_config_normalizes_zero_audio_values() {
+        let config = parse_host_config(
+            r#"
+audio_host:
+  sample_rate: 0
+  buffer_size: 0
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.audio_host.sample_rate, 48_000);
+        assert_eq!(config.audio_host.buffer_size, 256);
     }
 
     #[test]

@@ -45,6 +45,8 @@ pub struct DriverConfig {
     pub sample_rate: u32,
     pub buffer_size: usize,
     pub output_channels: usize,
+    pub audio_engine: String,
+    pub bit_depth: String,
 }
 
 impl AudioDriver {
@@ -54,6 +56,8 @@ impl AudioDriver {
         stream_tx: Sender<AudioBlock>,
         preferred_sample_rate: u32,
         preferred_buffer_size: usize,
+        audio_engine: String,
+        bit_depth: String,
     ) -> (Self, DriverConfig) {
         let running = Arc::new(AtomicBool::new(true));
 
@@ -62,12 +66,18 @@ impl AudioDriver {
             cmd_rx.clone(),
             stream_tx.clone(),
             Arc::clone(&running),
+            preferred_sample_rate,
             preferred_buffer_size,
+            audio_engine.clone(),
+            bit_depth.clone(),
         ) {
             Ok((stream, config)) => {
                 eprintln!(
-                    "[atri-host] cpal output started: sample_rate={}, channels={}",
-                    config.sample_rate, config.output_channels
+                    "[atri-host] cpal output started: device={}, sample_rate={}, channels={}, bit_depth={}",
+                    config.audio_engine,
+                    config.sample_rate,
+                    config.output_channels,
+                    config.bit_depth
                 );
                 (
                     Self {
@@ -84,6 +94,8 @@ impl AudioDriver {
                     sample_rate: preferred_sample_rate,
                     buffer_size: preferred_buffer_size,
                     output_channels: 2,
+                    audio_engine,
+                    bit_depth,
                 };
                 let fallback_thread = start_null_driver(
                     engine,
@@ -119,54 +131,51 @@ fn start_cpal_driver(
     cmd_rx: Receiver<AppCommand>,
     stream_tx: Sender<AudioBlock>,
     running: Arc<AtomicBool>,
+    preferred_sample_rate: u32,
     preferred_buffer_size: usize,
+    audio_engine: String,
+    bit_depth: String,
 ) -> Result<(cpal::Stream, DriverConfig), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or("no default output device")?;
-    let supported = device
-        .default_output_config()
-        .map_err(|err| format!("default output config failed: {err}"))?;
+    let selected = select_output_device(&audio_engine)?;
+    let supported = select_output_config(&selected.device, preferred_sample_rate, &bit_depth)?;
 
     let sample_rate = supported.sample_rate().0;
     let output_channels = supported.channels() as usize;
     let mut config = supported.config();
     config.buffer_size = cpal::BufferSize::Fixed(preferred_buffer_size as u32);
+
+    let stream = build_output_stream_for_format(
+        supported.sample_format(),
+        &selected.device,
+        &config,
+        Arc::clone(&engine),
+        cmd_rx.clone(),
+        stream_tx.clone(),
+        Arc::clone(&running),
+        output_channels,
+    )
+    .or_else(|err| {
+        log::warn!(
+            "[atri-host] fixed buffer_size={} rejected by device: {}; retrying default buffer",
+            preferred_buffer_size,
+            err
+        );
+        config.buffer_size = cpal::BufferSize::Default;
+        build_output_stream_for_format(
+            supported.sample_format(),
+            &selected.device,
+            &config,
+            Arc::clone(&engine),
+            cmd_rx,
+            stream_tx,
+            Arc::clone(&running),
+            output_channels,
+        )
+    })?;
+
     if let Ok(mut engine) = engine.lock() {
         engine.reconfigure(sample_rate, preferred_buffer_size);
     }
-
-    let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => build_output_stream::<f32>(
-            &device,
-            &config,
-            engine,
-            cmd_rx,
-            stream_tx,
-            running,
-            output_channels,
-        ),
-        cpal::SampleFormat::I16 => build_output_stream::<i16>(
-            &device,
-            &config,
-            engine,
-            cmd_rx,
-            stream_tx,
-            running,
-            output_channels,
-        ),
-        cpal::SampleFormat::U16 => build_output_stream::<u16>(
-            &device,
-            &config,
-            engine,
-            cmd_rx,
-            stream_tx,
-            running,
-            output_channels,
-        ),
-        format => Err(format!("unsupported output sample format: {format:?}")),
-    }?;
 
     stream
         .play()
@@ -177,8 +186,265 @@ fn start_cpal_driver(
             sample_rate,
             buffer_size: preferred_buffer_size,
             output_channels,
+            audio_engine: selected.id,
+            bit_depth: sample_format_bit_depth(supported.sample_format()).to_string(),
         },
     ))
+}
+
+struct SelectedOutputDevice {
+    id: String,
+    device: cpal::Device,
+}
+
+fn select_output_device(selection: &str) -> Result<SelectedOutputDevice, String> {
+    let selection = selection.trim();
+    if selection.is_empty() || selection.eq_ignore_ascii_case("default") {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or("no default output device")?;
+        let name = device
+            .name()
+            .unwrap_or_else(|_| "Default Output".to_string());
+        return Ok(SelectedOutputDevice {
+            id: audio_device_id(host.id().name(), &name),
+            device,
+        });
+    }
+
+    let (host_key, device_name) = selection
+        .split_once("::")
+        .map(|(host, name)| (host, Some(name)))
+        .unwrap_or((selection, None));
+    let host_id = host_id_from_key(host_key)
+        .ok_or_else(|| format!("audio device host is not available: {host_key}"))?;
+    let host = cpal::host_from_id(host_id)
+        .map_err(|err| format!("audio device host unavailable: {err}"))?;
+
+    let device = if let Some(device_name) = device_name {
+        host.output_devices()
+            .map_err(|err| format!("audio output device query failed: {err}"))?
+            .find(|device| {
+                device
+                    .name()
+                    .map(|name| name == device_name)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| format!("audio output device not found: {selection}"))?
+    } else {
+        host.default_output_device()
+            .ok_or_else(|| format!("no default output device for {}", host_id.name()))?
+    };
+    let name = device.name().unwrap_or_else(|_| "Output".to_string());
+
+    Ok(SelectedOutputDevice {
+        id: audio_device_id(host_id.name(), &name),
+        device,
+    })
+}
+
+fn host_id_from_key(key: &str) -> Option<cpal::HostId> {
+    let key = normalize_audio_key(key);
+    cpal::available_hosts()
+        .into_iter()
+        .find(|host_id| normalize_audio_key(host_id.name()) == key)
+}
+
+pub(crate) fn audio_device_id(host_api: &str, device_name: &str) -> String {
+    format!("{}::{}", normalize_audio_key(host_api), device_name)
+}
+
+fn normalize_audio_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(' ', "_")
+}
+
+fn select_output_config(
+    device: &cpal::Device,
+    preferred_sample_rate: u32,
+    preferred_bit_depth: &str,
+) -> Result<cpal::SupportedStreamConfig, String> {
+    let default_config = device
+        .default_output_config()
+        .map_err(|err| format!("default output config failed: {err}"))?;
+    if default_config.sample_rate().0 == preferred_sample_rate
+        && sample_format_matches_bit_depth(default_config.sample_format(), preferred_bit_depth)
+    {
+        return Ok(default_config);
+    }
+
+    let preferred_rate = cpal::SampleRate(preferred_sample_rate);
+    let Ok(supported_configs) = device.supported_output_configs() else {
+        log::warn!(
+            "[atri-host] supported output config query failed; using default sample_rate={}",
+            default_config.sample_rate().0
+        );
+        return Ok(default_config);
+    };
+    let supported = supported_configs
+        .filter(|range| {
+            range.min_sample_rate() <= preferred_rate && preferred_rate <= range.max_sample_rate()
+        })
+        .max_by_key(|range| output_config_score(range, &default_config, preferred_bit_depth))
+        .map(|range| range.with_sample_rate(preferred_rate));
+
+    match supported {
+        Some(config) => Ok(config),
+        None => {
+            log::warn!(
+                "[atri-host] requested sample_rate={} is not supported by the default device; using {}",
+                preferred_sample_rate,
+                default_config.sample_rate().0
+            );
+            Ok(default_config)
+        }
+    }
+}
+
+fn output_config_score(
+    range: &cpal::SupportedStreamConfigRange,
+    default_config: &cpal::SupportedStreamConfig,
+    preferred_bit_depth: &str,
+) -> u16 {
+    let mut score = 0;
+    if sample_format_matches_bit_depth(range.sample_format(), preferred_bit_depth) {
+        score += 16;
+    }
+    if range.sample_format() == default_config.sample_format() {
+        score += 8;
+    }
+    if range.channels() == default_config.channels() {
+        score += 4;
+    }
+    if range.channels() >= 2 {
+        score += 2;
+    }
+    score
+}
+
+fn sample_format_matches_bit_depth(format: cpal::SampleFormat, bit_depth: &str) -> bool {
+    matches!(
+        (bit_depth.trim().to_ascii_lowercase().as_str(), format),
+        ("f32", cpal::SampleFormat::F32)
+            | ("i16", cpal::SampleFormat::I16)
+            | ("i16", cpal::SampleFormat::U16)
+            | ("i24", cpal::SampleFormat::I32)
+            | ("i24", cpal::SampleFormat::U32)
+    )
+}
+
+fn sample_format_bit_depth(format: cpal::SampleFormat) -> &'static str {
+    match format {
+        cpal::SampleFormat::I16 | cpal::SampleFormat::U16 => "i16",
+        cpal::SampleFormat::I32 | cpal::SampleFormat::U32 => "i24",
+        cpal::SampleFormat::F32 | cpal::SampleFormat::F64 => "f32",
+        _ => "f32",
+    }
+}
+
+fn build_output_stream_for_format(
+    sample_format: cpal::SampleFormat,
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    engine: Arc<Mutex<AudioEngine>>,
+    cmd_rx: Receiver<AppCommand>,
+    stream_tx: Sender<AudioBlock>,
+    running: Arc<AtomicBool>,
+    output_channels: usize,
+) -> Result<cpal::Stream, String> {
+    match sample_format {
+        cpal::SampleFormat::I8 => build_output_stream::<i8>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::F32 => build_output_stream::<f32>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::F64 => build_output_stream::<f64>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::I16 => build_output_stream::<i16>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::I32 => build_output_stream::<i32>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::I64 => build_output_stream::<i64>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::U8 => build_output_stream::<u8>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::U16 => build_output_stream::<u16>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::U32 => build_output_stream::<u32>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        cpal::SampleFormat::U64 => build_output_stream::<u64>(
+            device,
+            config,
+            engine,
+            cmd_rx,
+            stream_tx,
+            running,
+            output_channels,
+        ),
+        format => Err(format!("unsupported output sample format: {format:?}")),
+    }
 }
 
 fn build_output_stream<T>(
@@ -208,6 +474,13 @@ where
                 let frames = output.len() / output_channels;
                 let needed = frames * 2;
                 if stereo.len() != needed {
+                    log::debug!(
+                        "[cpal] buffer size changed: old_stereo={}, new_needed={}, frames={}, channels={}",
+                        stereo.len(),
+                        needed,
+                        frames,
+                        output_channels
+                    );
                     stereo.resize(needed, 0.0);
                 }
 

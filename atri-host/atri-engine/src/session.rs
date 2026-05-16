@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use atri_core::audio::buffer::AudioBuffer;
 use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::{MidiEvent, ScheduledMidiEvent};
+use atri_core::midi::message::MidiMessage;
 use atri_core::midi::note::MidiNote;
 use atri_core::time::tempo::{Meter, Tempo};
 use atri_core::time::tempo_map::{SwapLock, TempoMap};
@@ -23,8 +24,67 @@ pub struct Session {
     next_route_id: u32,
     route_indices: HashMap<u32, usize>,
     route_bufs: Vec<BufferSet>,
+    route_delay_lines: Vec<RouteDelayLine>,
     midi_events: Vec<Vec<ScheduledMidiEvent>>,
     master_buf: AudioBuffer,
+}
+
+#[derive(Default)]
+struct RouteDelayLine {
+    delay_samples: usize,
+    channels: u16,
+    write_pos: usize,
+    samples: Vec<Vec<f32>>,
+}
+
+impl RouteDelayLine {
+    fn process(&mut self, buffer: &mut AudioBuffer, nframes: usize, delay_samples: usize) {
+        let nframes = nframes.min(buffer.capacity());
+        if nframes == 0 {
+            return;
+        }
+        if delay_samples == 0 {
+            self.clear();
+            return;
+        }
+
+        self.configure(buffer.channels(), delay_samples);
+        let start_pos = self.write_pos;
+        for channel_index in 0..usize::from(self.channels) {
+            let mut pos = start_pos;
+            let channel = buffer.channel_mut(channel_index as u16);
+            let delay_channel = &mut self.samples[channel_index];
+            for sample in channel.iter_mut().take(nframes) {
+                let delayed = delay_channel[pos];
+                delay_channel[pos] = *sample;
+                *sample = delayed;
+                pos += 1;
+                if pos == self.delay_samples {
+                    pos = 0;
+                }
+            }
+        }
+        self.write_pos = (start_pos + nframes) % self.delay_samples;
+    }
+
+    fn clear(&mut self) {
+        self.delay_samples = 0;
+        self.channels = 0;
+        self.write_pos = 0;
+        self.samples.clear();
+    }
+
+    fn configure(&mut self, channels: u16, delay_samples: usize) {
+        if self.delay_samples == delay_samples && self.channels == channels {
+            return;
+        }
+        self.delay_samples = delay_samples;
+        self.channels = channels;
+        self.write_pos = 0;
+        self.samples = (0..usize::from(channels))
+            .map(|_| vec![0.0; delay_samples])
+            .collect();
+    }
 }
 
 impl Session {
@@ -45,6 +105,7 @@ impl Session {
             next_route_id: 0,
             route_indices: HashMap::new(),
             route_bufs: Vec::new(),
+            route_delay_lines: Vec::new(),
             midi_events: Vec::new(),
             master_buf: AudioBuffer::new(2, buffer_size),
         }
@@ -57,6 +118,7 @@ impl Session {
         self.routes.push(Arc::new(Mutex::new(Route::new(id, name))));
         self.route_indices.insert(id, index);
         self.route_bufs.push(BufferSet::new(1, 2, self.buffer_size));
+        self.route_delay_lines.push(RouteDelayLine::default());
         self.midi_events.push(Vec::new());
         id
     }
@@ -77,6 +139,7 @@ impl Session {
             self.sample_rate = sample_rate;
             self.tempo_map
                 .update(|tempo_map| tempo_map.with_sample_rate(sample_rate));
+            self.notify_processors_sample_rate(f64::from(sample_rate));
         }
 
         if self.resize_buffers(buffer_size) {
@@ -90,6 +153,7 @@ impl Session {
         };
         self.routes.remove(index);
         self.route_bufs.remove(index);
+        self.route_delay_lines.remove(index);
         self.midi_events.remove(index);
         self.route_indices.remove(&track_id);
         for route_index in self.route_indices.values_mut() {
@@ -119,6 +183,7 @@ impl Session {
         if let Some(processor) = &processor {
             if let Ok(mut processor) = processor.lock() {
                 processor.set_block_size(self.buffer_size);
+                processor.set_sample_rate(f64::from(self.sample_rate));
             }
         }
         self.with_route(track_id, |route| {
@@ -187,7 +252,14 @@ impl Session {
         // Keep buffer storage valid here, but leave processor block-size
         // notifications to the control path to avoid locking every processor
         // from the realtime render path.
-        self.resize_buffers(nframes);
+        let resized = self.resize_buffers(nframes);
+        if resized {
+            log::debug!(
+                "[session] buffer resized: nframes={}, new_buffer_size={}",
+                nframes,
+                self.buffer_size
+            );
+        }
 
         let speed = self.transport.speed;
         let start_sample = self.transport.position;
@@ -200,6 +272,8 @@ impl Session {
             .routes
             .iter()
             .any(|route| route.lock().map(|route| route.solo).unwrap_or(false));
+        let route_latencies = self.route_mix_latencies(any_solo);
+        let max_route_latency = route_latencies.iter().copied().max().unwrap_or(0);
 
         self.master_buf.silence(nframes);
 
@@ -208,7 +282,11 @@ impl Session {
                 continue;
             };
 
-            if any_solo && !route.solo {
+            if route.mute || (any_solo && !route.solo) {
+                self.route_bufs[idx].silence(nframes);
+                if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
+                    delay_line.clear();
+                }
                 continue;
             }
 
@@ -221,7 +299,13 @@ impl Session {
                     &mut self.midi_events[idx],
                 );
             } else {
+                // On pause/stop, inject AllNotesOff so synth voices release
+                // instead of sustaining forever mid-note.
                 self.midi_events[idx].clear();
+                self.midi_events[idx].push(ScheduledMidiEvent::new(
+                    MidiEvent::new(0, MidiMessage::AllNotesOff { channel: 0 }),
+                    0,
+                ));
             }
 
             route.process(
@@ -233,8 +317,47 @@ impl Session {
                 nframes,
             );
 
+            let compensation =
+                max_route_latency.saturating_sub(route_latencies.get(idx).copied().unwrap_or(0));
+            if let Some(buf) = self.route_bufs[idx].get_mut(0) {
+                if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
+                    delay_line.process(buf, nframes, compensation);
+                }
+            }
+
             if let Some(buf) = self.route_bufs[idx].get(0) {
                 self.mixer.add(buf, &mut self.master_buf, nframes);
+            }
+        }
+
+        // Detailed MIDI log: print every block that has events.
+        {
+            let total_midi: usize = self.midi_events.iter().map(|v| v.len()).sum();
+            if total_midi > 0 {
+                let pos_secs = self.transport.position as f64 / self.sample_rate as f64;
+                let mut details = String::new();
+                for (idx, events) in self.midi_events.iter().enumerate() {
+                    if events.is_empty() {
+                        continue;
+                    }
+                    use std::fmt::Write;
+                    let _ = write!(&mut details, " t{idx}=[");
+                    for (ei, ev) in events.iter().enumerate() {
+                        let _ = write!(
+                            &mut details,
+                            "{}{:?}@{}",
+                            if ei > 0 { ", " } else { "" },
+                            ev.event.message,
+                            ev.offset
+                        );
+                    }
+                    let _ = write!(&mut details, "]");
+                }
+                log::debug!(
+                    "[session] t={pos_secs:.2}s pos={} ev={}{details}",
+                    self.transport.position,
+                    total_midi,
+                );
             }
         }
 
@@ -248,6 +371,21 @@ impl Session {
 
     fn route_index(&self, track_id: u32) -> Option<usize> {
         self.route_indices.get(&track_id).copied()
+    }
+
+    fn route_mix_latencies(&self, any_solo: bool) -> Vec<usize> {
+        self.routes
+            .iter()
+            .map(|route| {
+                let Ok(route) = route.lock() else {
+                    return 0;
+                };
+                if route.mute || (any_solo && !route.solo) {
+                    return 0;
+                }
+                route.signal_latency()
+            })
+            .collect()
     }
 
     fn with_route(&mut self, track_id: u32, f: impl FnOnce(&mut Route)) -> bool {
@@ -281,6 +419,19 @@ impl Session {
             for processor in route.processors.iter().flatten() {
                 if let Ok(mut processor) = processor.lock() {
                     processor.set_block_size(nframes);
+                }
+            }
+        }
+    }
+
+    fn notify_processors_sample_rate(&mut self, sample_rate: f64) {
+        for route in &self.routes {
+            let Ok(route) = route.lock() else {
+                continue;
+            };
+            for processor in route.processors.iter().flatten() {
+                if let Ok(mut processor) = processor.lock() {
+                    processor.set_sample_rate(sample_rate);
                 }
             }
         }
@@ -438,6 +589,32 @@ mod tests {
         assert!(route.processors[2].is_none());
     }
 
+    #[test]
+    fn pdc_delays_lower_latency_routes_to_match_slowest_route() {
+        let mut session = Session::new(48_000, 16);
+        let dry_track = session.add_track("Dry".into());
+        let latent_track = session.add_track("Latent".into());
+
+        assert!(session.set_processor_slot(
+            dry_track,
+            0,
+            Some(Arc::new(Mutex::new(PdcImpulseProcessor::new(0, 0.4)))),
+        ));
+        assert!(session.set_processor_slot(
+            latent_track,
+            0,
+            Some(Arc::new(Mutex::new(PdcImpulseProcessor::new(2, 0.4)))),
+        ));
+
+        let mut output = vec![0.0; 16 * 2];
+        session.process(&mut output);
+
+        let expected = 2.0 * 0.4 * std::f32::consts::FRAC_PI_4.cos();
+        assert!(output[0].abs() < 0.0001);
+        assert!((output[4] - expected).abs() < 0.0001);
+        assert!((output[5] - expected).abs() < 0.0001);
+    }
+
     struct TestProcessor {
         name: &'static str,
         active: bool,
@@ -454,6 +631,22 @@ mod tests {
 
     struct CountingBlockSizeProcessor {
         calls: Arc<AtomicUsize>,
+    }
+
+    struct PdcImpulseProcessor {
+        latency: usize,
+        amplitude: f32,
+        emitted: bool,
+    }
+
+    impl PdcImpulseProcessor {
+        fn new(latency: usize, amplitude: f32) -> Self {
+            Self {
+                latency,
+                amplitude,
+                emitted: false,
+            }
+        }
     }
 
     impl Processor for CountingBlockSizeProcessor {
@@ -494,6 +687,55 @@ mod tests {
         }
     }
 
+    impl Processor for PdcImpulseProcessor {
+        fn name(&self) -> &str {
+            "pdc-impulse"
+        }
+
+        fn run(
+            &mut self,
+            bufs: &mut BufferSet,
+            _midi: &[ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            nframes: usize,
+            _result_required: bool,
+        ) {
+            if self.emitted || self.latency >= nframes {
+                return;
+            }
+
+            let Some(buffer) = bufs.get_mut(0) else {
+                return;
+            };
+            for channel in 0..buffer.channels() {
+                buffer.channel_mut(channel)[self.latency] += self.amplitude;
+            }
+            self.emitted = true;
+        }
+
+        fn activate(&mut self) {}
+
+        fn deactivate(&mut self) {}
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn input_channels(&self) -> u16 {
+            2
+        }
+
+        fn output_channels(&self) -> u16 {
+            2
+        }
+
+        fn signal_latency(&self) -> usize {
+            self.latency
+        }
+    }
+
     impl Processor for TestProcessor {
         fn name(&self) -> &str {
             self.name
@@ -530,5 +772,295 @@ mod tests {
         fn output_channels(&self) -> u16 {
             2
         }
+    }
+
+    // ── Full pipeline frequency tests ──
+
+    use crate::plugin_proc::PluginInsert;
+    use crate::synth::BasicSynth;
+
+    /// Count zero-crossings in a slice — each crossing = ½ cycle.
+    fn count_zero_crossings(samples: &[f32]) -> usize {
+        samples
+            .windows(2)
+            .filter(|w| w[0].signum() != w[1].signum() && w[0] != 0.0)
+            .count()
+    }
+
+    /// Run the session for `total_samples` frames in blocks of `block_size`,
+    /// return (channel 0 samples, channel 1 samples).
+    fn render_session(
+        session: &mut Session,
+        total_samples: usize,
+        block_size: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let mut left = Vec::with_capacity(total_samples);
+        let mut right = Vec::with_capacity(total_samples);
+        let mut remaining = total_samples;
+        while remaining > 0 {
+            let nframes = block_size.min(remaining);
+            let mut output = vec![0.0f32; nframes * 2];
+            session.process(&mut output);
+            for i in 0..nframes {
+                left.push(output[i * 2]);
+                right.push(output[i * 2 + 1]);
+            }
+            remaining -= nframes;
+        }
+        (left, right)
+    }
+
+    #[test]
+    fn session_basic_synth_a4_440hz_across_full_note() {
+        let sr = 48_000;
+        let mut session = Session::new(sr, 256);
+
+        let track_id = session.add_track("Synth".into());
+        let mut plugin = PluginInsert::new(Box::new(BasicSynth::new(sr)));
+        plugin.activate();
+        assert!(session.set_processor_slot(track_id, 0, Some(Arc::new(Mutex::new(plugin))),));
+
+        // A4 = 440 Hz, note starting at beat 0 with duration 4 beats (2 seconds at 120bpm).
+        // Process 1 second (48000 samples) so the note plays throughout the entire render.
+        session.set_track_notes(track_id, vec![MidiNote::new(69, 0.0, 4.0, 100)]);
+
+        session.transport.play();
+
+        // Process 1 second of audio (48k samples) in blocks of 256
+        let total_samples = 48_000;
+        let (left, _right) = render_session(&mut session, total_samples, 256);
+
+        // Verify audio is present (non-silence)
+        let energy: f32 = left.iter().map(|s| s.abs()).sum();
+        assert!(energy > 0.0, "no audio output from session pipeline");
+
+        // Split into 4 quarters and check frequency consistency.
+        // A4 = 440 Hz at 48 kHz → 440/48000 ≈ 0.00917 cycles/sample
+        // In 12000 samples (0.25s): ~110 cycles → ~220 zero crossings.
+        let quarter = total_samples / 4;
+        let zc_q1 = count_zero_crossings(&left[0..quarter]);
+        let zc_q2 = count_zero_crossings(&left[quarter..quarter * 2]);
+        let zc_q3 = count_zero_crossings(&left[quarter * 2..quarter * 3]);
+        let zc_q4 = count_zero_crossings(&left[quarter * 3..]);
+
+        // Expected: ~220 crossings per quarter (440 Hz * 0.25s * 2 crossings/cycle)
+        // Octave down (220 Hz) would give ~110 crossings.
+        // The bug reportedly manifests at 50% note duration (midpoint).
+        let min_expected = 160;
+        let max_expected = 280;
+        for (label, zc) in [("Q1", zc_q1), ("Q2", zc_q2), ("Q3", zc_q3), ("Q4", zc_q4)] {
+            assert!(
+                zc >= min_expected && zc <= max_expected,
+                "{label} zero-crossings {zc} outside expected [{min_expected}, {max_expected}] — \
+                 possible octave-down or frequency artifact"
+            );
+        }
+
+        // Stricter: ratio between adjacent quarters should not halve (octave down).
+        let ratios = [
+            ("Q2/Q1", zc_q2 as f64 / zc_q1.max(1) as f64),
+            ("Q3/Q2", zc_q3 as f64 / zc_q2.max(1) as f64),
+            ("Q4/Q3", zc_q4 as f64 / zc_q3.max(1) as f64),
+        ];
+        for (label, ratio) in ratios {
+            assert!(
+                ratio > 0.5 && ratio < 2.0,
+                "{label} frequency ratio {ratio:.2} out of range — \
+                 possible octave jump between quarters"
+            );
+        }
+    }
+
+    #[test]
+    fn session_note_on_triggers_exactly_once_per_note() {
+        // Verify the sequencer doesn't generate duplicate NoteOn events
+        // which could cause phasing/beating artifacts.
+        let sr = 48_000;
+        let mut session = Session::new(sr, 256);
+
+        let track_id = session.add_track("Synth".into());
+        let mut plugin = PluginInsert::new(Box::new(BasicSynth::new(sr)));
+        plugin.activate();
+        assert!(session.set_processor_slot(track_id, 0, Some(Arc::new(Mutex::new(plugin))),));
+
+        // Single note
+        session.set_track_notes(track_id, vec![MidiNote::new(69, 1.0, 2.0, 100)]);
+
+        session.transport.play();
+
+        // Process the full note + some extra
+        let total_samples = 60_000; // slightly more than 1 second
+        let (left, _right) = render_session(&mut session, total_samples, 256);
+
+        // Find where audio starts and stops by threshold
+        let threshold = 0.001;
+        let first_nonzero = left.iter().position(|s| s.abs() > threshold);
+        let last_nonzero = left.iter().rposition(|s| s.abs() > threshold);
+
+        assert!(
+            first_nonzero.is_some(),
+            "audio should start when note triggers"
+        );
+
+        let start = first_nonzero.unwrap();
+        let end = last_nonzero.unwrap();
+
+        // Note at beat 1.0 with 120bpm 4/4 = 2 seconds per bar → beat 1.0 = 0.5 bar
+        // Actually, beat 1.0 = the start of the timeline. At 120bpm:
+        // 1 beat = 0.5 seconds = 24000 samples at 48kHz.
+        // So the note starts at sample 24000 and ends at sample 72000.
+        // We're only processing 60000 samples, so the note should still be playing.
+        // The first non-zero should be around sample 24000.
+        let expected_start = 24_000;
+        let start_tolerance = 512; // within ~1 buffer
+        assert!(
+            (start as i64 - expected_start as i64).abs() < start_tolerance,
+            "note started at sample {start}, expected ~{expected_start}"
+        );
+
+        // The last sample should be near the end of our render (note still playing)
+        assert!(
+            end > total_samples - 1000,
+            "note should still be playing at the end of render, \
+             last audio at sample {end} of {total_samples}"
+        );
+    }
+
+    #[test]
+    fn session_handles_variable_block_sizes() {
+        // Simulate CPAL/WASAPI varying buffer sizes between callbacks.
+        // This could trigger resize and expose buffer corruption or stale data.
+        let sr = 48_000;
+        let mut session = Session::new(sr, 256);
+
+        let track_id = session.add_track("Synth".into());
+        let mut plugin = PluginInsert::new(Box::new(BasicSynth::new(sr)));
+        plugin.activate();
+        assert!(session.set_processor_slot(track_id, 0, Some(Arc::new(Mutex::new(plugin))),));
+
+        session.set_track_notes(track_id, vec![MidiNote::new(69, 0.0, 4.0, 100)]);
+        session.transport.play();
+
+        // Varying block sizes: 128, 256, 512, 192, 320, 64, 448
+        let block_sizes = [128, 256, 512, 192, 320, 64, 448];
+        let total_samples = 48_000;
+        let mut left = Vec::with_capacity(total_samples);
+        let mut remaining = total_samples;
+        let mut size_idx = 0;
+
+        while remaining > 0 {
+            let nframes = block_sizes[size_idx % block_sizes.len()].min(remaining);
+            let mut output = vec![0.0f32; nframes * 2];
+            session.process(&mut output);
+            for i in 0..nframes {
+                left.push(output[i * 2]);
+            }
+            remaining -= nframes;
+            size_idx += 1;
+        }
+
+        // Verify audio output
+        let energy: f32 = left.iter().map(|s| s.abs()).sum();
+        assert!(energy > 0.0, "no audio after variable block sizes");
+
+        // Check frequency consistency across quarters
+        let quarter = total_samples / 4;
+        for (label, segment) in [
+            ("Q1", &left[0..quarter]),
+            ("Q2", &left[quarter..quarter * 2]),
+            ("Q3", &left[quarter * 2..quarter * 3]),
+            ("Q4", &left[quarter * 3..]),
+        ] {
+            let zc = count_zero_crossings(segment);
+            assert!(
+                zc >= 160 && zc <= 280,
+                "{label} zero-crossings {zc} out of range with variable block sizes"
+            );
+        }
+
+        // Verify no duplicate adjacent samples (sign of buffer corruption)
+        let duplicates = left
+            .windows(2)
+            .filter(|w| (w[0] - w[1]).abs() < f32::EPSILON)
+            .count();
+        assert!(
+            duplicates < total_samples / 10,
+            "found {duplicates} duplicate adjacent samples — possible buffer corruption"
+        );
+    }
+
+    #[test]
+    fn session_96000hz_with_cpal_like_672_buffer() {
+        // Reproduce the exact conditions of the user's CPAL/WASAPI setup:
+        // 96000 Hz sample rate, 672-sample buffer, A4=440Hz note.
+        let sr = 96_000;
+        let block_size = 672;
+        let mut session = Session::new(sr, block_size);
+
+        let track_id = session.add_track("Synth".into());
+        let mut plugin = PluginInsert::new(Box::new(BasicSynth::new(sr)));
+        plugin.activate();
+        assert!(session.set_processor_slot(track_id, 0, Some(Arc::new(Mutex::new(plugin))),));
+
+        // A4=440Hz from beat 0, duration 2 beats (1 second at 120bpm = 96000 samples)
+        session.set_track_notes(track_id, vec![MidiNote::new(69, 0.0, 2.0, 100)]);
+        session.transport.play();
+
+        // Process 1 second (96000 samples) in 672-sample blocks.
+        // 96000 / 672 = 142.86 blocks → 143 blocks, 96096 samples total.
+        let total_samples = sr as usize;
+        let (left, _right) = render_session(&mut session, total_samples, block_size);
+
+        let energy: f32 = left.iter().map(|s| s.abs()).sum();
+        assert!(
+            energy > 0.0,
+            "no audio output at 96kHz with 672-sample blocks"
+        );
+
+        // Split into 4 quarters, check frequency.
+        // A4=440Hz at 96kHz: 24000 samples per quarter, ~110 cycles → ~220 zero-crossings.
+        let quarter = total_samples / 4;
+        let min_expected = 160;
+        let max_expected = 280;
+        for (label, segment) in [
+            ("Q1", &left[0..quarter]),
+            ("Q2", &left[quarter..quarter * 2]),
+            ("Q3", &left[quarter * 2..quarter * 3]),
+            ("Q4", &left[quarter * 3..]),
+        ] {
+            let zc = count_zero_crossings(segment);
+            assert!(
+                zc >= min_expected && zc <= max_expected,
+                "[96kHz] {label} zero-crossings {zc} outside [{min_expected}, {max_expected}] — \
+                 possible octave-down or frequency artifact at 96kHz"
+            );
+        }
+
+        // Stricter: ratio between adjacent quarters.
+        let zc_q1 = count_zero_crossings(&left[0..quarter]);
+        let zc_q2 = count_zero_crossings(&left[quarter..quarter * 2]);
+        let zc_q3 = count_zero_crossings(&left[quarter * 2..quarter * 3]);
+        let zc_q4 = count_zero_crossings(&left[quarter * 3..]);
+        let ratios = [
+            ("Q2/Q1", zc_q2 as f64 / zc_q1.max(1) as f64),
+            ("Q3/Q2", zc_q3 as f64 / zc_q2.max(1) as f64),
+            ("Q4/Q3", zc_q4 as f64 / zc_q3.max(1) as f64),
+        ];
+        for (label, ratio) in ratios {
+            assert!(
+                ratio > 0.5 && ratio < 2.0,
+                "[96kHz] {label} ratio {ratio:.2} — possible octave jump"
+            );
+        }
+
+        // Check for buffer corruption (duplicate adjacent samples).
+        let duplicates = left
+            .windows(2)
+            .filter(|w| (w[0] - w[1]).abs() < f32::EPSILON)
+            .count();
+        assert!(
+            duplicates < total_samples / 10,
+            "[96kHz] found {duplicates} duplicate adjacent samples — buffer corruption?"
+        );
     }
 }

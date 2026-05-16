@@ -101,6 +101,10 @@ impl Plugin for BasicSynth {
         self.block_size = nframes;
     }
 
+    fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate as f32;
+    }
+
     fn connect_and_run(
         &mut self,
         bufs: &mut BufferSet,
@@ -175,5 +179,112 @@ mod tests {
             .map(|s| s.abs())
             .sum();
         assert!(energy > 0.0);
+    }
+
+    #[test]
+    fn a4_sine_has_correct_frequency() {
+        let sr = 48_000;
+        let mut synth = BasicSynth::new(sr);
+        let mut bufs = BufferSet::new(1, 1, 1024);
+        let midi = [ScheduledMidiEvent::new(
+            MidiEvent::new(
+                0,
+                MidiMessage::NoteOn {
+                    channel: 0,
+                    pitch: 69, // A4 = 440 Hz
+                    velocity: 100,
+                },
+            ),
+            0,
+        )];
+
+        synth.activate();
+        synth.connect_and_run(&mut bufs, &midi, 0, 1024, 1.0, 1024);
+
+        // Count zero crossings to verify frequency.
+        // A4 = 440 Hz at 48000 Hz sample rate.
+        // In 1024 samples we expect ~1024 * 440 / 48000 ≈ 9.39 cycles.
+        // Each cycle has 2 zero crossings, so ~19 crossings.
+        let channel = bufs.get(0).unwrap().channel(0);
+        let zero_crossings = channel
+            .windows(2)
+            .filter(|w| w[0].signum() != w[1].signum() && w[0] != 0.0)
+            .count();
+        // Allow loose bounds — we just verify it's not an octave lower.
+        // At an octave down (220 Hz), we'd expect ~4.7 cycles → ~9 crossings.
+        // At 440 Hz → ~19 crossings.
+        assert!(
+            zero_crossings >= 14,
+            "expected >=14 zero crossings for A4 440Hz, got {zero_crossings} (octave down = ~9)"
+        );
+
+        // Also verify samples are not duplicated (which would halve effective rate).
+        let mut duplicates = 0u32;
+        for w in channel.windows(2) {
+            if (w[0] - w[1]).abs() < f32::EPSILON {
+                duplicates += 1;
+            }
+        }
+        assert!(
+            duplicates < 10,
+            "found {duplicates} duplicate adjacent samples — possible buffer corruption"
+        );
+    }
+
+    #[test]
+    fn synth_respects_sample_rate_change() {
+        let mut synth = BasicSynth::new(48_000);
+        synth.activate();
+
+        // Play A4 at 48kHz with 256 samples → 5.33 ms → ~2.3 cycles → ~4.7 crossings
+        let mut bufs = BufferSet::new(1, 1, 256);
+        let midi = [ScheduledMidiEvent::new(
+            MidiEvent::new(
+                0,
+                MidiMessage::NoteOn {
+                    channel: 0,
+                    pitch: 69,
+                    velocity: 100,
+                },
+            ),
+            0,
+        )];
+        synth.connect_and_run(&mut bufs, &midi, 0, 256, 1.0, 256);
+        let zc_48k = bufs
+            .get(0)
+            .unwrap()
+            .channel(0)
+            .windows(2)
+            .filter(|w| w[0].signum() != w[1].signum() && w[0] != 0.0)
+            .count();
+
+        // Change sample rate to 96kHz. Same 256 samples → 2.67 ms → ~1.2 cycles → ~2.3 crossings.
+        // If the synth ignored the sample rate change, it would still produce ~4.7 crossings
+        // (but at the wrong playback speed, it would sound an octave higher on actual hardware).
+        synth.set_sample_rate(96_000.0);
+        synth.deactivate();
+        synth.activate();
+        let mut bufs2 = BufferSet::new(1, 1, 256);
+        synth.connect_and_run(&mut bufs2, &midi, 0, 256, 1.0, 256);
+        let zc_96k = bufs2
+            .get(0)
+            .unwrap()
+            .channel(0)
+            .windows(2)
+            .filter(|w| w[0].signum() != w[1].signum() && w[0] != 0.0)
+            .count();
+
+        // At 96kHz with same sample count, duration is halved → roughly half the crossings.
+        // A4=440Hz, 256/96000=2.67ms → ~1.17 cycles → ~2.3 crossings (floor to 2).
+        // At 48kHz: ~4.7 crossings.
+        assert!(
+            zc_48k > zc_96k,
+            "48k zero-crossings ({zc_48k}) should exceed 96k ({zc_96k}) for same sample count"
+        );
+        // The ratio should be close to 2:1 (not e.g. 1:1 which would mean sample rate was ignored).
+        assert!(
+            zc_48k >= zc_96k * 2 - 1,
+            "48k/96k crossing ratio mismatch: 48k={zc_48k}, 96k={zc_96k}"
+        );
     }
 }

@@ -220,11 +220,12 @@ async function transport(action, payload = {}) {
   if (action === 'seek') positionSeconds.value = Number(payload.position || 0)
   if (action === 'play') {
     try {
-      await ensureAudio()
-      if (audioContext?.state === 'suspended') {
-        await audioContext.resume()
-      }
-      connectAudioStream()
+      // Browser audio streaming is off while the Rust host drives speakers directly.
+      // await ensureAudio()
+      // if (audioContext?.state === 'suspended') {
+      //   await audioContext.resume()
+      // }
+      // connectAudioStream()
     } catch (err) {
       hostError.value = `Playback started, but browser audio output failed: ${err.message || err}`
     }
@@ -351,14 +352,22 @@ async function ensureAudio() {
   if (!AudioContextCtor || !window.AudioWorkletNode) {
     throw new Error('AudioWorklet is not supported by this browser')
   }
-  audioContext = new AudioContextCtor({ latencyHint: 'interactive', sampleRate: 48000 })
+  // Use the host's actual sample rate so streamed PCM plays at the correct pitch.
+  // The Rust host reports the real device rate (e.g. 96000 on WASAPI).
+  audioContext = new AudioContextCtor({ latencyHint: 'interactive', sampleRate: host.value.sample_rate })
   await audioContext.audioWorklet.addModule(pcmPlayerWorkletUrl)
   playerNode = new AudioWorkletNode(audioContext, 'atri-pcm-player', {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [2],
   })
-  playerNode.connect(audioContext.destination)
+  // The Rust host already drives the speakers via WASAPI/ASIO locally.
+  // Route the stream through a muted gain node so the worklet still runs
+  // (for future waveform visualisation) but doesn't produce an echo.
+  const monitorGain = audioContext.createGain()
+  monitorGain.gain.value = 0
+  playerNode.connect(monitorGain)
+  monitorGain.connect(audioContext.destination)
   audioReady.value = true
 }
 
@@ -389,7 +398,7 @@ function connectAudioStream() {
         type: 'samples',
         buffer,
         channels: Number(header.channels || 2),
-        sampleRate: Number(header.sample_rate || 48000),
+        sampleRate: Number(header.sample_rate || host.value.sample_rate),
       },
       [buffer]
     )

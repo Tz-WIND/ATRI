@@ -70,8 +70,19 @@ impl Processor for PluginInsert {
         2
     }
 
+    fn signal_latency(&self) -> usize {
+        if !self.active || self.bypass {
+            return 0;
+        }
+        self.plugin.signal_latency()
+    }
+
     fn set_block_size(&mut self, nframes: usize) {
         self.plugin.set_block_size(nframes);
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.plugin.set_sample_rate(sample_rate);
     }
 
     fn prepare_for_processing(&mut self) -> Result<(), String> {

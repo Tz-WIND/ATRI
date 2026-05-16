@@ -66,6 +66,16 @@ impl Route {
         self.sequencer.set_midi(notes, events);
     }
 
+    pub fn signal_latency(&self) -> usize {
+        self.processors
+            .iter()
+            .filter_map(|processor| processor.as_ref())
+            .filter_map(|processor| processor.lock().ok())
+            .filter(|processor| processor.is_active())
+            .map(|processor| processor.signal_latency())
+            .sum()
+    }
+
     /// Process this route's chain into the given BufferSet.
     pub fn process(
         &mut self,

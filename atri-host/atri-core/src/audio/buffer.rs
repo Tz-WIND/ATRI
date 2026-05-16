@@ -27,8 +27,11 @@ impl AudioBuffer {
         if capacity == self.capacity {
             return;
         }
+        // Re-allocate to avoid stale data from the old flat layout
+        // leaking between channels. The caller always silences after
+        // resize, so preserving old content is unnecessary.
         self.capacity = capacity;
-        self.data.resize(self.channels as usize * capacity, 0.0);
+        self.data = vec![0.0f32; self.channels as usize * capacity];
     }
 
     /// Get a slice for a specific channel (non-interleaved access).

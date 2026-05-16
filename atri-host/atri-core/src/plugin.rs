@@ -56,6 +56,10 @@ pub trait Plugin: Send + Sync {
     fn activate(&mut self);
     fn deactivate(&mut self);
     fn set_block_size(&mut self, nframes: usize);
+    fn set_sample_rate(&mut self, _sample_rate: f64) {}
+    fn signal_latency(&self) -> usize {
+        0
+    }
     fn prepare_for_processing(&mut self) -> Result<(), String> {
         Ok(())
     }

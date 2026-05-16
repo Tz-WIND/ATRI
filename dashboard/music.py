@@ -481,6 +481,8 @@ def _host_snapshot() -> dict[str, Any]:
         "running": host.is_running,
         "sample_rate": host.sample_rate,
         "buffer_size": host.buffer_size,
+        "audio_engine": host.audio_engine,
+        "bit_depth": host.bit_depth,
         "binary_path": host.binary_path or "",
     }
 
