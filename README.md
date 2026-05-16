@@ -559,7 +559,7 @@ cargo build -p atri-host --features asio
 4. 设置环境变量：
 
 ```powershell
-setx CPAL_ASIO_DIR "C:\SDKs\asiosdk"
+setx CPAL_ASIO_DIR "你的ASIOSDK放置路径"
 setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"
 ```
 
@@ -583,15 +583,6 @@ Python：
 
 ```powershell
 uv run ruff check
-uv run pytest
-```
-
-Windows 临时目录权限异常时的替代方案：
-
-```powershell
-$env:TMP = "$PWD\.pytest-tmp"
-$env:TEMP = "$PWD\.pytest-tmp"
-$env:UV_CACHE_DIR = "$PWD\.uv-cache"
 uv run pytest
 ```
 
