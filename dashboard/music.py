@@ -750,11 +750,13 @@ async def _sync_project_to_host(
     host_track_ids = {
         int(track.get("id", -1)) for track in status.get("tracks", []) if isinstance(track, dict)
     }
-    project_host_track_ids = {
-        int(track.get("host_track_id"))
-        for track in project.get("tracks", [])
-        if isinstance(track, dict) and track.get("host_track_id") is not None
-    }
+    project_host_track_ids: set[int] = set()
+    for track in project.get("tracks", []):
+        if not isinstance(track, dict):
+            continue
+        project_host_track_id = track.get("host_track_id")
+        if project_host_track_id is not None:
+            project_host_track_ids.add(int(project_host_track_id))
 
     meter = project.get("time_signature") or [4, 4]
     commands.append(
