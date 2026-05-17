@@ -327,6 +327,46 @@
               <strong>{{ activeMidiClip.clip.name }}</strong>
             </div>
             <div class="piano-actions">
+              <div
+                class="piano-control piano-quantize"
+                title="选择钢琴窗量化网格"
+              >
+                <span>量化</span>
+                <button
+                  class="piano-quantize-button"
+                  type="button"
+                  @click.stop="pianoQuantizeMenuOpen = !pianoQuantizeMenuOpen"
+                >
+                  <strong>{{ pianoQuantizeLabel }}</strong>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  ><path d="m6 9 6 6 6-6" /></svg>
+                </button>
+                <div
+                  v-if="pianoQuantizeMenuOpen"
+                  class="piano-quantize-menu"
+                >
+                  <button
+                    v-for="option in pianoQuantizeOptions"
+                    :key="option.id"
+                    type="button"
+                    :class="{ active: pianoQuantizeId === option.id }"
+                    @click.stop="setPianoQuantizeOption(option.id)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </div>
+              <button
+                :class="['mini-btn text', { active: isPianoSnapActive }]"
+                title="音符和控制器拖拽是否吸附到当前量化"
+                @click="pianoSnapEnabled = !pianoSnapEnabled"
+              >
+                吸附 {{ isPianoSnapActive ? '量化' : '关闭' }}
+              </button>
               <button
                 :class="['mini-btn text', { active: pianoTool === 'select' }]"
                 title="Select and move notes"
@@ -393,17 +433,141 @@
               </button>
             </div>
           </div>
-          <div
-            ref="pianoWrap"
-            class="piano-canvas-wrap"
-          >
-            <canvas
-              ref="pianoCanvas"
-              class="editor-canvas"
-              @pointerdown="onPianoPointerDown"
-              @wheel="onPianoWheel"
-              @contextmenu.prevent
-            />
+          <div class="piano-workspace">
+            <div
+              ref="pianoWrap"
+              class="piano-canvas-wrap"
+              @scroll="syncPianoScroll('piano')"
+            >
+              <canvas
+                ref="pianoCanvas"
+                class="editor-canvas"
+                @pointerdown="onPianoPointerDown"
+                @wheel="onPianoWheel"
+                @contextmenu.prevent
+              />
+            </div>
+            <div
+              v-if="controllerLanes.length"
+              ref="controllerWrap"
+              class="controller-lanes-wrap"
+              :style="{ height: `${controllerPanelHeight}px` }"
+              @scroll="syncPianoScroll('controller')"
+            >
+              <div
+                class="controller-lanes"
+                :style="{ width: `${pianoTimelineWidth}px` }"
+              >
+                <section
+                  v-for="lane in controllerLanes"
+                  :key="lane.id"
+                  class="controller-lane"
+                  :style="{ width: `${pianoTimelineWidth}px` }"
+                >
+                  <div class="controller-lane-axis">
+                    <span>{{ controllerAxisTop(lane) }}</span>
+                    <span>{{ controllerAxisMiddle(lane) }}</span>
+                    <span>{{ controllerAxisBottom(lane) }}</span>
+                  </div>
+                  <div
+                    class="controller-lane-tabs"
+                    :style="{ left: `${pianoKeyW + controllerScrollLeft}px` }"
+                  >
+                    <button
+                      class="controller-menu-btn"
+                      title="添加或移除控制器"
+                      @click.stop="toggleControllerMenu(lane.id)"
+                    >
+                      ...
+                    </button>
+                    <button
+                      v-for="controllerId in lane.controllerIds"
+                      :key="`${lane.id}-${controllerId}`"
+                      :class="[
+                        'controller-tab',
+                        { active: lane.activeControllerId === controllerId },
+                      ]"
+                      :title="controllerLabel(controllerId)"
+                      @click.stop="setLaneController(lane.id, controllerId)"
+                    >
+                      {{ controllerLabel(controllerId) }}
+                    </button>
+                    <button
+                      v-if="controllerLanes.length > 1"
+                      class="controller-close"
+                      title="移除控制器窗口"
+                      @click.stop="removeControllerLane(lane.id)"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      ><path d="M18 6 6 18M6 6l12 12" /></svg>
+                    </button>
+                    <div
+                      v-if="controllerMenuLaneId === lane.id"
+                      class="controller-menu"
+                    >
+                      <button
+                        v-for="preset in controllerMenuOptions(lane)"
+                        :key="`${lane.id}-menu-${preset.id}`"
+                        type="button"
+                        @click.stop="addControllerToLane(lane.id, preset.id)"
+                      >
+                        {{ preset.label }}
+                      </button>
+                      <label>
+                        <span>自定义 CC</span>
+                        <input
+                          v-model="customControllerNumber"
+                          inputmode="numeric"
+                          maxlength="3"
+                          placeholder="0-127"
+                          @keydown.enter.stop.prevent="addCustomControllerToLane(lane.id)"
+                        >
+                      </label>
+                      <button
+                        type="button"
+                        @click.stop="addCustomControllerToLane(lane.id)"
+                      >
+                        添加
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="lane.controllerIds.length <= 1"
+                        @click.stop="removeActiveControllerFromLane(lane.id)"
+                      >
+                        移除当前
+                      </button>
+                    </div>
+                  </div>
+                  <canvas
+                    :ref="el => setControllerLaneCanvas(lane.id, el)"
+                    class="controller-canvas"
+                    @pointerdown="event => onControllerLanePointerDown(event, lane)"
+                    @contextmenu.prevent
+                  />
+                </section>
+                <div
+                  class="controller-lane-footer"
+                  :style="{ width: `${pianoTimelineWidth}px` }"
+                >
+                  <button
+                    class="controller-footer-btn"
+                    title="增加控制器窗口"
+                    @click="addControllerLane"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    ><path d="M12 5v14M5 12h14" /></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -559,6 +723,31 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDawHost } from '@/composables/useDawHost.js'
+import {
+  CONTROLLER_PRESETS,
+  DEFAULT_CONTROLLER_IDS,
+  DEFAULT_NOTE_VELOCITY,
+  controllerDefinitionFromId,
+  controllerDisplayRange,
+  controllerLaneColorStyles,
+  controllerLaneStackHeight,
+  controllerRenderPoints,
+  controllerUnitToValue,
+  controllerValueToUnit,
+  createDefaultControllerLanes,
+  eventMatchesController,
+  makeControllerEventId,
+  makeControllerLaneId,
+  normalizeControllerEvent,
+  valueFromControllerEvent,
+} from './controllerLanes.js'
+import {
+  PIANO_QUANTIZE_OPTIONS,
+  interpolateControllerValue,
+  quantizeStepFromId,
+  quantizedBeatsBetween,
+  snapBeatToGrid,
+} from './pianoQuantize.js'
 
 defineProps({
   embedded: { type: Boolean, default: false },
@@ -601,10 +790,13 @@ const editorStack = ref(null)
 const pianoPanel = ref(null)
 const pianoWrap = ref(null)
 const pianoCanvas = ref(null)
+const controllerWrap = ref(null)
+const controllerLaneCanvases = new Map()
 
 const defaultPxPerBeat = 56
 const arrangementPxPerBeat = ref(defaultPxPerBeat)
 const pianoPxPerBeat = ref(defaultPxPerBeat)
+const pianoTimelineWidth = ref(0)
 const minArrangementPxPerBeat = 8
 const maxArrangementPxPerBeat = 64
 const minPianoPxPerBeat = 8
@@ -618,10 +810,17 @@ const arrangementTrackH = 72
 const pianoKeyW = 76
 const pianoRulerH = 24
 const pianoRowH = 12
+const controllerLaneTabH = 24
+const controllerLaneBodyH = 72
+const controllerLaneH = controllerLaneTabH + controllerLaneBodyH
+const controllerLaneFooterH = 28
 const minPitch = 36
 const maxPitch = 84
 const visualPositionBeats = ref(0)
 const pianoTool = ref('select')
+const pianoQuantizeId = ref('1/16')
+const pianoSnapEnabled = ref(true)
+const pianoQuantizeMenuOpen = ref(false)
 const selectedNoteIds = ref(new Set())
 const selectedClipIds = ref(new Set())
 const noteClipboard = ref([])
@@ -632,6 +831,16 @@ const activeClipId = ref(null)
 const pianoVisible = ref(false)
 const pianoPanelHeight = ref(null)
 const inspectorVisible = ref(true)
+const controllerLanes = ref(createDefaultControllerLanes())
+const controllerMenuLaneId = ref(null)
+const customControllerNumber = ref('')
+const controllerScrollLeft = ref(0)
+const controllerPanelHeight = computed(() => controllerLaneStackHeight(
+  controllerLanes.value.length,
+  controllerLaneH,
+  controllerLaneFooterH
+))
+const pianoQuantizeOptions = PIANO_QUANTIZE_OPTIONS
 const rackSlots = [
   { id: 'instrument', label: 'Instrument' },
   { id: 'insert_1', label: 'Insert 1' },
@@ -646,8 +855,11 @@ let lastFrame = 0
 let pianoDrag = null
 let pianoResizeDrag = null
 let arrangementDrag = null
+let controllerDrag = null
+let syncingPianoScroll = false
 
 const snapStep = 0.25
+const minFreehandStep = 0.0625
 const minArrangementPanelHeight = arrangementToolbarH + arrangementRulerH
 const minPianoPanelHeight = 140
 
@@ -657,6 +869,15 @@ const pluginOptions = computed(() => ({
   vst3: Array.isArray(plugins.value?.vst3) ? plugins.value.vst3 : [],
   vst2: Array.isArray(plugins.value?.vst2) ? plugins.value.vst2 : [],
 }))
+const pianoQuantizeStep = computed(() => quantizeStepFromId(pianoQuantizeId.value))
+const pianoQuantizeLabel = computed(() => (
+  pianoQuantizeOptions.find(option => option.id === pianoQuantizeId.value)?.label || '1/16'
+))
+const isPianoSnapActive = computed(() => pianoSnapEnabled.value && pianoQuantizeStep.value !== null)
+const activePianoSnapStep = computed(() => (
+  isPianoSnapActive.value ? pianoQuantizeStep.value : null
+))
+const activeNoteStep = computed(() => activePianoSnapStep.value || minFreehandStep)
 const activeMidiClip = computed(() => {
   for (const track of tracks.value) {
     for (const clip of track.clips || []) {
@@ -718,6 +939,7 @@ function makeClip(type = 'midi', start = 0) {
     source: '',
     path: '',
     notes: [],
+    events: [],
   }
 }
 
@@ -787,7 +1009,16 @@ async function writeMinorFigure() {
 
 async function clearActiveTrack() {
   if (!activeMidiClip.value) return
-  await persistActiveClipNotes([])
+  const clipId = activeMidiClip.value.clip.id
+  await persistProjectUpdate((nextProject) => {
+    for (const track of nextProject.tracks || []) {
+      const clip = (track.clips || []).find(item => item.id === clipId)
+      if (!clip) continue
+      clip.notes = []
+      clip.events = []
+      clip.duration = Math.max(Number(clip.duration || 0.25), snapStep)
+    }
+  })
   selectedNoteIds.value = new Set()
 }
 
@@ -1021,7 +1252,15 @@ function cloneClipsByIds(ids) {
   return tracks.value.flatMap((track, trackIndex) => (
     (track.clips || [])
       .filter(clip => idSet.has(clip.id))
-      .map(clip => ({ trackId: track.id, trackIndex, clip: { ...clip, notes: cloneNotes(clip.notes) } }))
+      .map(clip => ({
+        trackId: track.id,
+        trackIndex,
+        clip: {
+          ...clip,
+          notes: cloneNotes(clip.notes),
+          events: cloneEvents(clip.events),
+        },
+      }))
   ))
 }
 
@@ -1049,6 +1288,10 @@ function cloneNotes(notes = []) {
   return (notes || []).map(note => ({ ...note }))
 }
 
+function cloneEvents(events = []) {
+  return (events || []).map(event => ({ ...event }))
+}
+
 function toggleClipSelection(clipId) {
   const next = new Set(selectedClipIds.value)
   if (next.has(clipId)) next.delete(clipId)
@@ -1066,6 +1309,7 @@ function copySelectedClips() {
     clip: {
       ...record.clip,
       notes: cloneNotes(record.clip.notes),
+      events: cloneEvents(record.clip.events),
     },
   }))
 }
@@ -1084,6 +1328,7 @@ async function pasteClips() {
         id: makeClipId(),
         start: pasteStart + item.startOffset,
         notes: cloneNotes(item.clip.notes),
+        events: cloneEvents(item.clip.events),
       }
       pastedIds.push(clip.id)
       track.clips = [...(track.clips || []), clip].sort(sortClips)
@@ -1160,12 +1405,13 @@ async function onPianoPointerDown(event) {
   }
 
   if (pianoTool.value === 'draw') {
+    const start = snapPianoBeat(point.beat)
     const note = {
       id: makeNoteId(),
       pitch: point.pitch,
-      start: snapBeat(point.beat),
-      duration: snapStep,
-      velocity: 96,
+      start,
+      duration: activeNoteStep.value,
+      velocity: DEFAULT_NOTE_VELOCITY,
     }
     draftNote.value = note
     pianoDrag = {
@@ -1275,11 +1521,11 @@ function onPianoPointerMove(event) {
   if (!point) return
 
   if (pianoDrag.type === 'draw' && draftNote.value) {
-    const end = Math.max(pianoDrag.startBeat + snapStep, snapBeat(point.beat + snapStep))
+    const end = Math.max(pianoDrag.startBeat + activeNoteStep.value, snapPianoBeat(point.beat))
     draftNote.value = {
       ...draftNote.value,
       pitch: point.pitch,
-      duration: Math.max(snapStep, end - pianoDrag.startBeat),
+      duration: Math.max(activeNoteStep.value, end - pianoDrag.startBeat),
     }
   } else if (pianoDrag.type === 'select' && selectionBox.value) {
     selectionBox.value = {
@@ -1288,20 +1534,20 @@ function onPianoPointerMove(event) {
       y2: point.y,
     }
   } else if (pianoDrag.type === 'move') {
-    const deltaBeat = snapBeat(point.beat - pianoDrag.startBeat)
+    const deltaBeat = snapPianoBeatDelta(point.beat - pianoDrag.startBeat)
     const deltaPitch = point.pitch - pianoDrag.startPitch
     applyDraggedNotes((note) => ({
       ...note,
-      start: Math.max(0, snapBeat(note.start + deltaBeat)),
+      start: snapPianoBeat(Math.max(0, note.start + deltaBeat)),
       pitch: clamp(note.pitch + deltaPitch, minPitch, maxPitch),
     }))
   } else if (pianoDrag.type === 'resize') {
     applyDraggedNotes((note) => {
       if (note.id !== pianoDrag.noteId) return note
-      const duration = snapBeat(point.beat - pianoDrag.noteStart)
+      const duration = snapPianoDuration(point.beat - pianoDrag.noteStart)
       return {
         ...note,
-        duration: Math.max(snapStep, duration),
+        duration,
       }
     })
   }
@@ -1427,7 +1673,7 @@ async function persistActiveClipNotes(notes) {
         0,
         ...normalized.map(note => Number(note.start || 0) + Number(note.duration || 0))
       )
-      clip.duration = Math.max(Number(clip.duration || 0.25), noteEnd, snapStep)
+      clip.duration = Math.max(Number(clip.duration || 0.25), noteEnd, activeNoteStep.value)
     }
   })
 }
@@ -1436,9 +1682,9 @@ function normalizeClientNote(note) {
   return {
     id: note.id || makeNoteId(),
     pitch: clamp(Math.round(Number(note.pitch || 60)), 0, 127),
-    start: Math.max(0, snapBeat(Number(note.start || 0))),
-    duration: Math.max(snapStep, snapBeat(Number(note.duration || snapStep))),
-    velocity: clamp(Math.round(Number(note.velocity || 96)), 1, 127),
+    start: Math.max(0, snapBeatToGrid(Number(note.start || 0), null)),
+    duration: Math.max(minFreehandStep, snapBeatToGrid(Number(note.duration || minFreehandStep), null)),
+    velocity: clamp(Math.round(Number(note.velocity || DEFAULT_NOTE_VELOCITY)), 1, 127),
   }
 }
 
@@ -1480,7 +1726,7 @@ function copySelectedNotes() {
 
 async function pasteNotes() {
   if (!activeMidiClip.value || !noteClipboard.value.length) return
-  const pasteStart = snapBeat(Math.max(0, visualPositionBeats.value))
+  const pasteStart = snapPianoBeat(Math.max(0, visualPositionBeats.value))
   const clipStart = Number(activeMidiClip.value.clip.start || 0)
   const pasted = noteClipboard.value.map(note => ({
     ...note,
@@ -1497,6 +1743,348 @@ async function deleteSelectedNotes() {
   const remaining = activeMidiClip.value.clip.notes.filter(note => !selected.has(note.id))
   selectedNoteIds.value = new Set()
   await persistActiveClipNotes(remaining)
+}
+
+function setControllerLaneCanvas(laneId, el) {
+  if (el) controllerLaneCanvases.set(laneId, el)
+  else controllerLaneCanvases.delete(laneId)
+}
+
+function syncPianoScroll(source) {
+  if (syncingPianoScroll) return
+  const from = source === 'piano' ? pianoWrap.value : controllerWrap.value
+  const to = source === 'piano' ? controllerWrap.value : pianoWrap.value
+  if (!from || !to) return
+  controllerScrollLeft.value = source === 'controller' ? from.scrollLeft : to.scrollLeft
+  if (to.scrollLeft === from.scrollLeft) return
+  syncingPianoScroll = true
+  to.scrollLeft = from.scrollLeft
+  controllerScrollLeft.value = source === 'controller' ? from.scrollLeft : to.scrollLeft
+  requestAnimationFrame(() => {
+    syncingPianoScroll = false
+  })
+}
+
+function controllerDefinitionForLane(lane) {
+  return controllerDefinitionFromId(lane?.activeControllerId)
+}
+
+function controllerLabel(controllerId) {
+  return controllerDefinitionFromId(controllerId).label
+}
+
+function controllerAxisTop(lane) {
+  const definition = controllerDefinitionForLane(lane)
+  return String(controllerDisplayRange(definition).max)
+}
+
+function controllerAxisMiddle(lane) {
+  const definition = controllerDefinitionForLane(lane)
+  return String(controllerDisplayRange(definition).middle)
+}
+
+function controllerAxisBottom(lane) {
+  const definition = controllerDefinitionForLane(lane)
+  return String(controllerDisplayRange(definition).min)
+}
+
+function controllerMenuOptions(lane) {
+  const existing = new Set(lane.controllerIds || [])
+  return CONTROLLER_PRESETS.filter(preset => !existing.has(preset.id))
+}
+
+function toggleControllerMenu(laneId) {
+  controllerMenuLaneId.value = controllerMenuLaneId.value === laneId ? null : laneId
+  customControllerNumber.value = ''
+}
+
+function setLaneController(laneId, controllerId) {
+  controllerLanes.value = controllerLanes.value.map((lane) => {
+    if (lane.id !== laneId) return lane
+    const controllerIds = lane.controllerIds.includes(controllerId)
+      ? lane.controllerIds
+      : [...lane.controllerIds, controllerId]
+    return {
+      ...lane,
+      activeControllerId: controllerId,
+      controllerIds,
+    }
+  })
+  controllerMenuLaneId.value = null
+  nextTick(drawAll)
+}
+
+function addControllerLane() {
+  controllerLanes.value = [
+    ...controllerLanes.value,
+    {
+      id: makeControllerLaneId(),
+      activeControllerId: 'cc:1',
+      controllerIds: [...DEFAULT_CONTROLLER_IDS],
+    },
+  ]
+  nextTick(drawAll)
+}
+
+function removeControllerLane(laneId) {
+  if (controllerLanes.value.length <= 1) return
+  controllerLanes.value = controllerLanes.value.filter(lane => lane.id !== laneId)
+  if (controllerMenuLaneId.value === laneId) controllerMenuLaneId.value = null
+  nextTick(drawAll)
+}
+
+function addControllerToLane(laneId, controllerId) {
+  const definition = controllerDefinitionFromId(controllerId)
+  setLaneController(laneId, definition.id)
+}
+
+function addCustomControllerToLane(laneId) {
+  const controller = Number(customControllerNumber.value)
+  if (!Number.isFinite(controller)) return
+  addControllerToLane(laneId, `cc:${clamp(Math.round(controller), 0, 127)}`)
+  customControllerNumber.value = ''
+}
+
+function removeActiveControllerFromLane(laneId) {
+  controllerLanes.value = controllerLanes.value.map((lane) => {
+    if (lane.id !== laneId || lane.controllerIds.length <= 1) return lane
+    const controllerIds = lane.controllerIds.filter(id => id !== lane.activeControllerId)
+    return {
+      ...lane,
+      controllerIds,
+      activeControllerId: controllerIds[0] || 'velocity',
+    }
+  })
+  controllerMenuLaneId.value = null
+  nextTick(drawAll)
+}
+
+function controllerDefinitionFromEvent(event) {
+  if (event?.type === 'control_change') {
+    return controllerDefinitionFromId(`cc:${Number(event.controller || 0)}`)
+  }
+  if (event?.type === 'pitch_bend') return controllerDefinitionFromId('pitch_bend')
+  if (event?.type === 'channel_pressure') return controllerDefinitionFromId('after_touch')
+  return null
+}
+
+function normalizeEditableControllerEvent(event) {
+  const definition = controllerDefinitionFromEvent(event)
+  if (!definition) return { ...event }
+  return normalizeControllerEvent(definition, event, null)
+}
+
+async function persistActiveClipEvents(events) {
+  if (!activeMidiClip.value) return
+  const clipId = activeMidiClip.value.clip.id
+  const normalized = events
+    .map(normalizeEditableControllerEvent)
+    .sort(sortControllerEvents)
+  await persistProjectUpdate((nextProject) => {
+    for (const track of nextProject.tracks || []) {
+      const clip = (track.clips || []).find(item => item.id === clipId)
+      if (!clip) continue
+      clip.events = normalized
+      const noteEnd = Math.max(
+        0,
+        ...(clip.notes || []).map(note => Number(note.start || 0) + Number(note.duration || 0))
+      )
+      const eventEnd = Math.max(0, ...normalized.map(event => Number(event.start || 0)))
+      clip.duration = Math.max(Number(clip.duration || 0.25), noteEnd, eventEnd, activeNoteStep.value)
+    }
+  })
+}
+
+function sortControllerEvents(a, b) {
+  return Number(a.start || 0) - Number(b.start || 0)
+    || String(a.type || '').localeCompare(String(b.type || ''))
+    || Number(a.controller ?? a.pitch ?? -1) - Number(b.controller ?? b.pitch ?? -1)
+    || String(a.id || '').localeCompare(String(b.id || ''))
+}
+
+function onControllerLanePointerDown(event, lane) {
+  if (!activeMidiClip.value) return
+  const point = controllerLanePoint(event)
+  if (!point || point.x < pianoKeyW || point.y < controllerLaneTabH) return
+  event.preventDefault()
+  const definition = controllerDefinitionForLane(lane)
+  const value = controllerValueFromY(point.y, definition)
+
+  if (definition.type === 'velocity') {
+    const note = findControllerVelocityNote(point.beat)
+    if (!note) return
+    updateNoteVelocity(note.id, value)
+    controllerDrag = {
+      type: 'velocity',
+      laneId: lane.id,
+      noteId: note.id,
+      definition,
+    }
+  } else {
+    const beat = snapControllerBeat(point.beat)
+    const eventId = upsertControllerEventAtPoint(definition, beat, value)
+    controllerDrag = {
+      type: 'event',
+      laneId: lane.id,
+      eventId,
+      definition,
+      lastBeat: beat,
+      lastValue: value,
+    }
+  }
+
+  bindControllerDrag()
+  drawAll()
+}
+
+function bindControllerDrag() {
+  window.addEventListener('pointermove', onControllerPointerMove)
+  window.addEventListener('pointerup', onControllerPointerUp)
+}
+
+function unbindControllerDrag() {
+  window.removeEventListener('pointermove', onControllerPointerMove)
+  window.removeEventListener('pointerup', onControllerPointerUp)
+}
+
+function onControllerPointerMove(event) {
+  if (!controllerDrag || !activeMidiClip.value) return
+  const point = controllerLanePoint(event)
+  if (!point) return
+  event.preventDefault()
+  const value = controllerValueFromY(point.y, controllerDrag.definition)
+  if (controllerDrag.type === 'velocity') {
+    updateNoteVelocity(controllerDrag.noteId, value)
+  } else {
+    const beat = snapControllerBeat(point.beat)
+    controllerDrag.eventId = writeControllerDragPoints(
+      controllerDrag.definition,
+      controllerDrag.lastBeat,
+      controllerDrag.lastValue,
+      beat,
+      value
+    )
+    controllerDrag.lastBeat = beat
+    controllerDrag.lastValue = value
+  }
+  drawAll()
+}
+
+async function onControllerPointerUp() {
+  if (!controllerDrag || !activeMidiClip.value) return
+  const drag = controllerDrag
+  controllerDrag = null
+  unbindControllerDrag()
+  if (drag.type === 'velocity') {
+    await persistActiveClipNotes(activeMidiClip.value.clip.notes)
+  } else {
+    await persistActiveClipEvents(activeMidiClip.value.clip.events || [])
+  }
+  drawAll()
+}
+
+function controllerLanePoint(event) {
+  const target = event.target?.classList?.contains('controller-canvas')
+    ? event.target
+    : controllerLaneCanvases.get(controllerDrag?.laneId)
+  const canvas = target || event.target
+  if (!canvas?.getBoundingClientRect) return null
+  const rect = canvas.getBoundingClientRect()
+  const x = event.clientX - rect.left
+  const y = event.clientY - rect.top
+  return {
+    x,
+    y,
+    beat: Math.max(0, (x - pianoKeyW) / pianoPxPerBeat.value),
+  }
+}
+
+function controllerValueFromY(y, definition) {
+  const bodyY = clamp(y - controllerLaneTabH, 0, controllerLaneBodyH)
+  const unit = 1 - bodyY / controllerLaneBodyH
+  return controllerUnitToValue(definition, unit)
+}
+
+function findControllerVelocityNote(beat) {
+  const notes = activeMidiClip.value?.clip.notes || []
+  const snapped = snapPianoBeat(beat)
+  let closest = null
+  let closestDistance = Number.POSITIVE_INFINITY
+  for (const note of notes) {
+    const start = Number(note.start || 0)
+    const duration = Math.max(activeNoteStep.value, Number(note.duration || activeNoteStep.value))
+    const distance = Math.min(Math.abs(start - beat), Math.abs(start + duration - beat))
+    const inside = beat >= start - 0.05 && beat <= start + duration + 0.05
+    if ((inside || Math.abs(start - snapped) < 0.001) && distance < closestDistance) {
+      closest = note
+      closestDistance = distance
+    }
+  }
+  return closest
+}
+
+function updateNoteVelocity(noteId, value) {
+  if (!activeMidiClip.value) return
+  activeMidiClip.value.clip.notes = activeMidiClip.value.clip.notes
+    .map(note => note.id === noteId
+      ? { ...note, velocity: clamp(Math.round(value), 1, 127) }
+      : note)
+    .sort(sortNotes)
+}
+
+function upsertControllerEventAtPoint(definition, beat, value) {
+  const events = activeMidiClip.value?.clip.events || []
+  const start = snapControllerBeat(beat)
+  const hit = findControllerEvent(definition, start)
+  if (hit) {
+    updateControllerEvent(definition, hit.id, { start, value })
+    return hit.id
+  }
+  const event = normalizeControllerEvent(definition, {
+    id: makeControllerEventId(),
+    start,
+    value,
+  }, activePianoSnapStep.value)
+  activeMidiClip.value.clip.events = [...events, event].sort(sortControllerEvents)
+  return event.id
+}
+
+function writeControllerDragPoints(definition, startBeat, startValue, endBeat, endValue) {
+  const beats = quantizedBeatsBetween(startBeat, endBeat, activePianoSnapStep.value)
+  let lastEventId = controllerDrag?.eventId || null
+  for (const beat of beats) {
+    const value = interpolateControllerValue(startBeat, startValue, endBeat, endValue, beat)
+    lastEventId = upsertControllerEventAtPoint(definition, beat, value)
+  }
+  return lastEventId
+}
+
+function findControllerEvent(definition, beat) {
+  const events = activeMidiClip.value?.clip.events || []
+  const snapThreshold = activePianoSnapStep.value
+    ? Math.max(0.001, activePianoSnapStep.value / 3)
+    : Number.POSITIVE_INFINITY
+  const threshold = Math.min(Math.max(0.008, 3 / pianoPxPerBeat.value), snapThreshold)
+  return events
+    .filter(event => eventMatchesController(event, definition))
+    .find(event => Math.abs(Number(event.start || 0) - beat) <= threshold)
+}
+
+function updateControllerEvent(definition, eventId, patch) {
+  if (!activeMidiClip.value) return
+  activeMidiClip.value.clip.events = (activeMidiClip.value.clip.events || [])
+    .map((event) => {
+      if (event.id !== eventId) return event
+      const value = patch.value ?? valueFromControllerEvent(event, definition)
+      return normalizeControllerEvent(definition, { ...event, ...patch, value }, activePianoSnapStep.value)
+    })
+    .sort(sortControllerEvents)
+}
+
+function setPianoQuantizeOption(optionId) {
+  pianoQuantizeId.value = optionId
+  pianoQuantizeMenuOpen.value = false
+  drawAll()
 }
 
 function isInteractiveTarget(event) {
@@ -1556,12 +2144,30 @@ function onStudioKeydown(event) {
     selectedClipIds.value = new Set()
     selectionBox.value = null
     draftNote.value = null
+    controllerMenuLaneId.value = null
+    pianoQuantizeMenuOpen.value = false
     drawAll()
   }
 }
 
 function snapBeat(value) {
   return Math.round(Number(value || 0) / snapStep) * snapStep
+}
+
+function snapPianoBeat(value) {
+  return Math.max(0, snapBeatToGrid(value, activePianoSnapStep.value))
+}
+
+function snapPianoBeatDelta(value) {
+  return snapBeatToGrid(value, activePianoSnapStep.value)
+}
+
+function snapPianoDuration(value) {
+  return Math.max(activeNoteStep.value, snapBeatToGrid(value, activePianoSnapStep.value))
+}
+
+function snapControllerBeat(value) {
+  return Math.max(0, snapBeatToGrid(value, activePianoSnapStep.value))
 }
 
 function makeNoteId() {
@@ -1578,7 +2184,10 @@ function closePiano() {
   draftNote.value = null
   selectionBox.value = null
   pianoResizeDrag = null
+  controllerDrag = null
+  controllerMenuLaneId.value = null
   unbindPianoResize()
+  unbindControllerDrag()
   drawAll()
 }
 
@@ -1691,6 +2300,7 @@ function animationLoop(now) {
 function drawAll() {
   drawArrangement()
   drawPiano()
+  drawControllerLanes()
 }
 
 function setupCanvas(canvas, width, height) {
@@ -1842,6 +2452,7 @@ function drawPiano() {
     wrap.clientWidth,
     pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
   )
+  pianoTimelineWidth.value = width
   const height = pianoRulerH + (maxPitch - minPitch + 1) * pianoRowH
   const ctx = setupCanvas(canvas, width, height)
   ctx.fillStyle = '#17191c'
@@ -1911,6 +2522,157 @@ function drawPiano() {
   drawPianoPlayhead(ctx, height, clip)
 }
 
+function drawControllerLanes() {
+  if (!pianoVisible.value || !activeMidiClip.value || !controllerLanes.value.length) return
+  const clip = activeMidiClip.value.clip
+  controllerScrollLeft.value = controllerWrap.value?.scrollLeft || 0
+  const width = Math.max(
+    controllerWrap.value?.clientWidth || 0,
+    pianoTimelineWidth.value,
+    pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
+  )
+  pianoTimelineWidth.value = width
+  for (const lane of controllerLanes.value) {
+    const canvas = controllerLaneCanvases.get(lane.id)
+    if (!canvas) continue
+    const ctx = setupCanvas(canvas, width, controllerLaneH)
+    drawControllerLane(ctx, lane, width, clip)
+  }
+}
+
+function drawControllerLane(ctx, lane, width, clip) {
+  const definition = controllerDefinitionForLane(lane)
+  const colorStyles = controllerLaneColorStyles(activeMidiClip.value?.track?.color)
+  ctx.fillStyle = '#17191c'
+  ctx.fillRect(0, 0, width, controllerLaneH)
+  ctx.fillStyle = '#202428'
+  ctx.fillRect(0, 0, pianoKeyW, controllerLaneH)
+  ctx.fillStyle = '#202326'
+  ctx.fillRect(pianoKeyW, 0, width - pianoKeyW, controllerLaneTabH)
+  ctx.fillStyle = '#181b1f'
+  ctx.fillRect(pianoKeyW, controllerLaneTabH, width - pianoKeyW, controllerLaneBodyH)
+  paintControllerGrid(ctx, width)
+
+  if (definition.type === 'velocity') {
+    drawVelocityLane(ctx, clip, definition, colorStyles)
+  } else {
+    drawEventLane(ctx, clip, definition, colorStyles)
+  }
+  drawControllerPlayhead(ctx, controllerLaneH, clip)
+}
+
+function paintControllerGrid(ctx, width) {
+  const bodyTop = controllerLaneTabH
+  const bodyBottom = controllerLaneTabH + controllerLaneBodyH
+  const scale = pianoPxPerBeat.value
+  const snapStepWidth = activePianoSnapStep.value ? activePianoSnapStep.value * scale : 0
+  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
+  ctx.beginPath()
+  ctx.moveTo(0, bodyTop + 0.5)
+  ctx.lineTo(width, bodyTop + 0.5)
+  ctx.moveTo(0, bodyBottom - 0.5)
+  ctx.lineTo(width, bodyBottom - 0.5)
+  ctx.stroke()
+
+  for (const unit of [0.25, 0.5, 0.75]) {
+    const y = bodyTop + controllerLaneBodyH * unit
+    ctx.strokeStyle = unit === 0.5 ? 'rgba(229,236,245,0.11)' : 'rgba(229,236,245,0.055)'
+    ctx.beginPath()
+    ctx.moveTo(pianoKeyW, y)
+    ctx.lineTo(width, y)
+    ctx.stroke()
+  }
+
+  const visibleBeats = Math.ceil((width - pianoKeyW) / pianoPxPerBeat.value)
+  for (let beat = 0; beat <= visibleBeats; beat += 1) {
+    const x = pianoKeyW + beat * pianoPxPerBeat.value
+    ctx.strokeStyle = beat % meterBeats.value === 0
+      ? 'rgba(229,236,245,0.14)'
+      : 'rgba(229,236,245,0.06)'
+    ctx.beginPath()
+    ctx.moveTo(x, bodyTop)
+    ctx.lineTo(x, bodyBottom)
+    ctx.stroke()
+
+    if (snapStepWidth >= 4 && activePianoSnapStep.value && activePianoSnapStep.value < 1) {
+      for (let subBeat = activePianoSnapStep.value; subBeat < 1; subBeat += activePianoSnapStep.value) {
+        const subX = x + subBeat * scale
+        ctx.strokeStyle = 'rgba(229,236,245,0.035)'
+        ctx.beginPath()
+        ctx.moveTo(subX, bodyTop)
+        ctx.lineTo(subX, bodyBottom)
+        ctx.stroke()
+      }
+    }
+  }
+}
+
+function drawVelocityLane(ctx, clip, definition, colorStyles) {
+  const notes = clip.notes || []
+  for (const note of notes) {
+    const x = pianoKeyW + Number(note.start || 0) * pianoPxPerBeat.value
+    const value = clamp(Math.round(Number(note.velocity || definition.defaultValue)), 1, 127)
+    const y = controllerValueToY(value, definition)
+    const selected = selectedNoteIds.value.has(note.id)
+    ctx.strokeStyle = selected ? colorStyles.selectedVelocityStroke : colorStyles.velocityStroke
+    ctx.lineWidth = selected ? 3 : 2
+    ctx.beginPath()
+    ctx.moveTo(x, controllerLaneTabH + controllerLaneBodyH)
+    ctx.lineTo(x, y)
+    ctx.stroke()
+    ctx.fillStyle = selected ? colorStyles.selectedVelocityFill : colorStyles.velocityFill
+    ctx.fillRect(x - 2, y - 2, 4, 4)
+  }
+  ctx.lineWidth = 1
+}
+
+function drawEventLane(ctx, clip, definition, colorStyles) {
+  const tailBeat = Math.max(0, (pianoTimelineWidth.value - pianoKeyW) / pianoPxPerBeat.value)
+  const points = controllerRenderPoints(clip.events || [], definition, tailBeat)
+  if (!points.length) return
+
+  ctx.strokeStyle = colorStyles.eventStroke
+  ctx.fillStyle = colorStyles.eventFill
+  ctx.lineWidth = 1.4
+  ctx.beginPath()
+  points.forEach((point, index) => {
+    const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
+    const y = controllerValueToY(point.value, definition)
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  ctx.stroke()
+
+  for (const point of points) {
+    if (point.start === tailBeat && point.synthetic) continue
+    const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
+    const y = controllerValueToY(point.value, definition)
+    ctx.beginPath()
+    ctx.arc(x, y, point.synthetic ? 3 : 4, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.strokeStyle = colorStyles.eventPointStroke
+    ctx.stroke()
+  }
+  ctx.lineWidth = 1
+}
+
+function controllerValueToY(value, definition) {
+  const unit = controllerValueToUnit(definition, value)
+  return controllerLaneTabH + (1 - unit) * controllerLaneBodyH
+}
+
+function drawControllerPlayhead(ctx, height, clip) {
+  const localBeat = visualPositionBeats.value - Number(clip.start || 0)
+  if (localBeat < 0 || localBeat > Number(clip.duration || 0)) return
+  const x = pianoKeyW + localBeat * pianoPxPerBeat.value
+  ctx.strokeStyle = 'rgba(240, 209, 122, 0.8)'
+  ctx.lineWidth = 1.3
+  ctx.beginPath()
+  ctx.moveTo(x, controllerLaneTabH)
+  ctx.lineTo(x, height)
+  ctx.stroke()
+}
+
 function drawRuler(ctx, width) {
   const scale = arrangementPxPerBeat.value
   const bars = Math.ceil(width / (scale * meterBeats.value))
@@ -1959,6 +2721,7 @@ function paintPianoGrid(ctx, width, height, clip) {
   const scale = pianoPxPerBeat.value
   const clipStart = Number(clip.start || 0)
   const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
+  const snapStepWidth = activePianoSnapStep.value ? activePianoSnapStep.value * scale : 0
 
   for (let beat = 0; beat <= visibleBeats; beat += 1) {
     const x = pianoKeyW + beat * scale
@@ -1969,13 +2732,15 @@ function paintPianoGrid(ctx, width, height, clip) {
     ctx.lineTo(x, height)
     ctx.stroke()
 
-    ctx.strokeStyle = 'rgba(229,236,245,0.035)'
-    for (let div = 1; div < 4; div += 1) {
-      const subX = x + (div * scale) / 4
-      ctx.beginPath()
-      ctx.moveTo(subX, pianoRulerH)
-      ctx.lineTo(subX, height)
-      ctx.stroke()
+    if (snapStepWidth >= 4 && activePianoSnapStep.value && activePianoSnapStep.value < 1) {
+      ctx.strokeStyle = 'rgba(229,236,245,0.035)'
+      for (let subBeat = activePianoSnapStep.value; subBeat < 1; subBeat += activePianoSnapStep.value) {
+        const subX = x + subBeat * scale
+        ctx.beginPath()
+        ctx.moveTo(subX, pianoRulerH)
+        ctx.lineTo(subX, height)
+        ctx.stroke()
+      }
     }
   }
 
@@ -2104,6 +2869,7 @@ onMounted(async () => {
   if (editorStack.value) resizeObserver.observe(editorStack.value)
   if (arrangementWrap.value) resizeObserver.observe(arrangementWrap.value)
   if (pianoWrap.value) resizeObserver.observe(pianoWrap.value)
+  if (controllerWrap.value) resizeObserver.observe(controllerWrap.value)
   raf = requestAnimationFrame(animationLoop)
 })
 
@@ -2112,6 +2878,7 @@ onUnmounted(() => {
   unbindPianoDrag()
   unbindPianoResize()
   unbindArrangementDrag()
+  unbindControllerDrag()
   cancelAnimationFrame(raf)
 })
 
@@ -2689,6 +3456,211 @@ watch(positionBeats, (value) => {
   cursor: crosshair;
 }
 
+.piano-workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.controller-lanes-wrap {
+  flex: 0 0 auto;
+  height: 124px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-top: 1px solid rgba(229, 236, 245, 0.13);
+  background: #15181b;
+  scrollbar-width: thin;
+}
+
+.controller-lanes {
+  min-width: 100%;
+}
+
+.controller-lane {
+  position: relative;
+  height: 96px;
+  min-width: 100%;
+  overflow: visible;
+  border-bottom: 1px solid rgba(229, 236, 245, 0.11);
+  background: #17191c;
+}
+
+.controller-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  min-width: 100%;
+  cursor: crosshair;
+}
+
+.controller-lane-axis {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  width: 76px;
+  height: 96px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 28px 8px 6px;
+  border-right: 1px solid rgba(229, 236, 245, 0.16);
+  background: #2b3035;
+  color: #b7c2cf;
+  font-family: var(--mono);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.controller-lane-tabs {
+  position: absolute;
+  top: 0;
+  z-index: 5;
+  width: max-content;
+  height: 24px;
+  display: flex;
+  align-items: stretch;
+  overflow: visible;
+  background: rgba(32, 36, 40, 0.96);
+}
+
+.controller-menu-btn,
+.controller-tab,
+.controller-close,
+.controller-footer-btn {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-right: 1px solid rgba(229, 236, 245, 0.08);
+  background: #24282c;
+  color: #b9c3cf;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.controller-menu-btn {
+  width: 28px;
+  font-weight: 800;
+}
+
+.controller-tab {
+  min-width: 76px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.controller-tab.active {
+  background: #0d74c9;
+  color: #fff;
+}
+
+.controller-close {
+  width: 26px;
+  color: var(--t4);
+}
+
+.controller-close svg,
+.controller-footer-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.controller-menu-btn:hover,
+.controller-tab:hover,
+.controller-close:hover,
+.controller-footer-btn:hover {
+  color: var(--t1);
+  background: #343b42;
+}
+
+.controller-tab.active:hover {
+  background: #0d74c9;
+}
+
+.controller-menu {
+  position: absolute;
+  top: 25px;
+  left: 0;
+  z-index: 8;
+  width: 188px;
+  padding: 6px;
+  border: 1px solid rgba(229, 236, 245, 0.2);
+  border-radius: 6px;
+  background: #30353a;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.36);
+}
+
+.controller-menu button,
+.controller-menu label {
+  width: 100%;
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 7px;
+  background: transparent;
+  color: #e1e7ee;
+  font-size: 12px;
+  text-align: left;
+}
+
+.controller-menu button {
+  cursor: pointer;
+}
+
+.controller-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.controller-menu button:hover:not(:disabled) {
+  background: rgba(13, 116, 201, 0.28);
+}
+
+.controller-menu span {
+  color: #b7c2cf;
+}
+
+.controller-menu input {
+  width: 64px;
+  height: 22px;
+  border: 1px solid rgba(229, 236, 245, 0.18);
+  border-radius: 4px;
+  background: #15181b;
+  color: #f4f6f8;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.controller-lane-footer {
+  height: 28px;
+  min-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(229, 236, 245, 0.09);
+  background: #202428;
+}
+
+.controller-footer-btn {
+  position: sticky;
+  left: 10px;
+  width: 26px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #b9c3cf;
+}
+
 .piano-head {
   flex: 0 0 auto;
   text-transform: none;
@@ -2709,6 +3681,97 @@ watch(positionBeats, (value) => {
 .piano-head strong {
   color: var(--t1);
   font-size: 12px;
+}
+
+.piano-actions {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.piano-control {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid rgba(229, 236, 245, 0.13);
+  border-radius: 6px;
+  background: #2b3035;
+  color: var(--t2);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.piano-control span {
+  color: var(--t3);
+  text-transform: none;
+  font-size: 10px;
+}
+
+.piano-quantize {
+  position: relative;
+}
+
+.piano-quantize-button {
+  min-width: 70px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--t1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.piano-quantize-button strong {
+  color: var(--t1);
+  font-size: 12px;
+}
+
+.piano-quantize-button svg {
+  width: 13px;
+  height: 13px;
+  color: var(--t3);
+}
+
+.piano-quantize-menu {
+  position: absolute;
+  top: 31px;
+  left: 0;
+  z-index: 12;
+  min-width: 100%;
+  padding: 4px;
+  border: 1px solid rgba(229, 236, 245, 0.2);
+  border-radius: 6px;
+  background: #2a2e33;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
+}
+
+.piano-quantize-menu button {
+  width: 100%;
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  color: #d8dee6;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.piano-quantize-menu button:hover,
+.piano-quantize-menu button.active {
+  background: #0d74c9;
+  color: #fff;
 }
 
 .inspector-section {
