@@ -204,6 +204,21 @@ def create_track(
     return project, find_track(project, track_id)
 
 
+def delete_track(track_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove a track from the project while keeping at least one track."""
+    project = load_project()
+    track = find_track(project, track_id)
+    if len(project["tracks"]) <= 1:
+        raise ValueError("cannot delete the last track")
+
+    deleted_id = int(track["id"])
+    project["tracks"] = [
+        item for item in project["tracks"] if int(item.get("id", -1)) != deleted_id
+    ]
+    project = save_project(project)
+    return project, track
+
+
 def update_track(track_id: int, updates: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     project = load_project()
     track = find_track(project, track_id)

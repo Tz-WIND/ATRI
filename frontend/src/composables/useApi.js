@@ -163,6 +163,9 @@ export function useApi() {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+    studioDeleteTrack: (trackId) => request(`/api/music/studio/tracks/${encodeURIComponent(trackId)}`, {
+      method: 'DELETE',
+    }),
     studioSetTrackPlugin: (trackId, plugin, slotId = 'instrument') => request(`/api/music/studio/tracks/${encodeURIComponent(trackId)}/plugin`, {
       method: 'POST',
       body: JSON.stringify({ plugin, slot_id: slotId }),

@@ -1,4 +1,8 @@
+import pytest
+
 from core.music_project import (
+    create_track,
+    delete_track,
     load_project,
     midi_diff,
     midi_write,
@@ -6,6 +10,26 @@ from core.music_project import (
     save_project,
     set_track_plugin,
 )
+
+
+def test_delete_track_removes_requested_track(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    project, created = create_track("Rack Split")
+
+    project, deleted = delete_track(created["id"])
+
+    assert deleted["id"] == created["id"]
+    assert all(track["id"] != created["id"] for track in project["tracks"])
+    assert project_summary(project)["track_count"] == 2
+
+
+def test_delete_track_rejects_last_remaining_track(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project({"tracks": [{"id": 1, "name": "Only Track"}]})
+
+    with pytest.raises(ValueError, match="cannot delete the last track"):
+        delete_track(1)
 
 
 def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):

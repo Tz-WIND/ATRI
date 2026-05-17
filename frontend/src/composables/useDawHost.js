@@ -274,6 +274,12 @@ async function createTrack(name = 'Instrument') {
   return res
 }
 
+async function deleteTrack(trackId) {
+  const res = await api.studioDeleteTrack(trackId)
+  if (res.project) setProject(res.project)
+  return res
+}
+
 async function loadPlugins(options = null) {
   pluginsLoading.value = true
   hostError.value = ''
@@ -545,6 +551,7 @@ export function useDawHost() {
     replaceTrackNotes,
     updateTrack,
     createTrack,
+    deleteTrack,
     loadPlugins,
     setTrackPlugin,
     openPluginEditor,

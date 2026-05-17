@@ -27,6 +27,9 @@ from core.music_project import (
     set_track_plugin,
 )
 from core.music_project import (
+    delete_track as delete_project_track,
+)
+from core.music_project import (
     update_track as update_project_track,
 )
 
@@ -747,6 +750,11 @@ async def _sync_project_to_host(
     host_track_ids = {
         int(track.get("id", -1)) for track in status.get("tracks", []) if isinstance(track, dict)
     }
+    project_host_track_ids = {
+        int(track.get("host_track_id"))
+        for track in project.get("tracks", [])
+        if isinstance(track, dict) and track.get("host_track_id") is not None
+    }
 
     meter = project.get("time_signature") or [4, 4]
     commands.append(
@@ -755,6 +763,12 @@ async def _sync_project_to_host(
             {"bpm": float(project.get("tempo", 120.0)), "time_sig": meter},
         )
     )
+
+    for stale_host_track_id in sorted(host_track_ids - project_host_track_ids):
+        response = await host.send_command("remove_track", {"id": stale_host_track_id})
+        commands.append(response)
+        if response.get("type") != "error":
+            host_track_ids.remove(stale_host_track_id)
 
     project_changed = False
     for track in project.get("tracks", []):
@@ -1054,6 +1068,18 @@ async def studio_update_track(track_id: int):
 
 
 # ── Agent control endpoint (receives commands from MusicTool) ──
+
+
+@bp.route("/studio/tracks/<int:track_id>", methods=["DELETE"])
+async def studio_delete_track(track_id: int):
+    try:
+        project, track = delete_project_track(track_id)
+    except ValueError as e:
+        message = str(e)
+        status = 400 if message == "cannot delete the last track" else 404
+        return jsonify({"error": message}), status
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
 
 
 @bp.route("/studio/tracks/<int:track_id>/plugin", methods=["POST"])

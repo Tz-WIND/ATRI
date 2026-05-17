@@ -275,6 +275,21 @@
                         title="Solo"
                         @click.stop="updateTrack(track.id, { solo: !track.solo })"
                       >S</button>
+                      <button
+                        class="track-delete"
+                        title="Delete track"
+                        aria-label="Delete track"
+                        :disabled="tracks.length <= 1 || loading"
+                        @click.stop="deleteTrack(track.id)"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                        ><path d="M18 6 6 18M6 6l12 12" /></svg>
+                      </button>
                     </span>
                   </div>
                 </template>
@@ -572,6 +587,7 @@ const {
   transport,
   updateTrack,
   createTrack,
+  deleteTrack,
   loadPlugins,
   setTrackPlugin,
   openPluginEditor,
@@ -2542,6 +2558,39 @@ watch(positionBeats, (value) => {
   color: #f0d17a;
   border-color: rgba(240, 209, 122, 0.32);
   background: rgba(240, 209, 122, 0.12);
+}
+
+.track-delete {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--t4);
+  cursor: pointer;
+  opacity: 0.58;
+  transition: opacity 0.14s, background 0.14s, border-color 0.14s, color 0.14s;
+}
+
+.track-delete:hover:not(:disabled) {
+  color: #ffd4cf;
+  border-color: rgba(255, 141, 127, 0.42);
+  background: rgba(255, 141, 127, 0.14);
+  opacity: 1;
+}
+
+.track-delete svg {
+  width: 12px;
+  height: 12px;
+}
+
+.track-flag:disabled,
+.track-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
 }
 
 .editor-stack {
