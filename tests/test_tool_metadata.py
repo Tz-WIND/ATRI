@@ -5,6 +5,7 @@ from core.agent.llm import ToolCall
 from core.tools import create_tools
 from core.tools.base import Tool, ToolCapabilities
 from core.tools.read import ReadFileTool
+from core.tools.write import WriteFileTool
 
 
 class _MetadataTool(Tool):
@@ -101,3 +102,27 @@ def test_builtin_tool_schema_can_include_metadata(tmp_path):
     assert schema["metadata"]["capability"] == "filesystem.read"
     assert schema["metadata"]["read_only"] is True
     assert schema["metadata"]["supports_parallel"] is True
+
+
+def test_agent_blocks_high_privilege_tools_when_not_allowed(tmp_path):
+    agent = Agent.__new__(Agent)
+    agent.tools = [
+        ReadFileTool(str(tmp_path)),
+        WriteFileTool(str(tmp_path)),
+        _MetadataTool(str(tmp_path)),
+    ]
+    agent.high_privilege_tools_allowed = False
+
+    schema_names = {schema["function"]["name"] for schema in agent._tool_schemas()}
+
+    assert "read_file" in schema_names
+    assert "metadata_tool" in schema_names
+    assert "write_file" not in schema_names
+    assert agent._exec_tool(
+        ToolCall(
+            id="1",
+            name="write_file",
+            arguments={"file_path": "blocked.txt", "content": "nope"},
+        )
+    ).startswith("Error: high-privilege tool 'write_file' is restricted")
+    assert not (tmp_path / "blocked.txt").exists()

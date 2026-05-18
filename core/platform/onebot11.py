@@ -7,6 +7,7 @@ compatible implementations.
 import asyncio
 import itertools
 import logging
+from collections import deque
 
 from aiocqhttp import CQHttp, Event
 
@@ -34,6 +35,16 @@ class OneBot11Adapter(Platform):
         super().__init__(config, event_queue)
         self.host = config.get("ws_reverse_host", "0.0.0.0")  # noqa: S104
         self.port = config.get("ws_reverse_port", 6199)
+        recent_config = config.get("group_recent_messages", {}) or {}
+        self.group_recent_messages_enabled = bool(recent_config.get("enabled", True))
+        self.group_recent_messages_max = max(0, int(recent_config.get("max_messages", 10) or 0))
+        self._group_recent_messages: dict[str, deque[dict[str, str]]] = {}
+        whitelist_config = config.get("whitelist", {}) or {}
+        self.private_user_whitelist = self._normalize_id_set(
+            whitelist_config.get("private_user_ids", [])
+        )
+        self.group_whitelist = self._normalize_id_set(whitelist_config.get("group_ids", []))
+        self.admin_user_ids = self._normalize_id_set(config.get("admin_user_ids", []))
 
         self.bot = CQHttp(
             use_ws_reverse=True,
@@ -61,10 +72,30 @@ class OneBot11Adapter(Platform):
             except Exception as e:
                 logger.exception(f"Handle private message failed: {e}")
 
+        @self.bot.on_request("friend")
+        async def on_friend_request(event: Event):
+            await self._handle_friend_request(event)
+
         @self.bot.on_websocket_connection
         def on_ws_connect(_):
             logger.info("OneBot v11 adapter connected.")
             self._status = PlatformStatus.RUNNING
+
+    async def _handle_friend_request(self, event: Event) -> None:
+        """Reject OneBot friend requests instead of approving them."""
+        flag = str(event.flag or "")
+        if not flag:
+            logger.warning("onebot11: received friend request without flag, skip rejecting.")
+            return
+
+        try:
+            await self.bot.call_action(
+                action="set_friend_add_request",
+                flag=flag,
+                approve=False,
+            )
+        except Exception as e:
+            logger.error(f"Reject friend request failed: {e}")
 
     async def _convert_message(self, event: Event) -> MessageEvent | None:
         """Convert aiocqhttp Event to our unified MessageEvent."""
@@ -79,8 +110,13 @@ class OneBot11Adapter(Platform):
             if event.message_type == "group"
             else MessageType.FRIEND_MESSAGE
         )
+        user_id = str(event.sender.get("user_id", ""))
+        group_id = str(getattr(event, "group_id", "") or "")
+        if not self._is_whitelisted_message(msg_type, user_id=user_id, group_id=group_id):
+            return None
+
         sender = Sender(
-            user_id=str(event.sender["user_id"]),
+            user_id=user_id,
             nickname=event.sender.get("card") or event.sender.get("nickname", ""),
         )
 
@@ -138,17 +174,80 @@ class OneBot11Adapter(Platform):
             str(event.group_id) if msg_type == MessageType.GROUP_MESSAGE else sender.user_id
         )
 
-        return MessageEvent(
+        msg_event = MessageEvent(
             message_str=message_str,
             message_chain=chain,
             message_type=msg_type,
             sender=sender,
             session_id=session_id,
-            group_id=str(getattr(event, "group_id", "") or ""),
+            group_id=group_id,
             self_id=str(event.self_id),
             platform_name="onebot11",
             raw_event=event,
         )
+        self._attach_recent_group_messages(msg_event)
+        self._remember_group_message(msg_event)
+        msg_event._extras["onebot11_is_admin"] = sender.user_id in self.admin_user_ids
+        return msg_event
+
+    def _attach_recent_group_messages(self, event: MessageEvent) -> None:
+        if not self._should_track_recent_group_messages(event):
+            return
+        recent = list(self._group_recent_messages.get(event.group_id, []))
+        if recent:
+            event._extras["recent_group_messages"] = recent
+
+    def _remember_group_message(self, event: MessageEvent) -> None:
+        if not self._should_track_recent_group_messages(event):
+            return
+        if event.sender.user_id == event.self_id or self._mentions_bot(event):
+            return
+
+        text = event.message_str.strip()
+        if not text:
+            return
+
+        group_messages = self._group_recent_messages.setdefault(
+            event.group_id,
+            deque(maxlen=self.group_recent_messages_max),
+        )
+        group_messages.append(
+            {
+                "user_id": event.sender.user_id,
+                "nickname": event.sender.nickname,
+                "text": text,
+            }
+        )
+
+    def _should_track_recent_group_messages(self, event: MessageEvent) -> bool:
+        return (
+            self.group_recent_messages_enabled
+            and self.group_recent_messages_max > 0
+            and event.message_type == MessageType.GROUP_MESSAGE
+            and bool(event.group_id)
+        )
+
+    @staticmethod
+    def _mentions_bot(event: MessageEvent) -> bool:
+        for comp in event.message_chain:
+            if not isinstance(comp, At):
+                continue
+            if (event.self_id and comp.qq == event.self_id) or comp.qq == "all":
+                return True
+        return False
+
+    @staticmethod
+    def _normalize_id_set(values: object) -> set[str]:
+        if not isinstance(values, list):
+            return set()
+        return {text for value in values if (text := str(value).strip())}
+
+    def _is_whitelisted_message(
+        self, msg_type: MessageType, *, user_id: str, group_id: str
+    ) -> bool:
+        if msg_type == MessageType.GROUP_MESSAGE:
+            return not self.group_whitelist or group_id in self.group_whitelist
+        return not self.private_user_whitelist or user_id in self.private_user_whitelist
 
     async def run(self):
         logger.info(f"Starting OneBot v11 adapter on {self.host}:{self.port}")

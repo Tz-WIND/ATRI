@@ -266,7 +266,7 @@ def _post_novelai_request(payload: dict, cfg: dict) -> bytes:
     try:
         # S310 is suppressed after scheme, host, and credential validation above.
         with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310
-            return response.read()
+            return bytes(response.read())
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", errors="replace")
         message = _novelai_error_message(raw)

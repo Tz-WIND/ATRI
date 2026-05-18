@@ -21,10 +21,10 @@ _MAX_CHAT_IMAGES = 4
 _MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024
 
 
-def _serialize_response_chain(chain: object) -> list[dict] | None:
+def _serialize_response_chain(chain: object) -> list[dict[str, object]] | None:
     if not isinstance(chain, list):
         return None
-    items = []
+    items: list[dict[str, object]] = []
     for comp in chain:
         if isinstance(comp, Plain):
             items.append({"type": "plain", "text": comp.text})

@@ -65,6 +65,21 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "ws_reverse_port": {"type": "integer", "default": 6199, "minimum": 1},
                 "ws_reverse_token": {"type": "string", "default": ""},
                 "blocked_users": {"type": "array", "default": []},
+                "admin_user_ids": {"type": "array", "default": []},
+                "whitelist": {
+                    "type": "object",
+                    "properties": {
+                        "private_user_ids": {"type": "array", "default": []},
+                        "group_ids": {"type": "array", "default": []},
+                    },
+                },
+                "group_recent_messages": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": True},
+                        "max_messages": {"type": "integer", "default": 10, "minimum": 0},
+                    },
+                },
             },
         },
         "dashboard": {

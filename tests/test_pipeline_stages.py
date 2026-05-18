@@ -7,7 +7,7 @@ from core.agent.llm import LLMResponse
 from core.pipeline.scheduler import PipelineScheduler
 from core.pipeline.stage import Stage
 from core.pipeline.stages.preprocess import PreProcessStage
-from core.pipeline.stages.process import ProcessStage
+from core.pipeline.stages.process import ProcessStage, _event_allows_high_privilege_tools
 from core.pipeline.stages.respond import _split_message
 from core.pipeline.stages.waking import WakingCheckStage
 from core.platform.message import At, Image, MessageEvent, MessageType, Plain
@@ -83,6 +83,17 @@ def test_split_message_prefers_paragraph_then_line_boundaries():
     assert _split_message("aa\n\nbbcc", 4) == ["aa", "bbcc"]
     assert _split_message("aa\nbbcc", 4) == ["aa", "bbcc"]
     assert _split_message("abcdef", 3) == ["abc", "def"]
+
+
+def test_process_stage_allows_high_privilege_tools_for_onebot_admin_only():
+    webchat = MessageEvent(platform_name="webchat")
+    onebot_admin = MessageEvent(platform_name="onebot11")
+    onebot_admin._extras["onebot11_is_admin"] = True
+    onebot_normal = MessageEvent(platform_name="onebot11")
+
+    assert _event_allows_high_privilege_tools(webchat) is True
+    assert _event_allows_high_privilege_tools(onebot_admin) is True
+    assert _event_allows_high_privilege_tools(onebot_normal) is False
 
 
 @pytest.mark.asyncio
@@ -175,6 +186,40 @@ async def test_process_stage_keeps_multimodal_content_when_transcription_disable
         {"type": "text", "text": "look"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_stage_prepends_recent_group_messages_to_onebot_group_input():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    event = MessageEvent(
+        message_str="help me check",
+        message_chain=[Plain(text="help me check")],
+        message_type=MessageType.GROUP_MESSAGE,
+        platform_name="onebot11",
+    )
+    event._extras["recent_group_messages"] = [
+        {
+            "user_id": "1001",
+            "nickname": "Alice",
+            "text": "build failed at asio",
+        },
+        {
+            "user_id": "1002",
+            "nickname": "Bob",
+            "text": "maybe enable the feature flag",
+        },
+    ]
+
+    content = await stage._event_content_for_agent(event)
+
+    assert content == (
+        "[Recent group messages before this request]\n"
+        "- Alice (1001): build failed at asio\n"
+        "- Bob (1002): maybe enable the feature flag\n\n"
+        "[Current request]\n"
+        "help me check"
+    )
 
 
 @pytest.mark.asyncio

@@ -61,7 +61,7 @@ def test_session_store_lists_multimodal_user_content_preview(tmp_path):
 
 def test_session_store_preserves_generated_assistant_image_attachments(tmp_path):
     store = SessionStore(tmp_path)
-    messages = [
+    messages: list[dict] = [
         {"role": "user", "content": "draw a cat"},
         {
             "role": "assistant",

@@ -23,6 +23,15 @@ from .prompt import build_system_prompt
 from .tools_bridge import get_all_tools, get_tool
 
 
+def _is_high_privilege_tool(tool) -> bool:
+    capabilities = tool.capabilities
+    return bool(
+        capabilities.writes_files
+        or capabilities.executes_shell
+        or capabilities.requires_approval
+    )
+
+
 def _prepend_user_notice(user_input: str | list[dict], notice: str) -> str | list[dict]:
     if isinstance(user_input, list):
         return [{"type": "text", "text": notice + "\n\n"}, *user_input]
@@ -73,6 +82,7 @@ class Agent:
         self.skills_prompt = skills_prompt
         self.llm_factory = llm_factory
         self.model_catalog = model_catalog
+        self.high_privilege_tools_allowed = True
         self._cancel_event = threading.Event()
         self._was_cancelled = False  # True if previous chat() was interrupted
 
@@ -102,7 +112,7 @@ class Agent:
 
     def _build_system(self) -> str:
         prompt = build_system_prompt(
-            self.tools,
+            self._available_tools(),
             self.workspace,
             extra_instructions=self.extra_instructions,
             persona=self.persona,
@@ -129,7 +139,7 @@ class Agent:
         return self.llm.clone(model=model)
 
     def _subagent_model_prompt(self) -> str:
-        if not any(t.name == "agent" for t in self.tools):
+        if not any(t.name == "agent" for t in self._available_tools()):
             return ""
 
         choices = self._available_model_choices()
@@ -172,7 +182,12 @@ class Agent:
         ]
 
     def _tool_schemas(self) -> list[dict]:
-        return [t.schema() for t in self.tools]
+        return [t.schema() for t in self._available_tools()]
+
+    def _available_tools(self):
+        if getattr(self, "high_privilege_tools_allowed", True):
+            return self.tools
+        return [tool for tool in self.tools if not _is_high_privilege_tool(tool)]
 
     def chat(
         self,
@@ -311,6 +326,13 @@ class Agent:
         tool = get_tool(tc.name, self.tools)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
+        if not getattr(self, "high_privilege_tools_allowed", True) and _is_high_privilege_tool(
+            tool
+        ):
+            return (
+                f"Error: high-privilege tool '{tc.name}' is restricted for this "
+                "OneBot11 user."
+            )
         try:
             return tool.execute(**tc.arguments)
         except TypeError as e:

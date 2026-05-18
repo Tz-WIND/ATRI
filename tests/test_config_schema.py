@@ -27,6 +27,15 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["novelai"] == DEFAULT_CONFIG["novelai"]
     assert config["onebot11"]["enabled"] is False
     assert config["onebot11"]["ws_reverse_port"] == 6200
+    assert config["onebot11"]["admin_user_ids"] == []
+    assert config["onebot11"]["group_recent_messages"] == {
+        "enabled": True,
+        "max_messages": 10,
+    }
+    assert config["onebot11"]["whitelist"] == {
+        "private_user_ids": [],
+        "group_ids": [],
+    }
     assert config["workspace"] == DEFAULT_CONFIG["workspace"]
     assert "dashboard" in config
 
@@ -99,6 +108,51 @@ def test_normalize_config_coerces_image_transcription_settings():
     assert config["image_transcription"]["max_tokens"] == 2048
     assert config["image_transcription"]["temperature"] == 0.2
     assert config["image_transcription"]["prompt"]
+
+
+def test_normalize_config_coerces_onebot11_recent_group_message_settings():
+    config, changed = normalize_config(
+        {
+            "onebot11": {
+                "group_recent_messages": {
+                    "enabled": "false",
+                    "max_messages": "3",
+                }
+            }
+        }
+    )
+
+    assert changed is True
+    assert config["onebot11"]["group_recent_messages"] == {
+        "enabled": False,
+        "max_messages": 3,
+    }
+
+
+def test_normalize_config_keeps_onebot11_whitelist_settings():
+    config, changed = normalize_config(
+        {
+            "onebot11": {
+                "whitelist": {
+                    "private_user_ids": ["1001", "1002"],
+                    "group_ids": ["42"],
+                }
+            }
+        }
+    )
+
+    assert changed is True
+    assert config["onebot11"]["whitelist"] == {
+        "private_user_ids": ["1001", "1002"],
+        "group_ids": ["42"],
+    }
+
+
+def test_normalize_config_keeps_onebot11_admin_settings():
+    config, changed = normalize_config({"onebot11": {"admin_user_ids": ["1001", "1002"]}})
+
+    assert changed is True
+    assert config["onebot11"]["admin_user_ids"] == ["1001", "1002"]
 
 
 def test_normalize_config_adds_novelai_defaults_and_coerces_settings():

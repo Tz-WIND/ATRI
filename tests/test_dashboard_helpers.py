@@ -6,7 +6,7 @@ import pytest
 
 from core.tools import novelai_image
 from core.tools.novelai_image import NovelAIImageTool
-from dashboard.routes import _helpers, chat, models
+from dashboard.routes import _helpers, chat, management, models
 
 
 def test_dashboard_password_hash_verify_and_legacy_plaintext(monkeypatch):
@@ -105,6 +105,88 @@ def test_dashboard_masks_and_merges_novelai_config():
     assert merged["api_key"] == "nai-existing"
     assert merged["base_url"] == "https://image.example.test"
     assert merged["model"] == "nai-new"
+
+
+def test_adapter_payload_includes_recent_group_message_settings():
+    payload = management._adapter_payload(
+        {
+            "enabled": True,
+            "ws_reverse_host": "localhost",
+            "ws_reverse_port": 6199,
+            "ws_reverse_token": "secret",
+            "admin_user_ids": ["9001"],
+            "group_recent_messages": {
+                "enabled": False,
+                "max_messages": 4,
+            },
+            "whitelist": {
+                "private_user_ids": ["1001"],
+                "group_ids": ["42", "43"],
+            },
+        },
+        status="running",
+    )
+
+    assert payload == {
+        "enabled": True,
+        "ws_reverse_host": "localhost",
+            "ws_reverse_port": 6199,
+            "ws_reverse_token": "***",
+            "admin_user_ids": ["9001"],
+            "group_recent_messages": {
+                "enabled": False,
+                "max_messages": 4,
+        },
+        "whitelist": {
+            "private_user_ids": ["1001"],
+            "group_ids": ["42", "43"],
+        },
+        "status": "running",
+    }
+
+
+def test_apply_adapter_config_updates_onebot_access_lists_without_touching_token():
+    existing_value = "secret"
+    existing = {
+        "enabled": True,
+        "ws_reverse_token": existing_value,
+        "admin_user_ids": ["old-admin"],
+        "group_recent_messages": {
+            "enabled": True,
+            "max_messages": 10,
+        },
+        "whitelist": {
+            "private_user_ids": ["old"],
+            "group_ids": ["old-group"],
+        },
+    }
+
+    management._apply_adapter_config(
+        existing,
+        {
+            "ws_reverse_token": "***",
+            "admin_user_ids": ["9001", 9002, ""],
+            "group_recent_messages": {
+                "enabled": False,
+                "max_messages": "3",
+            },
+            "whitelist": {
+                "private_user_ids": ["1001", 1002, "  "],
+                "group_ids": ["42", 43, ""],
+            },
+        },
+    )
+
+    assert existing["ws_reverse_token"] == existing_value
+    assert existing["admin_user_ids"] == ["9001", "9002"]
+    assert existing["group_recent_messages"] == {
+        "enabled": False,
+        "max_messages": 3,
+    }
+    assert existing["whitelist"] == {
+        "private_user_ids": ["1001", "1002"],
+        "group_ids": ["42", "43"],
+    }
 
 
 def test_dashboard_builds_novelai_generation_payload():

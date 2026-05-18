@@ -204,10 +204,19 @@ class MidiDiffTool(Tool):
                         "points": {
                             "type": "array",
                             "description": (
-                                "Curve points as objects {start,value} or pairs [start,value]. "
+                                "Curve points as objects {start,value}. "
                                 "Point starts are absolute project beats. For velocity_curve, "
                                 "value is note velocity. For aftertouch, value maps to pressure."
                             ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "start": {"type": "number", "minimum": 0},
+                                    "value": {"type": "integer"},
+                                },
+                                "required": ["start", "value"],
+                                "additionalProperties": False,
+                            },
                         },
                         "start_value": {"type": "integer"},
                         "end_value": {"type": "integer"},
@@ -320,6 +329,9 @@ class MidiBatchEditTool(Tool):
                         "range": {
                             "type": "array",
                             "description": "Beat range as [start,end].",
+                            "items": {"type": "number", "minimum": 0},
+                            "minItems": 2,
+                            "maxItems": 2,
                         },
                         "start": {"type": "number", "minimum": 0},
                         "end": {"type": "number", "minimum": 0},
@@ -369,9 +381,17 @@ class MidiBatchEditTool(Tool):
                         "points": {
                             "type": "array",
                             "description": (
-                                "Explicit curve points as {start,value} objects "
-                                "or [start,value] pairs."
+                                "Explicit curve points as {start,value} objects."
                             ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "start": {"type": "number", "minimum": 0},
+                                    "value": {"type": "integer"},
+                                },
+                                "required": ["start", "value"],
+                                "additionalProperties": False,
+                            },
                         },
                         "resolution": {
                             "type": "number",

@@ -6,14 +6,54 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 # Ensure project root is on sys.path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from core.lifecycle import Lifecycle
+from core.lifecycle import SHUTDOWN_GRACE_PERIOD, Lifecycle
 
 # Seconds before a second Ctrl+C triggers shutdown instead of another cancel
 DOUBLE_PRESS_WINDOW = 3.0
+
+
+async def _run_lifecycle_until_shutdown(
+    lifecycle: Any,
+    shutdown_triggered: asyncio.Event,
+    logger: logging.Logger,
+) -> None:
+    start_task = asyncio.create_task(lifecycle.start())
+    shutdown_task = asyncio.create_task(shutdown_triggered.wait())
+    stopped = False
+
+    try:
+        _done, pending = await asyncio.wait(
+            [start_task, shutdown_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if start_task in pending:
+            logger.info("Shutting down gracefully...")
+            await lifecycle.stop()
+            stopped = True
+
+            if not start_task.done():
+                start_task.cancel()
+                _done, pending = await asyncio.wait(
+                    [start_task],
+                    timeout=SHUTDOWN_GRACE_PERIOD,
+                )
+                if pending:
+                    logger.warning(
+                        "Lifecycle start task did not finish within %.1fs after stop.",
+                        SHUTDOWN_GRACE_PERIOD,
+                    )
+        else:
+            await start_task
+    finally:
+        shutdown_task.cancel()
+        if not stopped:
+            await lifecycle.stop()
 
 
 def setup_logging():
@@ -75,25 +115,9 @@ async def main():
             signal.signal(sig, lambda signum, frame: handle_signal())
 
     try:
-        start_task = asyncio.create_task(lifecycle.start())
-        shutdown_task = asyncio.create_task(shutdown_triggered.wait())
-
-        _done, pending = await asyncio.wait(
-            [start_task, shutdown_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-
-        if start_task in pending:
-            logger.info("Shutting down gracefully...")
-            start_task.cancel()
-            try:
-                await start_task
-            except asyncio.CancelledError:
-                pass
+        await _run_lifecycle_until_shutdown(lifecycle, shutdown_triggered, logger)
     except asyncio.CancelledError:
         logger.info("Main task cancelled, stopping...")
-    finally:
-        await lifecycle.stop()
 
     logger.info("Goodbye!")
 

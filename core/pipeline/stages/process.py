@@ -21,7 +21,7 @@ from core.agent.llm import LLM
 from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
 from core.pipeline.stage import Stage, register_stage
-from core.platform.message import Image, MessageEvent, Plain, normalize_session_id
+from core.platform.message import Image, MessageEvent, MessageType, Plain, normalize_session_id
 from core.runtime import RuntimeTimelineStore, TaskStore, summarize_text
 from core.skills import SkillManager, build_skills_prompt
 from core.tools.bash import CONFIRM_MARKER
@@ -66,6 +66,52 @@ def _event_user_content_with_transcription(event: MessageEvent, transcription: s
         parts.append(text)
     parts.append("[Image transcription]\n" + transcription.strip())
     return "\n\n".join(parts)
+
+
+def _recent_group_context_text(event: MessageEvent) -> str:
+    if event.platform_name != "onebot11" or event.message_type != MessageType.GROUP_MESSAGE:
+        return ""
+
+    recent_messages = event._extras.get("recent_group_messages")
+    if not isinstance(recent_messages, list):
+        return ""
+
+    lines = []
+    for item in recent_messages:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        nickname = str(item.get("nickname") or "").strip()
+        user_id = str(item.get("user_id") or "").strip()
+        if nickname and user_id:
+            speaker = f"{nickname} ({user_id})"
+        else:
+            speaker = nickname or user_id or "Unknown user"
+        lines.append(f"- {speaker}: {text}")
+
+    if not lines:
+        return ""
+    return "[Recent group messages before this request]\n" + "\n".join(lines)
+
+
+def _prepend_recent_group_context(
+    event: MessageEvent,
+    content: str | list[dict],
+) -> str | list[dict]:
+    context = _recent_group_context_text(event)
+    if not context:
+        return content
+    if isinstance(content, list):
+        return [{"type": "text", "text": context + "\n\n[Current request]\n"}, *content]
+    return f"{context}\n\n[Current request]\n{content}"
+
+
+def _event_allows_high_privilege_tools(event: MessageEvent) -> bool:
+    if event.platform_name != "onebot11":
+        return True
+    return bool(event._extras.get("onebot11_is_admin"))
 
 
 @register_stage
@@ -342,6 +388,7 @@ class ProcessStage(Stage):
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
             with self._active_lock:
                 self._active_session_ids.add(session_id)
+            agent.high_privilege_tools_allowed = _event_allows_high_privilege_tools(event)
             user_content = await self._event_content_for_agent(event)
             response = await agent.chat_async(
                 user_content,
@@ -387,10 +434,13 @@ class ProcessStage(Stage):
 
     async def _event_content_for_agent(self, event: MessageEvent) -> str | list[dict]:
         images = _event_images(event)
-        if not images or not self.image_transcription.get("enabled"):
-            return _event_user_content(event)
-        transcription = await asyncio.to_thread(self._transcribe_event_images, event, images)
-        return _event_user_content_with_transcription(event, transcription)
+        content: str | list[dict]
+        if images and self.image_transcription.get("enabled"):
+            transcription = await asyncio.to_thread(self._transcribe_event_images, event, images)
+            content = _event_user_content_with_transcription(event, transcription)
+        else:
+            content = _event_user_content(event)
+        return _prepend_recent_group_context(event, content)
 
     def _transcribe_event_images(self, event: MessageEvent, images: list[Image]) -> str:
         cfg = self.image_transcription

@@ -125,8 +125,8 @@ class WebChatAdapter(Platform):
         )
 
 
-def _chain_to_wire(chain: MessageChain) -> list[dict]:
-    items = []
+def _chain_to_wire(chain: MessageChain) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
     for comp in chain:
         if isinstance(comp, Plain):
             items.append({"type": "plain", "text": comp.text})

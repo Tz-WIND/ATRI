@@ -13,6 +13,76 @@ if TYPE_CHECKING:
     from dashboard.server import Dashboard
 
 
+def _recent_group_messages_payload(ob: dict) -> dict:
+    config = ob.get("group_recent_messages", {})
+    if not isinstance(config, dict):
+        config = {}
+    return {
+        "enabled": bool(config.get("enabled", True)),
+        "max_messages": int(config.get("max_messages", 10) or 0),
+    }
+
+
+def _id_list_payload(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [text for value in values if (text := str(value).strip())]
+
+
+def _whitelist_payload(ob: dict) -> dict:
+    config = ob.get("whitelist", {})
+    if not isinstance(config, dict):
+        config = {}
+    return {
+        "private_user_ids": _id_list_payload(config.get("private_user_ids", [])),
+        "group_ids": _id_list_payload(config.get("group_ids", [])),
+    }
+
+
+def _adapter_payload(ob: dict, *, status: str) -> dict:
+    return {
+        "enabled": ob.get("enabled", True),
+        "ws_reverse_host": ob.get("ws_reverse_host", "0.0.0.0"),  # noqa: S104
+        "ws_reverse_port": ob.get("ws_reverse_port", 6199),
+        "ws_reverse_token": "***" if ob.get("ws_reverse_token") else "",
+        "admin_user_ids": _id_list_payload(ob.get("admin_user_ids", [])),
+        "group_recent_messages": _recent_group_messages_payload(ob),
+        "whitelist": _whitelist_payload(ob),
+        "status": status,
+    }
+
+
+def _apply_adapter_config(ob: dict, data: dict) -> None:
+    if "enabled" in data:
+        ob["enabled"] = data["enabled"]
+    if "ws_reverse_host" in data:
+        ob["ws_reverse_host"] = data["ws_reverse_host"]
+    if "ws_reverse_port" in data:
+        ob["ws_reverse_port"] = int(data["ws_reverse_port"])
+    if "ws_reverse_token" in data and data["ws_reverse_token"] != "***":  # noqa: S105
+        ob["ws_reverse_token"] = data["ws_reverse_token"]
+    if "admin_user_ids" in data:
+        ob["admin_user_ids"] = _id_list_payload(data["admin_user_ids"])
+
+    recent_data = data.get("group_recent_messages")
+    if isinstance(recent_data, dict):
+        recent_config = ob.setdefault("group_recent_messages", {})
+        if "enabled" in recent_data:
+            recent_config["enabled"] = bool(recent_data["enabled"])
+        if "max_messages" in recent_data:
+            recent_config["max_messages"] = max(0, int(recent_data["max_messages"]))
+
+    whitelist_data = data.get("whitelist")
+    if isinstance(whitelist_data, dict):
+        whitelist_config = ob.setdefault("whitelist", {})
+        if "private_user_ids" in whitelist_data:
+            whitelist_config["private_user_ids"] = _id_list_payload(
+                whitelist_data["private_user_ids"]
+            )
+        if "group_ids" in whitelist_data:
+            whitelist_config["group_ids"] = _id_list_payload(whitelist_data["group_ids"])
+
+
 def register(dashboard: Dashboard) -> None:
     app = dashboard.app
 
@@ -35,30 +105,17 @@ def register(dashboard: Dashboard) -> None:
     @app.route("/api/adapter", methods=["GET"])
     async def get_adapter():
         ob = dashboard.lifecycle.config.get("onebot11", {})
-        return jsonify(
-            {
-                "enabled": ob.get("enabled", True),
-                "ws_reverse_host": ob.get("ws_reverse_host", "0.0.0.0"),  # noqa: S104
-                "ws_reverse_port": ob.get("ws_reverse_port", 6199),
-                "ws_reverse_token": "***" if ob.get("ws_reverse_token") else "",
-                "status": dashboard.lifecycle.onebot11.status.value
-                if dashboard.lifecycle.onebot11
-                else "disabled",
-            }
-        )
+        if dashboard.lifecycle.onebot11:
+            status = dashboard.lifecycle.onebot11.status.value
+        else:
+            status = "disabled"
+        return jsonify(_adapter_payload(ob, status=status))
 
     @app.route("/api/adapter", methods=["POST"])
     async def update_adapter():
         data = await request.get_json()
         ob = dashboard.lifecycle.config.setdefault("onebot11", {})
-        if "enabled" in data:
-            ob["enabled"] = data["enabled"]
-        if "ws_reverse_host" in data:
-            ob["ws_reverse_host"] = data["ws_reverse_host"]
-        if "ws_reverse_port" in data:
-            ob["ws_reverse_port"] = int(data["ws_reverse_port"])
-        if "ws_reverse_token" in data and data["ws_reverse_token"] != "***":  # noqa: S105
-            ob["ws_reverse_token"] = data["ws_reverse_token"]
+        _apply_adapter_config(ob, data)
         dashboard.lifecycle.save_config()
         return jsonify({"ok": True, "note": "Restart required for adapter changes to take effect."})
 
