@@ -2,9 +2,72 @@
 
 ATRI 是一个 **AI Agent框架/原生音乐工作站** —— 将 DAW、实时音频引擎与 Agent 系统融为一体的本地创作环境。
 
-它不是聊天机器人外面套一层 DAW 的壳，也不是在 DAW 里塞一个 AI 对话框。ATRI 的 Agent 可以直接读取工程状态、写入 MIDI、操控播放、管理文件，像一名坐在你旁边看着屏幕的合作伙伴，而不是只能隔空给建议的旁观者。
+这不是聊天机器人外面套一层 DAW 的壳，也不是在 DAW 里塞一个 AI 对话框。ATRI 的 Agent 可以直接读取工程状态、写入 MIDI、操控播放、管理文件，像一名坐在你旁边看着屏幕的合作伙伴，而不是只能隔空给建议的旁观者。
 
-项目仍在快速演进中，但核心闭环已经成型：**从创意到 MIDI 到实时音频，Agent 全程参与，不只是动嘴。**
+项目当前仍在快速推进中......
+
+## 快速开始
+
+适合先在本机跑起 Dashboard + Rust Audio Host。命令示例以 PowerShell 为主。
+
+### 环境要求
+
+- Python 3.11+
+- uv
+- Node.js 18+
+- Rust stable + Cargo
+- Windows 构建 `atri-host` 建议安装 Visual Studio Build Tools（C++ 桌面开发）
+
+### 启动步骤
+
+```powershell
+git clone <repo-url>
+cd ATRI
+
+uv sync
+Copy-Item config.yaml.example config.yaml
+```
+
+编辑 `config.yaml`，至少填入可用的 `api_key`、`base_url` 和 `model`；也可以启动后在 Dashboard 的 `Settings -> Providers` 中配置模型。
+
+```powershell
+cd frontend
+npm install
+npm run build
+cd ..
+
+cd atri-host
+cargo build -p atri-host
+cd ..
+
+uv run python main.py
+```
+
+启动后打开：
+
+```text
+http://localhost:6185
+```
+
+首次访问会进入账号初始化流程。
+—————————————————————
+如需 Steinberg built-in ASIO 等其他 ASIO 设备：
+
+```powershell
+cargo build -p atri-host --features asio
+```
+
+前置准备：
+
+1. 安装 **Visual Studio Build Tools**（C++ 桌面开发 + Windows SDK）。
+2. 安装 **LLVM/Clang**，确保 `libclang` 可被找到。
+3. 下载并解压 **Steinberg ASIO SDK**。
+4. 设置环境变量：
+
+```powershell
+setx CPAL_ASIO_DIR "你的ASIOSDK放置路径"
+setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"
+```
 
 ## 三大组件
 
@@ -98,9 +161,9 @@ Python 侧持有可编辑工程数据，Rust Host 专注实时渲染。三者不
 
 ## Agent 架构详解
 
-ATRI 的 Agent 层是一套完整的 Coding Agent 框架，设计上参考了 Claude Code 式架构的核心理念：**LLM + 工具调用的闭环循环**，配合多层上下文压缩、子 Agent 并行调度、Plan/Agent 双模式切换，以及可扩展的 MCP/Skills 生态。
+ATRI 的 Agent 层是一套完整的 Coding Agent 框架，拥有LLM + 工具调用的闭环循环，配合多层上下文压缩、子 Agent 并行调度、Plan/Agent 双模式切换，以及可扩展的 MCP/Skills 生态。
 
-它不是聊天机器人套一层工具调用，而是一个**以工具执行为核心、以工程产出为导向的自主 Agent 运行时**。
+不是聊天机器人套一层工具调用，而是一个**以工具执行为核心、以工程产出为导向的自主 Agent 运行时**。
 
 ### 整体分层
 
@@ -157,7 +220,7 @@ ATRI 的 Agent 层是一套完整的 Coding Agent 框架，设计上参考了 Cl
 
 ### 上下文管理：三层压缩
 
-位于 `core/agent/context.py`，是 ATRI Agent 最核心的基础设施之一。受 Claude Code 启发，实现了基于**触发进入/退出**的三层级联压缩机制（非滑动窗口）：
+位于 `core/agent/context.py`，是 ATRI Agent 最核心的基础设施之一，实现了基于**触发进入/退出**的三层级联压缩机制（非滑动窗口）：
 
 ```text
 第 1 层 (tool_snip)
@@ -373,53 +436,6 @@ Dashboard Chat 输入 "帮我写一个 bassline"
   Rust Audio Host 同步并播放
 ```
 
-## 环境要求
-
-- Python 3.11+
-- uv
-- Node.js 18+
-- Rust stable + Cargo
-- Windows 构建 `atri-host` 建议安装 Visual Studio Build Tools (C++ 桌面开发)
-
-## 快速开始
-
-```powershell
-git clone <repo-url>
-cd ATRI
-uv sync
-```
-
-构建前端：
-
-```powershell
-cd frontend
-npm install
-npm run build
-cd ..
-```
-
-构建 Rust Audio Host：
-
-```powershell
-cd atri-host
-cargo build -p atri-host
-cd ..
-```
-
-启动 ATRI：
-
-```powershell
-uv run python main.py
-```
-
-打开 Dashboard：
-
-```text
-http://localhost:6185
-```
-
-首次访问会进入账号初始化流程。
-
 ## 首次配置建议
 
 1. `Settings -> Providers` —— 添加 OpenAI 兼容或 Anthropic 兼容的模型 Provider。
@@ -428,85 +444,6 @@ http://localhost:6185
 4. `Settings -> Audio` —— 确认采样率、缓冲区、位深与输出设备。
 5. 打开 `Studio`，点击 Demo 或创建轨道，确认 Host Online 后播放。
 6. 如需第三方乐器，先配置 VST 路径，再在 Studio Rack 中扫描并选择插件。
-
-## 配置示例
-
-核心配置位于 `config.yaml`：
-
-```yaml
-model: deepseek-chat
-api_format: openai
-base_url: https://api.deepseek.com/v1
-api_key: sk-your-api-key
-
-active_models:
-  - model: deepseek-chat
-    provider: DeepSeek
-
-providers:
-  DeepSeek:
-    base_url: https://api.deepseek.com/v1
-    api_key: sk-your-api-key
-    api_format: openai
-    models:
-      - deepseek-chat
-
-max_tokens: 20000
-max_context_tokens: 1000000
-max_rounds: 50
-temperature: 0.5
-
-workspace: ./workspace
-sessions_dir: data/sessions
-runtime_dir: data/runtime
-plugins_dir: plugins
-
-agent_mode: agent
-wake_words:
-  - atri
-persona: ""
-extra_instructions: ""
-
-dashboard:
-  enabled: true
-  host: 127.0.0.1
-  port: 6185
-  username: admin
-  password: ""
-
-onebot11:
-  enabled: false
-  ws_reverse_host: 0.0.0.0
-  ws_reverse_port: 6199
-  ws_reverse_token: ""
-  blocked_users: []
-
-image_transcription:
-  enabled: false
-  model: ""
-  api_key: ""
-  base_url: ""
-  api_format: openai
-
-music_directories:
-  - C:\Users\YourName\Music
-
-audio_host:
-  auto_start: true
-  binary_path: ""
-  sample_rate: 48000
-  buffer_size: 256
-  audio_engine: default
-  bit_depth: f32
-
-vst3_plugin_paths: []
-vst2_plugin_paths: []
-
-mcp_servers: {}
-skills_root: skills
-skill_search_roots: []
-tavily_api_key: ""
-```
 
 ## DAW 工程模型
 
@@ -526,7 +463,7 @@ Agent 不只是给文字建议。当前已配备三个专用工具：
 
 - `midi_write` —— 向指定轨道写入一批 MIDI notes，支持 replace 或 append。
 - `midi_diff` —— 对现有 notes 做 add/delete/update 级别的精确修改。
-- `music_player` —— 搜索、播放、暂停、切歌、调音量。
+- `music_player` —— 搜索、播放、暂停、切歌、调音量。（这个是控制音乐播放器的）
 
 典型对话示例：
 
@@ -642,11 +579,6 @@ ATRI/
 ├─ workspace/                 # Agent 文件工作区
 └─ data/                      # sessions、runtime、music cache、DAW project
 ```
-
-## 当前状态
-
-ATRI 处于快速开发期，DAW/Host 相关能力仍在频繁迭代。建议将其视为 **"AI 音乐工作站原型 + 可实际使用的 Agent Dashboard"**：Chat、模型管理、音乐库、工程持久化、MIDI 写入、基础播放和 VST3 工作流已形成闭环；更完整的 DAW 能力（复杂音频 clip 编辑、自动化曲线、导出混音、完整 VST2 加载等）仍在持续推进。
-
 ## License
 
 [GNU Affero General Public License v3.0](LICENSE)
