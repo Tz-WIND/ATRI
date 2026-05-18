@@ -389,8 +389,4 @@ class Agent:
 
 def _llm_safe_message(message: dict) -> dict:
     """Remove ATRI-only metadata before sending saved messages to an LLM API."""
-    return {
-        key: value
-        for key, value in message.items()
-        if not str(key).startswith("_atri_")
-    }
+    return {key: value for key, value in message.items() if not str(key).startswith("_atri_")}
