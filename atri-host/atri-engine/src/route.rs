@@ -4,7 +4,9 @@ use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::{MidiEvent, ScheduledMidiEvent};
 use atri_core::midi::note::MidiNote;
 use atri_core::midi::sequencer::MidiSequencer;
+use atri_core::time::tempo_map::TempoMap;
 
+use super::audio_clip::{AudioClip, render_audio_clips};
 use super::processor::{Gain, Pan, Processor};
 
 pub struct Route {
@@ -14,6 +16,7 @@ pub struct Route {
     pub gain: Gain,
     pub pan: Pan,
     pub sequencer: MidiSequencer,
+    pub audio_clips: Vec<AudioClip>,
     pub solo: bool,
     pub mute: bool,
 }
@@ -27,6 +30,7 @@ impl Route {
             gain: Gain::new(1.0),
             pan: Pan::new(),
             sequencer: MidiSequencer::new(),
+            audio_clips: Vec::new(),
             solo: false,
             mute: false,
         }
@@ -64,6 +68,35 @@ impl Route {
 
     pub fn set_midi(&mut self, notes: Vec<MidiNote>, events: Vec<MidiEvent>) {
         self.sequencer.set_midi(notes, events);
+    }
+
+    pub fn set_audio_clips(&mut self, clips: Vec<AudioClip>) {
+        self.audio_clips = clips;
+    }
+
+    pub fn audio_clip_count(&self) -> usize {
+        self.audio_clips.len()
+    }
+
+    pub fn render_audio_clips(
+        &self,
+        bufs: &mut BufferSet,
+        start_sample: i64,
+        end_sample: i64,
+        tempo_map: &TempoMap,
+        nframes: usize,
+    ) {
+        let Some(buffer) = bufs.get_mut(0) else {
+            return;
+        };
+        render_audio_clips(
+            &self.audio_clips,
+            buffer,
+            start_sample,
+            end_sample,
+            tempo_map,
+            nframes,
+        );
     }
 
     pub fn signal_latency(&self) -> usize {

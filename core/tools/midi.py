@@ -380,9 +380,7 @@ class MidiBatchEditTool(Tool):
                         "channel": {"type": "integer", "minimum": 0, "maximum": 15},
                         "points": {
                             "type": "array",
-                            "description": (
-                                "Explicit curve points as {start,value} objects."
-                            ),
+                            "description": ("Explicit curve points as {start,value} objects."),
                             "items": {
                                 "type": "object",
                                 "properties": {

@@ -6,8 +6,10 @@ license.workspace = true
 
 [dependencies]
 atri-core = { path = "../atri-core" }
+claxon = "0.4"
 crossbeam.workspace = true
 ringbuf.workspace = true
 cpal.workspace = true
 log.workspace = true
+symphonia = { version = "0.6", default-features = false, features = ["aac", "id3v1", "id3v2", "isomp4", "mp3"] }
 thiserror.workspace = true

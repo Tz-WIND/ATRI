@@ -29,6 +29,9 @@ if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
 
 
+DASHBOARD_MAX_CONTENT_LENGTH = 512 * 1024 * 1024
+
+
 class Dashboard:
     def __init__(self, lifecycle: Lifecycle, host: str = "127.0.0.1", port: int = 6185):
         self.lifecycle = lifecycle
@@ -41,7 +44,7 @@ class Dashboard:
 
         static_dir = str(Path(__file__).parent / "static")
         self.app = Quart("atri-dashboard", static_folder=static_dir, static_url_path="/static")
-        self.app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
+        self.app.config["MAX_CONTENT_LENGTH"] = DASHBOARD_MAX_CONTENT_LENGTH
         self._ws_clients: set = set()
         self._audio_clients: set = set()
         self._wire_audio_host()

@@ -179,18 +179,27 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         clips = _normalize_clips(raw_track, legacy_notes=legacy_notes, track_color=track_color)
         notes = _flatten_clip_notes(clips)
         midi_events = _flatten_clip_midi_events(clips)
+        track_type = _normalize_track_type(raw_track, clips=clips)
         normalized["tracks"].append(
             {
                 "id": track_id,
                 "host_track_id": _nullable_non_negative_int(raw_track.get("host_track_id")),
+                "type": track_type,
+                "channel_type": _normalize_track_channel_type(
+                    raw_track.get("channel_type"),
+                    track_type=track_type,
+                ),
                 "name": str(raw_track.get("name") or f"Track {track_id}"),
                 "color": track_color,
                 "volume": _bounded_float(raw_track.get("volume"), 0.8, 0.0, 2.0),
                 "pan": _bounded_float(raw_track.get("pan"), 0.0, -1.0, 1.0),
                 "mute": bool(raw_track.get("mute", False)),
                 "solo": bool(raw_track.get("solo", False)),
-                "instrument": str(raw_track.get("instrument") or "ATRI Basic Synth"),
-                "plugin_slots": _normalize_plugin_slots(raw_track),
+                "instrument": str(
+                    raw_track.get("instrument")
+                    or ("Audio Track" if track_type == "audio" else "ATRI Basic Synth")
+                ),
+                "plugin_slots": _normalize_plugin_slots(raw_track, track_type=track_type),
                 "clips": clips,
                 "notes": notes,
                 "midi_events": midi_events,
@@ -216,20 +225,32 @@ def create_track(
     name: str = "Instrument",
     *,
     color: str | None = None,
+    track_type: str = "instrument",
+    channel_type: str = "multichannel",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     project = load_project()
     existing = [int(track["id"]) for track in project["tracks"]]
     track_id = max(existing, default=0) + 1
+    normalized_type = _normalize_track_type({"type": track_type}, clips=[])
+    normalized_channel_type = _normalize_track_channel_type(
+        channel_type,
+        track_type=normalized_type,
+    )
     track: dict[str, Any] = {
         "id": track_id,
         "host_track_id": None,
+        "type": normalized_type,
+        "channel_type": normalized_channel_type,
         "name": name.strip() or f"Track {track_id}",
         "color": _track_color(color, track_id - 1),
         "volume": 0.8,
         "pan": 0.0,
         "mute": False,
         "solo": False,
-        "instrument": "ATRI Basic Synth",
+        "instrument": "Audio Track" if normalized_type == "audio" else "ATRI Basic Synth",
+        "plugin_slots": []
+        if normalized_type == "audio"
+        else [_normalize_plugin_slot({"type": "builtin", "name": "ATRI Basic Synth"})],
         "clips": [],
         "notes": [],
         "midi_events": [],
@@ -237,6 +258,66 @@ def create_track(
     project["tracks"].append(track)
     project = save_project(project)
     return project, find_track(project, track_id)
+
+
+def import_audio_clip(
+    path: str | Path,
+    *,
+    name: str = "",
+    start: float = 0.0,
+    duration_seconds: float = 0.0,
+    waveform: list[Any] | None = None,
+    source: str | Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Create a new audio track containing a single imported audio clip."""
+    project = load_project()
+    existing = [int(track["id"]) for track in project["tracks"]]
+    track_id = max(existing, default=0) + 1
+    track_color = _track_color(None, track_id - 1)
+    source_path = Path(path)
+    clip_name = name.strip() or source_path.stem or "Audio Clip"
+    tempo = _positive_float(project.get("tempo"), 120.0)
+    seconds = _non_negative_float(duration_seconds, 0.0)
+    duration_beats = max(0.25, seconds * tempo / 60.0) if seconds > 0 else 4.0
+    clip: dict[str, Any] = {
+        "id": f"clip_{uuid4().hex[:10]}",
+        "type": "audio",
+        "name": clip_name,
+        "start": _non_negative_float(start, 0.0),
+        "duration": duration_beats,
+        "duration_seconds": seconds,
+        "color": track_color,
+        "source": Path(source).as_posix() if source is not None else source_path.as_posix(),
+        "path": source_path.as_posix(),
+        "source_offset": 0.0,
+        "gain": 1.0,
+        "waveform": _normalize_waveform(waveform),
+        "notes": [],
+        "events": [],
+    }
+    track: dict[str, Any] = {
+        "id": track_id,
+        "host_track_id": None,
+        "type": "audio",
+        "channel_type": "multichannel",
+        "name": clip_name,
+        "color": track_color,
+        "volume": 0.8,
+        "pan": 0.0,
+        "mute": False,
+        "solo": False,
+        "instrument": "Audio Track",
+        "plugin_slots": [],
+        "clips": [clip],
+        "notes": [],
+        "midi_events": [],
+    }
+    project["tracks"].append(track)
+    project = save_project(project)
+    synced_track = find_track(project, track_id)
+    clip_id = clip["id"]
+    synced_clip = next(item for item in synced_track.get("clips", []) if item.get("id") == clip_id)
+    return project, synced_track, synced_clip
 
 
 def delete_track(track_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -269,12 +350,30 @@ def update_track(track_id: int, updates: dict[str, Any]) -> tuple[dict[str, Any]
         track["mute"] = bool(updates["mute"])
     if "solo" in updates:
         track["solo"] = bool(updates["solo"])
+    if "type" in updates or "track_type" in updates:
+        track["type"] = _normalize_track_type(
+            {"type": updates.get("type", updates.get("track_type"))},
+            clips=track.get("clips", []),
+        )
+        if track["type"] == "audio":
+            track["instrument"] = "Audio Track"
+            track["plugin_slots"] = []
+        else:
+            track["plugin_slots"] = _normalize_plugin_slots(track, track_type="instrument")
+    if "channel_type" in updates:
+        track["channel_type"] = _normalize_track_channel_type(
+            updates["channel_type"],
+            track_type=str(track.get("type") or "instrument"),
+        )
     if "instrument" in updates:
         track["instrument"] = str(updates["instrument"] or "ATRI Basic Synth")
     if "clips" in updates and isinstance(updates["clips"], list):
         track["clips"] = updates["clips"]
     if "plugin_slots" in updates and isinstance(updates["plugin_slots"], list):
-        track["plugin_slots"] = _normalize_plugin_slots({"plugin_slots": updates["plugin_slots"]})
+        track["plugin_slots"] = _normalize_plugin_slots(
+            {"plugin_slots": updates["plugin_slots"]},
+            track_type=str(track.get("type") or "instrument"),
+        )
     project = save_project(project)
     return project, find_track(project, track_id)
 
@@ -287,6 +386,8 @@ def set_track_plugin(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     project = load_project()
     track = find_track(project, track_id)
+    if track.get("type") == "audio":
+        raise ValueError("audio tracks do not support instrument plugins")
     slot = _normalize_plugin_slot(plugin, slot_id=slot_id)
     slots = [s for s in track.get("plugin_slots", []) if s.get("id") != slot["id"]]
     track["plugin_slots"] = _sort_plugin_slots([slot, *slots])
@@ -672,6 +773,12 @@ def project_summary(project: dict[str, Any]) -> dict[str, Any]:
     project = normalize_project(project)
     note_count = sum(len(track["notes"]) for track in project["tracks"])
     midi_event_count = sum(len(track["midi_events"]) for track in project["tracks"])
+    audio_clip_count = sum(
+        1
+        for track in project["tracks"]
+        for clip in track.get("clips", [])
+        if isinstance(clip, dict) and clip.get("type") == "audio"
+    )
     return {
         "title": project["title"],
         "tempo": project["tempo"],
@@ -680,13 +787,21 @@ def project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "track_count": len(project["tracks"]),
         "note_count": note_count,
         "midi_event_count": midi_event_count,
+        "audio_clip_count": audio_clip_count,
         "tracks": [
             {
                 "id": track["id"],
                 "name": track["name"],
+                "type": track["type"],
+                "channel_type": track["channel_type"],
                 "notes": len(track["notes"]),
                 "midi_events": len(track["midi_events"]),
                 "clips": len(track.get("clips", [])),
+                "audio_clips": sum(
+                    1
+                    for clip in track.get("clips", [])
+                    if isinstance(clip, dict) and clip.get("type") == "audio"
+                ),
                 "instrument": track["instrument"],
                 "plugin_slots": track.get("plugin_slots", []),
             }
@@ -792,9 +907,16 @@ def _normalize_clip(clip: dict[str, Any], *, track_color: str) -> dict[str, Any]
         "name": str(clip.get("name") or default_name),
         "start": _non_negative_float(clip.get("start"), 0.0),
         "duration": duration,
+        "duration_seconds": _non_negative_float(clip.get("duration_seconds"), 0.0),
         "color": _track_color(clip.get("color") or track_color, 0),
         "source": str(clip.get("source") or ""),
         "path": str(clip.get("path") or ""),
+        "source_offset": _non_negative_float(
+            _first_present(clip, ("source_offset", "offset"), default=0.0),
+            0.0,
+        ),
+        "gain": _bounded_float(clip.get("gain"), 1.0, 0.0, 4.0),
+        "waveform": _normalize_waveform(clip.get("waveform")) if clip_type == "audio" else [],
         "notes": notes,
         "events": events,
     }
@@ -2461,6 +2583,89 @@ def _normalize_sysex_b64(event: dict[str, Any]) -> str:
     return base64.b64encode(payload).decode("ascii") if payload else ""
 
 
+def normalize_audio_waveform(value: Any) -> list[float | dict[str, float]]:
+    return _normalize_waveform(value)
+
+
+def _normalize_waveform(value: Any) -> list[float | dict[str, float]]:
+    if not isinstance(value, list):
+        return []
+    waveform: list[float | dict[str, float]] = []
+    for point in value[:512]:
+        normalized = _normalize_waveform_point(point)
+        if normalized is not None:
+            waveform.append(normalized)
+    return waveform
+
+
+def _normalize_waveform_point(point: Any) -> float | dict[str, float] | None:
+    if isinstance(point, dict):
+        return _normalize_waveform_metrics(point)
+
+    parsed = _finite_float(point)
+    if parsed is None:
+        return None
+    return _round_waveform_value(min(1.0, abs(parsed)))
+
+
+def _normalize_waveform_metrics(point: dict[str, Any]) -> dict[str, float] | None:
+    raw_min = _finite_float(point.get("min"))
+    raw_max = _finite_float(point.get("max"))
+    raw_peak = _finite_float(point.get("peak"))
+    raw_rms = _finite_float(point.get("rms"))
+
+    peak = min(1.0, abs(raw_peak)) if raw_peak is not None else None
+    rms = min(1.0, abs(raw_rms)) if raw_rms is not None else None
+    if raw_min is None and raw_max is None:
+        if peak is None:
+            return None
+        min_value = -peak
+        max_value = peak
+    else:
+        fallback = peak or 0.0
+        if raw_min is None:
+            min_value = -max(fallback, abs(raw_max or 0.0))
+        else:
+            min_value = _clamp_float(raw_min, -1.0, 1.0)
+        if raw_max is None:
+            max_value = max(fallback, abs(raw_min or 0.0))
+        else:
+            max_value = _clamp_float(raw_max, -1.0, 1.0)
+        if min_value > max_value:
+            min_value, max_value = max_value, min_value
+
+    envelope_peak = max(abs(min_value), abs(max_value))
+    if rms is None:
+        rms = envelope_peak * 0.58
+    if peak is None:
+        peak = envelope_peak
+    peak = min(1.0, max(peak, envelope_peak, rms))
+    rms = min(rms, peak)
+    return {
+        "min": _round_waveform_value(min_value),
+        "max": _round_waveform_value(max_value),
+        "rms": _round_waveform_value(rms),
+        "peak": _round_waveform_value(peak),
+    }
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _clamp_float(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _round_waveform_value(value: float) -> float:
+    rounded = round(value, 4)
+    return 0.0 if rounded == 0 else rounded
+
+
 def _midi_event_sort_key(event: dict[str, Any]) -> tuple[float, str, int, int, str]:
     return (
         float(event.get("start", 0.0) or 0.0),
@@ -2544,7 +2749,36 @@ def _nullable_non_negative_int(value: Any) -> int | None:
     return parsed if parsed >= 0 else None
 
 
-def _normalize_plugin_slots(track: dict[str, Any]) -> list[dict[str, Any]]:
+def _normalize_track_type(track: dict[str, Any], *, clips: list[dict[str, Any]]) -> str:
+    raw_type = str(track.get("type", track.get("track_type", "")) or "").strip().lower()
+    if raw_type in {"instrument", "audio"}:
+        return raw_type
+    if str(track.get("instrument") or "").strip().lower() == "audio track":
+        return "audio"
+    if clips and all(clip.get("type") == "audio" for clip in clips):
+        return "audio"
+    return "instrument"
+
+
+def _normalize_track_channel_type(value: Any, *, track_type: str) -> str:
+    if track_type != "audio":
+        return "multichannel"
+    parsed = str(value or "").strip().lower().replace("-", "_")
+    if parsed in {"mono", "monophonic"}:
+        return "mono"
+    if parsed in {"multi", "multichannel", "multi_channel", "stereo"}:
+        return "multichannel"
+    return "multichannel"
+
+
+def _normalize_plugin_slots(
+    track: dict[str, Any],
+    *,
+    track_type: str = "instrument",
+) -> list[dict[str, Any]]:
+    if track_type == "audio":
+        return []
+
     raw_slots = track.get("plugin_slots")
     if isinstance(raw_slots, list) and raw_slots:
         slot_map: dict[str, dict[str, Any]] = {}

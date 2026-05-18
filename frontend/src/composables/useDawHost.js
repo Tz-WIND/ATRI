@@ -267,11 +267,27 @@ async function updateTrack(trackId, data) {
   return res
 }
 
-async function createTrack(name = 'Instrument') {
-  const res = await api.studioCreateTrack(name)
+async function createTrack(name = 'Instrument', options = {}) {
+  const res = await api.studioCreateTrack(name, options)
   setProject(res.project)
   if (res.track?.id) activeTrackId.value = res.track.id
   return res
+}
+
+async function importAudioFile(file, metadata = {}) {
+  loading.value = true
+  hostError.value = ''
+  try {
+    const res = await api.studioAudioImport(file, metadata)
+    if (res.project) setProject(res.project)
+    if (res.track?.id) activeTrackId.value = res.track.id
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to import audio'
+    throw err
+  } finally {
+    loading.value = false
+  }
 }
 
 async function deleteTrack(trackId) {
@@ -551,6 +567,7 @@ export function useDawHost() {
     replaceTrackNotes,
     updateTrack,
     createTrack,
+    importAudioFile,
     deleteTrack,
     loadPlugins,
     setTrackPlugin,

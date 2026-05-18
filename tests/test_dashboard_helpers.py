@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 from typing import Any
 
@@ -6,7 +7,32 @@ import pytest
 
 from core.tools import novelai_image
 from core.tools.novelai_image import NovelAIImageTool
+from dashboard import music as music_routes
 from dashboard.routes import _helpers, chat, management, models
+from dashboard.server import DASHBOARD_MAX_CONTENT_LENGTH
+
+
+def test_dashboard_upload_limit_is_finite_and_large_enough_for_audio_imports():
+    assert DASHBOARD_MAX_CONTENT_LENGTH == 512 * 1024 * 1024
+    assert DASHBOARD_MAX_CONTENT_LENGTH is not None
+
+
+def test_dashboard_audio_waveform_form_accepts_structured_metrics():
+    waveform = music_routes._audio_waveform_from_form(
+        json.dumps(
+            [
+                {"min": -0.4, "max": 0.7, "rms": 0.25, "peak": 0.7},
+                {"min": 0.6, "max": -0.2, "rms": 0.2},
+                0.5,
+            ]
+        )
+    )
+
+    assert waveform == [
+        {"min": -0.4, "max": 0.7, "rms": 0.25, "peak": 0.7},
+        {"min": -0.2, "max": 0.6, "rms": 0.2, "peak": 0.6},
+        0.5,
+    ]
 
 
 def test_dashboard_password_hash_verify_and_legacy_plaintext(monkeypatch):
@@ -130,12 +156,12 @@ def test_adapter_payload_includes_recent_group_message_settings():
     assert payload == {
         "enabled": True,
         "ws_reverse_host": "localhost",
-            "ws_reverse_port": 6199,
-            "ws_reverse_token": "***",
-            "admin_user_ids": ["9001"],
-            "group_recent_messages": {
-                "enabled": False,
-                "max_messages": 4,
+        "ws_reverse_port": 6199,
+        "ws_reverse_token": "***",
+        "admin_user_ids": ["9001"],
+        "group_recent_messages": {
+            "enabled": False,
+            "max_messages": 4,
         },
         "whitelist": {
             "private_user_ids": ["1001"],

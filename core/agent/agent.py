@@ -26,9 +26,7 @@ from .tools_bridge import get_all_tools, get_tool
 def _is_high_privilege_tool(tool) -> bool:
     capabilities = tool.capabilities
     return bool(
-        capabilities.writes_files
-        or capabilities.executes_shell
-        or capabilities.requires_approval
+        capabilities.writes_files or capabilities.executes_shell or capabilities.requires_approval
     )
 
 
@@ -329,10 +327,7 @@ class Agent:
         if not getattr(self, "high_privilege_tools_allowed", True) and _is_high_privilege_tool(
             tool
         ):
-            return (
-                f"Error: high-privilege tool '{tc.name}' is restricted for this "
-                "OneBot11 user."
-            )
+            return f"Error: high-privilege tool '{tc.name}' is restricted for this OneBot11 user."
         try:
             return tool.execute(**tc.arguments)
         except TypeError as e:

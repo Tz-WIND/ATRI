@@ -10,6 +10,7 @@ import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from quart import Blueprint, Response, jsonify, request
 
@@ -19,9 +20,11 @@ from core.music_project import (
 from core.music_project import (
     default_project,
     find_track,
+    import_audio_clip,
     load_project,
     midi_diff,
     midi_write,
+    normalize_audio_waveform,
     project_summary,
     save_project,
     set_track_plugin,
@@ -50,6 +53,7 @@ AUDIO_EXTS = {
     ".dsf",
     ".dff",
 }
+HOST_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -75,6 +79,47 @@ def _cache_path() -> Path:
     p = Path("data/music_cache.json")
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _audio_import_dir() -> Path:
+    path = Path("data/music_workstation/audio")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _safe_audio_filename(filename: str) -> str:
+    raw_name = Path(str(filename or "audio.wav").replace("\\", "/")).name
+    safe = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw_name).strip(" ._")
+    return safe or "audio.wav"
+
+
+def _audio_duration_seconds(path: Path, fallback: Any = None) -> float:
+    try:
+        parsed = float(fallback)
+    except (TypeError, ValueError):
+        parsed = 0.0
+    if parsed > 0:
+        return parsed
+
+    metadata = _read_metadata(str(path))
+    try:
+        return max(0.0, float((metadata or {}).get("duration") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _audio_waveform_from_form(raw: Any) -> list[float | dict[str, float]]:
+    if not raw:
+        return []
+    try:
+        loaded = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return []
+    return normalize_audio_waveform(loaded)
+
+
+def _audio_type_error(message: str, **extra: Any) -> tuple[Response, int]:
+    return jsonify({"type": "error", "error_type": "type_error", "error": message, **extra}), 400
 
 
 def _is_in_music_dirs(filepath: str) -> bool:
@@ -490,6 +535,27 @@ def _host_snapshot() -> dict[str, Any]:
     }
 
 
+def _response_data(response: Any) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        return {}
+    data = response.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _sync_audio_clip_error(sync: dict[str, Any]) -> str | None:
+    commands = sync.get("commands") if isinstance(sync, dict) else None
+    if not isinstance(commands, list):
+        return None
+    for response in commands:
+        if (
+            isinstance(response, dict)
+            and response.get("type") == "error"
+            and response.get("cmd") == "set_audio_clips"
+        ):
+            return str(response.get("message") or "failed to import audio clip")
+    return None
+
+
 def _track_slot(track: dict[str, Any], slot_id: str) -> dict[str, Any]:
     for slot in track.get("plugin_slots", []):
         if isinstance(slot, dict) and slot.get("id") == slot_id:
@@ -599,6 +665,8 @@ async def _load_track_slots(
     host_track_id: int,
     track: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    if track.get("type") == "audio":
+        return []
     slots = track.get("plugin_slots") or [_instrument_slot(track)]
     commands = []
     for slot in slots:
@@ -617,6 +685,8 @@ async def _capture_plugin_states(
     responses: list[dict[str, Any]] = []
     for track in project.get("tracks", []):
         if not isinstance(track, dict):
+            continue
+        if track.get("type") == "audio":
             continue
         host_track_id = track.get("host_track_id")
         if host_track_id is None:
@@ -778,7 +848,7 @@ async def _sync_project_to_host(
         if host_track_id is None or int(host_track_id) not in host_track_ids:
             response = await host.send_command("add_track", {"name": track.get("name", "Track")})
             commands.append(response)
-            host_track_id = response.get("data", {}).get("track_id")
+            host_track_id = _response_data(response).get("track_id")
             if host_track_id is None:
                 continue
             track["host_track_id"] = int(host_track_id)
@@ -816,10 +886,30 @@ async def _sync_project_to_host(
             for event in track.get("midi_events", [])
             if isinstance(event, dict)
         ]
+        audio_clips = [
+            {
+                "path": str(clip.get("path") or clip.get("source") or ""),
+                "start": float(clip.get("start", 0.0) or 0.0),
+                "duration": float(clip.get("duration", 0.0) or 0.0),
+                "source_offset": float(clip.get("source_offset", 0.0) or 0.0),
+                "gain": float(clip.get("gain", 1.0) or 1.0),
+                "channel_type": str(track.get("channel_type") or "multichannel"),
+            }
+            for clip in track.get("clips", [])
+            if isinstance(clip, dict)
+            and clip.get("type") == "audio"
+            and str(clip.get("path") or clip.get("source") or "")
+        ]
         commands.append(
             await host.send_command(
                 "set_midi",
                 {"track_id": host_track_id, "notes": notes, "events": midi_events},
+            )
+        )
+        commands.append(
+            await host.send_command(
+                "set_audio_clips",
+                {"track_id": host_track_id, "clips": audio_clips},
             )
         )
         commands.append(
@@ -1050,10 +1140,85 @@ async def studio_midi_diff():
     return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
 
 
+@bp.route("/studio/audio/import", methods=["POST"])
+async def studio_import_audio():
+    form = await request.form
+    files = await request.files
+    uploaded = files.get("file")
+    if uploaded is None:
+        return jsonify({"error": "no audio file uploaded"}), 400
+
+    original_name = str(form.get("original_name") or uploaded.filename or "Audio")
+    safe_name = _safe_audio_filename(uploaded.filename or original_name)
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in HOST_AUDIO_EXTS:
+        return _audio_type_error("unsupported audio file type")
+
+    saved_path = _audio_import_dir() / f"{uuid4().hex[:10]}_{safe_name}"
+    try:
+        await uploaded.save(saved_path)
+        if not saved_path.exists() or saved_path.stat().st_size == 0:
+            saved_path.unlink(missing_ok=True)
+            return jsonify({"error": "audio file is empty"}), 400
+        duration_seconds = _audio_duration_seconds(saved_path, form.get("duration_seconds"))
+        start = float(form.get("start") or 0.0)
+        waveform = _audio_waveform_from_form(form.get("waveform"))
+        project, track, clip = import_audio_clip(
+            saved_path,
+            name=Path(original_name.replace("\\", "/")).stem,
+            start=start,
+            duration_seconds=duration_seconds,
+            waveform=waveform,
+        )
+    except (OSError, TypeError, ValueError) as e:
+        try:
+            saved_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return jsonify({"error": str(e)}), 400
+
+    sync = await _sync_project_to_host(project, broadcast=False)
+    audio_error = _sync_audio_clip_error(sync)
+    if audio_error:
+        try:
+            saved_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        rollback_project = None
+        try:
+            rollback_project, _ = delete_project_track(int(track["id"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+        if rollback_project is not None:
+            await _sync_project_to_host(rollback_project, broadcast=True)
+        return _audio_type_error(audio_error, sync=sync)
+
+    project = sync.get("project", project)
+    try:
+        track = find_track(project, int(track["id"]))
+        clip_id = clip.get("id")
+        clip = next(
+            item
+            for item in track.get("clips", [])
+            if isinstance(item, dict) and item.get("id") == clip_id
+        )
+    except (StopIteration, TypeError, ValueError):
+        pass
+    await _broadcast_project(project)
+    return jsonify({"ok": True, "project": project, "track": track, "clip": clip, "sync": sync})
+
+
 @bp.route("/studio/tracks", methods=["POST"])
 async def studio_create_track():
     data = await _json_payload()
-    project, track = create_project_track(str(data.get("name") or "Instrument"))
+    track_type = str(data.get("type") or data.get("track_type") or "instrument")
+    default_name = "Audio Track" if track_type == "audio" else "Instrument"
+    project, track = create_project_track(
+        str(data.get("name") or default_name),
+        color=str(data.get("color") or ""),
+        track_type=track_type,
+        channel_type=str(data.get("channel_type") or "multichannel"),
+    )
     sync = await _sync_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
 

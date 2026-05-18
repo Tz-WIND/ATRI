@@ -155,9 +155,35 @@ export function useApi() {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-    studioCreateTrack: (name) => request('/api/music/studio/tracks', {
+    studioAudioImport: (file, metadata = {}) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      for (const [key, value] of Object.entries(metadata)) {
+        if (value !== undefined && value !== null) {
+          formData.append(key, typeof value === 'string' ? value : JSON.stringify(value))
+        }
+      }
+      return fetch(BASE + '/api/music/studio/audio/import', {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: formData,
+      }).then(async res => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          if (res.status === 428 && body.setup_required) {
+            markSetupRequired(body.error || 'setup required')
+          }
+          if (res.status === 401) {
+            markUnauthenticated(body.error || 'authentication required')
+          }
+          throw new Error(body.error || `HTTP ${res.status}`)
+        }
+        return res.json()
+      })
+    },
+    studioCreateTrack: (name, options = {}) => request('/api/music/studio/tracks', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ...options }),
     }),
     studioUpdateTrack: (trackId, data) => request(`/api/music/studio/tracks/${encodeURIComponent(trackId)}`, {
       method: 'PATCH',

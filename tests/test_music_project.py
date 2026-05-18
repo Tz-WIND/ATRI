@@ -3,6 +3,7 @@ import pytest
 from core.music_project import (
     create_track,
     delete_track,
+    import_audio_clip,
     load_project,
     midi_batch_edit,
     midi_diff,
@@ -33,6 +34,21 @@ def test_delete_track_rejects_last_remaining_track(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="cannot delete the last track"):
         delete_track(1)
+
+
+def test_create_track_supports_instrument_and_audio_track_types(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    _, instrument_track = create_track("Playable", track_type="instrument")
+    _, audio_track = create_track("Mic In", track_type="audio", channel_type="mono")
+
+    assert instrument_track["type"] == "instrument"
+    assert instrument_track["channel_type"] == "multichannel"
+    assert instrument_track["plugin_slots"][0]["id"] == "instrument"
+    assert audio_track["type"] == "audio"
+    assert audio_track["channel_type"] == "mono"
+    assert audio_track["plugin_slots"] == []
 
 
 def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):
@@ -873,6 +889,58 @@ def test_project_flattens_midi_clips_and_ignores_audio_clips(tmp_path, monkeypat
     assert len(track["clips"]) == 2
     assert len(track["notes"]) == 1
     assert track["notes"][0]["start"] == 8.5
+
+
+def test_import_audio_clip_creates_new_audio_track_without_reusing_existing_lanes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    source = tmp_path / "drop.wav"
+    source.write_bytes(b"RIFF....WAVE")
+
+    project, track, clip = import_audio_clip(
+        source,
+        name="Dropped Loop",
+        start=4,
+        duration_seconds=2.0,
+        waveform=[0.1, 0.5, 1.2, "bad"],
+    )
+
+    assert track["id"] == 3
+    assert track["name"] == "Dropped Loop"
+    assert track["type"] == "audio"
+    assert track["channel_type"] == "multichannel"
+    assert track["plugin_slots"] == []
+    assert clip["type"] == "audio"
+    assert clip["start"] == 4
+    assert clip["duration"] == 4
+    assert clip["path"].endswith("drop.wav")
+    assert clip["waveform"] == [0.1, 0.5, 1.0]
+    assert project_summary(project)["audio_clip_count"] == 1
+
+
+def test_import_audio_clip_preserves_structured_waveform_metrics(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    source = tmp_path / "drop.flac"
+    source.write_bytes(b"fLaC")
+
+    _, _, clip = import_audio_clip(
+        source,
+        name="Detailed Audio",
+        duration_seconds=1.0,
+        waveform=[
+            {"min": -0.8, "max": 1.2, "rms": 0.42, "peak": 0.9},
+            {"min": "bad"},
+            {"min": 0.6, "max": -0.2, "rms": 0.2},
+        ],
+    )
+
+    assert clip["waveform"] == [
+        {"min": -0.8, "max": 1.0, "rms": 0.42, "peak": 1.0},
+        {"min": -0.2, "max": 0.6, "rms": 0.2, "peak": 0.6},
+    ]
 
 
 def test_set_track_plugin_updates_instrument_slot(tmp_path, monkeypatch):

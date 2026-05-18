@@ -113,9 +113,11 @@
             <div class="track-list-head">
               <span>Tracks</span>
               <button
-                class="mini-btn"
+                class="mini-btn track-create-trigger"
+                type="button"
                 title="Add Track"
-                @click="createTrack('Instrument')"
+                aria-label="Add track"
+                @click="openTrackCreateDialog"
               >
                 <svg
                   viewBox="0 0 24 24"
@@ -176,7 +178,19 @@
 
           <div
             ref="arrangementWrap"
-            class="arrangement-canvas-wrap"
+            :class="[
+              'arrangement-canvas-wrap',
+              {
+                'audio-drop-active': audioDropActive,
+                'audio-importing': audioImporting,
+              },
+            ]"
+            :style="arrangementWrapStyle"
+            @dragenter.prevent="onAudioDragEnter"
+            @dragover.prevent="onAudioDragOver"
+            @dragleave="onAudioDragLeave"
+            @drop.prevent="onAudioDrop"
+            @scroll="syncArrangementScroll"
           >
             <div class="arrangement-scroll-inner">
               <aside class="track-list">
@@ -203,9 +217,10 @@
                     <span class="track-main">
                       <span class="track-title-line">
                         <strong>{{ track.name }}</strong>
-                        <small>{{ track.clips?.length || 0 }} clips / {{ track.notes.length }} notes</small>
+                        <small>{{ trackTypeLabel(track) }} / {{ track.clips?.length || 0 }} clips</small>
                       </span>
                       <span
+                        v-if="isInstrumentTrack(track)"
                         class="track-plugin-bar"
                         @click.stop
                       >
@@ -263,6 +278,25 @@
                           /></svg>
                         </button>
                       </span>
+                      <span
+                        v-else-if="isAudioTrack(track)"
+                        class="track-plugin-bar audio-channel-bar"
+                        @click.stop
+                      >
+                        <select
+                          class="track-plugin-select"
+                          :value="track.channel_type || 'multichannel'"
+                          title="Audio channel type"
+                          @change.stop="updateTrack(track.id, { channel_type: $event.target.value })"
+                        >
+                          <option value="mono">
+                            Mono
+                          </option>
+                          <option value="multichannel">
+                            Multi-channel
+                          </option>
+                        </select>
+                      </span>
                     </span>
                     <span class="track-buttons">
                       <button
@@ -303,6 +337,19 @@
                 @wheel="onArrangementWheel"
                 @contextmenu.prevent
               />
+            </div>
+            <div
+              v-if="audioDropActive || audioImporting"
+              class="audio-drop-layer"
+              aria-hidden="true"
+            >
+              <span class="audio-drop-glyph">
+                <i />
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
             </div>
           </div>
         </div>
@@ -665,7 +712,10 @@
               />
               <strong>{{ track.name }}</strong>
             </div>
-            <div class="rack-slots">
+            <div
+              v-if="isInstrumentTrack(track)"
+              class="rack-slots"
+            >
               <label
                 v-for="slot in rackSlots"
                 :key="`${track.id}-${slot.id}`"
@@ -713,10 +763,144 @@
                 <small>{{ pluginSlotLabel(track, slot.id) }}</small>
               </label>
             </div>
+            <label
+              v-else-if="isAudioTrack(track)"
+              class="rack-slot"
+            >
+              <span>Channels</span>
+              <select
+                :value="track.channel_type || 'multichannel'"
+                @change="updateTrack(track.id, { channel_type: $event.target.value })"
+              >
+                <option value="mono">
+                  Mono
+                </option>
+                <option value="multichannel">
+                  Multi-channel
+                </option>
+              </select>
+              <small>{{ trackChannelLabel(track) }}</small>
+            </label>
           </div>
         </div>
       </aside>
     </main>
+
+    <div
+      v-if="trackCreateDialogOpen"
+      class="modal-backdrop track-create-backdrop"
+      @click.self="closeTrackCreateDialog"
+      @keydown.esc.stop.prevent="closeTrackCreateDialog"
+    >
+      <section
+        class="track-create-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="track-create-title"
+        tabindex="-1"
+      >
+        <header class="track-create-dialog-head">
+          <div>
+            <span>New Track</span>
+            <h2 id="track-create-title">
+              Create Track
+            </h2>
+          </div>
+          <button
+            class="mini-btn"
+            type="button"
+            title="Close"
+            aria-label="Close"
+            @click="closeTrackCreateDialog"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            ><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </header>
+
+        <div class="track-create-form">
+          <label class="track-create-field">
+            <span>Name</span>
+            <input
+              ref="trackCreateNameInput"
+              v-model="trackCreateName"
+              type="text"
+              autocomplete="off"
+              placeholder="Auto name"
+              @keydown.enter.stop.prevent="createSelectedTrack"
+            >
+          </label>
+          <label class="track-create-field track-create-color-field">
+            <span>Color</span>
+            <div class="track-create-color-control">
+              <input
+                v-model="trackCreateColor"
+                type="color"
+                title="Track color"
+                aria-label="Track color"
+              >
+              <div class="track-create-swatches">
+                <button
+                  v-for="color in trackCreatePalette"
+                  :key="color"
+                  type="button"
+                  :class="['track-create-swatch', { active: trackCreateColor === color }]"
+                  :style="{ background: color }"
+                  :aria-label="`Use ${color}`"
+                  @click="trackCreateColor = color"
+                />
+              </div>
+            </div>
+          </label>
+          <label class="track-create-field">
+            <span>Type</span>
+            <select v-model="trackCreateType">
+              <option value="instrument">
+                Instrument
+              </option>
+              <option value="audio">
+                Audio
+              </option>
+            </select>
+          </label>
+          <label
+            v-if="trackCreateType === 'audio'"
+            class="track-create-field"
+          >
+            <span>Channels</span>
+            <select v-model="trackCreateChannelType">
+              <option value="mono">
+                Mono
+              </option>
+              <option value="multichannel">
+                Multi-channel
+              </option>
+            </select>
+          </label>
+        </div>
+
+        <footer class="track-create-actions">
+          <button
+            class="mini-btn text"
+            type="button"
+            @click="closeTrackCreateDialog"
+          >
+            Cancel
+          </button>
+          <button
+            class="mini-btn text active"
+            type="button"
+            @click="createSelectedTrack"
+          >
+            Create
+          </button>
+        </footer>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -776,6 +960,7 @@ const {
   transport,
   updateTrack,
   createTrack,
+  importAudioFile,
   deleteTrack,
   loadPlugins,
   setTrackPlugin,
@@ -794,7 +979,21 @@ const controllerWrap = ref(null)
 const controllerLaneCanvases = new Map()
 
 const defaultPxPerBeat = 56
+const supportedAudioImportExtensions = ['aac', 'flac', 'm4a', 'mp3', 'wav']
+const supportedAudioImportMimeTypes = new Set([
+  'audio/aac',
+  'audio/flac',
+  'audio/mp3',
+  'audio/mp4',
+  'audio/mpeg',
+  'audio/wav',
+  'audio/wave',
+  'audio/x-flac',
+  'audio/x-m4a',
+  'audio/x-wav',
+])
 const arrangementPxPerBeat = ref(defaultPxPerBeat)
+const arrangementScrollLeft = ref(0)
 const pianoPxPerBeat = ref(defaultPxPerBeat)
 const pianoTimelineWidth = ref(0)
 const minArrangementPxPerBeat = 8
@@ -816,6 +1015,7 @@ const controllerLaneH = controllerLaneTabH + controllerLaneBodyH
 const controllerLaneFooterH = 28
 const minPitch = 36
 const maxPitch = 84
+const trackCreatePalette = ['#4e79ff', '#d95b55', '#5f916b', '#d7b66f', '#b489d6', '#58a7b8']
 const visualPositionBeats = ref(0)
 const pianoTool = ref('select')
 const pianoQuantizeId = ref('1/16')
@@ -829,6 +1029,14 @@ const draftNote = ref(null)
 const selectionBox = ref(null)
 const activeClipId = ref(null)
 const pianoVisible = ref(false)
+const audioDropActive = ref(false)
+const audioImporting = ref(false)
+const trackCreateDialogOpen = ref(false)
+const trackCreateName = ref('')
+const trackCreateNameInput = ref(null)
+const trackCreateColor = ref(trackCreatePalette[0])
+const trackCreateType = ref('instrument')
+const trackCreateChannelType = ref('multichannel')
 const pianoPanelHeight = ref(null)
 const inspectorVisible = ref(true)
 const controllerLanes = ref(createDefaultControllerLanes())
@@ -857,6 +1065,7 @@ let pianoResizeDrag = null
 let arrangementDrag = null
 let controllerDrag = null
 let syncingPianoScroll = false
+let audioDecodeContext = null
 
 const snapStep = 0.25
 const minFreehandStep = 0.0625
@@ -894,6 +1103,9 @@ const editorStackStyle = computed(() => {
     gridTemplateRows: `minmax(${minArrangementPanelHeight}px, 1fr) ${pianoPanelHeight.value}px`,
   }
 })
+const arrangementWrapStyle = computed(() => ({
+  '--arrangement-scroll-left': `${arrangementScrollLeft.value}px`,
+}))
 const positionLabel = computed(() => {
   const beats = Math.max(0, visualPositionBeats.value)
   const bar = Math.floor(beats / meterBeats.value) + 1
@@ -927,6 +1139,40 @@ async function persistProjectUpdate(updater) {
   return res
 }
 
+function defaultTrackNameForType(type) {
+  return type === 'audio' ? 'Audio Track' : 'Instrument'
+}
+
+function defaultTrackCreateColor() {
+  return trackCreatePalette[tracks.value.length % trackCreatePalette.length]
+}
+
+function openTrackCreateDialog() {
+  trackCreateName.value = ''
+  trackCreateColor.value = defaultTrackCreateColor()
+  trackCreateType.value = 'instrument'
+  trackCreateChannelType.value = 'multichannel'
+  trackCreateDialogOpen.value = true
+  nextTick(() => trackCreateNameInput.value?.focus?.())
+}
+
+function closeTrackCreateDialog() {
+  trackCreateDialogOpen.value = false
+}
+
+async function createSelectedTrack() {
+  const type = trackCreateType.value === 'audio' ? 'audio' : 'instrument'
+  const channelType = trackCreateChannelType.value === 'mono' ? 'mono' : 'multichannel'
+  const name = trackCreateName.value.trim() || defaultTrackNameForType(type)
+  const res = await createTrack(name, {
+    type,
+    color: trackCreateColor.value,
+    channel_type: type === 'audio' ? channelType : 'multichannel',
+  })
+  closeTrackCreateDialog()
+  return res
+}
+
 function makeClip(type = 'midi', start = 0) {
   const duration = 4
   return {
@@ -956,6 +1202,160 @@ async function createClip(type = 'midi') {
   if (type === 'midi') pianoVisible.value = true
   drawAll()
   return clip
+}
+
+function isAudioFile(file) {
+  if (!file) return false
+  const mimeType = String(file.type || '').toLowerCase()
+  if (supportedAudioImportMimeTypes.has(mimeType)) return true
+  const name = String(file.name || '').toLowerCase()
+  return supportedAudioImportExtensions.some(extension => name.endsWith(`.${extension}`))
+}
+
+function hasAudioDrag(event) {
+  const items = Array.from(event.dataTransfer?.items || [])
+  if (
+    items.some(item => (
+      item.kind === 'file'
+      && supportedAudioImportMimeTypes.has(String(item.type || '').toLowerCase())
+    ))
+  ) {
+    return true
+  }
+  const files = Array.from(event.dataTransfer?.files || [])
+  return files.some(isAudioFile)
+}
+
+function onAudioDragEnter(event) {
+  if (!hasAudioDrag(event)) return
+  audioDropActive.value = true
+}
+
+function onAudioDragOver(event) {
+  if (!hasAudioDrag(event)) return
+  event.dataTransfer.dropEffect = 'copy'
+  audioDropActive.value = true
+}
+
+function onAudioDragLeave(event) {
+  if (!audioDropActive.value) return
+  const wrap = arrangementWrap.value
+  if (wrap?.contains(event.relatedTarget)) return
+  audioDropActive.value = false
+}
+
+async function onAudioDrop(event) {
+  audioDropActive.value = false
+  const files = Array.from(event.dataTransfer?.files || []).filter(isAudioFile)
+  if (!files.length) return
+
+  const start = snapBeat(arrangementDropBeat(event))
+  audioImporting.value = true
+  try {
+    for (const file of files) {
+      const prepared = await prepareAudioImport(file)
+      const res = await importAudioFile(prepared.file, {
+        start,
+        duration_seconds: prepared.durationSeconds,
+        waveform: prepared.waveform,
+        original_name: file.name || prepared.file.name,
+      })
+      if (res?.clip?.id) {
+        selectedClipIds.value = new Set([res.clip.id])
+        activeClipId.value = res.clip.id
+        pianoVisible.value = false
+      }
+    }
+  } catch (err) {
+    hostError.value = err.message || 'Failed to import audio'
+  } finally {
+    audioImporting.value = false
+    drawAll()
+  }
+}
+
+function arrangementDropBeat(event) {
+  const canvas = arrangementCanvas.value
+  if (!canvas) return visualPositionBeats.value
+  const rect = canvas.getBoundingClientRect()
+  const x = event.clientX - rect.left
+  if (x < 0) return visualPositionBeats.value
+  return Math.max(0, x / arrangementPxPerBeat.value)
+}
+
+async function prepareAudioImport(file) {
+  let durationSeconds = null
+  let waveform = []
+  try {
+    const buffer = await decodeAudioFile(file)
+    durationSeconds = buffer.duration
+    waveform = waveformPeaks(buffer, 384)
+  } catch {}
+  return {
+    file,
+    durationSeconds,
+    waveform,
+  }
+}
+
+async function decodeAudioFile(file) {
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+  if (!AudioContextCtor) {
+    throw new Error('Audio decoding is not supported by this browser')
+  }
+  if (!audioDecodeContext) {
+    audioDecodeContext = new AudioContextCtor()
+  }
+  const data = await file.arrayBuffer()
+  return audioDecodeContext.decodeAudioData(data.slice(0))
+}
+
+function waveformPeaks(buffer, buckets = 384) {
+  const channels = Math.max(1, Math.min(2, buffer.numberOfChannels || 1))
+  const channelData = Array.from({ length: channels }, (_, index) => buffer.getChannelData(index))
+  const bucketCount = Math.max(32, Math.min(512, buckets))
+  const peaks = []
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const start = Math.floor((bucket / bucketCount) * buffer.length)
+    const end = Math.max(start + 1, Math.floor(((bucket + 1) / bucketCount) * buffer.length))
+    let min = 1
+    let max = -1
+    let peak = 0
+    let sumSquares = 0
+    let sampleCount = 0
+    for (let index = start; index < end; index += 1) {
+      let mixed = 0
+      for (let channel = 0; channel < channels; channel += 1) {
+        const value = channelData[channel][index] || 0
+        mixed += value
+        peak = Math.max(peak, Math.abs(value))
+      }
+      mixed /= channels
+      min = Math.min(min, mixed)
+      max = Math.max(max, mixed)
+      peak = Math.max(peak, Math.abs(mixed))
+      sumSquares += mixed * mixed
+      sampleCount += 1
+    }
+    if (!sampleCount) {
+      for (let index = start; index < end; index += 1) {
+        const value = channelData[0][index] || 0
+        min = Math.min(min, value)
+        max = Math.max(max, value)
+        peak = Math.max(peak, Math.abs(value))
+        sumSquares += value * value
+        sampleCount += 1
+      }
+    }
+    const rms = sampleCount ? Math.sqrt(sumSquares / sampleCount) : 0
+    peaks.push({
+      min: clamp(Number.isFinite(min) ? min : 0, -1, 1),
+      max: clamp(Number.isFinite(max) ? max : 0, -1, 1),
+      rms: clamp(rms, 0, 1),
+      peak: clamp(peak, 0, 1),
+    })
+  }
+  return peaks
 }
 
 function openFirstMidiClip() {
@@ -1167,13 +1567,22 @@ async function onArrangementPointerUp() {
   drawAll()
 }
 
+function syncArrangementScroll(event) {
+  arrangementScrollLeft.value = Math.max(0, Number(event.currentTarget?.scrollLeft || 0))
+}
+
 function onArrangementWheel(event) {
   const canvas = arrangementCanvas.value
   const wrap = arrangementWrap.value
   if (!canvas || !wrap) return
   const rect = canvas.getBoundingClientRect()
   const y = event.clientY - rect.top
-  if (y > arrangementRulerH) return
+  if (y > arrangementRulerH) {
+    if (event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      scrollArrangementHorizontallyFromWheel(event, wrap)
+    }
+    if (!event.ctrlKey && !event.metaKey) return
+  }
 
   event.preventDefault()
   const oldScale = arrangementPxPerBeat.value
@@ -1196,6 +1605,16 @@ function onArrangementWheel(event) {
       maxScroll
     )
   })
+}
+
+function scrollArrangementHorizontallyFromWheel(event, wrap) {
+  const maxScroll = Math.max(0, wrap.scrollWidth - wrap.clientWidth)
+  if (maxScroll <= 0) return
+  const wheelDelta = event.deltaX || event.deltaY
+  if (!wheelDelta) return
+  event.preventDefault()
+  wrap.scrollLeft = clamp(wrap.scrollLeft + wheelDelta, 0, maxScroll)
+  arrangementScrollLeft.value = wrap.scrollLeft
 }
 
 function arrangementCanvasOffsetX() {
@@ -2191,11 +2610,28 @@ function closePiano() {
   drawAll()
 }
 
+function isInstrumentTrack(track) {
+  return (track?.type || 'instrument') === 'instrument'
+}
+
+function isAudioTrack(track) {
+  return track?.type === 'audio'
+}
+
+function trackChannelLabel(track) {
+  return track?.channel_type === 'mono' ? 'Mono' : 'Multi-channel'
+}
+
+function trackTypeLabel(track) {
+  return isAudioTrack(track) ? `Audio ${trackChannelLabel(track)}` : 'Instrument'
+}
+
 function isPluginEditorOpen(trackId) {
   return Boolean(editorWindows.value?.[`${trackId}:instrument`]?.open)
 }
 
 function canOpenPluginEditor(track) {
+  if (!isInstrumentTrack(track)) return false
   return pluginSlot(track, 'instrument').type === 'vst3'
 }
 
@@ -2210,6 +2646,13 @@ async function togglePluginEditor(track) {
 function pluginSlot(track, slotId = 'instrument') {
   const found = (track.plugin_slots || []).find(slot => slot.id === slotId)
   if (found) return found
+  if (!isInstrumentTrack(track)) {
+    return {
+      id: slotId,
+      type: 'empty',
+      name: 'Empty',
+    }
+  }
   if (slotId !== 'instrument') {
     return {
       id: slotId,
@@ -2384,9 +2827,14 @@ function drawArrangementClip(ctx, track, clip, trackIndex) {
   const rect = clipRect(clip, trackIndex)
   const selected = selectedClipIds.value.has(clip.id)
   const active = activeClipId.value === clip.id
-  ctx.fillStyle = clip.type === 'audio'
-    ? 'rgba(88, 167, 184, 0.68)'
-    : hexToRgba(clip.color || track.color, track.mute ? 0.22 : 0.78)
+  if (clip.type === 'audio') {
+    drawZrythmAudioRegionFrame(ctx, clip, rect, track, selected, active)
+    drawClipAudioPreview(ctx, clip, rect, track)
+    drawZrythmAudioResizeHandle(ctx, rect, active)
+    return
+  }
+
+  ctx.fillStyle = hexToRgba(clip.color || track.color, track.mute ? 0.22 : 0.78)
   roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 5)
   ctx.fill()
   ctx.strokeStyle = active
@@ -2407,12 +2855,59 @@ function drawArrangementClip(ctx, track, clip, trackIndex) {
 
   if (clip.type === 'midi') {
     drawClipMidiPreview(ctx, clip, rect, track)
-  } else {
-    drawClipAudioPreview(ctx, rect)
   }
 
   ctx.fillStyle = 'rgba(255,255,255,0.35)'
   ctx.fillRect(rect.x + rect.w - 5, rect.y + 18, 2, rect.h - 24)
+}
+
+function drawZrythmAudioRegionFrame(ctx, clip, rect, track, selected, active) {
+  const trackColor = clip.color || track.color
+  const headerHeight = audioRegionHeaderHeight(rect)
+  const radius = 5
+
+  ctx.save()
+  ctx.beginPath()
+  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, radius)
+  ctx.clip()
+
+  ctx.fillStyle = hexToRgba(clip.color || track.color, track.mute ? 0.22 : 0.72)
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
+
+  ctx.fillStyle = hexToRgba(trackColor, track.mute ? 0.18 : 0.78)
+  ctx.fillRect(rect.x, rect.y + headerHeight, rect.w, Math.max(1, rect.h - headerHeight))
+
+  ctx.fillStyle = hexToRgba(mixHexColor(trackColor, '#ffffff', 0.32), track.mute ? 0.24 : 0.72)
+  ctx.fillRect(rect.x, rect.y, rect.w, headerHeight)
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(rect.x, rect.y + headerHeight + 0.5)
+  ctx.lineTo(rect.x + rect.w, rect.y + headerHeight + 0.5)
+  ctx.stroke()
+  ctx.restore()
+
+  ctx.strokeStyle = active
+    ? 'rgba(240, 209, 122, 0.95)'
+    : selected ? 'rgba(255,255,255,0.62)' : 'rgba(0,0,0,0.32)'
+  ctx.lineWidth = active ? 2 : 1
+  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, radius)
+  ctx.stroke()
+
+  ctx.fillStyle = zrythmRegionContentColor()
+  ctx.font = '10px Cascadia Mono, Consolas, monospace'
+  ctx.fillText(`AUDIO  ${clip.name || 'Clip'}`, rect.x + 7, rect.y + headerHeight - 5)
+}
+
+function drawZrythmAudioResizeHandle(ctx, rect, active) {
+  const headerHeight = audioRegionHeaderHeight(rect)
+  ctx.fillStyle = active ? 'rgba(240, 209, 122, 0.78)' : 'rgba(255,255,255,0.42)'
+  ctx.fillRect(rect.x + rect.w - 5, rect.y + headerHeight + 3, 2, Math.max(1, rect.h - headerHeight - 8))
+}
+
+function audioRegionHeaderHeight(rect) {
+  return Math.min(18, Math.max(14, Math.floor(rect.h * 0.24)))
 }
 
 function drawClipMidiPreview(ctx, clip, rect, track) {
@@ -2430,17 +2925,130 @@ function drawClipMidiPreview(ctx, clip, rect, track) {
   }
 }
 
-function drawClipAudioPreview(ctx, rect) {
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)'
-  ctx.beginPath()
-  const mid = rect.y + rect.h * 0.62
-  for (let i = 0; i < Math.floor(rect.w); i += 6) {
-    const x = rect.x + i
-    const amp = 5 + ((i * 17) % 19)
-    ctx.moveTo(x, mid - amp)
-    ctx.lineTo(x, mid + amp)
+function drawClipAudioPreview(ctx, clip, rect, track) {
+  const waveform = Array.isArray(clip.waveform) ? clip.waveform : []
+  const points = waveform.map(waveformPointMetrics).filter(Boolean)
+  const trackColor = clip.color || track.color
+  const bodyTop = rect.y + audioRegionHeaderHeight(rect) + 2
+  const bodyBottom = rect.y + rect.h - 5
+  const bodyHeight = Math.max(12, bodyBottom - bodyTop)
+  const mid = bodyTop + bodyHeight * 0.5
+  const maxAmp = Math.max(4, bodyHeight * 0.46)
+  const left = rect.x + 4
+  const right = Math.max(left + 1, rect.x + rect.w - 7)
+  const bounds = {
+    left,
+    right,
+    top: bodyTop,
+    bottom: bodyBottom,
+    height: bodyHeight,
+    mid,
+    maxAmp,
+    width: Math.max(1, right - left),
   }
+
+  ctx.save()
+  ctx.beginPath()
+  roundRect(ctx, rect.x + 3, bodyTop, Math.max(1, rect.w - 9), bodyHeight, 3)
+  ctx.clip()
+
+  ctx.fillStyle = hexToRgba(trackColor, track.mute ? 0.08 : 0.18)
+  ctx.fillRect(rect.x + 3, bodyTop, Math.max(1, rect.w - 9), bodyHeight)
+
+  if (points.length) {
+    drawZrythmWaveformEnvelope(ctx, points, bounds)
+  } else {
+    drawZrythmFallbackWaveform(ctx, bounds)
+  }
+
+  ctx.restore()
+}
+
+function waveformPointMetrics(point) {
+  if (typeof point === 'number') {
+    const peak = clamp(Math.abs(point), 0, 1)
+    return { min: -peak, max: peak, rms: peak * 0.58, peak }
+  }
+  if (!point || typeof point !== 'object') return null
+
+  let min = waveformFiniteNumber(point.min)
+  let max = waveformFiniteNumber(point.max)
+  const rawPeak = waveformFiniteNumber(point.peak)
+  const rawRms = waveformFiniteNumber(point.rms)
+  let peak = rawPeak === null ? null : clamp(Math.abs(rawPeak), 0, 1)
+  let rms = rawRms === null ? null : clamp(Math.abs(rawRms), 0, 1)
+
+  if (min === null && max === null) {
+    if (peak === null) return null
+    min = -peak
+    max = peak
+  } else {
+    const fallback = peak || 0
+    min = min === null ? -Math.max(fallback, Math.abs(max || 0)) : clamp(min, -1, 1)
+    max = max === null ? Math.max(fallback, Math.abs(min || 0)) : clamp(max, -1, 1)
+    if (min > max) {
+      const nextMin = max
+      max = min
+      min = nextMin
+    }
+  }
+
+  const envelopePeak = Math.max(Math.abs(min), Math.abs(max))
+  rms = rms === null ? envelopePeak * 0.58 : rms
+  peak = peak === null ? envelopePeak : peak
+  peak = clamp(Math.max(peak, envelopePeak, rms), 0, 1)
+  rms = Math.min(rms, peak)
+  return { min, max, rms, peak }
+}
+
+function waveformFiniteNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function drawZrythmWaveformEnvelope(ctx, points, bounds) {
+  if (!points.length) return
+  ctx.save()
+  ctx.fillStyle = zrythmRegionContentColor()
+  ctx.strokeStyle = zrythmRegionOutlineColor()
+  ctx.lineWidth = 1
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  points.forEach((point, index) => {
+    const x = waveformX(bounds, points.length, index)
+    const y = waveformY(bounds, point.min)
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    ctx.lineTo(waveformX(bounds, points.length, index), waveformY(bounds, points[index].max))
+  }
+  ctx.closePath()
+  ctx.fill()
   ctx.stroke()
+  ctx.restore()
+}
+
+function drawZrythmFallbackWaveform(ctx, bounds) {
+  const count = Math.max(32, Math.floor(bounds.width))
+  const points = Array.from({ length: count }, (_, index) => {
+    const unit = index / Math.max(1, count - 1)
+    const peak = clamp(
+      0.18 + Math.abs(Math.sin(unit * 31.4)) * 0.36 + Math.abs(Math.sin(unit * 91.7)) * 0.2,
+      0,
+      1
+    )
+    return { min: -peak, max: peak, rms: peak * 0.54, peak }
+  })
+  drawZrythmWaveformEnvelope(ctx, points, bounds)
+}
+
+function waveformX(bounds, count, index) {
+  return bounds.left + (index / Math.max(1, count - 1)) * bounds.width
+}
+
+function waveformY(bounds, value) {
+  return clamp(bounds.mid + value * bounds.maxAmp, bounds.top + 1, bounds.bottom - 1)
 }
 
 function drawPiano() {
@@ -2836,13 +3444,42 @@ function roundRect(ctx, x, y, width, height, radius) {
   ctx.closePath()
 }
 
+function zrythmRegionContentColor() {
+  return 'rgba(246, 250, 255, 0.84)'
+}
+
+function zrythmRegionOutlineColor() {
+  return 'rgba(255, 255, 255, 0.96)'
+}
+
 function hexToRgba(hex, alpha) {
+  const { r, g, b } = hexToRgb(hex)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function hexToRgb(hex) {
   const safe = /^#[0-9a-f]{6}$/i.test(hex) ? hex : '#4e79ff'
   const value = parseInt(safe.slice(1), 16)
   const r = (value >> 16) & 255
   const g = (value >> 8) & 255
   const b = value & 255
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  return { r, g, b }
+}
+
+function mixHexColor(hex, targetHex, amount) {
+  const source = hexToRgb(hex)
+  const target = hexToRgb(targetHex)
+  const unit = clamp(amount, 0, 1)
+  const mixed = {
+    r: Math.round(source.r + (target.r - source.r) * unit),
+    g: Math.round(source.g + (target.g - source.g) * unit),
+    b: Math.round(source.b + (target.b - source.b) * unit),
+  }
+  return rgbToHex(mixed)
+}
+
+function rgbToHex({ r, g, b }) {
+  return `#${[r, g, b].map(value => value.toString(16).padStart(2, '0')).join('')}`
 }
 
 function pitchName(pitch) {
@@ -2879,6 +3516,7 @@ onUnmounted(() => {
   unbindPianoResize()
   unbindArrangementDrag()
   unbindControllerDrag()
+  if (audioDecodeContext?.close) audioDecodeContext.close()
   cancelAnimationFrame(raf)
 })
 
@@ -2902,6 +3540,7 @@ watch(positionBeats, (value) => {
 
 <style scoped>
 .studio-page {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -3107,8 +3746,7 @@ watch(positionBeats, (value) => {
 }
 
 .track-list {
-  position: sticky;
-  left: 0;
+  position: relative;
   z-index: 4;
   grid-column: 1;
   grid-row: 1;
@@ -3118,6 +3756,8 @@ watch(positionBeats, (value) => {
   background: #202428;
   border-right: 1px solid rgba(229, 236, 245, 0.12);
   box-shadow: 10px 0 20px rgba(0, 0, 0, 0.22);
+  transform: translateX(var(--arrangement-scroll-left, 0px));
+  will-change: transform;
 }
 
 .inspector {
@@ -3148,7 +3788,143 @@ watch(positionBeats, (value) => {
 }
 
 .track-list-head {
+  gap: 6px;
   border-right: 1px solid rgba(229, 236, 245, 0.12);
+}
+
+.track-list-head span {
+  flex: 1 1 auto;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(9, 11, 13, 0.66);
+  backdrop-filter: blur(7px);
+}
+
+.track-create-dialog {
+  width: min(420px, 100%);
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border: 1px solid rgba(229, 236, 245, 0.16);
+  border-radius: 8px;
+  background: #202428;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
+}
+
+.track-create-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid rgba(229, 236, 245, 0.1);
+}
+
+.track-create-dialog-head span {
+  color: var(--orange);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.track-create-dialog-head h2 {
+  margin: 2px 0 0;
+  color: var(--t1);
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.track-create-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.track-create-field {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.track-create-field span {
+  color: var(--t4);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.track-create-field input,
+.track-create-field select {
+  min-width: 0;
+  width: 100%;
+  height: 32px;
+  border: 1px solid rgba(229, 236, 245, 0.14);
+  border-radius: 6px;
+  background: #101215;
+  color: var(--t2);
+  font-size: 12px;
+}
+
+.track-create-field input {
+  padding: 0 10px;
+}
+
+.track-create-color-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.track-create-color-field input[type='color'] {
+  flex: 0 0 40px;
+  width: 40px;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.track-create-swatches {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.track-create-swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 5px;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.24);
+}
+
+.track-create-swatch.active {
+  border-color: rgba(240, 209, 122, 0.92);
+  box-shadow:
+    0 0 0 2px rgba(240, 209, 122, 0.16),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.26);
+}
+
+.track-create-field input:focus,
+.track-create-field select:focus {
+  outline: none;
+  border-color: rgba(240, 209, 122, 0.5);
+  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
+}
+
+.track-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid rgba(229, 236, 245, 0.08);
 }
 
 .arrangement-toolbar {
@@ -3266,6 +4042,10 @@ watch(positionBeats, (value) => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 26px;
   gap: 5px;
+}
+
+.track-plugin-bar.audio-channel-bar {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .track-plugin-select {
@@ -3392,6 +4172,74 @@ watch(positionBeats, (value) => {
   flex: 1 1 auto;
   position: relative;
   overscroll-behavior: contain;
+}
+
+.arrangement-canvas-wrap.audio-drop-active,
+.arrangement-canvas-wrap.audio-importing {
+  box-shadow: inset 0 0 0 1px rgba(88, 167, 184, 0.52);
+}
+
+.audio-drop-layer {
+  pointer-events: none;
+  position: absolute;
+  inset: 30px 0 0 246px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(88, 167, 184, 0.12);
+  border: 1px dashed rgba(143, 216, 199, 0.42);
+}
+
+.audio-drop-glyph {
+  width: 78px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 6px;
+  background: rgba(16, 18, 21, 0.72);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+}
+
+.audio-drop-glyph i {
+  width: 4px;
+  height: 18px;
+  border-radius: 999px;
+  background: #8fd8c7;
+  animation: audio-pulse 0.78s ease-in-out infinite alternate;
+}
+
+.audio-drop-glyph i:nth-child(2) {
+  height: 30px;
+  animation-delay: 0.08s;
+}
+
+.audio-drop-glyph i:nth-child(3) {
+  height: 22px;
+  animation-delay: 0.16s;
+}
+
+.audio-drop-glyph i:nth-child(4) {
+  height: 34px;
+  animation-delay: 0.24s;
+}
+
+.audio-drop-glyph i:nth-child(5) {
+  height: 14px;
+  animation-delay: 0.32s;
+}
+
+@keyframes audio-pulse {
+  from {
+    opacity: 0.42;
+    transform: scaleY(0.72);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
 }
 
 .arrangement-scroll-inner {

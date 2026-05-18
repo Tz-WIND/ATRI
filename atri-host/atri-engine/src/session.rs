@@ -9,6 +9,7 @@ use atri_core::midi::note::MidiNote;
 use atri_core::time::tempo::{Meter, Tempo};
 use atri_core::time::tempo_map::{SwapLock, TempoMap};
 
+use super::audio_clip::AudioClip;
 use super::mixer::Mixer;
 use super::processor::Processor;
 use super::route::Route;
@@ -229,6 +230,10 @@ impl Session {
         false
     }
 
+    pub fn set_track_audio_clips(&mut self, track_id: u32, clips: Vec<AudioClip>) -> bool {
+        self.with_route(track_id, |route| route.set_audio_clips(clips))
+    }
+
     pub fn set_track_volume(&mut self, track_id: u32, value: f32) -> bool {
         self.with_route(track_id, |route| route.gain.set_value(value))
     }
@@ -291,6 +296,15 @@ impl Session {
             }
 
             self.route_bufs[idx].silence(nframes);
+            if self.transport.is_rolling() {
+                route.render_audio_clips(
+                    &mut self.route_bufs[idx],
+                    start_sample,
+                    end_sample,
+                    &tempo_map,
+                    nframes,
+                );
+            }
             if self.transport.is_rolling() {
                 route.sequencer.collect_events_in_samples(
                     start_sample,

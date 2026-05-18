@@ -5,6 +5,7 @@ use atri_core::midi::event::MidiEvent;
 use atri_core::midi::message::MidiMessage;
 use atri_core::midi::note::MidiNote;
 use atri_core::time::beats::PPQN;
+use atri_engine::audio_clip::{AudioChannelMode, AudioClip, AudioClipSpec};
 use atri_engine::engine::AudioEngine;
 use atri_engine::plugin_proc::PluginInsert;
 use atri_engine::processor::Processor;
@@ -98,6 +99,7 @@ pub struct TrackStatus {
     solo: bool,
     note_count: usize,
     midi_event_count: usize,
+    audio_clip_count: usize,
     processors: Vec<String>,
     processor_slots: Vec<Option<String>>,
 }
@@ -128,6 +130,10 @@ pub enum Command {
         notes: Vec<MidiNoteData>,
         #[serde(default)]
         events: Vec<MidiEventData>,
+    },
+    SetAudioClips {
+        track_id: u32,
+        clips: Vec<AudioClipData>,
     },
     SetTempo {
         bpm: f64,
@@ -250,6 +256,19 @@ pub struct MidiEventData {
     pub bytes: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AudioClipData {
+    pub path: String,
+    pub start: f64,
+    pub duration: f64,
+    #[serde(default)]
+    pub source_offset: Option<f64>,
+    #[serde(default)]
+    pub gain: Option<f32>,
+    #[serde(default)]
+    pub channel_type: Option<String>,
+}
+
 pub fn handle_command(
     raw: &Value,
     engine: &Arc<Mutex<AudioEngine>>,
@@ -336,6 +355,20 @@ fn execute(
                 CommandResponse::ack("set_midi")
             } else {
                 CommandResponse::error(Some("set_midi"), "track not found")
+            }
+        }
+        Command::SetAudioClips { track_id, clips } => {
+            let audio_clips = match audio_clips_from_data(clips) {
+                Ok(clips) => clips,
+                Err(err) => return CommandResponse::error(Some("set_audio_clips"), &err),
+            };
+            let count = audio_clips.len();
+            if with_session(engine, |session| {
+                session.set_track_audio_clips(track_id, audio_clips)
+            }) {
+                CommandResponse::ack_with("set_audio_clips", json!({ "clips": count }))
+            } else {
+                CommandResponse::error(Some("set_audio_clips"), "track not found")
             }
         }
         Command::SetTempo { bpm, time_sig } => {
@@ -694,6 +727,34 @@ fn configure_scanner(
         .with_vst2_paths(host_config.vst2_plugin_paths.iter().cloned())
         .with_paths(paths.unwrap_or_default())
         .with_vst2_paths(vst2_paths.unwrap_or_default())
+}
+
+fn audio_clips_from_data(clips: Vec<AudioClipData>) -> Result<Vec<AudioClip>, String> {
+    clips
+        .into_iter()
+        .map(|clip| {
+            AudioClip::load(AudioClipSpec {
+                path: PathBuf::from(clip.path),
+                start_beats: clip.start,
+                duration_beats: clip.duration,
+                source_offset_seconds: clip.source_offset.unwrap_or(0.0),
+                gain: clip.gain.unwrap_or(1.0),
+                channel_mode: audio_channel_mode_from_data(clip.channel_type.as_deref()),
+            })
+        })
+        .collect()
+}
+
+fn audio_channel_mode_from_data(value: Option<&str>) -> AudioChannelMode {
+    match value
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mono" | "monophonic" => AudioChannelMode::Mono,
+        _ => AudioChannelMode::Multichannel,
+    }
 }
 
 fn midi_events_from_data(events: Vec<MidiEventData>) -> Result<Vec<MidiEvent>, String> {
@@ -1419,6 +1480,7 @@ fn status(
                     solo: route.solo,
                     note_count: route.sequencer.note_count(),
                     midi_event_count: route.sequencer.midi_event_count(),
+                    audio_clip_count: route.audio_clip_count(),
                     processors: route
                         .processors
                         .iter()
