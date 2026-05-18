@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from core.agent.agent import _llm_safe_message
 from core.agent.context import (
     TOOL_OUTPUT_COMPRESSED_MARKER,
     ContextManager,
@@ -10,6 +11,7 @@ from core.agent.context import (
     estimate_tokens,
 )
 from core.agent.session import SessionStore
+from core.pipeline.stages.process import _attach_generated_images_to_assistant_message
 from core.tools.retrieve_tool_result import RetrieveToolResultTool
 
 
@@ -55,6 +57,72 @@ def test_session_store_lists_multimodal_user_content_preview(tmp_path):
     store.save(messages, "gpt-test", "webchat:friend:vision")
 
     assert store.list_sessions()[0]["preview"] == "check this\n[Image attachment]\n"
+
+
+def test_session_store_preserves_generated_assistant_image_attachments(tmp_path):
+    store = SessionStore(tmp_path)
+    messages = [
+        {"role": "user", "content": "draw a cat"},
+        {
+            "role": "assistant",
+            "content": "Done.",
+            "_atri_attachments": [
+                {
+                    "src": "data:image/png;base64,aGVsbG8=",
+                    "name": "novelai-1.png",
+                    "type": "image/png",
+                    "size": 5,
+                }
+            ],
+        },
+    ]
+
+    store.save(messages, "gpt-test", "webchat:friend:image")
+
+    assert store.load("webchat:friend:image") == (messages, "gpt-test")
+
+
+def test_llm_safe_message_strips_atri_attachment_metadata():
+    message = {
+        "role": "assistant",
+        "content": "Done.",
+        "tool_calls": [{"id": "call_1"}],
+        "_atri_attachments": [{"src": "data:image/png;base64,aGVsbG8="}],
+    }
+
+    assert _llm_safe_message(message) == {
+        "role": "assistant",
+        "content": "Done.",
+        "tool_calls": [{"id": "call_1"}],
+    }
+
+
+def test_generated_images_attach_to_last_assistant_message():
+    messages = [
+        {"role": "user", "content": "draw"},
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    _attach_generated_images_to_assistant_message(
+        messages,
+        [
+            {
+                "url": "data:image/png;base64,aGVsbG8=",
+                "name": "novelai.png",
+                "mime_type": "image/png",
+                "size": 5,
+            }
+        ],
+    )
+
+    assert messages[-1]["_atri_attachments"] == [
+        {
+            "src": "data:image/png;base64,aGVsbG8=",
+            "name": "novelai.png",
+            "type": "image/png",
+            "size": 5,
+        }
+    ]
 
 
 def test_session_store_rejects_path_traversal_session_ids(tmp_path):

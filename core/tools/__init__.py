@@ -13,6 +13,7 @@ from .mcp import create_mcp_tools
 from .midi import MidiBatchEditTool, MidiDiffTool, MidiInspectTool, MidiQueryTool, MidiWriteTool
 from .mode import AgentModeTool
 from .music import MusicTool
+from .novelai_image import NovelAIImageTool
 from .read import ReadFileTool
 from .retrieve_tool_result import RetrieveToolResultTool
 from .search import SearchTool
@@ -53,6 +54,7 @@ def create_tools(
         AgentModeTool(workspace, mode_controller=mode_controller),
         LintTool(workspace),
         MusicTool(workspace),
+        NovelAIImageTool(workspace),
         MidiWriteTool(workspace),
         MidiDiffTool(workspace),
         MidiBatchEditTool(workspace),

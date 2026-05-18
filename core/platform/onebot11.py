@@ -173,7 +173,7 @@ class OneBot11Adapter(Platform):
             if isinstance(comp, Plain):
                 segments.append({"type": "text", "data": {"text": comp.text}})
             elif isinstance(comp, Image):
-                segments.append({"type": "image", "data": {"file": comp.url or comp.file}})
+                segments.append({"type": "image", "data": {"file": comp.file or comp.url}})
             elif isinstance(comp, At):
                 segments.append({"type": "at", "data": {"qq": comp.qq}})
             elif isinstance(comp, Reply):

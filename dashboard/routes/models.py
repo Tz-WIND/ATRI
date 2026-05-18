@@ -8,6 +8,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from quart import jsonify, request
 
+from core.tools.novelai_image import mask_novelai_config, merge_novelai_config, set_novelai_config
+
 if TYPE_CHECKING:
     from dashboard.server import Dashboard
 
@@ -26,6 +28,7 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "persona",
     "agent_mode",
     "image_transcription",
+    "novelai",
     "skills_root",
     "skill_search_roots",
     "tavily_api_key",
@@ -350,6 +353,7 @@ def register(dashboard: Dashboard) -> None:
                 "persona": c.get("persona", ""),
                 "agent_mode": c.get("agent_mode", "agent"),
                 "image_transcription": _mask_image_transcription(c.get("image_transcription", {})),
+                "novelai": mask_novelai_config(c.get("novelai", {})),
                 "skills_root": c.get("skills_root", "skills"),
                 "skill_search_roots": c.get("skill_search_roots", []),
                 "providers": _mask_providers(c.get("providers", {})),
@@ -410,6 +414,16 @@ def register(dashboard: Dashboard) -> None:
                     data["image_transcription"],
                 )
                 data["image_transcription"] = lc.config["image_transcription"]
+            except (TypeError, ValueError) as e:
+                return jsonify({"error": str(e)}), 400
+        if "novelai" in data:
+            try:
+                lc.config["novelai"] = merge_novelai_config(
+                    lc.config.get("novelai", {}),
+                    data["novelai"],
+                )
+                data["novelai"] = lc.config["novelai"]
+                set_novelai_config(lc.config["novelai"])
             except (TypeError, ValueError) as e:
                 return jsonify({"error": str(e)}), 400
         # audio_host settings

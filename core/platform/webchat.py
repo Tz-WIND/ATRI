@@ -123,3 +123,22 @@ class WebChatAdapter(Platform):
             description="Dashboard WebUI chat adapter",
             id="webchat",
         )
+
+
+def _chain_to_wire(chain: MessageChain) -> list[dict]:
+    items = []
+    for comp in chain:
+        if isinstance(comp, Plain):
+            items.append({"type": "plain", "text": comp.text})
+        elif isinstance(comp, Image):
+            file_value = "" if comp.file.startswith("base64://") else comp.file
+            items.append(
+                {
+                    "type": "image",
+                    "url": comp.url,
+                    "file": file_value,
+                    "mime_type": comp.mime_type,
+                    "size": comp.size,
+                }
+            )
+    return items

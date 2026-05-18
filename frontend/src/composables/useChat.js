@@ -122,6 +122,23 @@ export function useChat() {
     })
   }
 
+  function addOrPatchAssistantMessage(content, attachments = []) {
+    const text = String(content || '')
+    const lastIndexFromEnd = [...messages.value].reverse().findIndex((m) =>
+      m.role === 'assistant' && !m.streaming && String(m.content || '') === text
+    )
+    if (lastIndexFromEnd >= 0) {
+      const index = messages.value.length - 1 - lastIndexFromEnd
+      const current = messages.value[index]
+      messages.value.splice(index, 1, {
+        ...current,
+        attachments: mergeAttachments(current.attachments, attachments),
+      })
+      return
+    }
+    addMessage('assistant', text, true, { attachments })
+  }
+
   function startThinkingBlock() {
     finishThinkingBlock()
     const now = Date.now()
@@ -308,7 +325,9 @@ export function useChat() {
           addRuntimeThinkingForNextTurn()
         }
       } else if (m.role === 'assistant' && m.content) {
-        addMessage('assistant', m.content, true)
+        addMessage('assistant', m.content, true, {
+          attachments: normalizeStoredAttachments(m._atri_attachments),
+        })
       } else if (m.role === 'tool') {
         const call = callsById.get(m.tool_call_id) || {}
         const result = m.content || ''
@@ -431,6 +450,55 @@ export function useChat() {
     }))
   }
 
+  function normalizeAssistantChain(chain, fallbackText = '') {
+    if (!Array.isArray(chain)) {
+      return { text: String(fallbackText || ''), attachments: [] }
+    }
+    const textParts = []
+    const attachments = []
+    chain.forEach((part, index) => {
+      if (!part || typeof part !== 'object') return
+      if (part.type === 'plain') {
+        textParts.push(part.text || '')
+      } else if (part.type === 'image') {
+        const src = part.url || ''
+        if (src) {
+          attachments.push({
+            id: makeId(),
+            name: part.file || `generated-${index + 1}`,
+            type: part.mime_type || mimeFromDataUrl(src),
+            size: Number(part.size || 0),
+            src,
+          })
+        }
+      }
+    })
+    return { text: textParts.join('\n').trim() || String(fallbackText || ''), attachments }
+  }
+
+  function normalizeStoredAttachments(rawAttachments) {
+    if (!Array.isArray(rawAttachments)) return []
+    return rawAttachments
+      .map((image, index) => ({
+        id: makeId(),
+        name: image.name || `generated-${index + 1}`,
+        type: image.type || mimeFromDataUrl(image.src),
+        size: Number(image.size || 0),
+        src: image.src || image.url || '',
+      }))
+      .filter((image) => image.src)
+  }
+
+  function mergeAttachments(existing = [], incoming = []) {
+    const seen = new Set()
+    return [...existing, ...incoming].filter((image) => {
+      const key = image.src || image.id || image.name
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }
+
   async function cancelMessage() {
     if (!sending.value) return
     try {
@@ -464,6 +532,9 @@ export function useChat() {
 
       if (result.error) {
         addMessage('assistant', `Error: ${result.error}`, false)
+      } else if (Array.isArray(result.chain)) {
+        const parsed = normalizeAssistantChain(result.chain, result.response)
+        addOrPatchAssistantMessage(parsed.text, parsed.attachments)
       } else if (!streamingAssistantId && !messages.value.some((m) => m.role === 'assistant' && m.streaming === false && m.content === result.response)) {
         await new Promise(r => setTimeout(r, 120))
         if (!streamingAssistantId) {

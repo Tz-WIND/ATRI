@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from quart import jsonify, request
 
 from core import logger
-from core.platform.message import display_session_id, normalize_session_id
+from core.platform.message import Image, Plain, display_session_id, normalize_session_id
 
 if TYPE_CHECKING:
     from dashboard.server import Dashboard
@@ -19,6 +19,27 @@ if TYPE_CHECKING:
 _CHAT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 _MAX_CHAT_IMAGES = 4
 _MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _serialize_response_chain(chain: object) -> list[dict] | None:
+    if not isinstance(chain, list):
+        return None
+    items = []
+    for comp in chain:
+        if isinstance(comp, Plain):
+            items.append({"type": "plain", "text": comp.text})
+        elif isinstance(comp, Image):
+            file_value = "" if comp.file.startswith("base64://") else comp.file
+            items.append(
+                {
+                    "type": "image",
+                    "url": comp.url,
+                    "file": file_value,
+                    "mime_type": comp.mime_type,
+                    "size": comp.size,
+                }
+            )
+    return items
 
 
 def _parse_image_data_url(data_url: str) -> tuple[str, int]:
@@ -142,6 +163,7 @@ def register(dashboard: Dashboard) -> None:
             return jsonify(
                 {
                     "response": response_text,
+                    "chain": _serialize_response_chain(result.get("chain")),
                     "session_id": display_session_id(event.unified_msg_origin),
                     "tool_events": event._extras.get("tool_events", []),
                     "token_usage": token_usage,

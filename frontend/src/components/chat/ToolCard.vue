@@ -145,6 +145,7 @@ const TOOL_LABELS = {
   bash: { title: 'Shell', ing: 'Running shell', done: 'Ran shell', fail: 'Shell failed', key: 'command' },
   terminal: { title: 'Terminal', ing: 'Running terminal', done: 'Ran terminal', fail: 'Terminal failed', key: 'command' },
   agent: { title: 'Agent', ing: 'Running agent', done: 'Agent done', fail: 'Agent failed', key: 'task' },
+  novelai_image: { title: 'NovelAI', ing: 'Generating image', done: 'Generated image', fail: 'Image failed', key: 'prompt' },
 }
 
 const props = defineProps({

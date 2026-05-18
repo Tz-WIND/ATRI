@@ -166,7 +166,10 @@ class Agent:
         return list(catalog)
 
     def _full_messages(self) -> list[dict]:
-        return [{"role": "system", "content": self._build_system()}, *self.messages]
+        return [
+            {"role": "system", "content": self._build_system()},
+            *[_llm_safe_message(message) for message in self.messages],
+        ]
 
     def _tool_schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools]
@@ -382,3 +385,12 @@ class Agent:
 
     def reset(self):
         self.messages.clear()
+
+
+def _llm_safe_message(message: dict) -> dict:
+    """Remove ATRI-only metadata before sending saved messages to an LLM API."""
+    return {
+        key: value
+        for key, value in message.items()
+        if not str(key).startswith("_atri_")
+    }

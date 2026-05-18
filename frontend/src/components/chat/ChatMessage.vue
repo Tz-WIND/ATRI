@@ -66,6 +66,21 @@
           class="stream-cursor"
         />
       </template>
+      <div
+        v-if="message.role !== 'user' && assistantAttachments.length"
+        class="assistant-attachments"
+      >
+        <figure
+          v-for="image in assistantAttachments"
+          :key="image.id || image.src"
+          class="assistant-image"
+        >
+          <img
+            :src="safeImageSrc(image.src)"
+            :alt="image.name || 'Generated image'"
+          >
+        </figure>
+      </div>
     </div>
   </div>
 </template>
@@ -80,6 +95,12 @@ const props = defineProps({
 })
 
 const userAttachments = computed(() => (
+  Array.isArray(props.message.attachments)
+    ? props.message.attachments.filter((image) => safeImageSrc(image.src))
+    : []
+))
+
+const assistantAttachments = computed(() => (
   Array.isArray(props.message.attachments)
     ? props.message.attachments.filter((image) => safeImageSrc(image.src))
     : []
@@ -477,5 +498,28 @@ async function handleMarkdownClick(event) {
 .markdown-body :deep(.btn-copy:hover) {
   color: var(--t1);
   background: var(--bg-100);
+}
+
+.assistant-attachments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 360px));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.assistant-image {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(24, 24, 24, 0.52);
+}
+
+.assistant-image img {
+  width: 100%;
+  display: block;
+  max-height: 520px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.03);
 }
 </style>

@@ -62,9 +62,11 @@ class Lifecycle:
         if changed or config_was_empty:
             self.save_config(config)
 
+        from core.tools.novelai_image import set_novelai_config
         from core.tools.web_search import set_tavily_key
 
         set_tavily_key(config.get("tavily_api_key", "") or None)
+        set_novelai_config(config.get("novelai", {}))
         return config
 
     def save_config(self, config: dict | None = None):
@@ -127,6 +129,7 @@ class Lifecycle:
             "skill_search_roots": self.config.get("skill_search_roots", []),
             "skills_config": self.config.get("skills", {}),
             "tavily_api_key": self.config.get("tavily_api_key", ""),
+            "novelai": self.config.get("novelai", {}),
             "image_transcription": self.config.get("image_transcription", {}),
             "mcp_servers": self.config.get("mcp_servers", {}),
             "sessions_dir": self.config.get("sessions_dir"),

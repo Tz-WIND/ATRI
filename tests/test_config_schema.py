@@ -24,6 +24,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["temperature"] == 0.75
     assert config["agent_mode"] == DEFAULT_CONFIG["agent_mode"]
     assert config["image_transcription"] == DEFAULT_CONFIG["image_transcription"]
+    assert config["novelai"] == DEFAULT_CONFIG["novelai"]
     assert config["onebot11"]["enabled"] is False
     assert config["onebot11"]["ws_reverse_port"] == 6200
     assert config["workspace"] == DEFAULT_CONFIG["workspace"]
@@ -98,6 +99,23 @@ def test_normalize_config_coerces_image_transcription_settings():
     assert config["image_transcription"]["max_tokens"] == 2048
     assert config["image_transcription"]["temperature"] == 0.2
     assert config["image_transcription"]["prompt"]
+
+
+def test_normalize_config_adds_novelai_defaults_and_coerces_settings():
+    config, changed = normalize_config(
+        {
+            "novelai": {
+                "api_key": "nai-key",
+                "base_url": "https://example.test",
+                "model": "nai-test-model",
+            }
+        }
+    )
+
+    assert changed is True
+    assert config["novelai"]["api_key"] == "nai-key"
+    assert config["novelai"]["base_url"] == "https://example.test"
+    assert config["novelai"]["model"] == "nai-test-model"
 
 
 def test_normalize_config_removes_legacy_auth_token_when_dashboard_is_disabled():

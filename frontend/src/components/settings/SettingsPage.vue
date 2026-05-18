@@ -271,6 +271,53 @@
           </section>
 
           <section
+            v-else-if="activeTab === 'novelai'"
+            class="settings-section"
+          >
+            <div class="section-heading-row">
+              <div>
+                <h3>NovelAI Image Generation</h3>
+                <p class="section-desc">
+                  Credentials and defaults used by the Images workbench.
+                </p>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>NovelAI API Key</span>
+                  <input
+                    v-model="form.novelai.api_key"
+                    type="password"
+                    :placeholder="form.novelai.api_key ? '******** (unchanged)' : 'Persistent API token'"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Default Model</span>
+                  <input
+                    v-model="form.novelai.model"
+                    list="novelai-models"
+                    placeholder="nai-diffusion-4-5-full"
+                  >
+                  <datalist id="novelai-models">
+                    <option value="nai-diffusion-4-5-full" />
+                    <option value="nai-diffusion-4-5-curated" />
+                    <option value="nai-diffusion-4-full" />
+                    <option value="nai-diffusion-3" />
+                  </datalist>
+                </label>
+                <label class="setting-field full">
+                  <span>Image API Base URL</span>
+                  <input
+                    v-model="form.novelai.base_url"
+                    placeholder="https://image.novelai.net"
+                  >
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section
             v-else-if="activeTab === 'agent'"
             class="settings-section"
           >
@@ -523,6 +570,7 @@ const settingsGroups = [
     label: 'Agent',
     tabs: [
       { id: 'vision', label: 'Vision', description: 'Dedicated image transcription settings.', icon: icon.image },
+      { id: 'novelai', label: 'NovelAI', description: 'Image generation credentials and defaults.', icon: icon.image },
       { id: 'agent', label: 'Behavior', description: 'Wake words, persona, and extra instructions.', icon: icon.agent },
       { id: 'search', label: 'Search', description: 'Web search provider credentials.', icon: icon.search },
     ],
@@ -558,6 +606,11 @@ const form = ref({
     prompt: '',
     max_tokens: 1024,
     temperature: 0,
+  },
+  novelai: {
+    api_key: '',
+    base_url: 'https://image.novelai.net',
+    model: 'nai-diffusion-4-5-full',
   },
   audio_host: {
     sample_rate: 48000,
@@ -625,6 +678,7 @@ async function loadSettings() {
     form.value.extra_instructions = d.extra_instructions || ''
     form.value.tavily_api_key = d.tavily_api_key || ''
     form.value.image_transcription = normalizeImageTranscription(d.image_transcription)
+    form.value.novelai = normalizeNovelai(d.novelai)
     imageTranscriptionExpanded.value = Boolean(form.value.image_transcription.enabled)
     if (d.audio_host) {
       form.value.audio_host = {
@@ -656,6 +710,14 @@ function normalizeImageTranscription(value = {}) {
     prompt: value.prompt || '',
     max_tokens: Number(value.max_tokens || 1024),
     temperature: Number(value.temperature || 0),
+  }
+}
+
+function normalizeNovelai(value = {}) {
+  return {
+    api_key: value.api_key || '',
+    base_url: value.base_url || 'https://image.novelai.net',
+    model: value.model || 'nai-diffusion-4-5-full',
   }
 }
 
@@ -697,6 +759,11 @@ async function saveSettings() {
         base_url: form.value.image_transcription.base_url.trim(),
         api_key: form.value.image_transcription.api_key.trim(),
         prompt: form.value.image_transcription.prompt.trim(),
+      },
+      novelai: {
+        api_key: form.value.novelai.api_key.trim(),
+        base_url: form.value.novelai.base_url.trim(),
+        model: form.value.novelai.model.trim(),
       },
       audio_host: {
         sample_rate: form.value.audio_host.sample_rate,

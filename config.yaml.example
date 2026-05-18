@@ -45,6 +45,12 @@ image_transcription:
     Include visible text, UI state, errors, file paths, code snippets, diagrams,
     and any details needed to answer the user's request. Be concise and factual.
 
+# NovelAI image generation tool. Generated images are attached to chat replies.
+novelai:
+  api_key: ''
+  base_url: https://image.novelai.net
+  model: nai-diffusion-4-5-full
+
 # 工作目录（Agent 文件操作沙箱）
 workspace: ./workspace
 

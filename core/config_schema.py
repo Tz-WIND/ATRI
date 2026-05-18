@@ -49,6 +49,14 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "temperature": {"type": "number", "default": 0.0},
             },
         },
+        "novelai": {
+            "type": "object",
+            "properties": {
+                "api_key": {"type": "string", "default": ""},
+                "base_url": {"type": "string", "default": "https://image.novelai.net"},
+                "model": {"type": "string", "default": "nai-diffusion-4-5-full"},
+            },
+        },
         "onebot11": {
             "type": "object",
             "properties": {

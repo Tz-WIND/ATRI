@@ -88,6 +88,7 @@ class ProcessStage(Stage):
         self.skill_search_roots: list[str] = ctx.get("skill_search_roots", [])
         self.skills_config: dict = ctx.get("skills_config", {})
         self.tavily_api_key: str = ctx.get("tavily_api_key", "")
+        self.novelai: dict = dict(ctx.get("novelai", {}) or {})
         self.mcp_servers: dict = dict(ctx.get("mcp_servers", {}))
         self.image_transcription: dict = dict(ctx.get("image_transcription", {}) or {})
         self.mode_controller = AgentModeController(
@@ -95,9 +96,11 @@ class ProcessStage(Stage):
             on_change=self._on_agent_mode_changed,
         )
 
+        from core.tools.novelai_image import set_novelai_config
         from core.tools.web_search import set_tavily_key
 
         set_tavily_key(self.tavily_api_key or None)
+        set_novelai_config(self.novelai)
 
         self.skill_manager = SkillManager(
             self.skills_root,
@@ -353,7 +356,16 @@ class ProcessStage(Stage):
             turn.mark_thinking_done()
             await turn.drain_pending_broadcasts()
 
-            event.set_result(response_text)
+            generated_images = _image_components_from_extras(event._extras.get("generated_images"))
+            if generated_images:
+                text = response_text.strip() or "Generated image(s)."
+                event.set_result_chain([Plain(text=text), *generated_images])
+                _attach_generated_images_to_assistant_message(
+                    agent.messages,
+                    event._extras.get("generated_images"),
+                )
+            else:
+                event.set_result(response_text)
             event._extras["tool_events"] = turn.tool_events
             await turn.finish_success(response_text)
 
@@ -541,6 +553,11 @@ class ProcessStage(Stage):
             from core.tools.web_search import set_tavily_key
 
             set_tavily_key(self.tavily_api_key or None)
+        if "novelai" in kwargs:
+            self.novelai = dict(kwargs["novelai"] or {})
+            from core.tools.novelai_image import set_novelai_config
+
+            set_novelai_config(self.novelai)
         if "mcp_servers" in kwargs:
             self.mcp_servers = dict(kwargs["mcp_servers"] or {})
             with self._agents_lock:
@@ -904,13 +921,29 @@ class _RuntimeTurnRecorder:
         )
 
     def on_tool_end(self, tc_id: str, name: str, args: dict, result: str) -> None:
+        if name == "novelai_image":
+            try:
+                from core.tools.novelai_image import pop_generated_images_from_result
+
+                generated_images = pop_generated_images_from_result(result)
+            except Exception:
+                logger.exception("Failed to consume NovelAI generated images")
+                generated_images = []
+            if generated_images:
+                self.event._extras.setdefault("generated_images", []).extend(generated_images)
+
         is_error = result.startswith("Error")
         is_blocked = "BLOCKED:" in result
         needs_confirm = CONFIRM_MARKER in result
         is_compressed = result.startswith(TOOL_OUTPUT_COMPRESSED_MARKER)
         result_id = _extract_tool_result_id(result) if is_compressed else ""
         preview_len = 8000 if name in {"edit_file", "write_file"} or is_compressed else 200
-        preview = result[:preview_len] if len(result) > preview_len else result
+        preview_source = (
+            _strip_generated_image_markers(result) if name == "novelai_image" else result
+        )
+        preview = (
+            preview_source[:preview_len] if len(preview_source) > preview_len else preview_source
+        )
         success = not is_error and not is_blocked and not needs_confirm
         item_id = self.tool_item_ids.get(tc_id)
         self.finish_item(
@@ -1018,6 +1051,69 @@ def _extract_tool_result_id(result: str) -> str:
         if line.startswith("Tool result id:"):
             return line.split(":", 1)[1].strip()
     return ""
+
+
+def _strip_generated_image_markers(result: str) -> str:
+    return "\n".join(
+        line
+        for line in str(result or "").splitlines()
+        if not line.startswith("ATRI_GENERATED_IMAGE_BATCH:")
+    )
+
+
+def _image_components_from_extras(raw_images: object) -> list[Image]:
+    if not isinstance(raw_images, list):
+        return []
+    images = []
+    for item in raw_images:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        file = str(item.get("file") or "")
+        if not url and not file:
+            continue
+        images.append(
+            Image(
+                url=url,
+                file=file,
+                mime_type=str(item.get("mime_type") or ""),
+                size=int(item.get("size") or 0),
+            )
+        )
+    return images
+
+
+def _attach_generated_images_to_assistant_message(
+    messages: list[dict],
+    raw_images: object,
+) -> None:
+    if not isinstance(raw_images, list) or not raw_images:
+        return
+    attachments = []
+    for item in raw_images:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        if not url:
+            continue
+        attachments.append(
+            {
+                "src": url,
+                "name": str(item.get("name") or "generated-image"),
+                "type": str(item.get("mime_type") or ""),
+                "size": int(item.get("size") or 0),
+            }
+        )
+    if not attachments:
+        return
+    for message in reversed(messages):
+        if message.get("role") == "assistant":
+            existing = message.get("_atri_attachments")
+            message["_atri_attachments"] = [
+                *(existing if isinstance(existing, list) else []),
+                *attachments,
+            ]
+            return
 
 
 def _llm_config_from_provider(provider_cfg: dict) -> dict:

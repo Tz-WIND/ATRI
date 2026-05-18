@@ -1,7 +1,11 @@
+import io
+import zipfile
 from typing import Any
 
 import pytest
 
+from core.tools import novelai_image
+from core.tools.novelai_image import NovelAIImageTool
 from dashboard.routes import _helpers, chat, models
 
 
@@ -78,6 +82,100 @@ def test_dashboard_masks_and_merges_image_transcription_config():
     assert merged["api_key"] == "sk-existing"
     assert merged["max_tokens"] == 1024
     assert merged["temperature"] == 0.25
+
+
+def test_dashboard_masks_and_merges_novelai_config():
+    existing = {
+        "api_key": "nai-existing",
+        "base_url": "https://image.novelai.net",
+        "model": "nai-old",
+    }
+
+    assert novelai_image.mask_novelai_config(existing)["api_key"] == "***"
+
+    merged = novelai_image.merge_novelai_config(
+        existing,
+        {
+            "api_key": "***",
+            "base_url": "https://image.example.test",
+            "model": "nai-new",
+        },
+    )
+
+    assert merged["api_key"] == "nai-existing"
+    assert merged["base_url"] == "https://image.example.test"
+    assert merged["model"] == "nai-new"
+
+
+def test_dashboard_builds_novelai_generation_payload():
+    payload, meta = novelai_image.build_novelai_payload(
+        {
+            "prompt": "1girl, cinematic light",
+            "negative_prompt": "low quality",
+            "width": 999,
+            "height": 1024,
+            "steps": "32",
+            "scale": "6.5",
+            "seed": "123",
+            "n_samples": 2,
+            "image_format": "webp",
+        },
+        {"model": "nai-diffusion-4-5-full"},
+    )
+
+    assert payload["action"] == "generate"
+    assert payload["input"] == "1girl, cinematic light"
+    assert payload["model"] == "nai-diffusion-4-5-full"
+    assert payload["parameters"]["width"] == 1024
+    assert payload["parameters"]["height"] == 1024
+    assert payload["parameters"]["steps"] == 32
+    assert payload["parameters"]["scale"] == 6.5
+    assert payload["parameters"]["seed"] == 123
+    assert payload["parameters"]["n_samples"] == 2
+    assert payload["parameters"]["image_format"] == "webp"
+    assert payload["parameters"]["v4_prompt"]["caption"]["base_caption"] == (
+        "1girl, cinematic light"
+    )
+    assert meta["seed"] == 123
+
+
+def test_novelai_image_tool_returns_chat_image_batch(monkeypatch, tmp_path):
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("image_0.png", b"fake-png")
+
+    novelai_image.set_novelai_config(
+        {
+            "api_key": "nai-test",
+            "base_url": "https://image.novelai.net",
+            "model": "nai-diffusion-4-5-full",
+        }
+    )
+    monkeypatch.setattr(
+        novelai_image,
+        "_post_novelai_request",
+        lambda payload, cfg: archive_bytes.getvalue(),
+    )
+
+    result = NovelAIImageTool(str(tmp_path)).execute(prompt="cat wizard", seed=42)
+
+    assert "Generated 1 NovelAI image(s) for the chat reply." in result
+    images = novelai_image.pop_generated_images_from_result(result)
+    assert images == [
+        {
+            "url": "data:image/png;base64,ZmFrZS1wbmc=",
+            "file": "base64://ZmFrZS1wbmc=",
+            "mime_type": "image/png",
+            "size": 8,
+            "name": "novelai-42-1.png",
+        }
+    ]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_novelai_authorization_header_adds_bearer_prefix():
+    assert novelai_image._authorization_value("nai-token") == "Bearer nai-token"
+    assert novelai_image._authorization_value("Bearer nai-token") == "Bearer nai-token"
 
 
 def test_dashboard_resolve_workspace_path_blocks_escape(tmp_path):
