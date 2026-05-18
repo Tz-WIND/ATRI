@@ -507,9 +507,7 @@ def test_midi_batch_edit_rejects_curve_resolution_that_generates_too_many_points
         )
 
 
-def test_midi_diff_rejects_curve_resolution_that_generates_too_many_points(
-    tmp_path, monkeypatch
-):
+def test_midi_diff_rejects_curve_resolution_that_generates_too_many_points(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     load_project()
 
