@@ -56,6 +56,8 @@ MIDI_CURVE_EVENT_TYPES = {
 }
 
 MIDI_CURVE_MAX_POINTS = 4096
+METER_DENOMINATORS = {2, 4, 8, 16, 32}
+MAX_METER_NUMERATOR = 255
 
 
 def _now_iso() -> str:
@@ -2705,10 +2707,18 @@ def _first_present(mapping: dict[str, Any], keys: tuple[str, ...], default: Any 
 
 def _normalize_meter(value: Any) -> list[int]:
     if isinstance(value, (list, tuple)) and len(value) == 2:
-        num = _bounded_int(value[0], 4, 1, 32)
-        den = _bounded_int(value[1], 4, 1, 32)
+        num = _bounded_int(value[0], 4, 1, MAX_METER_NUMERATOR)
+        den = _normalize_meter_denominator(value[1])
         return [num, den]
     return [4, 4]
+
+
+def _normalize_meter_denominator(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 4
+    return parsed if parsed in METER_DENOMINATORS else 4
 
 
 def _track_color(value: Any, index: int) -> str:

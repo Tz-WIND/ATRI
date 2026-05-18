@@ -80,6 +80,106 @@ def test_music_studio_supports_external_audio_drop_import():
     assert "/api/music/studio/audio/import" in api_text
 
 
+def test_music_studio_exposes_free_time_signature_controls():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'class="time-signature-picker mono"' in studio_text
+    assert 'class="time-signature-display"' in studio_text
+    assert 'v-if="timeSignaturePopoverOpen"' in studio_text
+    assert 'class="time-signature-popover"' in studio_text
+    assert 'v-model.number="timeSignatureNumerator"' in studio_text
+    assert (
+        '@click.stop="timeSignatureDenominatorPopoverOpen ='
+        ' !timeSignatureDenominatorPopoverOpen"'
+    ) in studio_text
+    assert 'v-if="timeSignatureDenominatorPopoverOpen"' in studio_text
+    assert "const timeSignatureDenominatorOptions = [2, 4, 8, 16, 32]" in studio_text
+    assert "@change=\"updateTimeSignature\"" in studio_text
+    assert "timeSignatureLabel" in studio_text
+    assert "timeSignatureDenominatorLabel" in studio_text
+    assert "async function updateTimeSignature()" in studio_text
+    assert "async function setTimeSignatureDenominator(denominator)" in studio_text
+    assert "nextProject.time_signature = [numerator, denominator]" in studio_text
+
+
+def test_music_studio_exposes_editable_tempo_control():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'v-model.number="tempoInput"' in studio_text
+    assert 'aria-label="Tempo BPM"' in studio_text
+    assert '@change="updateTempo"' in studio_text
+    assert '@keydown.enter="updateTempo"' in studio_text
+    assert '@wheel.prevent="onTempoWheel"' in studio_text
+    assert "function normalizeTempo(value)" in studio_text
+    assert "async function updateTempo()" in studio_text
+    assert "function onTempoWheel(event)" in studio_text
+    assert "function scheduleTempoUpdate()" in studio_text
+    assert "nextProject.tempo = nextTempo" in studio_text
+
+
+def test_music_studio_meter_beats_respects_time_signature_denominator():
+    """meterBeats must use both numerator and denominator, computing bar length
+    in quarter-note beats.  e.g. 6/8 => 6 * (4/8) = 3 beats/bar;
+    2/2 => 2 * (4/2) = 4 beats/bar; 4/4 => 4 beats/bar (unchanged)."""
+    studio_text = _read(STUDIO_COMPONENT)
+
+    # meterBeats accesses both parts of time_signature
+    assert "project.value?.time_signature?.[0]" in studio_text
+    assert "project.value?.time_signature?.[1]" in studio_text
+    # denominator-aware bar-length formula
+    assert "4 / denominator" in studio_text
+    # normalizeTimeSignatureDenominator is called inside the meterBeats computed
+    assert (
+        "normalizeTimeSignatureDenominator(project.value?.time_signature?.[1])"
+        in studio_text
+    )
+
+
+def test_music_studio_beat_unit_respects_time_signature_for_beat_numbering():
+    """beatUnit = meterBeats / numerator controls beat-within-bar numbering.
+    positionLabel and pianoRulerBeatLabel must use beatUnit so that 6/8 shows
+    beat 2 at position 0.5, not beat 1."""
+    studio_text = _read(STUDIO_COMPONENT)
+
+    # beatUnit computed exists
+    assert "const beatUnit = computed(() => {" in studio_text
+    assert "meterBeats.value / numerator" in studio_text
+    # positionLabel uses beatUnit for beat-in-bar and ticks
+    assert "const unit = beatUnit.value" in studio_text
+    assert "posInBar % unit" in studio_text
+    # pianoRulerBeatLabel uses beatUnit
+    assert "const barLen = meterBeats.value" in studio_text
+    assert "const unit = beatUnit.value" in studio_text
+
+
+def test_music_studio_grid_overlays_bar_lines_at_fractional_positions():
+    """Grids must overlay bar lines at n * meterBeats positions so that
+    fractional bar lengths (3/8 => 1.5, 5/8 => 2.5) don't miss bar boundaries
+    that fall between integer quarter-note beats."""
+    studio_text = _read(STUDIO_COMPONENT)
+
+    # paintGrid (arrangement) overlays bar lines
+    assert "function paintGrid(ctx, width, height, offsetX, offsetY)" in studio_text
+    assert "const barLen = meterBeats.value" in studio_text
+    # Bar line overlay loop at fractional positions
+    assert "bar * barLen <= beats" in studio_text
+    # paintControllerGrid does the same
+    assert "barLen * pianoPxPerBeat.value" in studio_text
+    # drawPianoRuler bar line overlay
+    assert (
+        "// Bar lines overlaid at bar boundaries"
+        " (handles fractional barLen like 3/8=1.5)"
+    ) in studio_text
+
+
+def test_music_studio_piano_ruler_draws_decimal_beat_labels():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "function pianoRulerBeatLabel(absoluteBeat)" in studio_text
+    assert "return beatInBar === 1 ? String(bar) : `${bar}.${beatInBar}`" in studio_text
+    assert "ctx.fillText(pianoRulerBeatLabel(absoluteBeat), x + 5, 16)" in studio_text
+
+
 def test_music_studio_audio_drop_matches_host_supported_import_formats():
     studio_text = _read(STUDIO_COMPONENT)
 

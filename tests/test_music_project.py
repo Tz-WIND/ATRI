@@ -51,6 +51,20 @@ def test_create_track_supports_instrument_and_audio_track_types(tmp_path, monkey
     assert audio_track["plugin_slots"] == []
 
 
+def test_project_accepts_free_time_signature_numerator_and_limited_denominator(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    project = save_project({"time_signature": [37, 16]}, tmp_path / "free.json")
+
+    assert project["time_signature"] == [37, 16]
+
+    project = save_project({"time_signature": [9, 3]}, tmp_path / "limited.json")
+
+    assert project["time_signature"] == [9, 4]
+
+
 def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 

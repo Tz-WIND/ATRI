@@ -64,8 +64,78 @@
         <div class="clock mono">
           {{ positionLabel }}
         </div>
-        <div class="tempo-box mono">
-          {{ Math.round(tempo) }} BPM
+        <label
+          class="tempo-box mono"
+          title="Tempo BPM"
+          @wheel.prevent="onTempoWheel"
+        >
+          <input
+            v-model.number="tempoInput"
+            type="number"
+            min="1"
+            step="1"
+            aria-label="Tempo BPM"
+            @change="updateTempo"
+            @keydown.enter="updateTempo"
+          >
+          <span>BPM</span>
+        </label>
+        <div
+          ref="timeSignatureRoot"
+          class="time-signature-picker mono"
+          title="Time signature"
+        >
+          <button
+            class="time-signature-display"
+            type="button"
+            aria-label="Edit time signature"
+            @click.stop="toggleTimeSignaturePopover"
+          >
+            {{ timeSignatureLabel }}
+          </button>
+          <div
+            v-if="timeSignaturePopoverOpen"
+            class="time-signature-popover"
+            @click.stop
+          >
+            <label class="time-signature-numerator">
+              <span>拍号</span>
+              <input
+                v-model.number="timeSignatureNumerator"
+                type="number"
+                min="1"
+                max="255"
+                step="1"
+                aria-label="Time signature numerator"
+                @change="updateTimeSignature"
+                @keydown.enter="updateTimeSignature"
+              >
+            </label>
+            <div class="time-signature-duration-row">
+              <span>节拍时长</span>
+              <button
+                class="time-signature-denominator-trigger"
+                type="button"
+                @click.stop="timeSignatureDenominatorPopoverOpen = !timeSignatureDenominatorPopoverOpen"
+              >
+                {{ timeSignatureDenominatorLabel }}
+              </button>
+            </div>
+            <div
+              v-if="timeSignatureDenominatorPopoverOpen"
+              class="time-signature-denominator-popover"
+            >
+              <button
+                v-for="denominator in timeSignatureDenominatorOptions"
+                :key="denominator"
+                type="button"
+                :class="{ active: denominator === timeSignatureDenominator }"
+                @click.stop="setTimeSignatureDenominator(denominator)"
+              >
+                {{ denominatorLabel(denominator) }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -976,6 +1046,7 @@ const pianoPanel = ref(null)
 const pianoWrap = ref(null)
 const pianoCanvas = ref(null)
 const controllerWrap = ref(null)
+const timeSignatureRoot = ref(null)
 const controllerLaneCanvases = new Map()
 
 const defaultPxPerBeat = 56
@@ -1016,11 +1087,17 @@ const controllerLaneFooterH = 28
 const minPitch = 36
 const maxPitch = 84
 const trackCreatePalette = ['#4e79ff', '#d95b55', '#5f916b', '#d7b66f', '#b489d6', '#58a7b8']
+const timeSignatureDenominatorOptions = [2, 4, 8, 16, 32]
 const visualPositionBeats = ref(0)
 const pianoTool = ref('select')
 const pianoQuantizeId = ref('1/16')
 const pianoSnapEnabled = ref(true)
 const pianoQuantizeMenuOpen = ref(false)
+const tempoInput = ref(120)
+const timeSignatureNumerator = ref(4)
+const timeSignatureDenominator = ref(4)
+const timeSignaturePopoverOpen = ref(false)
+const timeSignatureDenominatorPopoverOpen = ref(false)
 const selectedNoteIds = ref(new Set())
 const selectedClipIds = ref(new Set())
 const noteClipboard = ref([])
@@ -1066,6 +1143,7 @@ let arrangementDrag = null
 let controllerDrag = null
 let syncingPianoScroll = false
 let audioDecodeContext = null
+let tempoUpdateTimer = null
 
 const snapStep = 0.25
 const minFreehandStep = 0.0625
@@ -1073,7 +1151,21 @@ const minArrangementPanelHeight = arrangementToolbarH + arrangementRulerH
 const minPianoPanelHeight = 140
 
 const tempo = computed(() => Number(project.value?.tempo || 120))
-const meterBeats = computed(() => Number(project.value?.time_signature?.[0] || 4))
+const meterBeats = computed(() => {
+  const numerator = normalizeTimeSignatureNumerator(project.value?.time_signature?.[0])
+  const denominator = normalizeTimeSignatureDenominator(project.value?.time_signature?.[1])
+  return numerator * (4 / denominator)
+})
+const beatUnit = computed(() => {
+  const numerator = normalizeTimeSignatureNumerator(project.value?.time_signature?.[0])
+  return meterBeats.value / numerator
+})
+const timeSignatureLabel = computed(() => (
+  `${timeSignatureNumerator.value} / ${timeSignatureDenominator.value}`
+))
+const timeSignatureDenominatorLabel = computed(() => (
+  denominatorLabel(timeSignatureDenominator.value)
+))
 const pluginOptions = computed(() => ({
   vst3: Array.isArray(plugins.value?.vst3) ? plugins.value.vst3 : [],
   vst2: Array.isArray(plugins.value?.vst2) ? plugins.value.vst2 : [],
@@ -1108,9 +1200,12 @@ const arrangementWrapStyle = computed(() => ({
 }))
 const positionLabel = computed(() => {
   const beats = Math.max(0, visualPositionBeats.value)
-  const bar = Math.floor(beats / meterBeats.value) + 1
-  const beat = Math.floor(beats % meterBeats.value) + 1
-  const ticks = Math.floor((beats % 1) * 960)
+  const barLen = meterBeats.value
+  const unit = beatUnit.value
+  const bar = Math.floor(beats / barLen) + 1
+  const posInBar = beats % barLen
+  const beat = Math.floor(posInBar / unit) + 1
+  const ticks = Math.floor((posInBar % unit) / unit * 960)
   return `${bar.toString().padStart(5, '0')}.${beat.toString().padStart(2, '0')}.${ticks.toString().padStart(3, '0')}`
 })
 
@@ -1137,6 +1232,95 @@ async function persistProjectUpdate(updater) {
   const res = await saveProject(nextProject, { broadcast: true })
   drawAll()
   return res
+}
+
+function normalizeTempo(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 120
+  return Math.round(Math.max(1, parsed) * 10) / 10
+}
+
+function syncTempoField(nextProject) {
+  tempoInput.value = normalizeTempo(nextProject?.tempo ?? 120)
+}
+
+async function updateTempo() {
+  if (!project.value) return
+  const nextTempo = normalizeTempo(tempoInput.value)
+  tempoInput.value = nextTempo
+  await persistProjectUpdate((nextProject) => {
+    nextProject.tempo = nextTempo
+  })
+}
+
+function scheduleTempoUpdate() {
+  clearTimeout(tempoUpdateTimer)
+  tempoUpdateTimer = setTimeout(() => {
+    updateTempo()
+  }, 160)
+}
+
+function onTempoWheel(event) {
+  const direction = event.deltaY < 0 ? 1 : -1
+  const step = event.shiftKey ? 0.1 : 1
+  tempoInput.value = normalizeTempo(Number(tempoInput.value || tempo.value) + direction * step)
+  scheduleTempoUpdate()
+}
+
+function normalizeTimeSignatureNumerator(value) {
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return 4
+  return clamp(parsed, 1, 255)
+}
+
+function normalizeTimeSignatureDenominator(value) {
+  const parsed = Number.parseInt(value, 10)
+  return timeSignatureDenominatorOptions.includes(parsed) ? parsed : 4
+}
+
+function denominatorLabel(denominator) {
+  return `1/${normalizeTimeSignatureDenominator(denominator)}`
+}
+
+function syncTimeSignatureFields(nextProject) {
+  const meter = Array.isArray(nextProject?.time_signature) ? nextProject.time_signature : [4, 4]
+  timeSignatureNumerator.value = normalizeTimeSignatureNumerator(meter[0])
+  timeSignatureDenominator.value = normalizeTimeSignatureDenominator(meter[1])
+}
+
+function toggleTimeSignaturePopover() {
+  timeSignaturePopoverOpen.value = !timeSignaturePopoverOpen.value
+  if (!timeSignaturePopoverOpen.value) {
+    timeSignatureDenominatorPopoverOpen.value = false
+  }
+}
+
+function closeTimeSignaturePopover() {
+  timeSignaturePopoverOpen.value = false
+  timeSignatureDenominatorPopoverOpen.value = false
+}
+
+function onDocumentPointerDown(event) {
+  const root = timeSignatureRoot.value
+  if (!root || root.contains(event.target)) return
+  closeTimeSignaturePopover()
+}
+
+async function updateTimeSignature() {
+  if (!project.value) return
+  const numerator = normalizeTimeSignatureNumerator(timeSignatureNumerator.value)
+  const denominator = normalizeTimeSignatureDenominator(timeSignatureDenominator.value)
+  timeSignatureNumerator.value = numerator
+  timeSignatureDenominator.value = denominator
+  await persistProjectUpdate((nextProject) => {
+    nextProject.time_signature = [numerator, denominator]
+  })
+}
+
+async function setTimeSignatureDenominator(denominator) {
+  timeSignatureDenominator.value = normalizeTimeSignatureDenominator(denominator)
+  timeSignatureDenominatorPopoverOpen.value = false
+  await updateTimeSignature()
 }
 
 function defaultTrackNameForType(type) {
@@ -3194,9 +3378,7 @@ function paintControllerGrid(ctx, width) {
   const visibleBeats = Math.ceil((width - pianoKeyW) / pianoPxPerBeat.value)
   for (let beat = 0; beat <= visibleBeats; beat += 1) {
     const x = pianoKeyW + beat * pianoPxPerBeat.value
-    ctx.strokeStyle = beat % meterBeats.value === 0
-      ? 'rgba(229,236,245,0.14)'
-      : 'rgba(229,236,245,0.06)'
+    ctx.strokeStyle = 'rgba(229,236,245,0.06)'
     ctx.beginPath()
     ctx.moveTo(x, bodyTop)
     ctx.lineTo(x, bodyBottom)
@@ -3212,6 +3394,17 @@ function paintControllerGrid(ctx, width) {
         ctx.stroke()
       }
     }
+  }
+
+  // Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)
+  const barLen = meterBeats.value
+  for (let bar = 0; bar * barLen <= visibleBeats; bar++) {
+    const barX = pianoKeyW + bar * barLen * pianoPxPerBeat.value
+    ctx.strokeStyle = 'rgba(229,236,245,0.14)'
+    ctx.beginPath()
+    ctx.moveTo(barX, bodyTop)
+    ctx.lineTo(barX, bodyBottom)
+    ctx.stroke()
   }
 }
 
@@ -3292,10 +3485,20 @@ function drawRuler(ctx, width) {
   }
 }
 
+function pianoRulerBeatLabel(absoluteBeat) {
+  const barLen = meterBeats.value
+  const unit = beatUnit.value
+  const bar = Math.floor(absoluteBeat / barLen) + 1
+  const posInBar = absoluteBeat % barLen
+  const beatInBar = Math.floor(posInBar / unit) + 1
+  return beatInBar === 1 ? String(bar) : `${bar}.${beatInBar}`
+}
+
 function drawPianoRuler(ctx, width, clip) {
   const scale = pianoPxPerBeat.value
   const clipStart = Number(clip.start || 0)
-  const meter = Math.max(1, meterBeats.value)
+  const barLen = meterBeats.value
+  const unit = beatUnit.value
   const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
   const endBeat = clipStart + visibleBeats
   ctx.fillStyle = '#202326'
@@ -3309,11 +3512,35 @@ function drawPianoRuler(ctx, width, clip) {
   ctx.stroke()
 
   ctx.font = '10px Cascadia Mono, Consolas, monospace'
-  for (
-    let barBeat = firstMultipleAtOrAfter(clipStart, meter);
-    barBeat <= endBeat + 0.001;
-    barBeat += meter
-  ) {
+
+  // Quarter-note grid lines
+  const firstBeat = Math.ceil(clipStart - 0.000001)
+  for (let absoluteBeat = firstBeat; absoluteBeat <= endBeat + 0.001; absoluteBeat += 1) {
+    const x = pianoKeyW + (absoluteBeat - clipStart) * scale
+    ctx.strokeStyle = 'rgba(229,236,245,0.1)'
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, pianoRulerH)
+    ctx.stroke()
+  }
+
+  // Beat-unit tick marks (only when they fall at non-integer positions and there's room)
+  if (unit !== 1 && unit * scale >= 12) {
+    for (let b = Math.ceil(clipStart / unit); b * unit <= endBeat + 0.001; b++) {
+      const absoluteBeat = b * unit
+      if (Math.abs(absoluteBeat - Math.round(absoluteBeat)) < 0.0001) continue // already drawn as quarter-note line
+      const x = pianoKeyW + (absoluteBeat - clipStart) * scale
+      ctx.strokeStyle = 'rgba(229,236,245,0.06)'
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, pianoRulerH)
+      ctx.stroke()
+    }
+  }
+
+  // Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)
+  for (let bar = Math.ceil((clipStart - 0.000001) / barLen); bar * barLen <= endBeat + 0.001; bar++) {
+    const barBeat = bar * barLen
     const x = pianoKeyW + (barBeat - clipStart) * scale
     ctx.strokeStyle = 'rgba(240, 209, 122, 0.28)'
     ctx.beginPath()
@@ -3321,7 +3548,17 @@ function drawPianoRuler(ctx, width, clip) {
     ctx.lineTo(x, pianoRulerH)
     ctx.stroke()
     ctx.fillStyle = '#d9e2ec'
-    ctx.fillText(String(Math.floor(barBeat / meter) + 1), x + 5, 16)
+    ctx.fillText(pianoRulerBeatLabel(barBeat), x + 5, 16)
+  }
+
+  // Beat labels at quarter-note positions (when zoomed in and not already labeled as bar)
+  if (scale >= 30) {
+    for (let absoluteBeat = firstBeat; absoluteBeat <= endBeat + 0.001; absoluteBeat += 1) {
+      if (Math.abs(absoluteBeat % barLen) < 0.0001) continue // bar label already drawn
+      const x = pianoKeyW + (absoluteBeat - clipStart) * scale
+      ctx.fillStyle = '#95b6d8'
+      ctx.fillText(pianoRulerBeatLabel(absoluteBeat), x + 5, 16)
+    }
   }
 }
 
@@ -3352,7 +3589,7 @@ function paintPianoGrid(ctx, width, height, clip) {
     }
   }
 
-  const meter = Math.max(1, meterBeats.value)
+  const meter = meterBeats.value
   const endBeat = clipStart + visibleBeats
   for (
     let barBeat = firstMultipleAtOrAfter(clipStart, meter);
@@ -3372,11 +3609,12 @@ function paintPianoGrid(ctx, width, height, clip) {
 function paintGrid(ctx, width, height, offsetX, offsetY) {
   const scale = arrangementPxPerBeat.value
   const beats = Math.ceil((width - offsetX) / scale)
+  const barLen = meterBeats.value
+
   for (let beat = 0; beat <= beats; beat += 1) {
     const x = offsetX + beat * scale
-    const isBar = beat % meterBeats.value === 0
-    ctx.strokeStyle = isBar ? 'rgba(229,236,245,0.18)' : 'rgba(229,236,245,0.07)'
-    ctx.lineWidth = isBar ? 1 : 0.5
+    ctx.strokeStyle = 'rgba(229,236,245,0.07)'
+    ctx.lineWidth = 0.5
     ctx.beginPath()
     ctx.moveTo(x, offsetY)
     ctx.lineTo(x, height)
@@ -3390,6 +3628,17 @@ function paintGrid(ctx, width, height, offsetX, offsetY) {
       ctx.lineTo(subX, height)
       ctx.stroke()
     }
+  }
+
+  // Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)
+  for (let bar = 0; bar * barLen <= beats; bar++) {
+    const barX = offsetX + bar * barLen * scale
+    ctx.strokeStyle = 'rgba(229,236,245,0.18)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(barX, offsetY)
+    ctx.lineTo(barX, height)
+    ctx.stroke()
   }
 }
 
@@ -3508,9 +3757,12 @@ onMounted(async () => {
   if (pianoWrap.value) resizeObserver.observe(pianoWrap.value)
   if (controllerWrap.value) resizeObserver.observe(controllerWrap.value)
   raf = requestAnimationFrame(animationLoop)
+  document.addEventListener('pointerdown', onDocumentPointerDown)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
+  clearTimeout(tempoUpdateTimer)
   if (resizeObserver) resizeObserver.disconnect()
   unbindPianoDrag()
   unbindPianoResize()
@@ -3520,14 +3772,16 @@ onUnmounted(() => {
   cancelAnimationFrame(raf)
 })
 
-watch(project, () => {
+watch(project, (nextProject) => {
+  syncTempoField(nextProject)
+  syncTimeSignatureFields(nextProject)
   if (activeClipId.value && !findClipRecord(activeClipId.value)) {
     activeClipId.value = null
     pianoVisible.value = false
     selectedNoteIds.value = new Set()
   }
   drawAll()
-})
+}, { immediate: true })
 watch(activeTrack, () => {
   selectedNoteIds.value = new Set()
   drawAll()
@@ -3686,12 +3940,160 @@ watch(positionBeats, (value) => {
   height: 32px;
   display: flex;
   align-items: center;
-  padding: 0 9px;
+  gap: 5px;
+  padding: 0 8px;
   border: 1px solid rgba(229, 236, 245, 0.12);
   border-radius: 6px;
   color: var(--t3);
   background: #1d2024;
   font-size: 11px;
+}
+
+.tempo-box input {
+  width: 50px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tempo-box input:focus {
+  outline: none;
+}
+
+.tempo-box:focus-within {
+  border-color: rgba(240, 209, 122, 0.5);
+  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
+}
+
+.time-signature-picker {
+  position: relative;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.time-signature-display {
+  height: 32px;
+  min-width: 66px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--t3);
+  background: #1d2024;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.time-signature-display:hover {
+  color: var(--t1);
+  border-color: rgba(240, 209, 122, 0.3);
+  background: #25292e;
+}
+
+.time-signature-popover {
+  position: absolute;
+  top: 38px;
+  left: 50%;
+  z-index: 20;
+  width: 166px;
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(229, 236, 245, 0.18);
+  border-radius: 7px;
+  background: #24282c;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
+  transform: translateX(-50%);
+}
+
+.time-signature-numerator,
+.time-signature-duration-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.time-signature-numerator span,
+.time-signature-duration-row span {
+  color: var(--t4);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.time-signature-numerator input,
+.time-signature-denominator-trigger {
+  height: 26px;
+  min-width: 0;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 4px;
+  background: #101215;
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.time-signature-numerator input {
+  width: 100%;
+  padding: 0 7px;
+}
+
+.time-signature-denominator-trigger {
+  width: 100%;
+  padding: 0 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.time-signature-denominator-popover {
+  position: absolute;
+  top: 76px;
+  right: 8px;
+  z-index: 21;
+  width: 86px;
+  display: grid;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid rgba(229, 236, 245, 0.2);
+  border-radius: 6px;
+  background: #30353a;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
+}
+
+.time-signature-denominator-popover button {
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #d8dee6;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.time-signature-denominator-popover button:hover,
+.time-signature-denominator-popover button.active {
+  background: #0d74c9;
+  color: #fff;
+}
+
+.time-signature-numerator input:focus,
+.time-signature-denominator-trigger:focus {
+  outline: none;
+  border-color: rgba(240, 209, 122, 0.5);
+  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
 }
 
 .host-dot {
@@ -4833,7 +5235,8 @@ watch(positionBeats, (value) => {
   font-size: 12px;
 }
 
-.studio-page.embedded .tempo-box {
+.studio-page.embedded .tempo-box,
+.studio-page.embedded .time-signature-picker {
   display: none;
 }
 
