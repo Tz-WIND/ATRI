@@ -89,12 +89,11 @@ def test_music_studio_exposes_free_time_signature_controls():
     assert 'class="time-signature-popover"' in studio_text
     assert 'v-model.number="timeSignatureNumerator"' in studio_text
     assert (
-        '@click.stop="timeSignatureDenominatorPopoverOpen ='
-        ' !timeSignatureDenominatorPopoverOpen"'
+        '@click.stop="timeSignatureDenominatorPopoverOpen = !timeSignatureDenominatorPopoverOpen"'
     ) in studio_text
     assert 'v-if="timeSignatureDenominatorPopoverOpen"' in studio_text
     assert "const timeSignatureDenominatorOptions = [2, 4, 8, 16, 32]" in studio_text
-    assert "@change=\"updateTimeSignature\"" in studio_text
+    assert '@change="updateTimeSignature"' in studio_text
     assert "timeSignatureLabel" in studio_text
     assert "timeSignatureDenominatorLabel" in studio_text
     assert "async function updateTimeSignature()" in studio_text
@@ -129,10 +128,7 @@ def test_music_studio_meter_beats_respects_time_signature_denominator():
     # denominator-aware bar-length formula
     assert "4 / denominator" in studio_text
     # normalizeTimeSignatureDenominator is called inside the meterBeats computed
-    assert (
-        "normalizeTimeSignatureDenominator(project.value?.time_signature?.[1])"
-        in studio_text
-    )
+    assert "normalizeTimeSignatureDenominator(project.value?.time_signature?.[1])" in studio_text
 
 
 def test_music_studio_beat_unit_respects_time_signature_for_beat_numbering():
@@ -167,8 +163,7 @@ def test_music_studio_grid_overlays_bar_lines_at_fractional_positions():
     assert "barLen * pianoPxPerBeat.value" in studio_text
     # drawPianoRuler bar line overlay
     assert (
-        "// Bar lines overlaid at bar boundaries"
-        " (handles fractional barLen like 3/8=1.5)"
+        "// Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)"
     ) in studio_text
 
 
