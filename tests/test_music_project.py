@@ -1,6 +1,13 @@
 import pytest
 
 from core.music_project import (
+    automation_diff,
+    automation_learned_parameter_rename,
+    automation_learned_parameter_upsert,
+    automation_learned_parameters_query,
+    automation_query,
+    automation_retarget,
+    automation_write,
     create_track,
     delete_track,
     import_audio_clip,
@@ -49,6 +56,234 @@ def test_create_track_supports_instrument_and_audio_track_types(tmp_path, monkey
     assert audio_track["type"] == "audio"
     assert audio_track["channel_type"] == "mono"
     assert audio_track["plugin_slots"] == []
+
+
+def test_automation_write_creates_first_class_automation_track(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    project, summary = automation_write(
+        {
+            "kind": "track_volume",
+            "track_id": 1,
+            "label": "Impact Lead Volume",
+        },
+        points=[
+            {"beat": 4, "value": 1.1},
+            {"beat": 0, "value": 0.4},
+            {"beat": 4, "value": 0.9},
+        ],
+        name="Impact Lead Volume",
+    )
+
+    automation_track = project["tracks"][-1]
+    assert summary["created"] is True
+    assert automation_track["type"] == "automation"
+    assert automation_track["host_track_id"] is None
+    assert automation_track["target"] == {
+        "kind": "track_volume",
+        "track_id": 1,
+        "label": "Impact Lead Volume",
+    }
+    assert automation_track["clips"] == []
+    assert automation_track["notes"] == []
+    assert automation_track["midi_events"] == []
+    point_pairs = [
+        (point["beat"], point["value"]) for point in automation_track["automation"]["points"]
+    ]
+    assert point_pairs == [
+        (0.0, 0.4),
+        (4.0, 0.9),
+    ]
+
+
+def test_automation_write_accepts_global_tempo_and_meter_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    project, tempo_summary = automation_write(
+        {"kind": "tempo_bpm"},
+        points=[{"beat": 0, "value": 90}, {"beat": 4, "value": 132}],
+        name="Tempo BPM",
+    )
+    tempo_track = project["tracks"][-1]
+
+    assert tempo_summary["target_status"] == "valid"
+    assert tempo_track["target"] == {"kind": "tempo_bpm", "label": "Tempo BPM"}
+    assert tempo_track["automation"]["value_min"] == 1.0
+    assert tempo_track["automation"]["value_max"] == 999.0
+    assert [(point["beat"], point["value"]) for point in tempo_track["automation"]["points"]] == [
+        (0.0, 90.0),
+        (4.0, 132.0),
+    ]
+
+    project, meter_summary = automation_write(
+        {"kind": "time_signature_numerator"},
+        points=[{"beat": 0, "value": 3.2}, {"beat": 8, "value": 7.6}],
+        name="Time Signature Numerator",
+    )
+    meter_track = project["tracks"][-1]
+
+    assert meter_summary["target_status"] == "valid"
+    assert meter_track["target"] == {
+        "kind": "time_signature_numerator",
+        "label": "Time Signature Numerator",
+    }
+    assert meter_track["automation"]["value_min"] == 1.0
+    assert meter_track["automation"]["value_max"] == 255.0
+    assert [(point["beat"], point["value"]) for point in meter_track["automation"]["points"]] == [
+        (0.0, 3.0),
+        (8.0, 8.0),
+    ]
+
+
+def test_automation_learned_parameters_upsert_and_rename(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    project, first = automation_learned_parameter_upsert(
+        {
+            "target": {
+                "kind": "plugin_parameter",
+                "track_id": 1,
+                "slot_id": "instrument",
+                "param_index": 3,
+                "param_id": 740,
+                "label": "Cutoff",
+            },
+            "source": {
+                "track_name": "Lead",
+                "slot_label": "Instrument",
+                "plugin_name": "Serum",
+                "param_name": "Cutoff",
+            },
+            "value": 0.37,
+        }
+    )
+
+    learned_id = first["id"]
+    learned = project["automation_learned_parameters"][0]
+    assert learned["id"] == learned_id
+    assert learned["name"] == "Lead / Instrument / Serum / Cutoff"
+    assert learned["target"]["param_id"] == 740
+    assert learned["last_value"] == 0.37
+
+    project, renamed = automation_learned_parameter_rename(learned_id, "Filter Cutoff")
+    assert renamed["name"] == "Filter Cutoff"
+
+    project, second = automation_learned_parameter_upsert(
+        {
+            "target": {
+                "kind": "plugin_parameter",
+                "track_id": 1,
+                "slot_id": "instrument",
+                "param_index": 3,
+                "param_id": 740,
+                "label": "Cutoff",
+            },
+            "source": {
+                "track_name": "Lead",
+                "slot_label": "Instrument",
+                "plugin_name": "Serum",
+                "param_name": "Cutoff",
+            },
+            "value": 0.61,
+        }
+    )
+
+    assert second["id"] == learned_id
+    assert len(project["automation_learned_parameters"]) == 1
+    assert project["automation_learned_parameters"][0]["name"] == "Filter Cutoff"
+    assert project["automation_learned_parameters"][0]["last_value"] == 0.61
+    assert automation_learned_parameters_query()["items"][0]["id"] == learned_id
+
+
+def test_automation_diff_and_retarget_round_trip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    project, summary = automation_write(
+        {"kind": "track_pan", "track_id": 1, "label": "Pan"},
+        points=[{"beat": 0, "value": -0.5}, {"beat": 8, "value": 0.5}],
+    )
+    automation_track_id = summary["track_id"]
+
+    project, diff = automation_diff(
+        automation_track_id,
+        [
+            {"op": "update_point", "beat": 8, "value": 0.25},
+            {"op": "add_point", "beat": 4, "value": 0.0},
+            {"op": "delete_point", "beat": 0},
+        ],
+    )
+
+    track = next(track for track in project["tracks"] if track["id"] == automation_track_id)
+    assert diff == {
+        "track_id": automation_track_id,
+        "operations": 3,
+        "added": 1,
+        "updated": 1,
+        "deleted": 1,
+    }
+    assert [(point["beat"], point["value"]) for point in track["automation"]["points"]] == [
+        (4.0, 0.0),
+        (8.0, 0.25),
+    ]
+
+    project, retarget = automation_retarget(
+        automation_track_id,
+        {
+            "kind": "plugin_parameter",
+            "track_id": 1,
+            "slot_id": "instrument",
+            "param_index": 12,
+            "param_id": 345,
+            "label": "Cutoff",
+        },
+    )
+
+    track = next(track for track in project["tracks"] if track["id"] == automation_track_id)
+    assert retarget["target"]["kind"] == "plugin_parameter"
+    assert track["automation"]["value_min"] == 0.0
+    assert track["automation"]["value_max"] == 1.0
+    assert track["target"]["param_index"] == 12
+
+
+def test_automation_query_reports_missing_targets_without_deleting_tracks(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    project = save_project(
+        {
+            "tracks": [
+                {"id": 1, "name": "Lead", "type": "instrument"},
+                {
+                    "id": 2,
+                    "name": "Missing Plugin Cutoff",
+                    "type": "automation",
+                    "target": {
+                        "kind": "plugin_parameter",
+                        "track_id": 1,
+                        "slot_id": "insert_3",
+                        "param_index": 7,
+                        "label": "Cutoff",
+                    },
+                    "automation": {"points": [{"beat": 0, "value": 0.2}]},
+                },
+            ]
+        }
+    )
+
+    result = automation_query(include_points=True)
+
+    assert len(project["tracks"]) == 2
+    assert result["automation_track_count"] == 1
+    assert result["tracks"][0]["id"] == 2
+    assert result["tracks"][0]["target_status"] == "missing"
+    assert result["tracks"][0]["points"] == [
+        {
+            "id": result["tracks"][0]["points"][0]["id"],
+            "beat": 0.0,
+            "value": 0.2,
+            "curve": "linear",
+        }
+    ]
 
 
 def test_project_accepts_free_time_signature_numerator_and_limited_denominator(

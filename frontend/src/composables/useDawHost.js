@@ -18,6 +18,7 @@ const positionSeconds = ref(0)
 const plugins = ref({ vst3: [], vst2: [], priority: ['vst3', 'vst2'] })
 const pluginsLoading = ref(false)
 const editorWindows = ref({})
+const pluginParameters = ref({})
 
 let audioContext = null
 let playerNode = null
@@ -37,6 +38,11 @@ const activeTrack = computed(() => (
 const tempo = computed(() => Number(project.value?.tempo || 120))
 const positionBeats = computed(() => (positionSeconds.value * tempo.value) / 60)
 const totalNotes = computed(() => tracks.value.reduce((sum, track) => sum + track.notes.length, 0))
+const learnedAutomationParameters = computed(() => (
+  Array.isArray(project.value?.automation_learned_parameters)
+    ? project.value.automation_learned_parameters
+    : []
+))
 
 function setProject(nextProject) {
   if (!nextProject) return
@@ -364,6 +370,76 @@ async function openPluginEditor(trackId, slotId = 'instrument') {
   }
 }
 
+function pluginParameterKey(trackId, slotId = 'instrument') {
+  return `${trackId}:${slotId}`
+}
+
+async function loadPluginParameters(trackId, slotId = 'instrument') {
+  hostError.value = ''
+  try {
+    const res = await api.studioPluginParameters(trackId, slotId)
+    pluginParameters.value = {
+      ...pluginParameters.value,
+      [pluginParameterKey(trackId, slotId)]: Array.isArray(res.parameters) ? res.parameters : [],
+    }
+    if (res.host) host.value = res.host
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to load plugin parameters'
+    throw err
+  }
+}
+
+async function setPluginParameter(trackId, slotId, paramIndex, value) {
+  const res = await api.studioSetPluginParameter({
+    track_id: trackId,
+    slot_id: slotId,
+    param_index: paramIndex,
+    value,
+  })
+  if (res.host) host.value = res.host
+  await loadPluginParameters(trackId, slotId).catch(() => null)
+  return res
+}
+
+async function createAutomationTrack(target, options = {}) {
+  const res = await api.studioAutomationWrite({
+    target,
+    points: Array.isArray(options.points) ? options.points : [
+      { beat: Math.max(0, positionBeats.value), value: options.value ?? 0 },
+    ],
+    name: options.name || target.label || 'Automation',
+    color: options.color,
+  })
+  if (res.project) setProject(res.project)
+  return res
+}
+
+async function retargetAutomationTrack(trackId, target) {
+  const res = await api.studioAutomationRetarget(trackId, target)
+  if (res.project) setProject(res.project)
+  return res
+}
+
+async function pollCapturedPluginParameters() {
+  hostError.value = ''
+  try {
+    const res = await api.studioCapturedPluginParameters()
+    if (res.project) setProject(res.project)
+    if (res.host) host.value = res.host
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to poll captured plugin parameters'
+    throw err
+  }
+}
+
+async function renameLearnedAutomationParameter(id, name) {
+  const res = await api.studioRenameLearnedPluginParameter(id, name)
+  if (res.project) setProject(res.project)
+  return res
+}
+
 function selectTrack(trackId) {
   activeTrackId.value = trackId
 }
@@ -556,6 +632,8 @@ export function useDawHost() {
     plugins,
     pluginsLoading,
     editorWindows,
+    pluginParameters,
+    learnedAutomationParameters,
     loadProject,
     saveProject,
     refreshHostStatus,
@@ -572,6 +650,12 @@ export function useDawHost() {
     loadPlugins,
     setTrackPlugin,
     openPluginEditor,
+    loadPluginParameters,
+    setPluginParameter,
+    createAutomationTrack,
+    retargetAutomationTrack,
+    pollCapturedPluginParameters,
+    renameLearnedAutomationParameter,
     selectTrack,
     connectAudioStream,
     disconnectAudioStream,

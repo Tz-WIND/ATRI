@@ -68,6 +68,7 @@
           class="tempo-box mono"
           title="Tempo BPM"
           @wheel.prevent="onTempoWheel"
+          @contextmenu.prevent="openAutomationMenu($event, automationTargetForTempoBpm(), 'Tempo BPM')"
         >
           <input
             v-model.number="tempoInput"
@@ -90,6 +91,7 @@
             type="button"
             aria-label="Edit time signature"
             @click.stop="toggleTimeSignaturePopover"
+            @contextmenu.prevent.stop="openAutomationMenu($event, automationTargetForTimeSignatureNumerator(), 'Time Signature Numerator')"
           >
             {{ timeSignatureLabel }}
           </button>
@@ -178,7 +180,10 @@
         class="editor-stack"
         :style="editorStackStyle"
       >
-        <div class="arrangement">
+        <div
+          class="arrangement"
+          :style="arrangementLayoutStyle"
+        >
           <div class="arrangement-head-grid">
             <div class="track-list-head">
               <span>Tracks</span>
@@ -246,6 +251,14 @@
             </div>
           </div>
 
+          <button
+            class="track-list-resize-handle"
+            type="button"
+            title="Resize track list"
+            aria-label="Resize track list"
+            @pointerdown="startTrackListResize"
+          />
+
           <div
             ref="arrangementWrap"
             :class="[
@@ -278,6 +291,7 @@
                     role="button"
                     tabindex="0"
                     @click="selectTrack(track.id)"
+                    @contextmenu.prevent="openTrackContextMenu($event, track)"
                     @keydown="onTrackRowKeydown($event, track.id)"
                   >
                     <span
@@ -286,8 +300,14 @@
                     />
                     <span class="track-main">
                       <span class="track-title-line">
-                        <strong>{{ track.name }}</strong>
-                        <small>{{ trackTypeLabel(track) }} / {{ track.clips?.length || 0 }} clips</small>
+                        <strong
+                          class="track-title-text"
+                          :title="track.name"
+                        >{{ track.name }}</strong>
+                        <small
+                          class="track-meta-text"
+                          :title="trackRowMetaLabel(track)"
+                        >{{ trackRowMetaLabel(track) }}</small>
                       </span>
                       <span
                         v-if="isInstrumentTrack(track)"
@@ -367,6 +387,20 @@
                           </option>
                         </select>
                       </span>
+                      <span
+                        v-else-if="isAutomationTrack(track)"
+                        class="track-plugin-bar automation-target-bar"
+                        @click.stop
+                      >
+                        <button
+                          class="automation-target-select"
+                          type="button"
+                          @click.stop="openAutomationParameterPickerForTrack(track)"
+                        >
+                          {{ automationTargetLabel(track.target) }}
+                        </button>
+                        <small>{{ automationPointCount(track) }} pts</small>
+                      </span>
                     </span>
                     <span class="track-buttons">
                       <button
@@ -379,21 +413,6 @@
                         title="Solo"
                         @click.stop="updateTrack(track.id, { solo: !track.solo })"
                       >S</button>
-                      <button
-                        class="track-delete"
-                        title="Delete track"
-                        aria-label="Delete track"
-                        :disabled="tracks.length <= 1 || loading"
-                        @click.stop="deleteTrack(track.id)"
-                      >
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                        ><path d="M18 6 6 18M6 6l12 12" /></svg>
-                      </button>
                     </span>
                   </div>
                 </template>
@@ -420,6 +439,34 @@
                 <i />
                 <i />
               </span>
+            </div>
+            <div
+              v-if="automationMenu.open"
+              class="automation-context-menu"
+              :style="{ left: `${automationMenu.x}px`, top: `${automationMenu.y}px` }"
+              @pointerdown.stop
+            >
+              <button @click="confirmCreateAutomationFromMenu">
+                Create automation track
+              </button>
+              <small>{{ automationMenu.label }}</small>
+            </div>
+            <div
+              v-if="trackContextMenu.open"
+              class="track-context-menu"
+              :style="{ left: `${trackContextMenu.x}px`, top: `${trackContextMenu.y}px` }"
+              @pointerdown.stop
+              @contextmenu.prevent.stop
+            >
+              <small>{{ trackContextMenu.name }}</small>
+              <button
+                class="track-context-delete"
+                type="button"
+                :disabled="tracks.length <= 1 || loading"
+                @click="deleteTrackFromContextMenu"
+              >
+                Delete Track
+              </button>
             </div>
           </div>
         </div>
@@ -717,6 +764,7 @@
                 max="1.4"
                 step="0.01"
                 :value="track.volume"
+                @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackVolume(track), `${track.name} Volume`)"
                 @change="updateTrack(track.id, { volume: Number($event.target.value) })"
               >
             </label>
@@ -728,6 +776,7 @@
                 max="1"
                 step="0.01"
                 :value="track.pan"
+                @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackPan(track), `${track.name} Pan`)"
                 @change="updateTrack(track.id, { pan: Number($event.target.value) })"
               >
             </label>
@@ -786,7 +835,7 @@
               v-if="isInstrumentTrack(track)"
               class="rack-slots"
             >
-              <label
+              <div
                 v-for="slot in rackSlots"
                 :key="`${track.id}-${slot.id}`"
                 :class="['rack-slot', { empty: pluginSlot(track, slot.id).type === 'empty' }]"
@@ -831,7 +880,39 @@
                   </option>
                 </select>
                 <small>{{ pluginSlotLabel(track, slot.id) }}</small>
-              </label>
+                <button
+                  type="button"
+                  class="rack-param-load"
+                  :disabled="pluginSlot(track, slot.id).type === 'empty'"
+                  @click.stop="loadPluginParameters(track.id, slot.id)"
+                >
+                  Params
+                </button>
+                <div
+                  v-if="pluginParameterRows(track.id, slot.id).length"
+                  class="rack-params"
+                  @click.stop
+                >
+                  <div
+                    v-for="param in pluginParameterRows(track.id, slot.id)"
+                    :key="`${track.id}-${slot.id}-${param.index}`"
+                    class="rack-param-row"
+                    @contextmenu.prevent="openAutomationMenu($event, automationTargetForPluginParameter(track, slot.id, param), `${track.name} ${param.name}`)"
+                  >
+                    <span>{{ param.name }}</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.001"
+                      :value="param.value"
+                      :disabled="param.automatable === false"
+                      @change="setLivePluginParameter(track.id, slot.id, param.index, Number($event.target.value))"
+                    >
+                    <small>{{ parameterValueLabel(param) }}</small>
+                  </div>
+                </div>
+              </div>
             </div>
             <label
               v-else-if="isAudioTrack(track)"
@@ -935,7 +1016,23 @@
               <option value="audio">
                 Audio
               </option>
+              <option value="automation">
+                Automation
+              </option>
             </select>
+          </label>
+          <label
+            v-if="trackCreateType === 'automation'"
+            class="track-create-field"
+          >
+            <span>Parameter</span>
+            <button
+              class="automation-parameter-button"
+              type="button"
+              @click="openAutomationParameterPickerForCreate"
+            >
+              {{ automationTargetLabel(trackCreateAutomationTarget) }}
+            </button>
           </label>
           <label
             v-if="trackCreateType === 'audio'"
@@ -969,6 +1066,88 @@
             Create
           </button>
         </footer>
+      </section>
+    </div>
+
+    <div
+      v-if="automationParameterPicker.open"
+      class="modal-backdrop automation-parameter-backdrop"
+      @click.self="closeAutomationParameterPicker"
+      @keydown.esc.stop.prevent="closeAutomationParameterPicker"
+    >
+      <section
+        class="automation-parameter-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="automation-parameter-title"
+        tabindex="-1"
+      >
+        <header class="track-create-dialog-head">
+          <div>
+            <span>Automation</span>
+            <h2 id="automation-parameter-title">
+              Select Parameter
+            </h2>
+          </div>
+          <button
+            class="mini-btn"
+            type="button"
+            title="Close"
+            aria-label="Close"
+            @click="closeAutomationParameterPicker"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            ><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </header>
+
+        <div class="automation-parameter-columns">
+          <section class="automation-parameter-column">
+            <h3>Available</h3>
+            <button
+              v-for="target in defaultAutomationTargets"
+              :key="target.key"
+              type="button"
+              class="automation-parameter-row"
+              @click="bindAutomationPickerTarget(target.target)"
+            >
+              <strong>{{ target.label }}</strong>
+              <span>{{ target.detail }}</span>
+            </button>
+          </section>
+          <section class="automation-parameter-column learned">
+            <h3>MIDI Learn</h3>
+            <button
+              type="button"
+              class="automation-learn-refresh"
+              @click="pollCapturedPluginParameters"
+            >
+              Refresh captured
+            </button>
+            <div
+              v-for="item in learnedAutomationTargets"
+              :key="item.id"
+              class="automation-learned-row"
+              role="button"
+              tabindex="0"
+              @click="bindAutomationPickerTarget(item.target)"
+              @keydown.enter.stop.prevent="bindAutomationPickerTarget(item.target)"
+              @keydown.space.stop.prevent="bindAutomationPickerTarget(item.target)"
+            >
+              <input
+                :value="item.name"
+                @pointerdown.stop
+                @click.stop
+                @change="renameLearnedAutomationParameter(item.id, $event.target.value)"
+              >
+              <small>{{ item.detail }}</small>
+            </div>
+          </section>
+        </div>
       </section>
     </div>
   </div>
@@ -1023,6 +1202,8 @@ const {
   plugins,
   pluginsLoading,
   editorWindows,
+  pluginParameters,
+  learnedAutomationParameters,
   loadProject,
   saveProject,
   syncProject,
@@ -1035,6 +1216,12 @@ const {
   loadPlugins,
   setTrackPlugin,
   openPluginEditor,
+  loadPluginParameters,
+  setPluginParameter,
+  createAutomationTrack,
+  retargetAutomationTrack,
+  pollCapturedPluginParameters,
+  renameLearnedAutomationParameter,
   selectTrack,
   refreshHostStatus,
 } = useDawHost()
@@ -1048,6 +1235,8 @@ const pianoCanvas = ref(null)
 const controllerWrap = ref(null)
 const timeSignatureRoot = ref(null)
 const controllerLaneCanvases = new Map()
+const automationMenu = ref({ open: false, x: 0, y: 0, target: null, label: '' })
+const trackContextMenu = ref({ open: false, x: 0, y: 0, trackId: null, name: '' })
 
 const defaultPxPerBeat = 56
 const supportedAudioImportExtensions = ['aac', 'flac', 'm4a', 'mp3', 'wav']
@@ -1073,7 +1262,10 @@ const minPianoPxPerBeat = 8
 const maxPianoPxPerBeat = 64
 const arrangementEmptyBars = 64
 const pianoEmptyBars = 32
-const trackListW = 246
+const defaultTrackListWidth = 246
+const minTrackListWidth = 190
+const maxTrackListWidth = 420
+const trackListWidth = ref(defaultTrackListWidth)
 const arrangementRulerH = 30
 const arrangementToolbarH = 34
 const arrangementTrackH = 72
@@ -1114,6 +1306,8 @@ const trackCreateNameInput = ref(null)
 const trackCreateColor = ref(trackCreatePalette[0])
 const trackCreateType = ref('instrument')
 const trackCreateChannelType = ref('multichannel')
+const trackCreateAutomationTarget = ref(null)
+const automationParameterPicker = ref({ open: false, mode: 'create', trackId: null })
 const pianoPanelHeight = ref(null)
 const inspectorVisible = ref(true)
 const controllerLanes = ref(createDefaultControllerLanes())
@@ -1139,11 +1333,14 @@ let raf = 0
 let lastFrame = 0
 let pianoDrag = null
 let pianoResizeDrag = null
+let trackListResizeDrag = null
 let arrangementDrag = null
 let controllerDrag = null
+let automationDrag = null
 let syncingPianoScroll = false
 let audioDecodeContext = null
 let tempoUpdateTimer = null
+let learnedParameterPollTimer = null
 
 const snapStep = 0.25
 const minFreehandStep = 0.0625
@@ -1195,6 +1392,9 @@ const editorStackStyle = computed(() => {
     gridTemplateRows: `minmax(${minArrangementPanelHeight}px, 1fr) ${pianoPanelHeight.value}px`,
   }
 })
+const arrangementLayoutStyle = computed(() => ({
+  '--track-list-width': `${trackListWidth.value}px`,
+}))
 const arrangementWrapStyle = computed(() => ({
   '--arrangement-scroll-left': `${arrangementScrollLeft.value}px`,
 }))
@@ -1208,6 +1408,60 @@ const positionLabel = computed(() => {
   const ticks = Math.floor((posInBar % unit) / unit * 960)
   return `${bar.toString().padStart(5, '0')}.${beat.toString().padStart(2, '0')}.${ticks.toString().padStart(3, '0')}`
 })
+const defaultAutomationTargets = computed(() => {
+  const targets = [
+    {
+      key: "global-tempo-bpm",
+      label: 'Tempo BPM',
+      detail: 'Session tempo',
+      target: automationTargetForTempoBpm(),
+    },
+    {
+      key: "global-time-signature-numerator",
+      label: 'Time Signature Numerator',
+      detail: 'Session meter numerator',
+      target: automationTargetForTimeSignatureNumerator(),
+    },
+  ]
+  for (const track of tracks.value) {
+    if (isAutomationTrack(track)) continue
+    targets.push({
+      key: `track-volume-${track.id}`,
+      label: `${track.name} Volume`,
+      detail: 'Track volume',
+      target: automationTargetForTrackVolume(track),
+    })
+    targets.push({
+      key: `track-pan-${track.id}`,
+      label: `${track.name} Pan`,
+      detail: 'Track pan',
+      target: automationTargetForTrackPan(track),
+    })
+    for (const slot of track.plugin_slots || []) {
+      if (!slot || slot.type !== 'vst3') continue
+      for (const param of pluginParameterRows(track.id, slot.id).filter(param => param.automatable !== false)) {
+        targets.push({
+          key: `plugin-${track.id}-${slot.id}-${param.index}`,
+          label: `${track.name} / ${slot.name} / ${param.name || `Parameter ${param.index}`}`,
+          detail: param.units || 'VST parameter',
+          target: automationTargetForPluginParameter(track, slot.id, param),
+        })
+      }
+    }
+  }
+  return targets
+})
+const learnedAutomationTargets = computed(() => (
+  learnedAutomationParameters.value.map(item => ({
+    id: item.id,
+    name: item.name,
+    detail: learnedAutomationTargetDetail(item),
+    target: {
+      ...(item.target || {}),
+      label: item.name,
+    },
+  }))
+))
 
 function cloneProject() {
   return JSON.parse(JSON.stringify(project.value || {}))
@@ -1300,7 +1554,17 @@ function closeTimeSignaturePopover() {
   timeSignatureDenominatorPopoverOpen.value = false
 }
 
+function closeTrackContextMenu() {
+  trackContextMenu.value = { open: false, x: 0, y: 0, trackId: null, name: '' }
+}
+
 function onDocumentPointerDown(event) {
+  if (automationMenu.value.open) {
+    automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
+  }
+  if (trackContextMenu.value.open) {
+    closeTrackContextMenu()
+  }
   const root = timeSignatureRoot.value
   if (!root || root.contains(event.target)) return
   closeTimeSignaturePopover()
@@ -1336,6 +1600,7 @@ function openTrackCreateDialog() {
   trackCreateColor.value = defaultTrackCreateColor()
   trackCreateType.value = 'instrument'
   trackCreateChannelType.value = 'multichannel'
+  trackCreateAutomationTarget.value = automationUnassignedTarget()
   trackCreateDialogOpen.value = true
   nextTick(() => trackCreateNameInput.value?.focus?.())
 }
@@ -1344,7 +1609,40 @@ function closeTrackCreateDialog() {
   trackCreateDialogOpen.value = false
 }
 
+function openTrackContextMenu(event, track) {
+  if (!track) return
+  event.preventDefault()
+  event.stopPropagation()
+  automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
+  selectTrack(track.id)
+  const menuWidth = 190
+  trackContextMenu.value = {
+    open: true,
+    x: Math.max(0, Math.min(Number(event.clientX || 0), window.innerWidth - menuWidth)),
+    y: Math.max(0, Math.min(Number(event.clientY || 0), window.innerHeight - 80)),
+    trackId: track.id,
+    name: track.name || `Track ${track.id}`,
+  }
+}
+
+async function deleteTrackFromContextMenu() {
+  const trackId = trackContextMenu.value.trackId
+  closeTrackContextMenu()
+  if (!trackId || tracks.value.length <= 1 || loading.value) return
+  await deleteTrack(trackId)
+}
+
 async function createSelectedTrack() {
+  if (trackCreateType.value === 'automation') {
+    const target = trackCreateAutomationTarget.value || automationUnassignedTarget()
+    const name = trackCreateName.value.trim() || target.label || 'Automation'
+    const res = await createAutomationTrackForTarget(target, {
+      name,
+      color: trackCreateColor.value,
+    })
+    closeTrackCreateDialog()
+    return res
+  }
   const type = trackCreateType.value === 'audio' ? 'audio' : 'instrument'
   const channelType = trackCreateChannelType.value === 'mono' ? 'mono' : 'multichannel'
   const name = trackCreateName.value.trim() || defaultTrackNameForType(type)
@@ -1355,6 +1653,50 @@ async function createSelectedTrack() {
   })
   closeTrackCreateDialog()
   return res
+}
+
+function automationUnassignedTarget() {
+  return { kind: 'unassigned', label: 'Unassigned' }
+}
+
+function openAutomationParameterPickerForCreate() {
+  automationParameterPicker.value = { open: true, mode: 'create', trackId: null }
+  loadAutomationPickerPluginParameters()
+  pollCapturedPluginParameters().catch(() => null)
+}
+
+function openAutomationParameterPickerForTrack(track) {
+  automationParameterPicker.value = { open: true, mode: 'track', trackId: track.id }
+  loadAutomationPickerPluginParameters()
+  pollCapturedPluginParameters().catch(() => null)
+}
+
+function closeAutomationParameterPicker() {
+  automationParameterPicker.value = { open: false, mode: 'create', trackId: null }
+}
+
+async function bindAutomationPickerTarget(target) {
+  if (!target) return
+  if (automationParameterPicker.value.mode === 'create') {
+    trackCreateAutomationTarget.value = target
+    closeAutomationParameterPicker()
+    return
+  }
+  const trackId = automationParameterPicker.value.trackId
+  if (!trackId) return
+  await retargetAutomationTrack(trackId, target)
+  closeAutomationParameterPicker()
+}
+
+function loadAutomationPickerPluginParameters() {
+  for (const track of tracks.value) {
+    if (!isInstrumentTrack(track)) continue
+    for (const slot of track.plugin_slots || []) {
+      if (slot?.type === 'vst3') {
+        loadPluginParameters(track.id, slot.id).catch(() => null)
+      }
+    }
+  }
 }
 
 function makeClip(type = 'midi', start = 0) {
@@ -1609,11 +1951,14 @@ async function clearActiveTrack() {
 async function onArrangementPointerDown(event) {
   const canvas = arrangementCanvas.value
   if (!canvas || !project.value) return
+  automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
+  closeTrackContextMenu()
   event.preventDefault()
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
   const y = event.clientY - rect.top
   const beat = Math.max(0, x / arrangementPxPerBeat.value)
+  const point = arrangementPoint(event)
   if (y <= arrangementRulerH) {
     arrangementDrag = {
       type: 'pan',
@@ -1656,6 +2001,11 @@ async function onArrangementPointerDown(event) {
   const track = tracks.value[index]
   if (track) {
     selectTrack(track.id)
+    if (isAutomationTrack(track) && point) {
+      selectedClipIds.value = new Set()
+      startAutomationDrag(track, point, event.pointerId)
+      return
+    }
     if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
       selectedClipIds.value = new Set()
     }
@@ -1751,8 +2101,174 @@ async function onArrangementPointerUp() {
   drawAll()
 }
 
+function startAutomationDrag(track, point, pointerId) {
+  const value = automationValueFromY(track, point.y)
+  const beat = snapAutomationBeat(point.beat)
+  upsertAutomationPointAt(track, beat, value)
+  automationDrag = {
+    type: 'automation',
+    pointerId,
+    trackId: track.id,
+    lastBeat: beat,
+    lastValue: value,
+  }
+  bindAutomationDrag()
+  drawAll()
+}
+
+function bindAutomationDrag() {
+  window.addEventListener('pointermove', onAutomationPointerMove)
+  window.addEventListener('pointerup', onAutomationPointerUp)
+}
+
+function unbindAutomationDrag() {
+  window.removeEventListener('pointermove', onAutomationPointerMove)
+  window.removeEventListener('pointerup', onAutomationPointerUp)
+}
+
+function onAutomationPointerMove(event) {
+  if (!automationDrag || !project.value) return
+  const track = tracks.value.find(item => Number(item.id) === Number(automationDrag.trackId))
+  const point = arrangementPoint(event)
+  if (!track || !point) return
+  event.preventDefault()
+  const beat = snapAutomationBeat(point.beat)
+  const value = automationValueFromY(track, point.y)
+  writeAutomationDragPoints(
+    track,
+    automationDrag.lastBeat,
+    automationDrag.lastValue,
+    beat,
+    value
+  )
+  automationDrag.lastBeat = beat
+  automationDrag.lastValue = value
+  drawAll()
+}
+
+async function onAutomationPointerUp() {
+  if (!automationDrag) return
+  const drag = automationDrag
+  automationDrag = null
+  unbindAutomationDrag()
+  await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId))
+  drawAll()
+}
+
+function automationTrackPoints(trackId) {
+  const track = tracks.value.find(item => Number(item.id) === Number(trackId))
+  return ensureAutomationTrackPoints(track)
+}
+
+function ensureAutomationTrackPoints(track) {
+  if (!track) return []
+  if (!track.automation || typeof track.automation !== 'object') {
+    track.automation = { points: [], value_min: 0, value_max: 1 }
+  }
+  if (!Array.isArray(track.automation.points)) track.automation.points = []
+  return track.automation.points
+}
+
+function automationValueRange(track) {
+  const min = Number(track?.automation?.value_min ?? 0)
+  const max = Number(track?.automation?.value_max ?? 1)
+  if (!Number.isFinite(min) || !Number.isFinite(max) || Math.abs(max - min) < 0.000001) {
+    return { min: 0, max: 1 }
+  }
+  return min < max ? { min, max } : { min: max, max: min }
+}
+
+function automationValueFromY(track, y) {
+  const trackIndex = tracks.value.findIndex(item => Number(item.id) === Number(track?.id))
+  const top = arrangementRulerH + Math.max(0, trackIndex) * arrangementTrackH + 12
+  const bodyHeight = Math.max(1, arrangementTrackH - 24)
+  const unit = 1 - clamp((Number(y || 0) - top) / bodyHeight, 0, 1)
+  const { min, max } = automationValueRange(track)
+  return roundAutomationValue(min + unit * (max - min))
+}
+
+function automationPointY(track, point, trackIndex) {
+  const { min, max } = automationValueRange(track)
+  const unit = clamp((Number(point?.value ?? min) - min) / Math.max(0.0001, max - min), 0, 1)
+  return arrangementRulerH + trackIndex * arrangementTrackH + 12 + (1 - unit) * (arrangementTrackH - 24)
+}
+
+function snapAutomationBeat(value) {
+  return Math.max(0, snapBeatToGrid(value, activePianoSnapStep.value))
+}
+
+function roundAutomationValue(value) {
+  return Math.round(Number(value || 0) * 1000000) / 1000000
+}
+
+function normalizeAutomationPoint(track, point) {
+  const { min, max } = automationValueRange(track)
+  let value = clamp(roundAutomationValue(point?.value), min, max)
+  if (track?.target?.kind === 'time_signature_numerator') {
+    value = Math.round(value)
+  }
+  return {
+    beat: snapAutomationBeat(point?.beat),
+    value,
+    curve: String(point?.curve || 'linear'),
+  }
+}
+
+function sortAutomationPoints(a, b) {
+  return Number(a.beat || 0) - Number(b.beat || 0)
+}
+
+function findAutomationPointIndex(track, beat) {
+  const points = ensureAutomationTrackPoints(track)
+  const snapThreshold = activePianoSnapStep.value
+    ? Math.max(0.001, activePianoSnapStep.value / 3)
+    : Number.POSITIVE_INFINITY
+  const threshold = Math.min(Math.max(0.008, 3 / arrangementPxPerBeat.value), snapThreshold)
+  return points.findIndex(point => Math.abs(Number(point.beat || 0) - Number(beat || 0)) <= threshold)
+}
+
+function upsertAutomationPointAt(track, beat, value) {
+  const points = ensureAutomationTrackPoints(track)
+  const point = normalizeAutomationPoint(track, { beat, value })
+  const index = findAutomationPointIndex(track, point.beat)
+  if (index >= 0) points[index] = { ...points[index], ...point }
+  else points.push(point)
+  points.sort(sortAutomationPoints)
+}
+
+function writeAutomationDragPoints(track, startBeat, startValue, endBeat, endValue) {
+  const beats = quantizedBeatsBetween(startBeat, endBeat, activePianoSnapStep.value)
+  for (const beat of beats) {
+    const value = interpolateAutomationValue(startBeat, startValue, endBeat, endValue, beat)
+    upsertAutomationPointAt(track, beat, value)
+  }
+}
+
+function interpolateAutomationValue(startBeat, startValue, endBeat, endValue, beat) {
+  const distance = Number(endBeat || 0) - Number(startBeat || 0)
+  if (Math.abs(distance) < 0.000001) return roundAutomationValue(endValue)
+  const unit = (Number(beat || 0) - Number(startBeat || 0)) / distance
+  return roundAutomationValue(Number(startValue || 0) + (Number(endValue || 0) - Number(startValue || 0)) * unit)
+}
+
+async function persistAutomationTrackPoints(trackId, points) {
+  const track = tracks.value.find(item => Number(item.id) === Number(trackId))
+  const normalized = (points || [])
+    .map(point => normalizeAutomationPoint(track, point))
+    .sort(sortAutomationPoints)
+  await persistProjectUpdate((nextProject) => {
+    const nextTrack = findProjectTrack(nextProject, trackId)
+    if (!nextTrack) return
+    nextTrack.automation = {
+      ...(nextTrack.automation || {}),
+      points: normalized,
+    }
+  })
+}
+
 function syncArrangementScroll(event) {
   arrangementScrollLeft.value = Math.max(0, Number(event.currentTarget?.scrollLeft || 0))
+  closeTrackContextMenu()
 }
 
 function onArrangementWheel(event) {
@@ -1802,7 +2318,7 @@ function scrollArrangementHorizontallyFromWheel(event, wrap) {
 }
 
 function arrangementCanvasOffsetX() {
-  return arrangementCanvas.value?.offsetLeft ?? trackListW
+  return arrangementCanvas.value?.offsetLeft ?? currentTrackListWidth()
 }
 
 function arrangementPoint(event) {
@@ -2068,6 +2584,54 @@ function clampPianoPanelHeight(height) {
   const maxHeight = Math.max(1, stackHeight - minArrangementPanelHeight)
   const minHeight = Math.min(minPianoPanelHeight, maxHeight)
   return Math.round(clamp(Number(height || minHeight), minHeight, maxHeight))
+}
+
+function clampTrackListWidth(width) {
+  return Math.round(clamp(Number(width || defaultTrackListWidth), minTrackListWidth, maxTrackListWidth))
+}
+
+function currentTrackListWidth() {
+  return clampTrackListWidth(trackListWidth.value)
+}
+
+function startTrackListResize(event) {
+  event.preventDefault()
+  event.stopPropagation()
+  const startWidth = currentTrackListWidth()
+  trackListWidth.value = startWidth
+  trackListResizeDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startWidth,
+  }
+  bindTrackListResize()
+}
+
+function bindTrackListResize() {
+  window.addEventListener('pointermove', onTrackListResizeMove)
+  window.addEventListener('pointerup', onTrackListResizeEnd)
+  window.addEventListener('pointercancel', onTrackListResizeEnd)
+}
+
+function unbindTrackListResize() {
+  window.removeEventListener('pointermove', onTrackListResizeMove)
+  window.removeEventListener('pointerup', onTrackListResizeEnd)
+  window.removeEventListener('pointercancel', onTrackListResizeEnd)
+}
+
+function onTrackListResizeMove(event) {
+  if (!trackListResizeDrag) return
+  event.preventDefault()
+  const deltaX = event.clientX - trackListResizeDrag.startX
+  trackListWidth.value = clampTrackListWidth(trackListResizeDrag.startWidth + deltaX)
+  drawAll()
+}
+
+function onTrackListResizeEnd() {
+  if (!trackListResizeDrag) return
+  trackListResizeDrag = null
+  unbindTrackListResize()
+  nextTick(drawAll)
 }
 
 function startPianoResize(event) {
@@ -2749,6 +3313,10 @@ function onStudioKeydown(event) {
     draftNote.value = null
     controllerMenuLaneId.value = null
     pianoQuantizeMenuOpen.value = false
+    automationDrag = null
+    unbindAutomationDrag()
+    automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
+    closeTrackContextMenu()
     drawAll()
   }
 }
@@ -2788,9 +3356,11 @@ function closePiano() {
   selectionBox.value = null
   pianoResizeDrag = null
   controllerDrag = null
+  automationDrag = null
   controllerMenuLaneId.value = null
   unbindPianoResize()
   unbindControllerDrag()
+  unbindAutomationDrag()
   drawAll()
 }
 
@@ -2802,12 +3372,148 @@ function isAudioTrack(track) {
   return track?.type === 'audio'
 }
 
+function isAutomationTrack(track) {
+  return track?.type === 'automation'
+}
+
 function trackChannelLabel(track) {
   return track?.channel_type === 'mono' ? 'Mono' : 'Multi-channel'
 }
 
 function trackTypeLabel(track) {
+  if (isAutomationTrack(track)) return 'Automation'
   return isAudioTrack(track) ? `Audio ${trackChannelLabel(track)}` : 'Instrument'
+}
+
+function trackRowMetaLabel(track) {
+  if (isAutomationTrack(track)) {
+    return `${trackTypeLabel(track)} / ${automationTargetLabel(track.target)}`
+  }
+  return `${trackTypeLabel(track)} / ${track.clips?.length || 0} clips`
+}
+
+function automationPointCount(track) {
+  return Array.isArray(track?.automation?.points) ? track.automation.points.length : 0
+}
+
+function automationTargetLabel(target) {
+  if (!target) return 'Unassigned'
+  if (target.kind === 'unassigned') return target.label || 'Unassigned'
+  if (target.kind === 'tempo_bpm') return target.label || 'Tempo BPM'
+  if (target.kind === 'time_signature_numerator') return target.label || 'Time Signature Numerator'
+  if (target.kind === 'track_volume') return target.label || `Track ${target.track_id} Volume`
+  if (target.kind === 'track_pan') return target.label || `Track ${target.track_id} Pan`
+  return target.label || `Param ${target.param_index ?? 0}`
+}
+
+function learnedAutomationTargetDetail(item) {
+  const source = item?.source || {}
+  return [
+    source.track_name,
+    source.slot_label || source.slot_id,
+    source.plugin_name,
+    source.param_name,
+  ].filter(Boolean).join(' / ')
+}
+
+function automationTargetForTrackVolume(track) {
+  return {
+    kind: 'track_volume',
+    track_id: track.id,
+    label: `${track.name} Volume`,
+  }
+}
+
+function automationTargetForTrackPan(track) {
+  return {
+    kind: 'track_pan',
+    track_id: track.id,
+    label: `${track.name} Pan`,
+  }
+}
+
+function automationTargetForTempoBpm() {
+  return {
+    kind: 'tempo_bpm',
+    label: 'Tempo BPM',
+  }
+}
+
+function automationTargetForTimeSignatureNumerator() {
+  return {
+    kind: 'time_signature_numerator',
+    label: 'Time Signature Numerator',
+  }
+}
+
+function automationTargetForPluginParameter(track, slotId, param) {
+  return {
+    kind: 'plugin_parameter',
+    track_id: track.id,
+    slot_id: slotId,
+    param_index: Number(param.index || 0),
+    param_id: param.param_id,
+    label: param.name || `Parameter ${param.index || 0}`,
+  }
+}
+
+function openAutomationMenu(event, target, label = '') {
+  closeTrackContextMenu()
+  automationMenu.value = {
+    open: true,
+    x: Number(event.clientX ?? 0),
+    y: Number(event.clientY ?? 0),
+    target,
+    label: label || target?.label || 'Automation',
+  }
+}
+
+async function confirmCreateAutomationFromMenu() {
+  const target = automationMenu.value.target
+  if (!target) return
+  await createAutomationTrackForTarget(target)
+  automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
+}
+
+async function createAutomationTrackForTarget(target, options = {}) {
+  const value = automationInitialValue(target)
+  return createAutomationTrack(target, {
+    name: options.name || target.label || 'Automation',
+    color: options.color,
+    value,
+    points: [
+      { beat: Math.max(0, positionBeats.value), value },
+      { beat: Math.max(1, positionBeats.value + 4), value },
+    ],
+  })
+}
+
+function automationInitialValue(target) {
+  const track = tracks.value.find(item => Number(item.id) === Number(target?.track_id))
+  if (target?.kind === 'tempo_bpm') return Number(tempo.value || 120)
+  if (target?.kind === 'time_signature_numerator') return Number(timeSignatureNumerator.value || 4)
+  if (target?.kind === 'track_volume') return Number(track?.volume ?? 0.8)
+  if (target?.kind === 'track_pan') return Number(track?.pan ?? 0)
+  if (target?.kind === 'plugin_parameter') {
+    const param = pluginParameterRows(target.track_id, target.slot_id)
+      .find(item => Number(item.index) === Number(target.param_index))
+    return Number(param?.value ?? 0)
+  }
+  return 0
+}
+
+function pluginParameterRows(trackId, slotId) {
+  return pluginParameters.value?.[`${trackId}:${slotId}`] || []
+}
+
+function parameterValueLabel(param) {
+  const value = Number(param?.value ?? 0)
+  const unit = param?.units ? ` ${param.units}` : ''
+  return `${value.toFixed(3)}${unit}`
+}
+
+async function setLivePluginParameter(trackId, slotId, paramIndex, value) {
+  await setPluginParameter(trackId, slotId, paramIndex, value)
 }
 
 function isPluginEditorOpen(trackId) {
@@ -2945,7 +3651,10 @@ function drawArrangement() {
   const canvas = arrangementCanvas.value
   const wrap = arrangementWrap.value
   if (!canvas || !wrap) return
-  const timelineViewportWidth = Math.max(0, wrap.clientWidth - trackListW)
+  const timelineViewportWidth = Math.max(
+    0,
+    arrangementWrap.value.clientWidth - currentTrackListWidth()
+  )
   const width = Math.max(
     timelineViewportWidth,
     arrangementLengthBeats() * arrangementPxPerBeat.value + 40
@@ -2980,6 +3689,10 @@ function drawArrangement() {
   drawRuler(ctx, width)
 
   tracks.value.forEach((track, index) => {
+    if (isAutomationTrack(track)) {
+      drawAutomationTrack(ctx, track, index)
+      return
+    }
     for (const clip of track.clips || []) {
       drawArrangementClip(ctx, track, clip, index)
     }
@@ -2995,7 +3708,11 @@ function arrangementLengthBeats() {
       Number(clip.start || 0) + Number(clip.duration || 0)
     )))
   )
-  return Math.max(Number(project.value?.length_beats || 16), emptyTailBeats, clipEnd + 2)
+  const automationEnd = Math.max(
+    0,
+    ...tracks.value.flatMap(track => (track.automation?.points || []).map(point => Number(point.beat || 0)))
+  )
+  return Math.max(Number(project.value?.length_beats || 16), emptyTailBeats, clipEnd + 2, automationEnd + 2)
 }
 
 function pianoLengthBeats(clip) {
@@ -3043,6 +3760,40 @@ function drawArrangementClip(ctx, track, clip, trackIndex) {
 
   ctx.fillStyle = 'rgba(255,255,255,0.35)'
   ctx.fillRect(rect.x + rect.w - 5, rect.y + 18, 2, rect.h - 24)
+}
+
+function drawAutomationTrack(ctx, track, trackIndex) {
+  const points = Array.isArray(track?.automation?.points) ? track.automation.points : []
+  const y = arrangementRulerH + trackIndex * arrangementTrackH
+  const midY = y + arrangementTrackH * 0.5
+  const left = 0
+  const right = arrangementLengthBeats() * arrangementPxPerBeat.value
+  ctx.strokeStyle = hexToRgba(track.color, track.mute ? 0.22 : 0.74)
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(left, midY)
+  if (!points.length) {
+    ctx.lineTo(right, midY)
+  } else {
+    points.forEach((point, index) => {
+      const x = Number(point.beat || 0) * arrangementPxPerBeat.value
+      const py = automationPointY(track, point, trackIndex)
+      if (index === 0) ctx.lineTo(x, py)
+      else ctx.lineTo(x, py)
+    })
+  }
+  ctx.stroke()
+  ctx.fillStyle = hexToRgba(track.color, track.mute ? 0.28 : 0.95)
+  for (const point of points) {
+    const x = Number(point.beat || 0) * arrangementPxPerBeat.value
+    const py = automationPointY(track, point, trackIndex)
+    ctx.beginPath()
+    ctx.arc(x, py, 4, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.fillStyle = 'rgba(244,246,248,0.72)'
+  ctx.font = '10px Cascadia Mono, Consolas, monospace'
+  ctx.fillText(automationTargetLabel(track.target), 8, y + 16)
 }
 
 function drawZrythmAudioRegionFrame(ctx, clip, rect, track, selected, active) {
@@ -3758,16 +4509,22 @@ onMounted(async () => {
   if (controllerWrap.value) resizeObserver.observe(controllerWrap.value)
   raf = requestAnimationFrame(animationLoop)
   document.addEventListener('pointerdown', onDocumentPointerDown)
+  learnedParameterPollTimer = setInterval(() => {
+    if (host.value?.running) pollCapturedPluginParameters().catch(() => null)
+  }, 1500)
 })
 
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   clearTimeout(tempoUpdateTimer)
+  clearInterval(learnedParameterPollTimer)
   if (resizeObserver) resizeObserver.disconnect()
   unbindPianoDrag()
   unbindPianoResize()
+  unbindTrackListResize()
   unbindArrangementDrag()
   unbindControllerDrag()
+  unbindAutomationDrag()
   if (audioDecodeContext?.close) audioDecodeContext.close()
   cancelAnimationFrame(raf)
 })
@@ -4153,13 +4910,48 @@ watch(positionBeats, (value) => {
   grid-column: 1;
   grid-row: 1;
   align-self: start;
-  width: 246px;
-  min-width: 246px;
+  width: var(--track-list-width);
+  min-width: var(--track-list-width);
   background: #202428;
-  border-right: 1px solid rgba(229, 236, 245, 0.12);
   box-shadow: 10px 0 20px rgba(0, 0, 0, 0.22);
   transform: translateX(var(--arrangement-scroll-left, 0px));
   will-change: transform;
+}
+
+.track-list-resize-handle {
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--track-list-width) - 4px);
+  width: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.track-list-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: rgba(229, 236, 245, 0.14);
+  transition: background 120ms ease;
+}
+
+.track-list-resize-handle:hover::after,
+.track-list-resize-handle:focus-visible::after {
+  background: rgba(143, 216, 199, 0.72);
+}
+
+.track-list-resize-handle:focus-visible {
+  outline: 1px solid rgba(143, 216, 199, 0.8);
+  outline-offset: -1px;
 }
 
 .inspector {
@@ -4186,12 +4978,11 @@ watch(positionBeats, (value) => {
   flex: 0 0 auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: 246px minmax(0, 1fr);
+  grid-template-columns: var(--track-list-width) minmax(0, 1fr);
 }
 
 .track-list-head {
   gap: 6px;
-  border-right: 1px solid rgba(229, 236, 245, 0.12);
 }
 
 .track-list-head span {
@@ -4262,7 +5053,8 @@ watch(positionBeats, (value) => {
 }
 
 .track-create-field input,
-.track-create-field select {
+.track-create-field select,
+.automation-parameter-button {
   min-width: 0;
   width: 100%;
   height: 32px;
@@ -4271,6 +5063,12 @@ watch(positionBeats, (value) => {
   background: #101215;
   color: var(--t2);
   font-size: 12px;
+}
+
+.automation-parameter-button {
+  padding: 0 10px;
+  text-align: left;
+  cursor: pointer;
 }
 
 .track-create-field input {
@@ -4315,7 +5113,8 @@ watch(positionBeats, (value) => {
 }
 
 .track-create-field input:focus,
-.track-create-field select:focus {
+.track-create-field select:focus,
+.automation-parameter-button:focus {
   outline: none;
   border-color: rgba(240, 209, 122, 0.5);
   box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
@@ -4327,6 +5126,144 @@ watch(positionBeats, (value) => {
   gap: 8px;
   padding: 12px 16px 16px;
   border-top: 1px solid rgba(229, 236, 245, 0.08);
+}
+
+.automation-parameter-dialog {
+  width: min(760px, 100%);
+  max-height: calc(100% - 24px);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid rgba(229, 236, 245, 0.16);
+  border-radius: 8px;
+  background: #202428;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
+}
+
+.automation-parameter-columns {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.88fr);
+  gap: 0;
+  overflow: hidden;
+}
+
+.automation-parameter-column {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+}
+
+.automation-parameter-column.learned {
+  border-left: 1px solid rgba(229, 236, 245, 0.08);
+  background: rgba(12, 15, 18, 0.22);
+}
+
+.automation-parameter-column h3 {
+  margin: 0 0 4px;
+  color: var(--t4);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.automation-parameter-row,
+.automation-learned-row {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(229, 236, 245, 0.1);
+  border-radius: 6px;
+  background: rgba(11, 13, 15, 0.36);
+}
+
+.automation-parameter-row {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  color: var(--t2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.automation-parameter-row:hover,
+.automation-parameter-row:focus-visible,
+.automation-learned-row:hover,
+.automation-learned-row:focus-visible,
+.automation-learned-row:focus-within {
+  border-color: rgba(240, 209, 122, 0.34);
+  background: rgba(240, 209, 122, 0.07);
+}
+
+.automation-parameter-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--t1);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-parameter-row span,
+.automation-learned-row small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--t4);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-learn-refresh {
+  width: 100%;
+  height: 28px;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 6px;
+  background: rgba(229, 236, 245, 0.05);
+  color: var(--t3);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.automation-learn-refresh:hover,
+.automation-learn-refresh:focus-visible {
+  border-color: rgba(127, 201, 167, 0.34);
+  color: var(--t1);
+}
+
+.automation-learned-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.automation-learned-row input {
+  min-width: 0;
+  width: 100%;
+  height: 28px;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 5px;
+  background: #111418;
+  color: var(--t2);
+  font-size: 12px;
+  padding: 0 8px;
+  cursor: text;
+}
+
+.automation-learned-row input:focus {
+  outline: none;
+  border-color: rgba(240, 209, 122, 0.5);
+  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
+}
+
+.automation-learned-row small {
+  grid-column: 1 / -1;
 }
 
 .arrangement-toolbar {
@@ -4366,17 +5303,18 @@ watch(positionBeats, (value) => {
 
 .track-row {
   width: 100%;
-  min-height: 72px;
+  height: 72px;
   display: grid;
   grid-template-columns: 4px minmax(0, 1fr) auto;
   gap: 9px;
   align-items: center;
-  padding: 8px 9px;
+  padding: 6px 9px;
   border: 0;
   border-bottom: 1px solid rgba(229, 236, 245, 0.08);
   background: transparent;
   color: var(--t2);
   cursor: pointer;
+  overflow: hidden;
   text-align: left;
 }
 
@@ -4402,47 +5340,63 @@ watch(positionBeats, (value) => {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 5px;
+  gap: 4px;
 }
 
 .track-title-line {
   width: 100%;
   min-width: 0;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
-.track-main strong,
+.track-title-text,
+.track-meta-text {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  display: block;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mix-name strong {
   max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.track-title-text,
+.mix-name strong {
   font-size: 13px;
 }
 
-.track-main strong {
-  min-width: 0;
+.track-title-text {
+  color: var(--t1);
+  line-height: 16px;
 }
 
-.track-main small {
-  flex: 0 0 auto;
+.track-meta-text {
   color: var(--t4);
   font-size: 11px;
+  line-height: 13px;
 }
 
 .track-buttons {
+  justify-self: end;
+  margin-left: auto;
   display: flex;
-  gap: 4px;
+  gap: 5px;
 }
 
 .track-plugin-bar {
   width: 100%;
   min-width: 0;
+  height: 24px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 26px;
+  grid-template-columns: minmax(0, 1fr) 24px;
   gap: 5px;
 }
 
@@ -4450,10 +5404,30 @@ watch(positionBeats, (value) => {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.track-plugin-bar.automation-target-bar {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  color: rgba(229, 236, 245, 0.72);
+  font-size: 10px;
+}
+
+.automation-target-select {
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .track-plugin-select {
   min-width: 0;
   width: 100%;
-  height: 26px;
+  height: 24px;
   border: 1px solid rgba(229, 236, 245, 0.12);
   border-radius: 5px;
   background: #101215;
@@ -4462,8 +5436,8 @@ watch(positionBeats, (value) => {
 }
 
 .track-plugin-open {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4491,6 +5465,59 @@ watch(positionBeats, (value) => {
   height: 14px;
 }
 
+.automation-context-menu,
+.track-context-menu {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  gap: 4px;
+  min-width: 176px;
+  padding: 7px;
+  border: 1px solid rgba(229, 236, 245, 0.16);
+  border-radius: 7px;
+  background: rgba(24, 27, 31, 0.96);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34);
+}
+
+.automation-context-menu button,
+.track-context-menu button {
+  border: 0;
+  border-radius: 5px;
+  padding: 7px 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.automation-context-menu button {
+  background: rgba(240, 209, 122, 0.18);
+  color: #f4f0dc;
+}
+
+.track-context-delete {
+  background: rgba(255, 141, 127, 0.14);
+  color: #ffd4cf;
+}
+
+.track-context-delete:hover:not(:disabled),
+.track-context-delete:focus-visible:not(:disabled) {
+  background: rgba(255, 141, 127, 0.22);
+}
+
+.track-context-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.automation-context-menu small,
+.track-context-menu small {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(229, 236, 245, 0.56);
+  padding: 0 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .track-flag {
   width: 24px;
   height: 24px;
@@ -4509,35 +5536,7 @@ watch(positionBeats, (value) => {
   background: rgba(240, 209, 122, 0.12);
 }
 
-.track-delete {
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--t4);
-  cursor: pointer;
-  opacity: 0.58;
-  transition: opacity 0.14s, background 0.14s, border-color 0.14s, color 0.14s;
-}
-
-.track-delete:hover:not(:disabled) {
-  color: #ffd4cf;
-  border-color: rgba(255, 141, 127, 0.42);
-  background: rgba(255, 141, 127, 0.14);
-  opacity: 1;
-}
-
-.track-delete svg {
-  width: 12px;
-  height: 12px;
-}
-
-.track-flag:disabled,
-.track-delete:disabled {
+.track-flag:disabled {
   cursor: not-allowed;
   opacity: 0.46;
 }
@@ -4563,6 +5562,8 @@ watch(positionBeats, (value) => {
 }
 
 .arrangement {
+  --track-list-width: 246px;
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -4584,7 +5585,7 @@ watch(positionBeats, (value) => {
 .audio-drop-layer {
   pointer-events: none;
   position: absolute;
-  inset: 30px 0 0 246px;
+  inset: 30px 0 0 var(--track-list-width);
   z-index: 6;
   display: flex;
   align-items: center;
@@ -4647,7 +5648,7 @@ watch(positionBeats, (value) => {
 .arrangement-scroll-inner {
   min-width: 100%;
   display: grid;
-  grid-template-columns: 246px max-content;
+  grid-template-columns: var(--track-list-width) max-content;
   align-items: start;
 }
 
@@ -5179,6 +6180,53 @@ watch(positionBeats, (value) => {
   white-space: nowrap;
 }
 
+.rack-param-load {
+  grid-column: 2;
+  justify-self: start;
+  min-height: 24px;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 5px;
+  background: #15181b;
+  color: var(--t3);
+  font-size: 10px;
+}
+
+.rack-params {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid rgba(229, 236, 245, 0.08);
+  border-radius: 5px;
+  background: rgba(13, 15, 18, 0.56);
+}
+
+.rack-param-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 7px;
+}
+
+.rack-param-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t3);
+  text-transform: none;
+}
+
+.rack-param-row input {
+  min-width: 0;
+}
+
+.rack-param-row small {
+  grid-column: auto;
+  font-family: var(--mono);
+  text-align: right;
+}
+
 @media (max-width: 1120px) {
   .studio-topbar {
     grid-template-columns: 1fr;
@@ -5197,6 +6245,19 @@ watch(positionBeats, (value) => {
 
   .inspector {
     display: none;
+  }
+
+  .automation-parameter-dialog {
+    max-height: calc(100% - 16px);
+  }
+
+  .automation-parameter-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .automation-parameter-column.learned {
+    border-top: 1px solid rgba(229, 236, 245, 0.08);
+    border-left: 0;
   }
 }
 

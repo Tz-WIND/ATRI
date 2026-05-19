@@ -1,10 +1,14 @@
 use std::cmp;
 use std::mem;
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::ScheduledMidiEvent;
-use atri_core::plugin::{EditorParentHandle, Plugin, PluginEditorContext, PluginEditorHandle};
+use atri_core::plugin::{
+    CapturedPluginParameterEdit, EditorParentHandle, Plugin, PluginEditorContext,
+    PluginEditorHandle, PluginParameterInfo,
+};
 use vst3::{
     ComPtr, ComWrapper,
     Steinberg::{
@@ -14,8 +18,8 @@ use vst3::{
             IAudioProcessorTrait, IComponent, IComponent_iid, IComponentHandler, IComponentTrait,
             IConnectionPoint, IConnectionPointTrait, IEditController, IEditController_iid,
             IEditControllerTrait, IoModes_, MediaTypes_, ParamID, ParamValue, ParameterInfo,
-            ProcessContext, ProcessContext_, ProcessData, ProcessModes_, ProcessSetup, SpeakerArr,
-            SpeakerArrangement, SymbolicSampleSizes_, ViewType,
+            ParameterInfo_, ProcessContext, ProcessContext_, ProcessData, ProcessModes_,
+            ProcessSetup, SpeakerArr, SpeakerArrangement, SymbolicSampleSizes_, ViewType,
         },
         kResultFalse, kResultOk,
     },
@@ -242,12 +246,55 @@ impl Plugin for Vst3Plugin {
         }
     }
 
+    fn set_parameter_at_sample(&mut self, index: u32, sample_offset: usize, value: f32) {
+        if let Err(err) = self.ensure_instance() {
+            log::warn!(
+                "failed to create VST3 instance for automated parameter edit '{}': {err}",
+                self.name
+            );
+            return;
+        };
+        let Some(factory) = &self.factory else {
+            return;
+        };
+        let Some(instance) = &mut self.instance else {
+            return;
+        };
+        if let Err(err) = instance.ensure_controller(factory) {
+            log::warn!(
+                "failed to create VST3 controller for '{}': {err}",
+                self.name
+            );
+            return;
+        }
+        if let Err(err) = instance.set_parameter_normalized_at_sample(index, sample_offset, value) {
+            log::warn!(
+                "failed to automate VST3 parameter for '{}': {err}",
+                self.name
+            );
+        }
+    }
+
     fn parameter_count(&self) -> u32 {
         self.instance
             .as_ref()
             .and_then(|instance| instance.controller.as_ref())
             .map(|controller| unsafe { controller.getParameterCount().max(0) as u32 })
             .unwrap_or(0)
+    }
+
+    fn parameter_info(&self) -> Vec<PluginParameterInfo> {
+        let Some(instance) = &self.instance else {
+            return Vec::new();
+        };
+        instance.parameter_info()
+    }
+
+    fn drain_captured_parameter_edits(&mut self) -> Vec<CapturedPluginParameterEdit> {
+        self.instance
+            .as_mut()
+            .map(Vst3Instance::drain_captured_parameter_edits)
+            .unwrap_or_default()
     }
 
     fn has_editor(&self) -> bool {
@@ -385,6 +432,7 @@ struct Vst3Instance {
     processing_sample_rate: f64,
     processing_max_samples: usize,
     queued_parameter_changes: Vec<ParameterChangePoint>,
+    captured_parameter_edits: Arc<Mutex<Vec<CapturedPluginParameterEdit>>>,
 }
 
 impl Vst3Instance {
@@ -429,6 +477,7 @@ impl Vst3Instance {
             processing_sample_rate: 0.0,
             processing_max_samples: 0,
             queued_parameter_changes: Vec::new(),
+            captured_parameter_edits: Arc::new(Mutex::new(Vec::new())),
         };
         Ok(instance)
     }
@@ -458,6 +507,32 @@ impl Vst3Instance {
         (result == kResultOk).then_some(info.id)
     }
 
+    fn parameter_info(&self) -> Vec<PluginParameterInfo> {
+        let Some(controller) = self.controller.as_ref() else {
+            return Vec::new();
+        };
+        let count = unsafe { controller.getParameterCount().max(0) as u32 };
+        (0..count)
+            .filter_map(|index| {
+                let mut info = unsafe { mem::zeroed::<ParameterInfo>() };
+                let result =
+                    unsafe { controller.getParameterInfo(index.try_into().ok()?, &mut info) };
+                if result != kResultOk {
+                    return None;
+                }
+                let value = unsafe { controller.getParamNormalized(info.id) as f32 };
+                Some(PluginParameterInfo {
+                    index,
+                    param_id: Some(info.id),
+                    name: vst3_utf16_string(&info.title),
+                    units: vst3_utf16_string(&info.units),
+                    value,
+                    automatable: info.flags & ParameterInfo_::ParameterFlags_::kCanAutomate != 0,
+                })
+            })
+            .collect()
+    }
+
     fn set_parameter_normalized(&mut self, index: u32, value: f32) -> Result<(), String> {
         let Some(id) = self.parameter_id_at(index) else {
             return Err(format!("parameter index {index} is out of range"));
@@ -470,6 +545,26 @@ impl Vst3Instance {
             }
         }
         self.queue_parameter_change(id, 0, value);
+        Ok(())
+    }
+
+    fn set_parameter_normalized_at_sample(
+        &mut self,
+        index: u32,
+        sample_offset: usize,
+        value: f32,
+    ) -> Result<(), String> {
+        let Some(id) = self.parameter_id_at(index) else {
+            return Err(format!("parameter index {index} is out of range"));
+        };
+        let value = value.clamp(0.0, 1.0) as ParamValue;
+        if let Some(controller) = self.controller.as_ref() {
+            let result = unsafe { controller.setParamNormalized(id, value) };
+            if result != kResultOk {
+                log::debug!("VST3 controller setParamNormalized returned {result}");
+            }
+        }
+        self.queue_parameter_change(id, sample_offset, value);
         Ok(())
     }
 
@@ -491,6 +586,16 @@ impl Vst3Instance {
         changes
     }
 
+    fn drain_captured_parameter_edits(&mut self) -> Vec<CapturedPluginParameterEdit> {
+        let mut edits = self
+            .captured_parameter_edits
+            .lock()
+            .map(|mut edits| std::mem::take(&mut *edits))
+            .unwrap_or_default();
+        edits.sort_by_key(|edit| edit.captured_at_millis);
+        edits
+    }
+
     fn ensure_controller(&mut self, factory: &PluginFactory) -> Result<bool, String> {
         if self.controller.is_some() {
             return Ok(false);
@@ -507,7 +612,9 @@ impl Vst3Instance {
         let controller_connection = controller.cast::<IConnectionPoint>();
         connect_component_and_controller(&component_connection, &controller_connection);
 
-        let component_handler = ComWrapper::new(AtriComponentHandler);
+        let component_handler = ComWrapper::new(AtriComponentHandler::with_capture_queue(
+            Arc::clone(&self.captured_parameter_edits),
+        ));
         let handler = component_handler
             .to_com_ptr::<IComponentHandler>()
             .expect("AtriComponentHandler exposes IComponentHandler");
@@ -1106,6 +1213,11 @@ fn current_system_time_nanos() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+fn vst3_utf16_string(value: &[u16]) -> String {
+    let end = value.iter().position(|ch| *ch == 0).unwrap_or(value.len());
+    String::from_utf16_lossy(&value[..end])
 }
 
 fn check_result(label: &str, result: i32) -> Result<(), String> {

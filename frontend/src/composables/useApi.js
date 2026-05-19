@@ -155,6 +155,35 @@ export function useApi() {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+    studioAutomationQuery: (options = {}) => {
+      const params = new URLSearchParams()
+      if (options.track_id !== undefined && options.track_id !== null) params.set('track_id', options.track_id)
+      if (options.include_points) params.set('include_points', 'true')
+      const query = params.toString()
+      return request(`/api/music/studio/automation${query ? `?${query}` : ''}`)
+    },
+    studioAutomationWrite: (payload) => request('/api/music/studio/automation', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+    studioAutomationDiff: (trackId, operations) => request(`/api/music/studio/automation/${encodeURIComponent(trackId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ operations }),
+    }),
+    studioAutomationRetarget: (trackId, target) => request(`/api/music/studio/automation/${encodeURIComponent(trackId)}/retarget`, {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    }),
+    studioPluginParameters: (trackId, slotId = 'instrument') => request(`/api/music/studio/tracks/${encodeURIComponent(trackId)}/plugin/parameters?slot_id=${encodeURIComponent(slotId)}`),
+    studioCapturedPluginParameters: () => request('/api/music/studio/plugin/captured-parameters'),
+    studioRenameLearnedPluginParameter: (id, name) => request(`/api/music/studio/plugin/learned-parameters/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+    studioSetPluginParameter: (payload) => request('/api/music/studio/plugin/parameter', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
     studioAudioImport: (file, metadata = {}) => {
       const formData = new FormData()
       formData.append('file', file)

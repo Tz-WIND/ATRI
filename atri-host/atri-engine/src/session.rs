@@ -6,6 +6,7 @@ use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::{MidiEvent, ScheduledMidiEvent};
 use atri_core::midi::message::MidiMessage;
 use atri_core::midi::note::MidiNote;
+use atri_core::time::beats::Beats;
 use atri_core::time::tempo::{Meter, Tempo};
 use atri_core::time::tempo_map::{SwapLock, TempoMap};
 
@@ -14,6 +15,43 @@ use super::mixer::Mixer;
 use super::processor::Processor;
 use super::route::Route;
 use super::transport::Transport;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomationCurve {
+    Linear,
+    Hold,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutomationPoint {
+    pub beat: f64,
+    pub value: f32,
+    pub curve: AutomationCurve,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AutomationTarget {
+    PluginParameter {
+        track_id: u32,
+        slot_index: usize,
+        param_index: u32,
+    },
+    TrackVolume {
+        track_id: u32,
+    },
+    TrackPan {
+        track_id: u32,
+    },
+    TempoBpm,
+    TimeSignatureNumerator,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutomationLane {
+    pub target: AutomationTarget,
+    pub points: Vec<AutomationPoint>,
+    pub muted: bool,
+}
 
 pub struct Session {
     pub routes: Vec<Arc<Mutex<Route>>>,
@@ -27,6 +65,7 @@ pub struct Session {
     route_bufs: Vec<BufferSet>,
     route_delay_lines: Vec<RouteDelayLine>,
     midi_events: Vec<Vec<ScheduledMidiEvent>>,
+    automation_lanes: Vec<AutomationLane>,
     master_buf: AudioBuffer,
 }
 
@@ -108,6 +147,7 @@ impl Session {
             route_bufs: Vec::new(),
             route_delay_lines: Vec::new(),
             midi_events: Vec::new(),
+            automation_lanes: Vec::new(),
             master_buf: AudioBuffer::new(2, buffer_size),
         }
     }
@@ -250,6 +290,21 @@ impl Session {
         self.with_route(track_id, |route| route.solo = value)
     }
 
+    pub fn set_automation_lanes(&mut self, mut lanes: Vec<AutomationLane>) {
+        for lane in &mut lanes {
+            lane.points.sort_by(|a, b| {
+                a.beat
+                    .partial_cmp(&b.beat)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        self.automation_lanes = lanes;
+    }
+
+    pub fn automation_lane_count(&self) -> usize {
+        self.automation_lanes.len()
+    }
+
     /// Main processing callback. `output` must be interleaved stereo.
     pub fn process(&mut self, output: &mut [f32]) {
         let nframes = output.len() / 2;
@@ -281,6 +336,9 @@ impl Session {
         let max_route_latency = route_latencies.iter().copied().max().unwrap_or(0);
 
         self.master_buf.silence(nframes);
+        if self.transport.is_rolling() {
+            self.apply_automation_lanes(start_sample, end_sample, &tempo_map, nframes);
+        }
 
         for (idx, route_arc) in self.routes.iter().enumerate() {
             let Ok(mut route) = route_arc.lock() else {
@@ -402,6 +460,73 @@ impl Session {
             .collect()
     }
 
+    fn apply_automation_lanes(
+        &mut self,
+        start_sample: i64,
+        end_sample: i64,
+        tempo_map: &TempoMap,
+        nframes: usize,
+    ) {
+        let lanes = self.automation_lanes.clone();
+        for lane in lanes {
+            if lane.muted {
+                continue;
+            }
+            let events = automation_events_in_block(&lane, start_sample, end_sample, tempo_map);
+            if events.is_empty() {
+                continue;
+            }
+            match lane.target {
+                AutomationTarget::PluginParameter {
+                    track_id,
+                    slot_index,
+                    param_index,
+                } => {
+                    let Some(processor) = self.processor_slot(track_id, slot_index) else {
+                        continue;
+                    };
+                    let Ok(mut processor) = processor.lock() else {
+                        continue;
+                    };
+                    for (sample_offset, value, _beat) in events {
+                        let offset = sample_offset.min(nframes.saturating_sub(1));
+                        let _ = processor.set_parameter_at_sample(param_index, offset, value);
+                    }
+                }
+                AutomationTarget::TrackVolume { track_id } => {
+                    for (_sample_offset, value, _beat) in events {
+                        let _ = self.set_track_volume(track_id, value);
+                    }
+                }
+                AutomationTarget::TrackPan { track_id } => {
+                    for (_sample_offset, value, _beat) in events {
+                        let _ = self.set_track_pan(track_id, value);
+                    }
+                }
+                AutomationTarget::TempoBpm => {
+                    for (_sample_offset, value, beat) in events {
+                        let bpm = f64::from(value).clamp(1.0, 999.0);
+                        let at = Beats::from_beats(beat.max(0.0));
+                        self.tempo_map.update(|tempo_map| {
+                            let metric = tempo_map.metric_at_beats(at);
+                            tempo_map.with_tempo(Tempo::new(bpm, metric.tempo.note_type), at)
+                        });
+                    }
+                }
+                AutomationTarget::TimeSignatureNumerator => {
+                    for (_sample_offset, value, beat) in events {
+                        let numerator = value.round().clamp(1.0, 255.0) as u8;
+                        let at = Beats::from_beats(beat.max(0.0));
+                        self.tempo_map.update(|tempo_map| {
+                            let metric = tempo_map.metric_at_beats(at);
+                            tempo_map.with_meter(Meter::new(numerator, metric.meter.denom), at)
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     fn with_route(&mut self, track_id: u32, f: impl FnOnce(&mut Route)) -> bool {
         let Some(index) = self.route_index(track_id) else {
             return false;
@@ -450,6 +575,29 @@ impl Session {
             }
         }
     }
+}
+
+fn automation_events_in_block(
+    lane: &AutomationLane,
+    start_sample: i64,
+    end_sample: i64,
+    tempo_map: &TempoMap,
+) -> Vec<(usize, f32, f64)> {
+    let mut events = Vec::new();
+    for point in &lane.points {
+        let point_sample = tempo_map.sample_at_beats(atri_core::time::beats::Beats::from_beats(
+            point.beat.max(0.0),
+        ));
+        if point_sample < start_sample || point_sample >= end_sample {
+            continue;
+        }
+        events.push((
+            (point_sample - start_sample) as usize,
+            point.value,
+            point.beat,
+        ));
+    }
+    events
 }
 
 fn rescale_sample_position(position: i64, old_sample_rate: u32, new_sample_rate: u32) -> i64 {
@@ -601,6 +749,148 @@ mod tests {
         assert!(route.processors[0].is_some());
         assert!(route.processors[1].is_none());
         assert!(route.processors[2].is_none());
+    }
+
+    #[derive(Default)]
+    struct RecordingParamProcessor {
+        changes: Arc<Mutex<Vec<(u32, usize, f32)>>>,
+    }
+
+    impl Processor for RecordingParamProcessor {
+        fn name(&self) -> &str {
+            "recording-param"
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut BufferSet,
+            _midi: &[ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+        }
+
+        fn activate(&mut self) {}
+        fn deactivate(&mut self) {}
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn input_channels(&self) -> u16 {
+            2
+        }
+        fn output_channels(&self) -> u16 {
+            2
+        }
+
+        fn set_parameter_at_sample(
+            &mut self,
+            index: u32,
+            sample_offset: usize,
+            value: f32,
+        ) -> Result<(), String> {
+            self.changes
+                .lock()
+                .unwrap()
+                .push((index, sample_offset, value));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn automation_lanes_emit_plugin_parameter_changes_at_sample_offsets() {
+        let mut session = Session::new(48_000, 128);
+        let track_id = session.add_track("Automated".to_string());
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let processor = RecordingParamProcessor {
+            changes: Arc::clone(&changes),
+        };
+        assert!(session.set_processor_slot(track_id, 0, Some(Arc::new(Mutex::new(processor)))));
+
+        session.set_automation_lanes(vec![AutomationLane {
+            target: AutomationTarget::PluginParameter {
+                track_id,
+                slot_index: 0,
+                param_index: 3,
+            },
+            points: vec![
+                AutomationPoint {
+                    beat: 0.0,
+                    value: 0.2,
+                    curve: AutomationCurve::Linear,
+                },
+                AutomationPoint {
+                    beat: 8.0 / atri_core::time::beats::PPQN as f64,
+                    value: 0.8,
+                    curve: AutomationCurve::Linear,
+                },
+            ],
+            muted: false,
+        }]);
+
+        session.transport.play();
+        let mut output = vec![0.0; 256];
+        session.process(&mut output);
+
+        assert_eq!(*changes.lock().unwrap(), vec![(3, 0, 0.2), (3, 100, 0.8)]);
+    }
+
+    #[test]
+    fn automation_lanes_update_tempo_and_meter_targets() {
+        let mut session = Session::new(48_000, 128);
+        session.set_automation_lanes(vec![
+            AutomationLane {
+                target: AutomationTarget::TempoBpm,
+                points: vec![AutomationPoint {
+                    beat: 0.0,
+                    value: 132.0,
+                    curve: AutomationCurve::Linear,
+                }],
+                muted: false,
+            },
+            AutomationLane {
+                target: AutomationTarget::TimeSignatureNumerator,
+                points: vec![AutomationPoint {
+                    beat: 0.0,
+                    value: 7.6,
+                    curve: AutomationCurve::Linear,
+                }],
+                muted: false,
+            },
+        ]);
+
+        session.transport.play();
+        let mut output = vec![0.0; 256];
+        session.process(&mut output);
+
+        let tempo_map = session.tempo_map.read();
+        assert_eq!(tempo_map.current_tempo().bpm, 132.0);
+        assert_eq!(tempo_map.current_meter().num, 8);
+        assert_eq!(tempo_map.current_meter().denom, 4);
+    }
+
+    #[test]
+    fn muted_automation_lanes_do_not_emit_changes() {
+        let mut session = Session::new(48_000, 128);
+        let track_id = session.add_track("Muted Automation".to_string());
+        session.set_automation_lanes(vec![AutomationLane {
+            target: AutomationTarget::TrackVolume { track_id },
+            points: vec![AutomationPoint {
+                beat: 0.0,
+                value: 0.25,
+                curve: AutomationCurve::Linear,
+            }],
+            muted: true,
+        }]);
+
+        session.transport.play();
+        let mut output = vec![0.0; 256];
+        session.process(&mut output);
+
+        let route = session.routes[0].lock().unwrap();
+        assert_eq!(route.gain.target, 1.0);
     }
 
     #[test]

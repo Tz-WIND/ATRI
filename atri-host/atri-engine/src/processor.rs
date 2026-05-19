@@ -1,6 +1,9 @@
 use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::ScheduledMidiEvent;
-use atri_core::plugin::{EditorParentHandle, PluginEditorContext, PluginEditorHandle};
+use atri_core::plugin::{
+    CapturedPluginParameterEdit, EditorParentHandle, PluginEditorContext, PluginEditorHandle,
+    PluginParameterInfo,
+};
 
 /// The Processor trait — every signal processing node in a Route chain.
 pub trait Processor: Send + Sync {
@@ -86,8 +89,34 @@ pub trait Processor: Send + Sync {
         Err(format!("{} does not expose plugin parameters", self.name()))
     }
 
+    fn set_parameter_at_sample(
+        &mut self,
+        index: u32,
+        _sample_offset: usize,
+        value: f32,
+    ) -> Result<(), String> {
+        self.set_parameter(index, value)
+    }
+
     fn parameter_count(&mut self) -> u32 {
         0
+    }
+
+    fn parameter_info(&mut self) -> Vec<PluginParameterInfo> {
+        (0..self.parameter_count())
+            .map(|index| PluginParameterInfo {
+                index,
+                param_id: None,
+                name: format!("Parameter {index}"),
+                units: String::new(),
+                value: self.get_parameter(index).unwrap_or(0.0),
+                automatable: true,
+            })
+            .collect()
+    }
+
+    fn drain_captured_parameter_edits(&mut self) -> Vec<CapturedPluginParameterEdit> {
+        Vec::new()
     }
 }
 

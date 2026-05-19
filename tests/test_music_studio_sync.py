@@ -11,6 +11,11 @@ class FakeStudioHost:
     def __init__(self):
         self.is_running = True
         self.commands = []
+        self.sample_rate = 48000
+        self.buffer_size = 256
+        self.audio_engine = "test"
+        self.bit_depth = "f32"
+        self.binary_path = ""
 
     async def send_command(self, cmd, params=None):
         params = params or {}
@@ -18,6 +23,62 @@ class FakeStudioHost:
         if cmd == "get_status":
             return {"tracks": [{"id": 1}, {"id": 2}]}
         return {"type": "ack", "cmd": cmd}
+
+
+class ParameterStudioHost(FakeStudioHost):
+    async def send_command(self, cmd, params=None):
+        params = params or {}
+        self.commands.append((cmd, params))
+        if cmd == "get_status":
+            return {"tracks": [{"id": 4}]}
+        if cmd == "list_plugin_parameters":
+            return {
+                "type": "ack",
+                "cmd": "list_plugin_parameters",
+                "data": {
+                    "track_id": params["track_id"],
+                    "slot_index": params["slot_index"],
+                    "parameters": [
+                        {
+                            "index": 0,
+                            "param_id": 100,
+                            "name": "Cutoff",
+                            "units": "Hz",
+                            "value": 0.42,
+                            "automatable": True,
+                        }
+                    ],
+                    "parameter_count": 1,
+                },
+            }
+        return {"type": "ack", "cmd": cmd}
+
+
+class CapturedParameterStudioHost(ParameterStudioHost):
+    async def send_command(self, cmd, params=None):
+        params = params or {}
+        self.commands.append((cmd, params))
+        if cmd == "poll_captured_plugin_parameters":
+            return {
+                "type": "ack",
+                "cmd": "poll_captured_plugin_parameters",
+                "data": {
+                    "parameters": [
+                        {
+                            "track_id": 4,
+                            "slot_index": 0,
+                            "param_index": 2,
+                            "param_id": 900,
+                            "name": "Resonance",
+                            "units": "%",
+                            "value": 0.77,
+                            "automatable": True,
+                            "plugin_name": "Synth",
+                        }
+                    ]
+                },
+            }
+        return await super().send_command(cmd, params)
 
 
 class AddTrackWithoutDataHost:
@@ -138,6 +199,191 @@ async def test_sync_project_to_host_sends_audio_track_channel_type(monkeypatch):
 
     set_audio = next(params for cmd, params in host.commands if cmd == "set_audio_clips")
     assert set_audio["clips"][0]["channel_type"] == "mono"
+
+
+async def test_sync_project_to_host_skips_automation_routes_and_sends_lanes(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Automation Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+            {
+                "id": 2,
+                "host_track_id": None,
+                "type": "automation",
+                "name": "Lead Volume",
+                "mute": False,
+                "solo": False,
+                "target": {"kind": "track_volume", "track_id": 1, "label": "Lead Volume"},
+                "automation": {
+                    "points": [{"beat": 0, "value": 0.4}, {"beat": 4, "value": 1.0}],
+                },
+                "clips": [],
+                "notes": [],
+                "midi_events": [],
+            },
+            {
+                "id": 3,
+                "host_track_id": None,
+                "type": "automation",
+                "name": "Tempo BPM",
+                "mute": False,
+                "solo": False,
+                "target": {"kind": "tempo_bpm", "label": "Tempo BPM"},
+                "automation": {
+                    "points": [{"beat": 0, "value": 120}, {"beat": 4, "value": 132}],
+                },
+                "clips": [],
+                "notes": [],
+                "midi_events": [],
+            },
+            {
+                "id": 4,
+                "host_track_id": None,
+                "type": "automation",
+                "name": "Time Signature Numerator",
+                "mute": False,
+                "solo": False,
+                "target": {
+                    "kind": "time_signature_numerator",
+                    "label": "Time Signature Numerator",
+                },
+                "automation": {
+                    "points": [{"beat": 0, "value": 4}, {"beat": 8, "value": 7}],
+                },
+                "clips": [],
+                "notes": [],
+                "midi_events": [],
+            },
+        ],
+    }
+
+    await music._sync_project_to_host(project)
+
+    assert ("add_track", {"name": "Lead Volume"}) not in host.commands
+    set_automation = next(params for cmd, params in host.commands if cmd == "set_automation")
+    assert set_automation["lanes"] == [
+        {
+            "target": {"kind": "track_volume", "track_id": 1},
+            "points": [
+                {"beat": 0.0, "value": 0.4, "curve": "linear"},
+                {"beat": 4.0, "value": 1.0, "curve": "linear"},
+            ],
+            "muted": False,
+        },
+        {
+            "target": {"kind": "tempo_bpm"},
+            "points": [
+                {"beat": 0.0, "value": 120.0, "curve": "linear"},
+                {"beat": 4.0, "value": 132.0, "curve": "linear"},
+            ],
+            "muted": False,
+        },
+        {
+            "target": {"kind": "time_signature_numerator"},
+            "points": [
+                {"beat": 0.0, "value": 4.0, "curve": "linear"},
+                {"beat": 8.0, "value": 7.0, "curve": "linear"},
+            ],
+            "muted": False,
+        },
+    ]
+
+
+async def test_plugin_parameter_metadata_route_translates_project_track(monkeypatch):
+    host = ParameterStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+    monkeypatch.setattr(
+        music,
+        "load_project",
+        lambda: {
+            "tracks": [
+                {
+                    "id": 10,
+                    "host_track_id": 4,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "plugin_slots": [{"id": "instrument", "type": "vst3", "name": "Synth"}],
+                }
+            ]
+        },
+    )
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.get("/api/music/studio/tracks/10/plugin/parameters?slot_id=instrument")
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["project_track_id"] == 10
+    assert body["host_track_id"] == 4
+    assert body["slot_id"] == "instrument"
+    assert body["parameters"][0]["name"] == "Cutoff"
+    assert ("list_plugin_parameters", {"track_id": 4, "slot_index": 0}) in host.commands
+
+
+async def test_captured_plugin_parameters_are_learned_without_creating_tracks(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    host = CapturedParameterStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+    music.save_project(
+        {
+            "title": "Learn",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "tracks": [
+                {
+                    "id": 10,
+                    "host_track_id": 4,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "plugin_slots": [{"id": "instrument", "type": "vst3", "name": "Synth"}],
+                }
+            ],
+        }
+    )
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.get("/api/music/studio/plugin/captured-parameters")
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["captured"][0]["target"]["track_id"] == 10
+    assert body["learned_parameters"][0]["name"] == "Lead / Instrument / Synth / Resonance"
+    assert body["learned_parameters"][0]["target"]["param_id"] == 900
+    assert [track["type"] for track in body["project"]["tracks"]] == ["instrument"]
+    assert ("poll_captured_plugin_parameters", {}) in host.commands
 
 
 async def test_studio_create_track_passes_requested_color(monkeypatch):

@@ -15,9 +15,12 @@ from uuid import uuid4
 from quart import Blueprint, Response, jsonify, request
 
 from core.music_project import (
-    create_track as create_project_track,
-)
-from core.music_project import (
+    automation_diff,
+    automation_learned_parameter_rename,
+    automation_learned_parameter_upsert,
+    automation_query,
+    automation_retarget,
+    automation_write,
     default_project,
     find_track,
     import_audio_clip,
@@ -28,6 +31,9 @@ from core.music_project import (
     project_summary,
     save_project,
     set_track_plugin,
+)
+from core.music_project import (
+    create_track as create_project_track,
 )
 from core.music_project import (
     delete_track as delete_project_track,
@@ -582,6 +588,80 @@ def _slot_index(slot_id: str) -> int:
     return 255
 
 
+def _is_automation_track(track: dict[str, Any]) -> bool:
+    return str(track.get("type") or "").strip().lower() == "automation"
+
+
+def _host_track_id_for_project_target(
+    project: dict[str, Any],
+    target_track_id: Any,
+) -> int | None:
+    try:
+        track = find_track(project, int(target_track_id))
+    except (TypeError, ValueError):
+        return None
+    host_track_id = track.get("host_track_id")
+    if host_track_id is None:
+        return None
+    return int(host_track_id)
+
+
+def _automation_lanes_for_host(
+    project: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    lanes: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for track in project.get("tracks", []):
+        if not isinstance(track, dict) or not _is_automation_track(track):
+            continue
+        target_payload = track.get("target")
+        target: dict[str, Any] = target_payload if isinstance(target_payload, dict) else {}
+        kind = str(target.get("kind") or "")
+        host_target: dict[str, Any]
+        if kind in {"tempo_bpm", "time_signature_numerator"}:
+            host_target = {"kind": kind}
+        else:
+            host_track_id = _host_track_id_for_project_target(project, target.get("track_id"))
+            if host_track_id is None:
+                skipped.append(
+                    {"track_id": track.get("id"), "reason": "target track is not synced"}
+                )
+                continue
+            if kind == "plugin_parameter":
+                host_target = {
+                    "kind": "plugin_parameter",
+                    "track_id": host_track_id,
+                    "slot_index": _slot_index(str(target.get("slot_id") or "instrument")),
+                    "param_index": int(target.get("param_index", 0) or 0),
+                }
+            elif kind in {"track_volume", "track_pan"}:
+                host_target = {"kind": kind, "track_id": host_track_id}
+            else:
+                skipped.append(
+                    {"track_id": track.get("id"), "reason": "unsupported automation target"}
+                )
+                continue
+        points = []
+        for point in track.get("automation", {}).get("points", []):
+            if not isinstance(point, dict):
+                continue
+            points.append(
+                {
+                    "beat": float(point.get("beat", 0.0) or 0.0),
+                    "value": float(point.get("value", 0.0) or 0.0),
+                    "curve": str(point.get("curve") or "linear"),
+                }
+            )
+        lanes.append(
+            {
+                "target": host_target,
+                "points": points,
+                "muted": bool(track.get("mute", False)),
+            }
+        )
+    return lanes, skipped
+
+
 async def _load_track_slot(
     host,
     host_track_id: int,
@@ -824,6 +904,8 @@ async def _sync_project_to_host(
     for track in project.get("tracks", []):
         if not isinstance(track, dict):
             continue
+        if _is_automation_track(track):
+            continue
         project_host_track_id = track.get("host_track_id")
         if project_host_track_id is not None:
             project_host_track_ids.add(int(project_host_track_id))
@@ -844,6 +926,11 @@ async def _sync_project_to_host(
 
     project_changed = False
     for track in project.get("tracks", []):
+        if not isinstance(track, dict):
+            continue
+        if _is_automation_track(track):
+            track["host_track_id"] = None
+            continue
         host_track_id = track.get("host_track_id")
         if host_track_id is None or int(host_track_id) not in host_track_ids:
             response = await host.send_command("add_track", {"name": track.get("name", "Track")})
@@ -937,6 +1024,14 @@ async def _sync_project_to_host(
             )
         )
 
+    automation_lanes, skipped_automation = _automation_lanes_for_host(project)
+    commands.append(
+        await host.send_command(
+            "set_automation",
+            {"lanes": automation_lanes},
+        )
+    )
+
     if project_changed:
         project = save_project(project)
     if broadcast:
@@ -945,6 +1040,10 @@ async def _sync_project_to_host(
     return {
         "host_running": True,
         "commands": commands,
+        "automation": {
+            "lanes": len(automation_lanes),
+            "skipped": skipped_automation,
+        },
         "project": project,
         "summary": project_summary(project),
     }
@@ -1045,6 +1144,229 @@ async def studio_open_plugin_editor(track_id: int):
     return jsonify(result), status
 
 
+@bp.route("/studio/tracks/<int:track_id>/plugin/parameters", methods=["GET"])
+async def studio_plugin_parameters(track_id: int):
+    slot_id = str(request.args.get("slot_id") or "instrument")
+    project = load_project()
+    try:
+        track = find_track(project, track_id)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e), "host": _host_snapshot()}), 404
+
+    host = _host_manager()
+    if not host.is_running:
+        return (
+            jsonify({"ok": False, "error": "host process not running", "host": _host_snapshot()}),
+            409,
+        )
+    if track.get("host_track_id") is None:
+        sync = await _sync_project_to_host(project, broadcast=True)
+        project = sync.get("project", project)
+        track = find_track(project, track_id)
+    host_track_id = track.get("host_track_id")
+    if host_track_id is None:
+        return (
+            jsonify(
+                {"ok": False, "error": "track is not synced to the host", "host": _host_snapshot()}
+            ),
+            409,
+        )
+
+    slot_index = _slot_index(slot_id)
+    response = await host.send_command(
+        "list_plugin_parameters",
+        {"track_id": int(host_track_id), "slot_index": slot_index},
+    )
+    ok = response.get("type") != "error"
+    status = 200 if ok else 409
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    return (
+        jsonify(
+            {
+                "ok": ok,
+                "error": response.get("message") if not ok else None,
+                "project_track_id": track_id,
+                "host_track_id": int(host_track_id),
+                "slot_id": slot_id,
+                "slot_index": slot_index,
+                "plugin": _track_slot(track, slot_id),
+                "parameters": data.get("parameters") or [],
+                "parameter_count": data.get("parameter_count", 0),
+                "response": response,
+                "host": _host_snapshot(),
+            }
+        ),
+        status,
+    )
+
+
+@bp.route("/studio/plugin/parameter", methods=["POST"])
+async def studio_set_plugin_parameter():
+    data = await _json_payload()
+    track_id = int(data.get("track_id", 1))
+    slot_id = str(data.get("slot_id") or "instrument")
+    param_index = int(data.get("param_index", data.get("index", 0)) or 0)
+    value = float(data.get("value", 0.0) or 0.0)
+    project = load_project()
+    try:
+        track = find_track(project, track_id)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e), "host": _host_snapshot()}), 404
+    host = _host_manager()
+    if not host.is_running:
+        return (
+            jsonify({"ok": False, "error": "host process not running", "host": _host_snapshot()}),
+            409,
+        )
+    if track.get("host_track_id") is None:
+        sync = await _sync_project_to_host(project, broadcast=True)
+        project = sync.get("project", project)
+        track = find_track(project, track_id)
+    host_track_id = track.get("host_track_id")
+    if host_track_id is None:
+        return (
+            jsonify(
+                {"ok": False, "error": "track is not synced to the host", "host": _host_snapshot()}
+            ),
+            409,
+        )
+    slot_index = _slot_index(slot_id)
+    response = await host.send_command(
+        "set_plugin_parameter",
+        {
+            "track_id": int(host_track_id),
+            "slot_index": slot_index,
+            "index": param_index,
+            "value": value,
+        },
+    )
+    ok = response.get("type") != "error"
+    return (
+        jsonify(
+            {
+                "ok": ok,
+                "error": response.get("message") if not ok else None,
+                "response": response,
+                "host": _host_snapshot(),
+            }
+        ),
+        200 if ok else 409,
+    )
+
+
+def _slot_id_from_index(slot_index: int) -> str:
+    if slot_index <= 0:
+        return "instrument"
+    return f"insert_{slot_index}"
+
+
+def _captured_parameter_for_project(
+    project: dict[str, Any],
+    captured: dict[str, Any],
+) -> dict[str, Any] | None:
+    host_track_id_raw = captured.get("track_id")
+    if host_track_id_raw is None or host_track_id_raw == "":
+        return None
+    try:
+        host_track_id = int(str(host_track_id_raw))
+    except (TypeError, ValueError):
+        return None
+    project_track = next(
+        (
+            track
+            for track in project.get("tracks", [])
+            if isinstance(track, dict)
+            and track.get("host_track_id") is not None
+            and int(track.get("host_track_id", -1)) == host_track_id
+        ),
+        None,
+    )
+    if not project_track:
+        return None
+    slot_index = int(captured.get("slot_index", 0) or 0)
+    slot_id = _slot_id_from_index(slot_index)
+    slot = _track_slot(project_track, slot_id)
+    param_index = int(captured.get("param_index", captured.get("index", 0)) or 0)
+    param_name = str(captured.get("name") or f"Parameter {param_index}")
+    target: dict[str, Any] = {
+        "kind": "plugin_parameter",
+        "track_id": int(project_track["id"]),
+        "slot_id": slot_id,
+        "param_index": param_index,
+        "label": param_name,
+    }
+    param_id = captured.get("param_id")
+    if param_id is not None and param_id != "":
+        target["param_id"] = int(str(param_id))
+    return {
+        "target": target,
+        "source": {
+            "track_name": str(project_track.get("name") or f"Track {project_track['id']}"),
+            "slot_id": slot_id,
+            "slot_label": "Instrument" if slot_id == "instrument" else f"Insert {slot_index}",
+            "plugin_name": str(captured.get("plugin_name") or slot.get("name") or "Plugin"),
+            "param_name": param_name,
+            "units": str(captured.get("units") or ""),
+        },
+        "value": float(captured.get("value", 0.0) or 0.0),
+    }
+
+
+@bp.route("/studio/plugin/captured-parameters", methods=["GET"])
+async def studio_captured_plugin_parameters():
+    project = load_project()
+    captured_for_project: list[dict[str, Any]] = []
+    host = _host_manager()
+    if host.is_running:
+        response = await host.send_command("poll_captured_plugin_parameters")
+        if response.get("type") == "error":
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": response.get("message"),
+                        "captured": [],
+                        "learned_parameters": project.get("automation_learned_parameters", []),
+                        "project": project,
+                        "host": _host_snapshot(),
+                    }
+                ),
+                409,
+            )
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        for captured in data.get("parameters") or []:
+            if not isinstance(captured, dict):
+                continue
+            learned_payload = _captured_parameter_for_project(project, captured)
+            if not learned_payload:
+                continue
+            project, learned = automation_learned_parameter_upsert(learned_payload)
+            captured_for_project.append(learned)
+    return jsonify(
+        {
+            "ok": True,
+            "captured": captured_for_project,
+            "learned_parameters": project.get("automation_learned_parameters", []),
+            "project": project,
+            "host": _host_snapshot(),
+        }
+    )
+
+
+@bp.route("/studio/plugin/learned-parameters/<parameter_id>", methods=["PATCH"])
+async def studio_rename_learned_plugin_parameter(parameter_id: str):
+    data = await _json_payload()
+    try:
+        project, learned = automation_learned_parameter_rename(
+            parameter_id,
+            str(data.get("name") or ""),
+        )
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    await _broadcast_project(project)
+    return jsonify({"ok": True, "project": project, "learned_parameter": learned})
+
+
 @bp.route("/studio/plugins", methods=["GET", "POST"])
 async def studio_plugins():
     host = _host_manager()
@@ -1134,6 +1456,68 @@ async def studio_midi_diff():
     data = await _json_payload()
     try:
         project, summary = midi_diff(int(data.get("track_id", 1)), data.get("operations") or [])
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/automation", methods=["GET"])
+async def studio_automation_query():
+    include_points = str(request.args.get("include_points") or "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    track_id_arg = request.args.get("track_id")
+    track_id = int(track_id_arg) if track_id_arg else None
+    return jsonify(
+        {
+            "ok": True,
+            "automation": automation_query(track_id=track_id, include_points=include_points),
+        }
+    )
+
+
+@bp.route("/studio/automation", methods=["POST"])
+async def studio_automation_write():
+    data = await _json_payload()
+    target_payload = data.get("target")
+    target: dict[str, Any] = target_payload if isinstance(target_payload, dict) else {}
+    raw_track_id = data.get("track_id")
+    track_id = None if raw_track_id in (None, "") else int(str(raw_track_id))
+    try:
+        project, summary = automation_write(
+            target,
+            points=data.get("points") if isinstance(data.get("points"), list) else [],
+            name=str(data.get("name") or ""),
+            track_id=track_id,
+            color=str(data.get("color") or "") or None,
+        )
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/automation/<int:track_id>", methods=["PATCH"])
+async def studio_automation_diff(track_id: int):
+    data = await _json_payload()
+    try:
+        project, summary = automation_diff(track_id, data.get("operations") or [])
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/automation/<int:track_id>/retarget", methods=["POST"])
+async def studio_automation_retarget(track_id: int):
+    data = await _json_payload()
+    target_payload = data.get("target")
+    target: dict[str, Any] = target_payload if isinstance(target_payload, dict) else {}
+    try:
+        project, summary = automation_retarget(track_id, target)
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)

@@ -76,6 +76,13 @@ def test_registered_tools_expose_capability_metadata(tmp_path):
     assert tools["novelai_image"].metadata()["writes_files"] is False
     assert tools["agent_result"].metadata()["read_only"] is True
     assert tools["set_agent_mode"].metadata()["capability"] == "agent.mode"
+    assert tools["vst_param_query"].metadata()["capability"] == "music.vst.read"
+    assert tools["vst_param_query"].metadata()["read_only"] is True
+    assert tools["vst_param_set"].metadata()["capability"] == "music.vst.write"
+    assert tools["automation_query"].metadata()["capability"] == "music.automation.read"
+    assert tools["automation_write"].metadata()["capability"] == "music.automation.write"
+    assert tools["automation_diff"].metadata()["capability"] == "music.automation.write"
+    assert tools["automation_retarget"].metadata()["capability"] == "music.automation.write"
 
     assert all(tool.metadata()["capability"] != "general" for tool in tools.values())
 

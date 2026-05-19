@@ -1,6 +1,14 @@
 """Tool registry with workspace-constrained instances."""
 
 from .agent_tool import AgentResultTool, AgentTool
+from .automation import (
+    AutomationDiffTool,
+    AutomationQueryTool,
+    AutomationRetargetTool,
+    AutomationWriteTool,
+    VstParamQueryTool,
+    VstParamSetTool,
+)
 from .base import Tool
 from .bash import BashTool
 from .edit import EditFileTool
@@ -60,6 +68,12 @@ def create_tools(
         MidiBatchEditTool(workspace),
         MidiQueryTool(workspace),
         MidiInspectTool(workspace),
+        VstParamQueryTool(workspace),
+        VstParamSetTool(workspace),
+        AutomationQueryTool(workspace),
+        AutomationWriteTool(workspace),
+        AutomationDiffTool(workspace),
+        AutomationRetargetTool(workspace),
         WebSearchTool(workspace),
         WebFetchTool(workspace),
     ]

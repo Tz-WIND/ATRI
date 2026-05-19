@@ -55,6 +55,9 @@ MIDI_CURVE_EVENT_TYPES = {
     "polyphonic_key_pressure",
 }
 
+TRACK_AUTOMATION_TARGET_KINDS = {"plugin_parameter", "track_volume", "track_pan"}
+GLOBAL_AUTOMATION_TARGET_KINDS = {"tempo_bpm", "time_signature_numerator"}
+
 MIDI_CURVE_MAX_POINTS = 4096
 METER_DENOMINATORS = {2, 4, 8, 16, 32}
 MAX_METER_NUMERATOR = 255
@@ -73,6 +76,7 @@ def default_project() -> dict[str, Any]:
         "time_signature": [4, 4],
         "length_beats": 16.0,
         "updated_at": _now_iso(),
+        "automation_learned_parameters": [],
         "tracks": [
             {
                 "id": 1,
@@ -155,6 +159,9 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         "time_signature": _normalize_meter(project.get("time_signature")),
         "length_beats": _positive_float(project.get("length_beats"), base["length_beats"]),
         "updated_at": str(project.get("updated_at") or _now_iso()),
+        "automation_learned_parameters": _normalize_learned_parameters(
+            project.get("automation_learned_parameters")
+        ),
         "tracks": [],
     }
 
@@ -174,44 +181,69 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         next_id = max(next_id, track_id + 1)
 
         track_color = _track_color(raw_track.get("color"), index)
-        legacy_notes = [
-            _normalize_note(note) for note in raw_track.get("notes", []) if isinstance(note, dict)
-        ]
-        legacy_notes.sort(key=lambda note: (note["start"], note["pitch"], note["duration"]))
-        clips = _normalize_clips(raw_track, legacy_notes=legacy_notes, track_color=track_color)
-        notes = _flatten_clip_notes(clips)
-        midi_events = _flatten_clip_midi_events(clips)
-        track_type = _normalize_track_type(raw_track, clips=clips)
-        normalized["tracks"].append(
-            {
-                "id": track_id,
-                "host_track_id": _nullable_non_negative_int(raw_track.get("host_track_id")),
-                "type": track_type,
-                "channel_type": _normalize_track_channel_type(
-                    raw_track.get("channel_type"),
-                    track_type=track_type,
-                ),
-                "name": str(raw_track.get("name") or f"Track {track_id}"),
-                "color": track_color,
-                "volume": _bounded_float(raw_track.get("volume"), 0.8, 0.0, 2.0),
-                "pan": _bounded_float(raw_track.get("pan"), 0.0, -1.0, 1.0),
-                "mute": bool(raw_track.get("mute", False)),
-                "solo": bool(raw_track.get("solo", False)),
-                "instrument": str(
-                    raw_track.get("instrument")
-                    or ("Audio Track" if track_type == "audio" else "ATRI Basic Synth")
-                ),
-                "plugin_slots": _normalize_plugin_slots(raw_track, track_type=track_type),
-                "clips": clips,
-                "notes": notes,
-                "midi_events": midi_events,
-            }
+        declared_type = (
+            str(raw_track.get("type", raw_track.get("track_type", "")) or "").strip().lower()
         )
+        if declared_type == "automation":
+            clips: list[dict[str, Any]] = []
+            notes: list[dict[str, Any]] = []
+            midi_events: list[dict[str, Any]] = []
+            track_type = "automation"
+        else:
+            legacy_notes = [
+                _normalize_note(note)
+                for note in raw_track.get("notes", [])
+                if isinstance(note, dict)
+            ]
+            legacy_notes.sort(key=lambda note: (note["start"], note["pitch"], note["duration"]))
+            clips = _normalize_clips(raw_track, legacy_notes=legacy_notes, track_color=track_color)
+            notes = _flatten_clip_notes(clips)
+            midi_events = _flatten_clip_midi_events(clips)
+            track_type = _normalize_track_type(raw_track, clips=clips)
+
+        normalized_track: dict[str, Any] = {
+            "id": track_id,
+            "host_track_id": None
+            if track_type == "automation"
+            else _nullable_non_negative_int(raw_track.get("host_track_id")),
+            "type": track_type,
+            "channel_type": _normalize_track_channel_type(
+                raw_track.get("channel_type"),
+                track_type=track_type,
+            ),
+            "name": str(raw_track.get("name") or f"Track {track_id}"),
+            "color": track_color,
+            "volume": _bounded_float(raw_track.get("volume"), 0.8, 0.0, 2.0),
+            "pan": _bounded_float(raw_track.get("pan"), 0.0, -1.0, 1.0),
+            "mute": bool(raw_track.get("mute", False)),
+            "solo": bool(raw_track.get("solo", False)),
+            "instrument": str(
+                raw_track.get("instrument")
+                or (
+                    "Automation"
+                    if track_type == "automation"
+                    else "Audio Track"
+                    if track_type == "audio"
+                    else "ATRI Basic Synth"
+                )
+            ),
+            "plugin_slots": _normalize_plugin_slots(raw_track, track_type=track_type),
+            "clips": clips,
+            "notes": notes,
+            "midi_events": midi_events,
+        }
+        if track_type == "automation":
+            normalized_track["target"] = _normalize_automation_target(raw_track.get("target"))
+            normalized_track["automation"] = _normalize_automation_payload(
+                raw_track.get("automation"),
+                target=normalized_track["target"],
+            )
+        normalized["tracks"].append(normalized_track)
 
     if not normalized["tracks"]:
         normalized["tracks"] = deepcopy(base["tracks"])
 
-    max_end = max(
+    max_clip_end = max(
         (
             clip["start"] + clip["duration"]
             for track in normalized["tracks"]
@@ -219,6 +251,17 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         ),
         default=0.0,
     )
+    max_automation_end = max(
+        (
+            point["beat"]
+            for track in normalized["tracks"]
+            if track.get("type") == "automation"
+            for point in track.get("automation", {}).get("points", [])
+            if isinstance(point, dict)
+        ),
+        default=0.0,
+    )
+    max_end = max(max_clip_end, max_automation_end)
     normalized["length_beats"] = max(normalized["length_beats"], _ceil_to_bar(max_end))
     return normalized
 
@@ -388,8 +431,8 @@ def set_track_plugin(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     project = load_project()
     track = find_track(project, track_id)
-    if track.get("type") == "audio":
-        raise ValueError("audio tracks do not support instrument plugins")
+    if track.get("type") != "instrument":
+        raise ValueError("only instrument tracks support instrument plugins")
     slot = _normalize_plugin_slot(plugin, slot_id=slot_id)
     slots = [s for s in track.get("plugin_slots", []) if s.get("id") != slot["id"]]
     track["plugin_slots"] = _sort_plugin_slots([slot, *slots])
@@ -397,6 +440,224 @@ def set_track_plugin(
         track["instrument"] = slot["name"]
     project = save_project(project)
     return project, find_track(project, track_id)
+
+
+def automation_write(
+    target: dict[str, Any],
+    *,
+    points: list[dict[str, Any]] | None = None,
+    name: str = "",
+    track_id: int | None = None,
+    color: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Create or replace a first-class project automation track."""
+    project = load_project()
+    normalized_target = _normalize_automation_target(target)
+    automation = _normalize_automation_payload({"points": points or []}, target=normalized_target)
+    created = track_id is None
+
+    if track_id is None:
+        existing = [int(track["id"]) for track in project["tracks"]]
+        track_id = max(existing, default=0) + 1
+        track = _new_automation_track(
+            track_id,
+            target=normalized_target,
+            automation=automation,
+            name=name,
+            color=color,
+        )
+        project["tracks"].append(track)
+    else:
+        track = find_track(project, track_id)
+        if track.get("type") != "automation":
+            raise ValueError(f"track {track_id} is not an automation track")
+        track["target"] = normalized_target
+        track["automation"] = automation
+        if name:
+            track["name"] = str(name).strip() or track["name"]
+        if color is not None:
+            track["color"] = _track_color(color, int(track["id"]) - 1)
+
+    project = save_project(project)
+    saved_track = find_track(project, track_id)
+    summary = {
+        "track_id": int(saved_track["id"]),
+        "created": created,
+        "target": saved_track["target"],
+        "points": len(saved_track["automation"]["points"]),
+        "target_status": _automation_target_status(project, saved_track["target"]),
+    }
+    return project, summary
+
+
+def automation_diff(
+    track_id: int,
+    operations: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply atomic edits to an existing automation track."""
+    project = load_project()
+    track = find_track(project, track_id)
+    if track.get("type") != "automation":
+        raise ValueError(f"track {track_id} is not an automation track")
+
+    target = _normalize_automation_target(track.get("target"))
+    automation = _normalize_automation_payload(track.get("automation"), target=target)
+    points = list(automation["points"])
+    changed = {"added": 0, "updated": 0, "deleted": 0}
+
+    for raw_op in operations:
+        if not isinstance(raw_op, dict):
+            continue
+        op = dict(raw_op)
+        op_type = str(op.get("op") or op.get("type") or "").strip().lower()
+        if op_type in {"add_point", "add"}:
+            point = _normalize_automation_point(op, target=target)
+            points = _upsert_automation_point(points, point)
+            changed["added"] += 1
+        elif op_type in {"update_point", "update"}:
+            point = _normalize_automation_point(op, target=target)
+            points, updated = _update_automation_point(points, point)
+            changed["updated"] += updated
+        elif op_type in {"delete_point", "delete"}:
+            points, deleted = _delete_automation_point(points, op)
+            changed["deleted"] += deleted
+        elif op_type in {"replace_range", "replace"}:
+            start = _non_negative_float(op.get("start"), 0.0)
+            end = _non_negative_float(op.get("end"), start)
+            lo, hi = min(start, end), max(start, end)
+            kept = [point for point in points if not lo - 1e-6 <= point["beat"] <= hi + 1e-6]
+            changed["deleted"] += len(points) - len(kept)
+            points = kept
+            for raw_point in op.get("points") or []:
+                if not isinstance(raw_point, dict):
+                    continue
+                point = _normalize_automation_point(raw_point, target=target)
+                points = _upsert_automation_point(points, point)
+                changed["added"] += 1
+        else:
+            raise ValueError(f"unsupported automation diff operation: {op_type}")
+
+    automation["points"] = _normalize_automation_points(points, target=target)
+    track["target"] = target
+    track["automation"] = automation
+    project = save_project(project)
+    summary = {
+        "track_id": int(track["id"]),
+        "operations": len(operations),
+        **changed,
+    }
+    return project, summary
+
+
+def automation_retarget(
+    track_id: int,
+    target: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    project = load_project()
+    track = find_track(project, track_id)
+    if track.get("type") != "automation":
+        raise ValueError(f"track {track_id} is not an automation track")
+    normalized_target = _normalize_automation_target(target)
+    track["target"] = normalized_target
+    track["automation"] = _normalize_automation_payload(
+        track.get("automation"),
+        target=normalized_target,
+    )
+    project = save_project(project)
+    saved_track = find_track(project, track_id)
+    summary = {
+        "track_id": int(saved_track["id"]),
+        "target": saved_track["target"],
+        "target_status": _automation_target_status(project, saved_track["target"]),
+    }
+    return project, summary
+
+
+def automation_query(
+    *,
+    track_id: int | None = None,
+    include_points: bool = False,
+) -> dict[str, Any]:
+    project = load_project()
+    automation_tracks = [
+        track
+        for track in project.get("tracks", [])
+        if isinstance(track, dict)
+        and track.get("type") == "automation"
+        and (track_id is None or int(track.get("id", -1)) == int(track_id))
+    ]
+    rows = [
+        _automation_track_summary(project, track, include_points=include_points)
+        for track in automation_tracks
+    ]
+    return {
+        "automation_track_count": len(rows),
+        "tracks": rows,
+    }
+
+
+def automation_learned_parameters_query() -> dict[str, Any]:
+    project = load_project()
+    return {
+        "learned_parameter_count": len(project.get("automation_learned_parameters", [])),
+        "items": deepcopy(project.get("automation_learned_parameters", [])),
+    }
+
+
+def automation_learned_parameter_upsert(
+    parameter: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    project = load_project()
+    learned = _normalize_learned_parameter(parameter)
+    items = list(project.get("automation_learned_parameters", []))
+    existing_index = next(
+        (index for index, item in enumerate(items) if item.get("id") == learned["id"]),
+        None,
+    )
+    if existing_index is None:
+        items.append(learned)
+        saved_item = learned
+        created = True
+    else:
+        previous = items[existing_index]
+        saved_item = {
+            **learned,
+            "name": str(previous.get("name") or learned["name"]),
+            "created_at": str(previous.get("created_at") or learned["created_at"]),
+        }
+        items[existing_index] = saved_item
+        created = False
+    project["automation_learned_parameters"] = items
+    project = save_project(project)
+    saved = next(
+        item
+        for item in project.get("automation_learned_parameters", [])
+        if item["id"] == saved_item["id"]
+    )
+    return project, {**deepcopy(saved), "created": created}
+
+
+def automation_learned_parameter_rename(
+    parameter_id: str,
+    name: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    project = load_project()
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("learned parameter name is required")
+    items = list(project.get("automation_learned_parameters", []))
+    for item in items:
+        if item.get("id") == parameter_id:
+            item["name"] = clean_name
+            project["automation_learned_parameters"] = items
+            project = save_project(project)
+            saved = next(
+                saved_item
+                for saved_item in project.get("automation_learned_parameters", [])
+                if saved_item["id"] == parameter_id
+            )
+            return project, deepcopy(saved)
+    raise ValueError(f"learned parameter {parameter_id} not found")
 
 
 def midi_write(
@@ -956,6 +1217,306 @@ def _flatten_clip_midi_events(clips: list[dict[str, Any]]) -> list[dict[str, Any
             )
     events.sort(key=_midi_event_sort_key)
     return events
+
+
+def _new_automation_track(
+    track_id: int,
+    *,
+    target: dict[str, Any],
+    automation: dict[str, Any],
+    name: str = "",
+    color: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": track_id,
+        "host_track_id": None,
+        "type": "automation",
+        "channel_type": "multichannel",
+        "name": str(name or target.get("label") or f"Automation {track_id}").strip()
+        or f"Automation {track_id}",
+        "color": _track_color(color, track_id - 1),
+        "volume": 0.8,
+        "pan": 0.0,
+        "mute": False,
+        "solo": False,
+        "instrument": "Automation",
+        "plugin_slots": [],
+        "target": target,
+        "automation": automation,
+        "clips": [],
+        "notes": [],
+        "midi_events": [],
+    }
+
+
+def _normalize_automation_target(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    kind = str(raw.get("kind") or raw.get("type") or "track_volume").strip().lower()
+    if kind not in {
+        *TRACK_AUTOMATION_TARGET_KINDS,
+        *GLOBAL_AUTOMATION_TARGET_KINDS,
+        "unassigned",
+    }:
+        kind = "track_volume"
+    target: dict[str, Any] = {"kind": kind}
+    if kind in TRACK_AUTOMATION_TARGET_KINDS:
+        target["track_id"] = _positive_int(raw.get("track_id"), 1)
+    if kind == "plugin_parameter":
+        target["slot_id"] = str(raw.get("slot_id") or "instrument").strip() or "instrument"
+        target["param_index"] = _bounded_int(raw.get("param_index"), 0, 0, 2**31 - 1)
+        if raw.get("param_id") not in (None, ""):
+            target["param_id"] = _bounded_int(raw.get("param_id"), 0, 0, 2**31 - 1)
+    label = str(raw.get("label") or raw.get("name") or _automation_target_default_label(target))
+    if label:
+        target["label"] = label
+    return target
+
+
+def _automation_target_default_label(target: dict[str, Any]) -> str:
+    kind = target.get("kind")
+    if kind == "unassigned":
+        return "Unassigned"
+    if kind == "tempo_bpm":
+        return "Tempo BPM"
+    if kind == "time_signature_numerator":
+        return "Time Signature Numerator"
+    if kind == "track_pan":
+        return "Pan"
+    if kind == "plugin_parameter":
+        return f"Parameter {target.get('param_index', 0)}"
+    return "Volume"
+
+
+def _automation_bounds_for_target(target: dict[str, Any]) -> tuple[float, float, float]:
+    kind = target.get("kind")
+    if kind == "tempo_bpm":
+        return (1.0, 999.0, 120.0)
+    if kind == "time_signature_numerator":
+        return (1.0, float(MAX_METER_NUMERATOR), 4.0)
+    if kind == "track_pan":
+        return (-1.0, 1.0, 0.0)
+    if kind == "track_volume":
+        return (0.0, 2.0, 0.8)
+    return (0.0, 1.0, 0.0)
+
+
+def _normalize_automation_payload(value: Any, *, target: dict[str, Any]) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    minimum, maximum, default = _automation_bounds_for_target(target)
+    value_min = _bounded_float(raw.get("value_min"), minimum, minimum, maximum)
+    value_max = _bounded_float(raw.get("value_max"), maximum, minimum, maximum)
+    if value_max < value_min:
+        value_min, value_max = value_max, value_min
+    default_value = _bounded_float(raw.get("default_value"), default, value_min, value_max)
+    payload = {
+        "value_min": value_min,
+        "value_max": value_max,
+        "default_value": default_value,
+        "points": _normalize_automation_points(raw.get("points") or [], target=target),
+    }
+    return payload
+
+
+def _normalize_automation_points(value: Any, *, target: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_points = value if isinstance(value, list) else []
+    points: list[dict[str, Any]] = []
+    for raw_point in raw_points:
+        if isinstance(raw_point, dict):
+            points.append(_normalize_automation_point(raw_point, target=target))
+    by_beat: dict[float, dict[str, Any]] = {}
+    for point in points:
+        by_beat[round(float(point["beat"]), 6)] = point
+    return [by_beat[beat] for beat in sorted(by_beat)]
+
+
+def _normalize_automation_point(value: dict[str, Any], *, target: dict[str, Any]) -> dict[str, Any]:
+    minimum, maximum, default = _automation_bounds_for_target(target)
+    beat = _non_negative_float(_first_present(value, ("beat", "start"), default=0.0), 0.0)
+    point_id = str(value.get("id") or f"pt_{uuid4().hex[:10]}")
+    curve = str(value.get("curve") or "linear").strip().lower()
+    if curve not in {"linear", "hold"}:
+        curve = "linear"
+    point_value = _bounded_float(value.get("value"), default, minimum, maximum)
+    if target.get("kind") == "time_signature_numerator":
+        point_value = float(round(point_value))
+    return {
+        "id": point_id,
+        "beat": round(beat, 6),
+        "value": point_value,
+        "curve": curve,
+    }
+
+
+def _upsert_automation_point(
+    points: list[dict[str, Any]],
+    point: dict[str, Any],
+) -> list[dict[str, Any]]:
+    kept = [item for item in points if abs(float(item["beat"]) - float(point["beat"])) > 1e-6]
+    return sorted([*kept, point], key=lambda item: float(item["beat"]))
+
+
+def _update_automation_point(
+    points: list[dict[str, Any]],
+    point: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    updated = 0
+    next_points = []
+    for existing in points:
+        same_id = point.get("id") and str(existing.get("id")) == str(point.get("id"))
+        same_beat = abs(float(existing["beat"]) - float(point["beat"])) <= 1e-6
+        if same_id or same_beat:
+            next_points.append({**existing, **point, "id": existing.get("id") or point["id"]})
+            updated += 1
+        else:
+            next_points.append(existing)
+    if not updated:
+        next_points.append(point)
+    return (
+        sorted(next_points, key=lambda item: float(item["beat"])),
+        updated if updated else 1,
+    )
+
+
+def _delete_automation_point(
+    points: list[dict[str, Any]],
+    op: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    before = len(points)
+    point_id = str(op.get("id") or op.get("point_id") or "")
+    has_beat = "beat" in op or "start" in op
+    beat = _non_negative_float(_first_present(op, ("beat", "start"), default=0.0), 0.0)
+    kept = []
+    for point in points:
+        if point_id and str(point.get("id")) == point_id:
+            continue
+        if has_beat and abs(float(point["beat"]) - beat) <= 1e-6:
+            continue
+        kept.append(point)
+    return kept, before - len(kept)
+
+
+def _automation_target_status(project: dict[str, Any], target: dict[str, Any]) -> str:
+    if target.get("kind") == "unassigned":
+        return "unassigned"
+    if target.get("kind") in GLOBAL_AUTOMATION_TARGET_KINDS:
+        return "valid"
+    try:
+        target_track = find_track(project, int(target.get("track_id", -1)))
+    except (TypeError, ValueError):
+        return "missing"
+    kind = target.get("kind")
+    if kind in {"track_volume", "track_pan"}:
+        return "valid"
+    if kind == "plugin_parameter":
+        slot_id = str(target.get("slot_id") or "instrument")
+        slots = target_track.get("plugin_slots") if isinstance(target_track, dict) else []
+        if not isinstance(slots, list):
+            slots = []
+        if slot_id == "instrument" and not slots:
+            return "unvalidated"
+        slot = next(
+            (item for item in slots if isinstance(item, dict) and item.get("id") == slot_id),
+            None,
+        )
+        if not slot or slot.get("type") == "empty":
+            return "missing"
+        return "unvalidated"
+    return "missing"
+
+
+def _automation_track_summary(
+    project: dict[str, Any],
+    track: dict[str, Any],
+    *,
+    include_points: bool,
+) -> dict[str, Any]:
+    points = track.get("automation", {}).get("points", [])
+    beats = [float(point.get("beat", 0.0)) for point in points if isinstance(point, dict)]
+    values = [float(point.get("value", 0.0)) for point in points if isinstance(point, dict)]
+    row = {
+        "id": track["id"],
+        "name": track["name"],
+        "color": track["color"],
+        "mute": track["mute"],
+        "target": track.get("target"),
+        "target_status": _automation_target_status(project, track.get("target") or {}),
+        "point_count": len(points),
+        "beat_range": [min(beats), max(beats)] if beats else None,
+        "value_range": [min(values), max(values)] if values else None,
+    }
+    if include_points:
+        row["points"] = points
+    return row
+
+
+def _normalize_learned_parameters(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    learned: dict[str, dict[str, Any]] = {}
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            item = _normalize_learned_parameter(raw)
+        except ValueError:
+            continue
+        learned[item["id"]] = item
+    return [learned[key] for key in sorted(learned)]
+
+
+def _normalize_learned_parameter(value: dict[str, Any]) -> dict[str, Any]:
+    target = _normalize_automation_target(value.get("target"))
+    if target.get("kind") != "plugin_parameter":
+        raise ValueError("learned automation parameter target must be a plugin parameter")
+    raw_source = value.get("source")
+    source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
+    now = _now_iso()
+    item_id = str(value.get("id") or _learned_parameter_id(target)).strip()
+    name = str(value.get("name") or _learned_parameter_default_name(target, source)).strip()
+    return {
+        "id": item_id,
+        "name": name or _learned_parameter_default_name(target, source),
+        "target": target,
+        "source": {
+            "track_name": str(source.get("track_name") or ""),
+            "slot_id": str(source.get("slot_id") or target.get("slot_id") or "instrument"),
+            "slot_label": str(source.get("slot_label") or _slot_label(target.get("slot_id"))),
+            "plugin_name": str(source.get("plugin_name") or ""),
+            "param_name": str(source.get("param_name") or target.get("label") or ""),
+            "units": str(source.get("units") or ""),
+        },
+        "last_value": _bounded_float(value.get("value", value.get("last_value")), 0.0, 0.0, 1.0),
+        "created_at": str(value.get("created_at") or now),
+        "last_captured_at": str(value.get("last_captured_at") or now),
+    }
+
+
+def _learned_parameter_id(target: dict[str, Any]) -> str:
+    slot_id = str(target.get("slot_id") or "instrument")
+    param_key = target.get("param_id", target.get("param_index", 0))
+    raw = f"{target.get('track_id')}:{slot_id}:{param_key}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"learned_plugin_parameter_{digest}"
+
+
+def _learned_parameter_default_name(target: dict[str, Any], source: dict[str, Any]) -> str:
+    parts = [
+        str(source.get("track_name") or f"Track {target.get('track_id')}").strip(),
+        str(source.get("slot_label") or _slot_label(target.get("slot_id"))).strip(),
+        str(source.get("plugin_name") or "Plugin").strip(),
+        str(source.get("param_name") or target.get("label") or "Parameter").strip(),
+    ]
+    return " / ".join(part for part in parts if part)
+
+
+def _slot_label(slot_id: Any) -> str:
+    slot = str(slot_id or "instrument")
+    if slot == "instrument":
+        return "Instrument"
+    if slot.startswith("insert_"):
+        suffix = slot.removeprefix("insert_")
+        return f"Insert {suffix}"
+    return slot
 
 
 def _normalize_selection(
@@ -2761,7 +3322,7 @@ def _nullable_non_negative_int(value: Any) -> int | None:
 
 def _normalize_track_type(track: dict[str, Any], *, clips: list[dict[str, Any]]) -> str:
     raw_type = str(track.get("type", track.get("track_type", "")) or "").strip().lower()
-    if raw_type in {"instrument", "audio"}:
+    if raw_type in {"instrument", "audio", "automation"}:
         return raw_type
     if str(track.get("instrument") or "").strip().lower() == "audio track":
         return "audio"
@@ -2786,7 +3347,7 @@ def _normalize_plugin_slots(
     *,
     track_type: str = "instrument",
 ) -> list[dict[str, Any]]:
-    if track_type == "audio":
+    if track_type != "instrument":
         return []
 
     raw_slots = track.get("plugin_slots")

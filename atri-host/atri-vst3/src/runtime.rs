@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use atri_core::midi::event::ScheduledMidiEvent;
 use atri_core::midi::message::MidiMessage;
+use atri_core::plugin::CapturedPluginParameterEdit;
 use atri_core::plugin::{
     EditorParentHandle, EditorParentKind, PluginEditorContext, PluginEditorHandle,
 };
@@ -230,7 +231,32 @@ impl IHostApplicationTrait for AtriHostApplication {
     }
 }
 
-pub(crate) struct AtriComponentHandler;
+pub(crate) struct AtriComponentHandler {
+    captured_parameter_edits: Arc<Mutex<Vec<CapturedPluginParameterEdit>>>,
+}
+
+impl AtriComponentHandler {
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
+        Self::with_capture_queue(Arc::new(Mutex::new(Vec::new())))
+    }
+
+    pub(crate) fn with_capture_queue(
+        captured_parameter_edits: Arc<Mutex<Vec<CapturedPluginParameterEdit>>>,
+    ) -> Self {
+        Self {
+            captured_parameter_edits,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drain_captured_parameter_edits(&self) -> Vec<CapturedPluginParameterEdit> {
+        self.captured_parameter_edits
+            .lock()
+            .map(|mut edits| std::mem::take(&mut *edits))
+            .unwrap_or_default()
+    }
+}
 
 impl Class for AtriComponentHandler {
     type Interfaces = (
@@ -247,7 +273,17 @@ impl IComponentHandlerTrait for AtriComponentHandler {
         kResultOk
     }
 
-    unsafe fn performEdit(&self, _id: ParamID, _value_normalized: ParamValue) -> tresult {
+    unsafe fn performEdit(&self, id: ParamID, value_normalized: ParamValue) -> tresult {
+        if let Ok(mut edits) = self.captured_parameter_edits.lock() {
+            edits.push(CapturedPluginParameterEdit {
+                param_id: id,
+                value: value_normalized.clamp(0.0, 1.0),
+                captured_at_millis: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_millis())
+                    .unwrap_or(0),
+            });
+        }
         kResultOk
     }
 
@@ -1076,5 +1112,20 @@ mod tests {
             assert_eq!(offset, 4);
             assert_eq!(value, 0.25);
         }
+    }
+
+    #[test]
+    fn component_handler_captures_perform_edit_values() {
+        let handler = AtriComponentHandler::new();
+
+        unsafe {
+            assert_eq!(handler.performEdit(900, 0.77), kResultOk);
+        }
+
+        let edits = handler.drain_captured_parameter_edits();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].param_id, 900);
+        assert!((edits[0].value - 0.77).abs() < 0.0001);
+        assert!(handler.drain_captured_parameter_edits().is_empty());
     }
 }

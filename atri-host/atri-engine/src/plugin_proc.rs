@@ -1,6 +1,9 @@
 use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::ScheduledMidiEvent;
-use atri_core::plugin::{EditorParentHandle, Plugin, PluginEditorContext, PluginEditorHandle};
+use atri_core::plugin::{
+    CapturedPluginParameterEdit, EditorParentHandle, Plugin, PluginEditorContext,
+    PluginEditorHandle, PluginParameterInfo,
+};
 
 use super::processor::Processor;
 
@@ -118,7 +121,26 @@ impl Processor for PluginInsert {
         Ok(())
     }
 
+    fn set_parameter_at_sample(
+        &mut self,
+        index: u32,
+        sample_offset: usize,
+        value: f32,
+    ) -> Result<(), String> {
+        self.plugin
+            .set_parameter_at_sample(index, sample_offset, value);
+        Ok(())
+    }
+
     fn parameter_count(&mut self) -> u32 {
         self.plugin.parameter_count()
+    }
+
+    fn parameter_info(&mut self) -> Vec<PluginParameterInfo> {
+        self.plugin.parameter_info()
+    }
+
+    fn drain_captured_parameter_edits(&mut self) -> Vec<CapturedPluginParameterEdit> {
+        self.plugin.drain_captured_parameter_edits()
     }
 }

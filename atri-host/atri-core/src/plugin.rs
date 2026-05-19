@@ -1,5 +1,6 @@
 use crate::audio::buffer_set::BufferSet;
 use crate::midi::event::ScheduledMidiEvent;
+use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorParentKind {
@@ -48,6 +49,23 @@ pub trait PluginEditorHandle: Send {
     fn close(&mut self);
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PluginParameterInfo {
+    pub index: u32,
+    pub param_id: Option<u32>,
+    pub name: String,
+    pub units: String,
+    pub value: f32,
+    pub automatable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CapturedPluginParameterEdit {
+    pub param_id: u32,
+    pub value: f64,
+    pub captured_at_millis: u128,
+}
+
 /// Core abstraction for loadable audio processors (VST3, VST2, LV2, etc.).
 /// Defined in atri-core so atri-engine and plugin backends can share the
 /// contract without circular dependencies.
@@ -74,7 +92,26 @@ pub trait Plugin: Send + Sync {
     );
     fn get_parameter(&self, index: u32) -> f32;
     fn set_parameter(&mut self, index: u32, value: f32);
+    fn set_parameter_at_sample(&mut self, index: u32, _sample_offset: usize, value: f32) {
+        self.set_parameter(index, value);
+    }
     fn parameter_count(&self) -> u32;
+    fn parameter_info(&self) -> Vec<PluginParameterInfo> {
+        (0..self.parameter_count())
+            .map(|index| PluginParameterInfo {
+                index,
+                param_id: None,
+                name: format!("Parameter {index}"),
+                units: String::new(),
+                value: self.get_parameter(index),
+                automatable: true,
+            })
+            .collect()
+    }
+
+    fn drain_captured_parameter_edits(&mut self) -> Vec<CapturedPluginParameterEdit> {
+        Vec::new()
+    }
 
     fn has_editor(&self) -> bool {
         false

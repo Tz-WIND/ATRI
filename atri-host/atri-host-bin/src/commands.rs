@@ -9,7 +9,9 @@ use atri_engine::audio_clip::{AudioChannelMode, AudioClip, AudioClipSpec};
 use atri_engine::engine::AudioEngine;
 use atri_engine::plugin_proc::PluginInsert;
 use atri_engine::processor::Processor;
-use atri_engine::session::Session;
+use atri_engine::session::{
+    AutomationCurve, AutomationLane, AutomationPoint, AutomationTarget, Session,
+};
 use atri_engine::synth::BasicSynth;
 use atri_vst3::factory::PluginFactory;
 use atri_vst3::plugin::Vst3Plugin;
@@ -198,6 +200,14 @@ pub enum Command {
         index: u32,
         value: f32,
     },
+    ListPluginParameters {
+        track_id: u32,
+        slot_index: Option<u8>,
+    },
+    PollCapturedPluginParameters,
+    SetAutomation {
+        lanes: Vec<AutomationLaneData>,
+    },
     ScanPlugins {
         paths: Option<Vec<String>>,
         vst2_paths: Option<Vec<String>>,
@@ -267,6 +277,41 @@ pub struct AudioClipData {
     pub gain: Option<f32>,
     #[serde(default)]
     pub channel_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AutomationLaneData {
+    pub target: AutomationTargetData,
+    #[serde(default)]
+    pub points: Vec<AutomationPointData>,
+    #[serde(default)]
+    pub muted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum AutomationTargetData {
+    PluginParameter {
+        track_id: u32,
+        slot_index: Option<u8>,
+        param_index: u32,
+    },
+    TrackVolume {
+        track_id: u32,
+    },
+    TrackPan {
+        track_id: u32,
+    },
+    TempoBpm,
+    TimeSignatureNumerator,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AutomationPointData {
+    pub beat: f64,
+    pub value: f32,
+    #[serde(default)]
+    pub curve: Option<String>,
 }
 
 pub fn handle_command(
@@ -547,6 +592,12 @@ fn execute(
             index,
             value,
         } => set_plugin_parameter(engine, track_id, slot_index, index, value),
+        Command::ListPluginParameters {
+            track_id,
+            slot_index,
+        } => list_plugin_parameters(engine, track_id, slot_index),
+        Command::PollCapturedPluginParameters => poll_captured_plugin_parameters(engine),
+        Command::SetAutomation { lanes } => set_automation(engine, lanes),
         Command::ScanPlugins { paths, vst2_paths } => {
             let scanner = configure_scanner(host_config, paths, vst2_paths);
             let vst3 = scanner.scan();
@@ -1063,6 +1114,137 @@ fn set_plugin_parameter(
     )
 }
 
+fn list_plugin_parameters(
+    engine: &Arc<Mutex<AudioEngine>>,
+    track_id: u32,
+    slot_index: Option<u8>,
+) -> CommandResponse {
+    let slot_index = usize::from(slot_index.unwrap_or(0));
+    let Some(processor) = processor_slot(engine, track_id, slot_index) else {
+        return CommandResponse::error(Some("list_plugin_parameters"), "plugin instance not found");
+    };
+
+    let parameters = match processor.lock() {
+        Ok(mut processor) => processor.parameter_info(),
+        Err(_) => {
+            return CommandResponse::error(
+                Some("list_plugin_parameters"),
+                "plugin instance is unavailable",
+            );
+        }
+    };
+
+    CommandResponse::ack_with(
+        "list_plugin_parameters",
+        json!({
+            "track_id": track_id,
+            "slot_index": slot_index,
+            "parameter_count": parameters.len(),
+            "parameters": parameters
+        }),
+    )
+}
+
+fn poll_captured_plugin_parameters(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
+    let parameters = with_session(engine, |session| {
+        let mut captured = Vec::new();
+        for route_arc in &session.routes {
+            let Ok(route) = route_arc.lock() else {
+                continue;
+            };
+            let track_id = route.id;
+            for (slot_index, processor) in route.processors.iter().enumerate() {
+                let Some(processor) = processor else {
+                    continue;
+                };
+                let Ok(mut processor) = processor.lock() else {
+                    continue;
+                };
+                let plugin_name = processor.name().to_string();
+                let parameter_info = processor.parameter_info();
+                for edit in processor.drain_captured_parameter_edits() {
+                    let info = parameter_info
+                        .iter()
+                        .find(|info| info.param_id == Some(edit.param_id));
+                    captured.push(json!({
+                        "track_id": track_id,
+                        "slot_index": slot_index,
+                        "param_index": info.map(|info| info.index).unwrap_or(0),
+                        "param_id": edit.param_id,
+                        "name": info
+                            .map(|info| info.name.clone())
+                            .unwrap_or_else(|| format!("Parameter {}", edit.param_id)),
+                        "units": info.map(|info| info.units.clone()).unwrap_or_default(),
+                        "value": edit.value,
+                        "automatable": info.map(|info| info.automatable).unwrap_or(true),
+                        "plugin_name": plugin_name,
+                        "captured_at_millis": edit.captured_at_millis,
+                    }));
+                }
+            }
+        }
+        captured
+    });
+    CommandResponse::ack_with(
+        "poll_captured_plugin_parameters",
+        json!({ "parameters": parameters }),
+    )
+}
+
+fn set_automation(
+    engine: &Arc<Mutex<AudioEngine>>,
+    lanes: Vec<AutomationLaneData>,
+) -> CommandResponse {
+    let lanes = lanes
+        .into_iter()
+        .map(automation_lane_from_data)
+        .collect::<Vec<_>>();
+    with_session(engine, |session| session.set_automation_lanes(lanes));
+    CommandResponse::ack_with(
+        "set_automation",
+        json!({
+            "lanes": with_session(engine, |session| session.automation_lane_count())
+        }),
+    )
+}
+
+fn automation_lane_from_data(data: AutomationLaneData) -> AutomationLane {
+    AutomationLane {
+        target: match data.target {
+            AutomationTargetData::PluginParameter {
+                track_id,
+                slot_index,
+                param_index,
+            } => AutomationTarget::PluginParameter {
+                track_id,
+                slot_index: usize::from(slot_index.unwrap_or(0)),
+                param_index,
+            },
+            AutomationTargetData::TrackVolume { track_id } => {
+                AutomationTarget::TrackVolume { track_id }
+            }
+            AutomationTargetData::TrackPan { track_id } => AutomationTarget::TrackPan { track_id },
+            AutomationTargetData::TempoBpm => AutomationTarget::TempoBpm,
+            AutomationTargetData::TimeSignatureNumerator => {
+                AutomationTarget::TimeSignatureNumerator
+            }
+        },
+        points: data
+            .points
+            .into_iter()
+            .map(|point| AutomationPoint {
+                beat: point.beat.max(0.0),
+                value: point.value,
+                curve: match point.curve.as_deref() {
+                    Some("hold") => AutomationCurve::Hold,
+                    _ => AutomationCurve::Linear,
+                },
+            })
+            .collect(),
+        muted: data.muted,
+    }
+}
+
 fn processor_slot(
     engine: &Arc<Mutex<AudioEngine>>,
     track_id: u32,
@@ -1087,6 +1269,103 @@ mod tests {
         let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
         let streamer = Arc::new(Mutex::new(AudioStreamer::new(48_000, 2)));
         (engine, cmd_tx, cmd_rx, streamer, HostConfig::default())
+    }
+
+    struct MetadataProcessor;
+
+    impl Processor for MetadataProcessor {
+        fn name(&self) -> &str {
+            "metadata-processor"
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut atri_core::audio::buffer_set::BufferSet,
+            _midi: &[atri_core::midi::event::ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+        }
+
+        fn activate(&mut self) {}
+        fn deactivate(&mut self) {}
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn input_channels(&self) -> u16 {
+            2
+        }
+        fn output_channels(&self) -> u16 {
+            2
+        }
+        fn parameter_count(&mut self) -> u32 {
+            1
+        }
+        fn get_parameter(&mut self, index: u32) -> Option<f32> {
+            (index == 0).then_some(0.42)
+        }
+        fn parameter_info(&mut self) -> Vec<atri_core::plugin::PluginParameterInfo> {
+            vec![atri_core::plugin::PluginParameterInfo {
+                index: 0,
+                param_id: Some(100),
+                name: "Cutoff".to_string(),
+                units: "Hz".to_string(),
+                value: 0.42,
+                automatable: true,
+            }]
+        }
+    }
+
+    struct CapturingProcessor {
+        edits: Vec<atri_core::plugin::CapturedPluginParameterEdit>,
+    }
+
+    impl Processor for CapturingProcessor {
+        fn name(&self) -> &str {
+            "capturing-processor"
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut atri_core::audio::buffer_set::BufferSet,
+            _midi: &[atri_core::midi::event::ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+        }
+
+        fn activate(&mut self) {}
+        fn deactivate(&mut self) {}
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn input_channels(&self) -> u16 {
+            2
+        }
+        fn output_channels(&self) -> u16 {
+            2
+        }
+        fn parameter_info(&mut self) -> Vec<atri_core::plugin::PluginParameterInfo> {
+            vec![atri_core::plugin::PluginParameterInfo {
+                index: 2,
+                param_id: Some(900),
+                name: "Resonance".to_string(),
+                units: "%".to_string(),
+                value: 0.77,
+                automatable: true,
+            }]
+        }
+        fn drain_captured_parameter_edits(
+            &mut self,
+        ) -> Vec<atri_core::plugin::CapturedPluginParameterEdit> {
+            std::mem::take(&mut self.edits)
+        }
     }
 
     #[test]
@@ -1204,6 +1483,130 @@ mod tests {
             tracks[0].processor_slots,
             vec![Some("ATRI Basic Synth".to_string())]
         );
+    }
+
+    #[test]
+    fn list_plugin_parameters_reports_metadata() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track_id = with_session(&engine, |session| {
+            let track_id = session.add_track("Keys".to_string());
+            assert!(session.set_processor_slot(
+                track_id,
+                0,
+                Some(Arc::new(Mutex::new(MetadataProcessor))),
+            ));
+            track_id
+        });
+
+        let response = execute(
+            Command::ListPluginParameters {
+                track_id,
+                slot_index: Some(0),
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        let CommandResponse::Ack { cmd, data, .. } = response else {
+            panic!("expected ack response");
+        };
+        assert_eq!(cmd, "list_plugin_parameters");
+        let data = data.expect("metadata response data");
+        assert_eq!(data["parameter_count"], 1);
+        assert_eq!(data["parameters"][0]["name"], "Cutoff");
+        assert_eq!(data["parameters"][0]["units"], "Hz");
+        assert_eq!(data["parameters"][0]["automatable"], true);
+        let value = data["parameters"][0]["value"].as_f64().unwrap();
+        assert!((value - 0.42).abs() < 0.0001);
+    }
+
+    #[test]
+    fn poll_captured_plugin_parameters_drains_and_enriches_edits() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track_id = with_session(&engine, |session| {
+            let track_id = session.add_track("Keys".to_string());
+            assert!(session.set_processor_slot(
+                track_id,
+                1,
+                Some(Arc::new(Mutex::new(CapturingProcessor {
+                    edits: vec![atri_core::plugin::CapturedPluginParameterEdit {
+                        param_id: 900,
+                        value: 0.77,
+                        captured_at_millis: 1234,
+                    }],
+                }))),
+            ));
+            track_id
+        });
+
+        let response = execute(
+            Command::PollCapturedPluginParameters,
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        let CommandResponse::Ack { cmd, data, .. } = response else {
+            panic!("expected ack response");
+        };
+        assert_eq!(cmd, "poll_captured_plugin_parameters");
+        let data = data.expect("captured response data");
+        assert_eq!(data["parameters"][0]["track_id"], track_id);
+        assert_eq!(data["parameters"][0]["slot_index"], 1);
+        assert_eq!(data["parameters"][0]["param_index"], 2);
+        assert_eq!(data["parameters"][0]["param_id"], 900);
+        assert_eq!(data["parameters"][0]["name"], "Resonance");
+        assert_eq!(data["parameters"][0]["value"], 0.77);
+
+        let drained = execute(
+            Command::PollCapturedPluginParameters,
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        let CommandResponse::Ack { data, .. } = drained else {
+            panic!("expected ack response");
+        };
+        assert_eq!(data.unwrap()["parameters"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn set_automation_stores_lanes_without_adding_routes() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track_id = with_session(&engine, |session| session.add_track("Keys".to_string()));
+
+        let response = execute(
+            Command::SetAutomation {
+                lanes: vec![AutomationLaneData {
+                    target: AutomationTargetData::TrackVolume { track_id },
+                    points: vec![AutomationPointData {
+                        beat: 0.0,
+                        value: 0.5,
+                        curve: Some("linear".to_string()),
+                    }],
+                    muted: false,
+                }],
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "set_automation"));
+        let (route_count, lane_count) = with_session(&engine, |session| {
+            (session.routes.len(), session.automation_lane_count())
+        });
+        assert_eq!(route_count, 1);
+        assert_eq!(lane_count, 1);
     }
 
     #[test]
