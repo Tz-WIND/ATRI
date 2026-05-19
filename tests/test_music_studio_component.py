@@ -299,8 +299,8 @@ def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_rack(
     )
     assert "async function dropTrackReorder(event, targetTrack)" in studio_text
     assert (
-        "nextProject.tracks = moveTrackInList(nextProject.tracks || [], sourceTrackId, targetTrack.id, placement)"
-        in studio_text
+        "nextProject.tracks = moveTrackInList("
+        "nextProject.tracks || [], sourceTrackId, targetTrack.id, placement)" in studio_text
     )
     assert ".track-row.reorder-before::before" in studio_text
     assert ".track-row.reorder-after::after" in studio_text
