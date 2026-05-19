@@ -200,12 +200,43 @@ def test_music_studio_grid_overlays_bar_lines_at_fractional_positions():
     ) in studio_text
 
 
-def test_music_studio_piano_ruler_draws_decimal_beat_labels():
+def test_music_studio_piano_and_arrangement_rulers_share_decimal_beat_labels():
     studio_text = _read(STUDIO_COMPONENT)
 
-    assert "function pianoRulerBeatLabel(absoluteBeat)" in studio_text
+    assert "function rulerBeatLabel(absoluteBeat)" in studio_text
+    assert "function drawBeatRulerLabels(ctx, {" in studio_text
     assert "return beatInBar === 1 ? String(bar) : `${bar}.${beatInBar}`" in studio_text
-    assert "ctx.fillText(pianoRulerBeatLabel(absoluteBeat), x + 5, 16)" in studio_text
+    assert "drawBeatRulerLabels(ctx, {\n    startBeat: 0," in studio_text
+    assert "originX: 0," in studio_text
+    assert "drawBeatRulerLabels(ctx, {\n    startBeat: clipStart," in studio_text
+    assert "originX: pianoKeyW," in studio_text
+    assert (
+        "const shouldDrawBeatLabel = metrics.shouldLabel && "
+        "(metrics.isBar || scale >= rulerBeatLabelMinScale)"
+    ) in studio_text
+    assert "ctx.fillText(rulerBeatLabel(absoluteBeat), labelX, Math.min(labelY" in studio_text
+
+
+def test_music_studio_rulers_draw_scaled_tick_marks_from_quantize_step():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const rulerMajorTickRatio = 1 / 3" in studio_text
+    assert "const rulerMinorTickRatio = rulerMajorTickRatio / 2" in studio_text
+    assert "const rulerFineTickRatio = rulerMinorTickRatio / 2" in studio_text
+    assert "const rulerLabelGap = 2" in studio_text
+    assert "function rulerTickStep()" in studio_text
+    assert "return activePianoSnapStep.value || snapStep" in studio_text
+    assert "function rulerTickMetrics(absoluteBeat)" in studio_text
+    assert "heightRatio: rulerMajorTickRatio" in studio_text
+    assert "heightRatio: rulerMinorTickRatio" in studio_text
+    assert "heightRatio: rulerFineTickRatio" in studio_text
+    assert "ctx.font = metrics.isBar ? rulerBarLabelFont : rulerBeatLabelFont" in studio_text
+    assert "ctx.lineWidth = metrics.lineWidth" in studio_text
+    assert "ctx.moveTo(x, tickBottom - tickHeight)" in studio_text
+    assert "const labelX = Math.max(originX + rulerLabelGap, x + rulerLabelGap)" in studio_text
+    assert (
+        "for (\n    let absoluteBeat = firstMultipleAtOrAfter(startBeat, tickStep);" in studio_text
+    )
 
 
 def test_music_studio_audio_drop_matches_host_supported_import_formats():
@@ -258,8 +289,14 @@ def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_rack(
     assert '@dragover.prevent.stop="onTrackReorderDragOver($event, track)"' in studio_text
     assert '@drop.prevent.stop="dropTrackReorder($event, track)"' in studio_text
     assert '@dragend.stop="endTrackReorderDrag"' in studio_text
-    assert "const trackReorderDrag = ref({ trackId: null, overTrackId: null, placement: 'after' })" in studio_text
-    assert "function moveTrackInList(trackList, sourceTrackId, targetTrackId, placement)" in studio_text
+    assert (
+        "const trackReorderDrag = ref({ trackId: null, overTrackId: null, placement: 'after' })"
+        in studio_text
+    )
+    assert (
+        "function moveTrackInList(trackList, sourceTrackId, targetTrackId, placement)"
+        in studio_text
+    )
     assert "async function dropTrackReorder(event, targetTrack)" in studio_text
     assert (
         "nextProject.tracks = moveTrackInList(nextProject.tracks || [], sourceTrackId, targetTrack.id, placement)"
@@ -349,6 +386,31 @@ def test_music_studio_exposes_plugin_parameter_browser_and_live_set():
     assert "async function setPluginParameter(trackId, slotId, paramIndex, value)" in host_text
     assert "studioPluginParameters: (trackId, slotId = 'instrument')" in api_text
     assert "studioSetPluginParameter: (payload)" in api_text
+
+
+def test_music_studio_plugin_names_truncate_like_track_titles():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert (
+        ".track-plugin-select {\n"
+        "  min-width: 0;\n"
+        "  width: 100%;\n"
+        "  height: 24px;\n"
+        "  overflow: hidden;\n"
+        "  text-overflow: ellipsis;\n"
+        "  white-space: nowrap;\n"
+    ) in studio_text
+    assert (
+        ".rack-slot select {\n"
+        "  min-width: 0;\n"
+        "  width: 100%;\n"
+        "  height: 28px;\n"
+        "  overflow: hidden;\n"
+        "  text-overflow: ellipsis;\n"
+        "  white-space: nowrap;\n"
+    ) in studio_text
+    assert ".rack-slot small,\n.rack-meta {" in studio_text
+    assert "text-overflow: ellipsis;" in studio_text
 
 
 def test_music_studio_automation_tracks_can_be_drawn_like_controller_lanes():
