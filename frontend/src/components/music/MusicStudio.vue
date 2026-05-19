@@ -287,11 +287,24 @@
                   :key="track.id"
                 >
                   <div
-                    :class="['track-row', { active: activeTrack?.id === track.id }]"
+                    :class="[
+                      'track-row',
+                      {
+                        active: activeTrack?.id === track.id,
+                        'reorder-dragging': isTrackReorderDragging(track),
+                        'reorder-before': isTrackReorderDropTarget(track, 'before'),
+                        'reorder-after': isTrackReorderDropTarget(track, 'after'),
+                      },
+                    ]"
+                    :draggable="canDragTrackRow(track)"
                     role="button"
                     tabindex="0"
                     @click="selectTrack(track.id)"
                     @contextmenu.prevent="openTrackContextMenu($event, track)"
+                    @dragstart.stop="startTrackReorderDrag($event, track)"
+                    @dragover.prevent.stop="onTrackReorderDragOver($event, track)"
+                    @drop.prevent.stop="dropTrackReorder($event, track)"
+                    @dragend.stop="endTrackReorderDrag"
                     @keydown="onTrackRowKeydown($event, track.id)"
                   >
                     <span
@@ -1237,6 +1250,7 @@ const timeSignatureRoot = ref(null)
 const controllerLaneCanvases = new Map()
 const automationMenu = ref({ open: false, x: 0, y: 0, target: null, label: '' })
 const trackContextMenu = ref({ open: false, x: 0, y: 0, trackId: null, name: '' })
+const trackReorderDrag = ref({ trackId: null, overTrackId: null, placement: 'after' })
 
 const defaultPxPerBeat = 56
 const supportedAudioImportExtensions = ['aac', 'flac', 'm4a', 'mp3', 'wav']
@@ -1265,6 +1279,7 @@ const pianoEmptyBars = 32
 const defaultTrackListWidth = 246
 const minTrackListWidth = 190
 const maxTrackListWidth = 420
+const trackReorderMidpoint = 0.5
 const trackListWidth = ref(defaultTrackListWidth)
 const arrangementRulerH = 30
 const arrangementToolbarH = 34
@@ -1556,6 +1571,116 @@ function closeTimeSignaturePopover() {
 
 function closeTrackContextMenu() {
   trackContextMenu.value = { open: false, x: 0, y: 0, trackId: null, name: '' }
+}
+
+// Track reordering persists the shared project order so the sidebar, canvas, and rack stay aligned.
+function canDragTrackRow(track) {
+  return track?.id != null && tracks.value.length > 1 && !loading.value
+}
+
+function isTrackReorderInteractiveTarget(target) {
+  return Boolean(target?.closest?.('button, input, select, textarea, a'))
+}
+
+function sameTrackId(left, right) {
+  return left != null && right != null && String(left) === String(right)
+}
+
+function trackOrderKey(trackList) {
+  return (trackList || []).map(track => String(track.id)).join('|')
+}
+
+function moveTrackInList(trackList, sourceTrackId, targetTrackId, placement) {
+  const nextTracks = [...(trackList || [])]
+  const sourceIndex = nextTracks.findIndex(track => sameTrackId(track.id, sourceTrackId))
+  const targetIndex = nextTracks.findIndex(track => sameTrackId(track.id, targetTrackId))
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return nextTracks
+
+  const [movedTrack] = nextTracks.splice(sourceIndex, 1)
+  const targetIndexAfterRemoval = nextTracks.findIndex(track => sameTrackId(track.id, targetTrackId))
+  if (targetIndexAfterRemoval < 0) return trackList || []
+
+  const insertIndex = placement === 'before'
+    ? targetIndexAfterRemoval
+    : targetIndexAfterRemoval + 1
+  nextTracks.splice(insertIndex, 0, movedTrack)
+  return nextTracks
+}
+
+function trackReorderPlacementFromEvent(event) {
+  const rect = event.currentTarget?.getBoundingClientRect?.()
+  if (!rect?.height) return 'after'
+  const localY = Number(event.clientY || 0) - rect.top
+  return localY < rect.height * trackReorderMidpoint ? 'before' : 'after'
+}
+
+function draggedTrackIdFromEvent(event) {
+  const rawTrackId = trackReorderDrag.value.trackId ?? event.dataTransfer?.getData('text/plain')
+  const track = tracks.value.find(item => sameTrackId(item.id, rawTrackId))
+  return track?.id ?? rawTrackId
+}
+
+function isTrackReorderDragging(track) {
+  return sameTrackId(trackReorderDrag.value.trackId, track?.id)
+}
+
+function isTrackReorderDropTarget(track, placement) {
+  const drag = trackReorderDrag.value
+  return Boolean(
+    drag.trackId != null
+    && !sameTrackId(drag.trackId, track?.id)
+    && sameTrackId(drag.overTrackId, track?.id)
+    && drag.placement === placement
+  )
+}
+
+function startTrackReorderDrag(event, track) {
+  if (!canDragTrackRow(track) || isTrackReorderInteractiveTarget(event.target)) {
+    event.preventDefault()
+    return
+  }
+  closeTrackContextMenu()
+  automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
+  selectTrack(track.id)
+  trackReorderDrag.value = { trackId: track.id, overTrackId: track.id, placement: 'after' }
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(track.id))
+  }
+}
+
+function onTrackReorderDragOver(event, track) {
+  if (trackReorderDrag.value.trackId == null || !canDragTrackRow(track)) return
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  trackReorderDrag.value = {
+    ...trackReorderDrag.value,
+    overTrackId: track.id,
+    placement: trackReorderPlacementFromEvent(event),
+  }
+}
+
+function endTrackReorderDrag() {
+  trackReorderDrag.value = { trackId: null, overTrackId: null, placement: 'after' }
+}
+
+async function dropTrackReorder(event, targetTrack) {
+  const sourceTrackId = draggedTrackIdFromEvent(event)
+  const placement = trackReorderPlacementFromEvent(event)
+  endTrackReorderDrag()
+  if (
+    sourceTrackId == null
+    || targetTrack?.id == null
+    || sameTrackId(sourceTrackId, targetTrack.id)
+    || loading.value
+  ) return
+
+  const reorderedTracks = moveTrackInList(tracks.value, sourceTrackId, targetTrack.id, placement)
+  if (trackOrderKey(reorderedTracks) === trackOrderKey(tracks.value)) return
+
+  await persistProjectUpdate((nextProject) => {
+    nextProject.tracks = moveTrackInList(nextProject.tracks || [], sourceTrackId, targetTrack.id, placement)
+  })
+  selectTrack(sourceTrackId)
 }
 
 function onDocumentPointerDown(event) {
@@ -5304,6 +5429,7 @@ watch(positionBeats, (value) => {
 .track-row {
   width: 100%;
   height: 72px;
+  position: relative;
   display: grid;
   grid-template-columns: 4px minmax(0, 1fr) auto;
   gap: 9px;
@@ -5313,9 +5439,36 @@ watch(positionBeats, (value) => {
   border-bottom: 1px solid rgba(229, 236, 245, 0.08);
   background: transparent;
   color: var(--t2);
-  cursor: pointer;
+  cursor: grab;
   overflow: hidden;
   text-align: left;
+}
+
+.track-row.reorder-dragging {
+  opacity: 0.58;
+  cursor: grabbing;
+}
+
+.track-row.reorder-before::before,
+.track-row.reorder-after::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  z-index: 2;
+  height: 2px;
+  border-radius: 999px;
+  background: #f0d17a;
+  box-shadow: 0 0 0 1px rgba(240, 209, 122, 0.18);
+  pointer-events: none;
+}
+
+.track-row.reorder-before::before {
+  top: 0;
+}
+
+.track-row.reorder-after::after {
+  bottom: -1px;
 }
 
 .track-row.active {

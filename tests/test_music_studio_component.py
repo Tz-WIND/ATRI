@@ -250,6 +250,26 @@ def test_music_studio_track_list_sidebar_can_be_resized():
     assert "grid-template-columns: var(--track-list-width) max-content;" in studio_text
 
 
+def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_rack():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert ':draggable="canDragTrackRow(track)"' in studio_text
+    assert '@dragstart.stop="startTrackReorderDrag($event, track)"' in studio_text
+    assert '@dragover.prevent.stop="onTrackReorderDragOver($event, track)"' in studio_text
+    assert '@drop.prevent.stop="dropTrackReorder($event, track)"' in studio_text
+    assert '@dragend.stop="endTrackReorderDrag"' in studio_text
+    assert "const trackReorderDrag = ref({ trackId: null, overTrackId: null, placement: 'after' })" in studio_text
+    assert "function moveTrackInList(trackList, sourceTrackId, targetTrackId, placement)" in studio_text
+    assert "async function dropTrackReorder(event, targetTrack)" in studio_text
+    assert (
+        "nextProject.tracks = moveTrackInList(nextProject.tracks || [], sourceTrackId, targetTrack.id, placement)"
+        in studio_text
+    )
+    assert ".track-row.reorder-before::before" in studio_text
+    assert ".track-row.reorder-after::after" in studio_text
+    assert ':key="`rack-${track.id}`"' in studio_text
+
+
 def test_music_studio_track_list_sidebar_uses_single_aligned_divider():
     studio_text = _read(STUDIO_COMPONENT)
 
