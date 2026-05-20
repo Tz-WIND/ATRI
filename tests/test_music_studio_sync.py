@@ -124,6 +124,53 @@ class FreshRoutingHost:
         return {"type": "ack", "cmd": cmd}
 
 
+async def test_load_track_slots_does_not_load_builtin_for_empty_bus():
+    host = FakeStudioHost()
+
+    responses = await music._load_track_slots(
+        host,
+        2,
+        {"type": "bus", "instrument": "Bus", "plugin_slots": []},
+    )
+
+    assert responses == []
+    assert host.commands == []
+
+
+async def test_load_track_slots_loads_bus_insert_slots():
+    host = FakeStudioHost()
+
+    responses = await music._load_track_slots(
+        host,
+        2,
+        {
+            "type": "bus",
+            "instrument": "Bus",
+            "plugin_slots": [
+                {
+                    "id": "insert_1",
+                    "type": "vst3",
+                    "name": "Bus Compressor",
+                    "path": "C:/VST3/BusCompressor.vst3",
+                }
+            ],
+        },
+    )
+
+    assert responses == [{"type": "ack", "cmd": "load_vst3"}]
+    assert host.commands == [
+        (
+            "load_vst3",
+            {
+                "track_id": 2,
+                "slot_index": 1,
+                "path": "C:/VST3/BusCompressor.vst3",
+                "name": "Bus Compressor",
+            },
+        )
+    ]
+
+
 async def test_sync_project_to_host_removes_stale_host_tracks(monkeypatch):
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
@@ -532,6 +579,124 @@ async def test_sync_project_to_host_resolves_track_to_later_bus_on_fresh_host(mo
         },
         {"track_id": 2, "sends": []},
     ]
+
+
+async def test_sync_project_to_host_routes_top_level_tracks_through_master_bus(monkeypatch):
+    host = FreshRoutingHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Master Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "master_bus": {
+            "host_track_id": None,
+            "name": "Master Bus",
+            "volume": 0.7,
+            "pan": -0.25,
+            "mute": True,
+            "solo": False,
+            "plugin_slots": [],
+        },
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": None,
+                "type": "instrument",
+                "name": "Lead",
+                "output_bus_id": None,
+                "sends": [],
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            }
+        ],
+    }
+
+    sync = await music._sync_project_to_host(project)
+
+    assert project["tracks"][0]["host_track_id"] == 1
+    assert project["master_bus"]["host_track_id"] == 2
+    configs = [params for cmd, params in host.commands if cmd == "set_route_config"]
+    assert configs == [
+        {"track_id": 1, "kind": "track", "output_track_id": None},
+        {"track_id": 2, "kind": "bus", "output_track_id": None},
+        {"track_id": 1, "kind": None, "output_track_id": 2},
+        {"track_id": 2, "kind": None, "output_track_id": None},
+    ]
+    assert ("set_volume", {"track_id": 2, "value": 0.7}) in host.commands
+    assert ("set_pan", {"track_id": 2, "value": -0.25}) in host.commands
+    assert ("set_mute", {"track_id": 2, "value": True}) in host.commands
+    assert ("set_solo", {"track_id": 2, "value": False}) in host.commands
+    assert sync["routing"] == {"routes": 2, "skipped": []}
+
+
+async def test_sync_project_to_host_loads_existing_master_bus_insert_slots(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Master Insert",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "master_bus": {
+            "host_track_id": 2,
+            "name": "Master Bus",
+            "volume": 1.0,
+            "pan": 0.0,
+            "mute": False,
+            "solo": False,
+            "plugin_slots": [
+                {
+                    "id": "insert_1",
+                    "type": "vst3",
+                    "name": "Limiter",
+                    "path": "C:/VST3/Limiter.vst3",
+                }
+            ],
+        },
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "output_bus_id": None,
+                "sends": [],
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            }
+        ],
+    }
+
+    await music._sync_project_to_host(project)
+
+    assert (
+        "load_vst3",
+        {
+            "track_id": 2,
+            "slot_index": 1,
+            "path": "C:/VST3/Limiter.vst3",
+            "name": "Limiter",
+        },
+    ) in host.commands
 
 
 async def test_plugin_parameter_metadata_route_translates_project_track(monkeypatch):

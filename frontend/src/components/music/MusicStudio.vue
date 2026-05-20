@@ -5,7 +5,7 @@
       {
         embedded,
         'inspector-hidden': !inspectorVisible,
-        'piano-closed': !pianoVisible || !activeMidiClip,
+        'piano-closed': !lowerEditorVisible,
       },
     ]"
     tabindex="0"
@@ -156,6 +156,13 @@
           @click="resetDemo()"
         >
           Demo
+        </button>
+        <button
+          :class="['tool-btn text', { active: mixerVisible }]"
+          title="Show mixer rack"
+          @click="openMixer"
+        >
+          Mixer
         </button>
         <button
           :class="['tool-btn text', { active: inspectorVisible }]"
@@ -804,55 +811,370 @@
             </div>
           </div>
         </div>
+
+        <div
+          v-if="mixerVisible"
+          ref="pianoPanel"
+          class="mixer-panel"
+        >
+          <div
+            class="piano-resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            title="Resize mixer"
+            @pointerdown="startPianoResize"
+          >
+            <span />
+          </div>
+          <div class="mixer-head">
+            <div>
+              <span>Mixer</span>
+              <strong>{{ mixerTracks.length }} routes</strong>
+            </div>
+            <div class="mixer-actions">
+              <button
+                class="mini-btn text"
+                :disabled="pluginsLoading"
+                @click="loadPlugins()"
+              >
+                {{ pluginsLoading ? 'Scanning' : 'Scan' }}
+              </button>
+              <button
+                class="mini-btn"
+                title="Close mixer"
+                @click="closeMixer"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                ><path d="M18 6 6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+          </div>
+          <div class="mixer-strip-body">
+            <div class="mixer-track-strip-scroll">
+              <div class="mixer-strip-row">
+                <section
+                  v-for="track in mixerTracks"
+                  :key="`mixer-${track.id}`"
+                  :class="['mixer-strip', { active: activeTrack?.id === track.id }]"
+                  @click="selectTrack(track.id)"
+                >
+                  <div class="mixer-strip-head">
+                    <span
+                      class="track-color"
+                      :style="{ background: track.color }"
+                    />
+                    <strong :title="track.name">
+                      {{ track.name }}
+                    </strong>
+                    <small>{{ trackTypeLabel(track) }}</small>
+                  </div>
+
+                  <div class="mixer-section mixer-inserts">
+                    <span class="mixer-section-label">Insert</span>
+                    <label
+                      v-if="!canUseMixerInserts(track)"
+                      class="mixer-insert-slot empty"
+                    >
+                      <span>No Inserts</span>
+                      <select disabled>
+                        <option>Unavailable</option>
+                      </select>
+                    </label>
+                    <template v-else>
+                      <label
+                        v-for="slot in mixerInsertSlots(track)"
+                        :key="`${track.id}-${slot.id}`"
+                        :class="['mixer-insert-slot', { empty: pluginSlot(track, slot.id).type === 'empty' }]"
+                      >
+                        <span>{{ uniqueMixerPluginLabel(track, slot) }}</span>
+                        <select
+                          :value="pluginSlotValue(track, slot.id)"
+                          :title="pluginSlotLabel(track, slot.id)"
+                          @change="onPluginSelect(track, slot.id, $event.target.value)"
+                        >
+                          <option value="empty::">
+                            Empty
+                          </option>
+                          <option
+                            v-if="selectedPluginMissing(track, slot.id)"
+                            :value="pluginSlotValue(track, slot.id)"
+                          >
+                            {{ pluginSlot(track, slot.id).name }}
+                          </option>
+                          <option
+                            v-for="plugin in pluginOptions.vst3"
+                            :key="`${track.id}-${slot.id}-vst3-${plugin.path}`"
+                            :value="`vst3::${plugin.path}`"
+                          >
+                            {{ plugin.name }}
+                          </option>
+                          <option
+                            v-for="plugin in pluginOptions.vst2"
+                            :key="`${track.id}-${slot.id}-vst2-${plugin.path}`"
+                            :value="`vst2::${plugin.path}`"
+                            disabled
+                          >
+                            {{ plugin.name }} (VST2)
+                          </option>
+                        </select>
+                        <button
+                          type="button"
+                          class="mixer-param-load"
+                          :disabled="pluginSlot(track, slot.id).type === 'empty'"
+                          @click.stop="loadPluginParameters(track.id, slot.id)"
+                        >
+                          Params
+                        </button>
+                        <div
+                          v-if="pluginParameterRows(track.id, slot.id).length"
+                          class="mixer-params"
+                          @click.stop
+                        >
+                          <div
+                            v-for="param in pluginParameterRows(track.id, slot.id)"
+                            :key="`${track.id}-${slot.id}-${param.index}`"
+                            class="mixer-param-row"
+                            @contextmenu.prevent="openAutomationMenu($event, automationTargetForPluginParameter(track, slot.id, param), `${track.name} ${param.name}`)"
+                          >
+                            <span>{{ param.name }}</span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.001"
+                              :value="param.value"
+                              :disabled="param.automatable === false"
+                              @change="setLivePluginParameter(track.id, slot.id, param.index, Number($event.target.value))"
+                            >
+                            <small>{{ parameterValueLabel(param) }}</small>
+                          </div>
+                        </div>
+                      </label>
+                    </template>
+                  </div>
+
+                  <div class="mixer-section mixer-sends">
+                    <span class="mixer-section-label">Send</span>
+                    <div
+                      v-for="(send, index) in mixerSendRows(track)"
+                      :key="send.id || `${track.id}-send-${index}`"
+                      class="mixer-send-row"
+                    >
+                      <select
+                        :value="send.target_bus_id"
+                        @change="updateTrackSend(track, index, { target_bus_id: Number($event.target.value), id: `send_${$event.target.value}` })"
+                      >
+                        <option
+                          v-for="bus in availableOutputBuses(track.id)"
+                          :key="`send-${track.id}-${bus.id}`"
+                          :value="bus.id"
+                        >
+                          {{ bus.name }}
+                        </option>
+                      </select>
+                      <input
+                        type="range"
+                        min="0"
+                        max="2"
+                        step="0.01"
+                        :value="send.level ?? 1"
+                        @change="updateTrackSend(track, index, { level: Number($event.target.value) })"
+                      >
+                      <button
+                        type="button"
+                        :class="{ active: send.enabled !== false }"
+                        @click.stop="updateTrackSend(track, index, { enabled: send.enabled === false })"
+                      >
+                        S
+                      </button>
+                      <button
+                        type="button"
+                        @click.stop="removeTrackSend(track, index)"
+                      >
+                        x
+                      </button>
+                    </div>
+                    <select
+                      class="mixer-send-add"
+                      value=""
+                      @change="onAddTrackSendChange(track, $event)"
+                    >
+                      <option value="">
+                        Add Send
+                      </option>
+                      <option
+                        v-for="bus in availableOutputBuses(track.id)"
+                        :key="`add-send-${track.id}-${bus.id}`"
+                        :value="bus.id"
+                      >
+                        {{ bus.name }}
+                      </option>
+                    </select>
+                  </div>
+
+                  <label class="mixer-pan">
+                    <span>L</span>
+                    <span class="mixer-pan-control">
+                      <span class="mixer-pan-center-line" />
+                      <input
+                        type="range"
+                        min="-1"
+                        max="1"
+                        step="0.01"
+                        :value="track.pan"
+                        @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackPan(track), `${track.name} Pan`)"
+                        @change="updateTrack(track.id, { pan: Number($event.target.value) })"
+                      >
+                    </span>
+                    <span>R</span>
+                    <strong>{{ Number(track.pan || 0).toFixed(2) }}</strong>
+                  </label>
+
+                  <div class="mixer-strip-buttons">
+                    <button
+                      :class="['track-flag', { on: track.mute }]"
+                      title="Mute"
+                      @click.stop="updateTrack(track.id, { mute: !track.mute })"
+                    >
+                      M
+                    </button>
+                    <button
+                      :class="['track-flag', { on: track.solo }]"
+                      title="Solo"
+                      @click.stop="updateTrack(track.id, { solo: !track.solo })"
+                    >
+                      S
+                    </button>
+                  </div>
+
+                  <label class="mixer-fader">
+                    <span>{{ volumeDbLabel(track.volume) }}</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1.4"
+                      step="0.01"
+                      orient="vertical"
+                      :value="track.volume"
+                      @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackVolume(track), `${track.name} Volume`)"
+                      @change="updateTrack(track.id, { volume: Number($event.target.value) })"
+                    >
+                  </label>
+                </section>
+              </div>
+            </div>
+            <div class="mixer-master-dock">
+              <section class="mixer-strip master-strip">
+                <div class="mixer-strip-head">
+                  <span
+                    class="master-strip-color"
+                    :style="{ background: masterBus.color }"
+                  />
+                  <strong>{{ masterBus.name }}</strong>
+                  <small>Main Output</small>
+                </div>
+
+                <div class="mixer-section mixer-inserts">
+                  <span class="mixer-section-label">Insert</span>
+                  <label
+                    v-for="slot in mixerInsertSlots(masterBus)"
+                    :key="`master-${slot.id}`"
+                    :class="['mixer-insert-slot', { empty: pluginSlot(masterBus, slot.id).type === 'empty' }]"
+                  >
+                    <span>{{ uniqueMixerPluginLabel(masterBus, slot) }}</span>
+                    <select
+                      :value="pluginSlotValue(masterBus, slot.id)"
+                      :title="pluginSlotLabel(masterBus, slot.id)"
+                      @change="onMasterBusPluginSelect(slot.id, $event.target.value)"
+                    >
+                      <option value="empty::">
+                        Empty
+                      </option>
+                      <option
+                        v-if="selectedPluginMissing(masterBus, slot.id)"
+                        :value="pluginSlotValue(masterBus, slot.id)"
+                      >
+                        {{ pluginSlot(masterBus, slot.id).name }}
+                      </option>
+                      <option
+                        v-for="plugin in pluginOptions.vst3"
+                        :key="`master-${slot.id}-vst3-${plugin.path}`"
+                        :value="`vst3::${plugin.path}`"
+                      >
+                        {{ plugin.name }}
+                      </option>
+                      <option
+                        v-for="plugin in pluginOptions.vst2"
+                        :key="`master-${slot.id}-vst2-${plugin.path}`"
+                        :value="`vst2::${plugin.path}`"
+                        disabled
+                      >
+                        {{ plugin.name }} (VST2)
+                      </option>
+                    </select>
+                  </label>
+                </div>
+
+                <label class="mixer-pan">
+                  <span>L</span>
+                  <span class="mixer-pan-control">
+                    <span class="mixer-pan-center-line" />
+                    <input
+                      type="range"
+                      min="-1"
+                      max="1"
+                      step="0.01"
+                      :value="masterBus.pan"
+                      @change="updateMasterBus({ pan: Number($event.target.value) })"
+                    >
+                  </span>
+                  <span>R</span>
+                  <strong>{{ Number(masterBus.pan || 0).toFixed(2) }}</strong>
+                </label>
+
+                <div class="mixer-strip-buttons">
+                  <button
+                    :class="['track-flag', { on: masterBus.mute }]"
+                    title="Mute"
+                    @click.stop="updateMasterBus({ mute: !masterBus.mute })"
+                  >
+                    M
+                  </button>
+                  <button
+                    :class="['track-flag', { on: masterBus.solo }]"
+                    title="Solo"
+                    @click.stop="updateMasterBus({ solo: !masterBus.solo })"
+                  >
+                    S
+                  </button>
+                </div>
+
+                <label class="mixer-fader">
+                  <span>{{ volumeDbLabel(masterBus.volume) }}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1.4"
+                    step="0.01"
+                    orient="vertical"
+                    :value="masterBus.volume"
+                    @change="updateMasterBus({ volume: Number($event.target.value) })"
+                  >
+                </label>
+              </section>
+            </div>
+          </div>
+        </div>
       </section>
 
       <aside
         v-show="inspectorVisible"
         class="inspector"
       >
-        <div class="inspector-section">
-          <div class="section-title">
-            Mixer
-          </div>
-          <div
-            v-for="track in tracks"
-            :key="`mix-${track.id}`"
-            class="mix-strip"
-          >
-            <div class="mix-name">
-              <span
-                class="track-color"
-                :style="{ background: track.color }"
-              />
-              <strong>{{ track.name }}</strong>
-            </div>
-            <label>
-              <span>Vol</span>
-              <input
-                type="range"
-                min="0"
-                max="1.4"
-                step="0.01"
-                :value="track.volume"
-                @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackVolume(track), `${track.name} Volume`)"
-                @change="updateTrack(track.id, { volume: Number($event.target.value) })"
-              >
-            </label>
-            <label>
-              <span>Pan</span>
-              <input
-                type="range"
-                min="-1"
-                max="1"
-                step="0.01"
-                :value="track.pan"
-                @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackPan(track), `${track.name} Pan`)"
-                @change="updateTrack(track.id, { pan: Number($event.target.value) })"
-              >
-            </label>
-          </div>
-        </div>
-
         <div class="inspector-section">
           <div class="section-title">
             Engine
@@ -875,134 +1197,6 @@
               <dd>{{ totalNotes }}</dd>
             </div>
           </dl>
-        </div>
-
-        <div class="inspector-section plugin-rack">
-          <div class="section-title rack-title">
-            <span>Rack</span>
-            <button
-              class="rack-scan"
-              :disabled="pluginsLoading"
-              title="Scan VST plugins"
-              @click="loadPlugins()"
-            >
-              {{ pluginsLoading ? 'Scanning' : 'Scan' }}
-            </button>
-          </div>
-          <div
-            v-for="track in tracks"
-            :key="`rack-${track.id}`"
-            :class="['rack-strip', { active: activeTrack?.id === track.id }]"
-          >
-            <div class="rack-strip-head">
-              <span
-                class="track-color"
-                :style="{ background: track.color }"
-              />
-              <strong>{{ track.name }}</strong>
-            </div>
-            <div
-              v-if="isInstrumentTrack(track)"
-              class="rack-slots"
-            >
-              <div
-                v-for="slot in rackSlots"
-                :key="`${track.id}-${slot.id}`"
-                :class="['rack-slot', { empty: pluginSlot(track, slot.id).type === 'empty' }]"
-              >
-                <span>{{ slot.label }}</span>
-                <select
-                  :value="pluginSlotValue(track, slot.id)"
-                  @change="onPluginSelect(track, slot.id, $event.target.value)"
-                >
-                  <option
-                    v-if="slot.id === 'instrument'"
-                    value="builtin::ATRI Basic Synth"
-                  >
-                    ATRI Basic Synth
-                  </option>
-                  <option
-                    v-else
-                    value="empty::"
-                  >
-                    Empty
-                  </option>
-                  <option
-                    v-if="selectedPluginMissing(track, slot.id)"
-                    :value="pluginSlotValue(track, slot.id)"
-                  >
-                    {{ pluginSlot(track, slot.id).name }}
-                  </option>
-                  <option
-                    v-for="plugin in pluginOptions.vst3"
-                    :key="`${slot.id}-vst3-${plugin.path}`"
-                    :value="`vst3::${plugin.path}`"
-                  >
-                    {{ plugin.name }}
-                  </option>
-                  <option
-                    v-for="plugin in pluginOptions.vst2"
-                    :key="`${slot.id}-vst2-${plugin.path}`"
-                    :value="`vst2::${plugin.path}`"
-                    disabled
-                  >
-                    {{ plugin.name }} (VST2)
-                  </option>
-                </select>
-                <small>{{ pluginSlotLabel(track, slot.id) }}</small>
-                <button
-                  type="button"
-                  class="rack-param-load"
-                  :disabled="pluginSlot(track, slot.id).type === 'empty'"
-                  @click.stop="loadPluginParameters(track.id, slot.id)"
-                >
-                  Params
-                </button>
-                <div
-                  v-if="pluginParameterRows(track.id, slot.id).length"
-                  class="rack-params"
-                  @click.stop
-                >
-                  <div
-                    v-for="param in pluginParameterRows(track.id, slot.id)"
-                    :key="`${track.id}-${slot.id}-${param.index}`"
-                    class="rack-param-row"
-                    @contextmenu.prevent="openAutomationMenu($event, automationTargetForPluginParameter(track, slot.id, param), `${track.name} ${param.name}`)"
-                  >
-                    <span>{{ param.name }}</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.001"
-                      :value="param.value"
-                      :disabled="param.automatable === false"
-                      @change="setLivePluginParameter(track.id, slot.id, param.index, Number($event.target.value))"
-                    >
-                    <small>{{ parameterValueLabel(param) }}</small>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <label
-              v-else-if="isAudioTrack(track)"
-              class="rack-slot"
-            >
-              <span>Channels</span>
-              <select
-                :value="track.channel_type || 'multichannel'"
-                @change="updateTrack(track.id, { channel_type: $event.target.value })"
-              >
-                <option value="mono">
-                  Mono
-                </option>
-                <option value="multichannel">
-                  Multi-channel
-                </option>
-              </select>
-              <small>{{ trackChannelLabel(track) }}</small>
-            </label>
-          </div>
         </div>
       </aside>
     </main>
@@ -1397,7 +1591,9 @@ const clipClipboard = ref([])
 const draftNote = ref(null)
 const selectionBox = ref(null)
 const activeClipId = ref(null)
-const pianoVisible = ref(false)
+const lowerEditorMode = ref(null)
+const pianoVisible = computed(() => lowerEditorMode.value === 'piano')
+const mixerVisible = computed(() => lowerEditorMode.value === 'mixer')
 const audioDropActive = ref(false)
 const audioImporting = ref(false)
 const trackCreateDialogOpen = ref(false)
@@ -1421,13 +1617,6 @@ const controllerPanelHeight = computed(() => controllerLaneStackHeight(
   controllerLaneFooterH
 ))
 const pianoQuantizeOptions = PIANO_QUANTIZE_OPTIONS
-const rackSlots = [
-  { id: 'instrument', label: 'Instrument' },
-  { id: 'insert_1', label: 'Insert 1' },
-  { id: 'insert_2', label: 'Insert 2' },
-  { id: 'insert_3', label: 'Insert 3' },
-  { id: 'insert_4', label: 'Insert 4' },
-]
 
 let resizeObserver = null
 let raf = 0
@@ -1487,8 +1676,13 @@ const activeMidiClip = computed(() => {
   }
   return null
 })
+const lowerEditorVisible = computed(() => (
+  (pianoVisible.value && activeMidiClip.value) || mixerVisible.value
+))
+const mixerTracks = computed(() => tracks.value.filter(track => !isAutomationTrack(track)))
+const masterBus = computed(() => normalizeMasterBus(project.value?.master_bus))
 const editorStackStyle = computed(() => {
-  if (!pianoVisible.value || !activeMidiClip.value || !pianoPanelHeight.value) return {}
+  if (!lowerEditorVisible.value || !pianoPanelHeight.value) return {}
   return {
     gridTemplateRows: `minmax(${minArrangementPanelHeight}px, 1fr) ${pianoPanelHeight.value}px`,
   }
@@ -1566,6 +1760,23 @@ const learnedAutomationTargets = computed(() => (
 
 function cloneProject() {
   return JSON.parse(JSON.stringify(project.value || {}))
+}
+
+function normalizeMasterBus(bus = {}) {
+  const source = bus && typeof bus === 'object' ? bus : {}
+  const volume = Number(source.volume ?? 1)
+  const pan = Number(source.pan ?? 0)
+  return {
+    id: 'master',
+    type: 'bus',
+    name: source.name || 'Master Bus',
+    color: source.color || '#58a7b8',
+    volume: Number.isFinite(volume) ? clamp(volume, 0, 2) : 1,
+    pan: Number.isFinite(pan) ? clamp(pan, -1, 1) : 0,
+    mute: Boolean(source.mute),
+    solo: Boolean(source.solo),
+    plugin_slots: Array.isArray(source.plugin_slots) ? source.plugin_slots : [],
+  }
 }
 
 function findProjectTrack(nextProject, trackId) {
@@ -1944,7 +2155,7 @@ async function createClip(type = 'midi') {
   })
   selectedClipIds.value = new Set([clip.id])
   activeClipId.value = clip.id
-  if (type === 'midi') pianoVisible.value = true
+  if (type === 'midi') openPiano()
   drawAll()
   return clip
 }
@@ -2008,7 +2219,7 @@ async function onAudioDrop(event) {
       if (res?.clip?.id) {
         selectedClipIds.value = new Set([res.clip.id])
         activeClipId.value = res.clip.id
-        pianoVisible.value = false
+        closePiano()
       }
     }
   } catch (err) {
@@ -2113,7 +2324,7 @@ function openFirstMidiClip() {
     selectTrack(track.id)
     activeClipId.value = clip.id
     selectedClipIds.value = new Set([clip.id])
-    pianoVisible.value = true
+    openPiano()
     return
   }
 }
@@ -2242,7 +2453,7 @@ function onArrangementDoubleClick(event) {
   selectedClipIds.value = new Set([hit.clip.id])
   activeClipId.value = hit.clip.id
   if (hit.clip.type === 'midi') {
-    pianoVisible.value = true
+    openPiano()
     selectedNoteIds.value = new Set()
   }
   drawAll()
@@ -2677,7 +2888,8 @@ async function pasteClips() {
   if (first) {
     activeClipId.value = first.clip.id
     selectTrack(first.track.id)
-    pianoVisible.value = first.clip.type === 'midi'
+    if (first.clip.type === 'midi') openPiano()
+    else closePiano()
   }
 }
 
@@ -2691,7 +2903,7 @@ async function deleteSelectedClips() {
   })
   if (deleting.has(activeClipId.value)) {
     activeClipId.value = null
-    pianoVisible.value = false
+    closePiano()
     selectedNoteIds.value = new Set()
   }
   selectedClipIds.value = new Set()
@@ -3568,8 +3780,12 @@ function makeClipId() {
   return `clip_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
+function openPiano() {
+  lowerEditorMode.value = 'piano'
+}
+
 function closePiano() {
-  pianoVisible.value = false
+  if (lowerEditorMode.value === 'piano') lowerEditorMode.value = null
   selectedNoteIds.value = new Set()
   draftNote.value = null
   selectionBox.value = null
@@ -3580,6 +3796,24 @@ function closePiano() {
   unbindPianoResize()
   unbindControllerDrag()
   unbindAutomationDrag()
+  drawAll()
+}
+
+function openMixer() {
+  lowerEditorMode.value = 'mixer'
+  selectedNoteIds.value = new Set()
+  draftNote.value = null
+  selectionBox.value = null
+  pianoQuantizeMenuOpen.value = false
+  controllerMenuLaneId.value = null
+  unbindPianoDrag()
+  unbindPianoResize()
+  unbindControllerDrag()
+  drawAll()
+}
+
+function closeMixer() {
+  if (lowerEditorMode.value === 'mixer') lowerEditorMode.value = null
   drawAll()
 }
 
@@ -3621,6 +3855,136 @@ function availableOutputBuses(trackId = null) {
     && (trackId == null || Number(track.id) !== Number(trackId))
     && !outputChainContainsTrack(track, trackId)
   ))
+}
+
+function canUseMixerInserts(track) {
+  return isInstrumentTrack(track) || isBusTrack(track)
+}
+
+function insertSlotNumber(slotId) {
+  const match = String(slotId || '').match(/^insert_(\d+)$/)
+  return match ? Number(match[1]) : null
+}
+
+function nextInsertSlotId(track) {
+  const used = new Set(
+    (track?.plugin_slots || [])
+      .map(slot => insertSlotNumber(slot.id))
+      .filter(number => number !== null)
+  )
+  let nextNumber = 1
+  while (used.has(nextNumber)) nextNumber += 1
+  return `insert_${nextNumber}`
+}
+
+function mixerInsertSlots(track) {
+  if (!canUseMixerInserts(track)) return []
+  const slots = (track?.plugin_slots || [])
+    .filter(slot => insertSlotNumber(slot.id) !== null)
+    .sort((a, b) => insertSlotNumber(a.id) - insertSlotNumber(b.id))
+  return [
+    ...slots,
+    { id: nextInsertSlotId(track), type: 'empty', name: 'Empty', addSlot: true },
+  ]
+}
+
+function mixerPluginDisplayLabel(track, slot) {
+  const current = pluginSlot(track, slot.id)
+  if (current.type === 'empty') return slot.addSlot ? 'Add Insert' : 'Empty'
+  return current.name || 'Plugin'
+}
+
+function mixerRouteKey(track) {
+  return String(track?.id ?? 'master')
+}
+
+function mixerDuplicateRoutes() {
+  return [...mixerTracks.value, masterBus.value]
+}
+
+function uniqueMixerPluginLabel(track, slot) {
+  const baseLabel = mixerPluginDisplayLabel(track, slot)
+  if (baseLabel === 'Add Insert' || baseLabel === 'Empty') return baseLabel
+  const duplicates = []
+  for (const mixerTrack of mixerDuplicateRoutes()) {
+    for (const insertSlot of mixerInsertSlots(mixerTrack)) {
+      if (insertSlot.addSlot) continue
+      if (mixerPluginDisplayLabel(mixerTrack, insertSlot) === baseLabel) {
+        duplicates.push(`${mixerRouteKey(mixerTrack)}:${insertSlot.id}`)
+      }
+    }
+  }
+  const duplicateIndex = duplicates.indexOf(`${mixerRouteKey(track)}:${slot.id}`)
+  return duplicateIndex === 0 ? baseLabel : `${baseLabel} (${duplicateIndex})`
+}
+
+function mixerSendRows(track) {
+  return Array.isArray(track?.sends) ? track.sends : []
+}
+
+function normalizedTrackSends(track) {
+  return mixerSendRows(track).map(send => ({
+    id: send.id || `send_${send.target_bus_id}`,
+    target_bus_id: Number(send.target_bus_id),
+    level: Number(send.level ?? 1),
+    enabled: send.enabled !== false,
+  }))
+}
+
+function updateTrackSend(track, index, patch) {
+  const sends = normalizedTrackSends(track)
+  if (!sends[index]) return null
+  sends[index] = { ...sends[index], ...patch }
+  if (sends[index].target_bus_id == null || Number.isNaN(Number(sends[index].target_bus_id))) {
+    sends.splice(index, 1)
+  }
+  return updateTrack(track.id, { sends })
+}
+
+function addTrackSend(track, targetBusId) {
+  const target = Number(targetBusId)
+  if (!Number.isFinite(target)) return null
+  const sends = normalizedTrackSends(track)
+  if (sends.some(send => Number(send.target_bus_id) === target)) return null
+  sends.push({ id: `send_${target}`, target_bus_id: target, level: 1, enabled: true })
+  return updateTrack(track.id, { sends })
+}
+
+function removeTrackSend(track, index) {
+  const sends = normalizedTrackSends(track)
+  sends.splice(index, 1)
+  return updateTrack(track.id, { sends })
+}
+
+function onAddTrackSendChange(track, event) {
+  addTrackSend(track, event.target.value)
+  event.target.value = ''
+}
+
+function updateMasterBus(patch) {
+  return persistProjectUpdate(nextProject => {
+    nextProject.master_bus = {
+      ...normalizeMasterBus(nextProject.master_bus),
+      ...patch,
+    }
+  })
+}
+
+function setMasterBusPlugin(plugin, slotId) {
+  const slot = {
+    ...(plugin || {}),
+    id: slotId,
+  }
+  const pluginSlots = masterBus.value.plugin_slots
+    .filter(existing => existing?.id !== slotId)
+  return updateMasterBus({ plugin_slots: [slot, ...pluginSlots] })
+}
+
+function volumeDbLabel(volume) {
+  const value = Number(volume ?? 0)
+  if (value <= 0.0001) return '-inf dB'
+  const db = 20 * Math.log10(value)
+  return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`
 }
 
 function updateTrackOutputBus(track, value) {
@@ -3863,6 +4227,22 @@ async function onPluginSelect(track, slotId, value) {
     .find(item => item.path === path)
   if (!plugin) return
   await setTrackPlugin(track.id, {
+    ...plugin,
+    id: slotId,
+    type,
+  }, slotId)
+}
+
+async function onMasterBusPluginSelect(slotId, value) {
+  const { type, path } = parsePluginValue(value)
+  if (type === 'empty' || type === 'builtin') {
+    await setMasterBusPlugin({ id: slotId, type: 'empty', name: 'Empty' }, slotId)
+    return
+  }
+  const plugin = [...pluginOptions.value.vst3, ...pluginOptions.value.vst2]
+    .find(item => item.path === path)
+  if (!plugin) return
+  await setMasterBusPlugin({
     ...plugin,
     id: slotId,
     type,
@@ -4887,7 +5267,7 @@ watch(project, (nextProject) => {
   syncTimeSignatureFields(nextProject)
   if (activeClipId.value && !findClipRecord(activeClipId.value)) {
     activeClipId.value = null
-    pianoVisible.value = false
+    if (lowerEditorMode.value === 'piano') lowerEditorMode.value = null
     selectedNoteIds.value = new Set()
   }
   drawAll()
@@ -5742,15 +6122,7 @@ watch(positionBeats, (value) => {
   white-space: nowrap;
 }
 
-.mix-name strong {
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.track-title-text,
-.mix-name strong {
+.track-title-text {
   font-size: 13px;
 }
 
@@ -5813,10 +6185,10 @@ watch(positionBeats, (value) => {
   min-width: 0;
   width: 100%;
   height: 24px;
+  border: 1px solid rgba(229, 236, 245, 0.12);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border: 1px solid rgba(229, 236, 245, 0.12);
   border-radius: 5px;
   background: #101215;
   color: var(--t2);
@@ -6421,33 +6793,6 @@ watch(positionBeats, (value) => {
   border-bottom: 1px solid rgba(229, 236, 245, 0.1);
 }
 
-.mix-strip {
-  padding: 10px;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.07);
-}
-
-.mix-name,
-.rack-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mix-strip label {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  color: var(--t4);
-  font-size: 11px;
-}
-
-.mix-strip input[type='range'] {
-  width: 100%;
-  accent-color: #9ebfff;
-}
-
 .engine-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6473,153 +6818,348 @@ watch(positionBeats, (value) => {
   font-size: 12px;
 }
 
-.plugin-rack {
-  padding-bottom: 10px;
+.mixer-panel {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #17191c;
 }
 
-.rack-title {
+.mixer-head {
+  flex: 0 0 auto;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(229, 236, 245, 0.12);
+  background: #202428;
+}
+
+.mixer-head div:first-child,
+.mixer-actions {
+  display: flex;
+  align-items: baseline;
   gap: 8px;
 }
 
-.rack-scan {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 5px;
-  background: #191d21;
+.mixer-head span {
   color: var(--t3);
-  cursor: pointer;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
 }
 
-.rack-scan:hover {
+.mixer-head strong {
   color: var(--t1);
-  border-color: rgba(240, 209, 122, 0.3);
-}
-
-.rack-strip {
-  margin: 8px 10px 0;
-  padding: 9px;
-  border: 1px solid rgba(229, 236, 245, 0.1);
-  border-radius: 6px;
-  background: #181b1f;
-  color: var(--t2);
   font-size: 12px;
 }
 
-.rack-strip.active {
-  border-color: rgba(240, 209, 122, 0.22);
-  background: #1d2024;
-}
-
-.rack-strip-head {
-  display: flex;
+.mixer-actions {
   align-items: center;
-  gap: 8px;
 }
 
-.rack-strip-head strong {
+.mixer-strip-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 154px;
+  overflow: hidden;
+  background: #14171a;
+}
+
+.mixer-track-strip-scroll {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  background: #14171a;
+}
+
+.mixer-strip-row {
+  height: 100%;
+  width: max-content;
+  min-width: 100%;
+  display: flex;
+  align-items: stretch;
+}
+
+.mixer-strip {
+  width: 154px;
+  min-width: 154px;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(48px, 1fr) auto minmax(40px, auto) auto 132px;
+  gap: 8px;
+  padding: 8px;
+  border-right: 1px solid rgba(229, 236, 245, 0.1);
+  background: #202428;
+  color: var(--t2);
+}
+
+.mixer-strip.active {
+  background: #252a2f;
+  box-shadow: inset 0 2px 0 rgba(240, 209, 122, 0.7);
+}
+
+.mixer-strip-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 4px minmax(0, 1fr);
+  gap: 3px 7px;
+  align-items: center;
+}
+
+.mixer-strip-head .track-color,
+.master-strip-color {
+  grid-row: 1 / 3;
+  width: 4px;
+  height: 100%;
+  min-height: 28px;
+  border-radius: 999px;
+}
+
+.master-strip-color {
+  display: block;
+  background: #58a7b8;
+}
+
+.mixer-strip-head strong,
+.mixer-strip-head small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mixer-strip-head strong {
+  color: var(--t1);
   font-size: 12px;
 }
 
-.rack-slots {
+.mixer-strip-head small {
+  color: var(--t4);
+  font-size: 10px;
+}
+
+.mixer-section {
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  margin-top: 9px;
+  gap: 5px;
 }
 
-.rack-slot {
-  display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
-  align-items: center;
-  gap: 4px 8px;
-}
-
-.rack-slot span {
+.mixer-section-label {
   color: var(--t4);
+  font-family: var(--mono);
   font-size: 10px;
   text-transform: uppercase;
 }
 
-.rack-slot select {
+.mixer-inserts {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.mixer-sends {
+  max-height: 92px;
+  overflow-y: auto;
+}
+
+.mixer-insert-slot {
   min-width: 0;
-  width: 100%;
-  height: 28px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border: 1px solid rgba(229, 236, 245, 0.12);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid rgba(229, 236, 245, 0.09);
   border-radius: 5px;
-  background: #101215;
-  color: var(--t2);
-  font-size: 11px;
+  background: #181b1f;
 }
 
-.rack-slot.empty select {
-  color: var(--t4);
-}
-
-.rack-slot small,
-.rack-meta {
-  grid-column: 2;
-  color: var(--t4);
-  font-size: 10px;
+.mixer-insert-slot span {
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rack-param-load {
-  grid-column: 2;
-  justify-self: start;
-  min-height: 24px;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 5px;
-  background: #15181b;
   color: var(--t3);
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.rack-params {
-  grid-column: 1 / -1;
+.mixer-insert-slot select,
+.mixer-send-row select,
+.mixer-send-add {
+  min-width: 0;
+  width: 100%;
+  height: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 4px;
+  background: #101215;
+  color: var(--t2);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixer-insert-slot.empty select {
+  color: var(--t4);
+}
+
+.mixer-param-load,
+.mixer-send-row button {
+  height: 22px;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 4px;
+  background: #15181b;
+  color: var(--t3);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.mixer-param-load:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.mixer-params {
   display: grid;
-  gap: 5px;
-  padding: 6px;
+  gap: 4px;
+  padding: 5px;
   border: 1px solid rgba(229, 236, 245, 0.08);
   border-radius: 5px;
   background: rgba(13, 15, 18, 0.56);
 }
 
-.rack-param-row {
+.mixer-param-row {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) 54px;
-  align-items: center;
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
 }
 
-.rack-param-row span {
+.mixer-param-row span,
+.mixer-param-row small {
   min-width: 0;
   overflow: hidden;
+  color: var(--t3);
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--t3);
-  text-transform: none;
 }
 
-.rack-param-row input {
+.mixer-param-row input {
   min-width: 0;
 }
 
-.rack-param-row small {
-  grid-column: auto;
+.mixer-param-row small {
+  color: var(--t4);
   font-family: var(--mono);
-  text-align: right;
+}
+
+.mixer-send-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px 22px 22px;
+  gap: 4px;
+  align-items: center;
+}
+
+.mixer-send-row input {
+  min-width: 0;
+  accent-color: #58a7b8;
+}
+
+.mixer-send-row button.active {
+  color: #fff;
+  border-color: rgba(88, 167, 184, 0.56);
+  background: #0d74c9;
+}
+
+.mixer-pan {
+  min-height: 40px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px 6px;
+  align-items: center;
+  color: var(--t4);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.mixer-pan-control {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.mixer-pan-center-line {
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 999px;
+  background: #0d74c9;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.mixer-pan input {
+  width: 100%;
+  min-width: 0;
+  accent-color: #9ebfff;
+}
+
+.mixer-pan strong {
+  grid-column: 1 / -1;
+  color: var(--t2);
+  font-size: 10px;
+  text-align: center;
+}
+
+.mixer-strip-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.mixer-fader {
+  min-height: 132px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  justify-items: center;
+  gap: 6px;
+}
+
+.mixer-fader span {
+  color: var(--t3);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.mixer-fader input {
+  width: 108px;
+  align-self: center;
+  accent-color: #58a7b8;
+  transform: rotate(-90deg);
+}
+
+.mixer-master-dock {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.master-strip {
+  height: 100%;
+  grid-template-rows: auto minmax(48px, 1fr) minmax(40px, auto) auto 132px;
+  border-left: 1px solid rgba(88, 167, 184, 0.32);
+  background: #252b30;
+  box-shadow: -12px 0 22px rgba(0, 0, 0, 0.26);
 }
 
 @media (max-width: 1120px) {

@@ -290,7 +290,7 @@ def test_music_studio_track_list_sidebar_can_be_resized():
     assert "grid-template-columns: var(--track-list-width) max-content;" in studio_text
 
 
-def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_rack():
+def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_mixer():
     studio_text = _read(STUDIO_COMPONENT)
 
     assert ':draggable="canDragTrackRow(track)"' in studio_text
@@ -313,7 +313,7 @@ def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_rack(
     )
     assert ".track-row.reorder-before::before" in studio_text
     assert ".track-row.reorder-after::after" in studio_text
-    assert ':key="`rack-${track.id}`"' in studio_text
+    assert ':key="`mixer-${track.id}`"' in studio_text
 
 
 def test_music_studio_track_list_sidebar_uses_single_aligned_divider():
@@ -405,21 +405,144 @@ def test_music_studio_plugin_names_truncate_like_track_titles():
         "  min-width: 0;\n"
         "  width: 100%;\n"
         "  height: 24px;\n"
+        "  border: 1px solid rgba(229, 236, 245, 0.12);\n"
         "  overflow: hidden;\n"
         "  text-overflow: ellipsis;\n"
         "  white-space: nowrap;\n"
     ) in studio_text
     assert (
-        ".rack-slot select {\n"
+        ".mixer-insert-slot select,\n"
+        ".mixer-send-row select,\n"
+        ".mixer-send-add {\n"
         "  min-width: 0;\n"
         "  width: 100%;\n"
-        "  height: 28px;\n"
+        "  height: 24px;\n"
         "  overflow: hidden;\n"
-        "  text-overflow: ellipsis;\n"
-        "  white-space: nowrap;\n"
     ) in studio_text
-    assert ".rack-slot small,\n.rack-meta {" in studio_text
+    assert ".mixer-insert-slot span {" in studio_text
     assert "text-overflow: ellipsis;" in studio_text
+
+
+def test_music_studio_has_mutually_exclusive_piano_and_mixer_lower_windows():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const lowerEditorMode = ref(null)" in studio_text
+    assert "const pianoVisible = computed(() => lowerEditorMode.value === 'piano')" in studio_text
+    assert "const mixerVisible = computed(() => lowerEditorMode.value === 'mixer')" in studio_text
+    assert '@click="openMixer"' in studio_text
+    assert "function openMixer()" in studio_text
+    assert "function closeMixer()" in studio_text
+    assert "lowerEditorMode.value = 'mixer'" in studio_text
+    assert "lowerEditorMode.value = 'piano'" in studio_text
+    assert 'v-if="mixerVisible"' in studio_text
+    assert 'v-if="pianoVisible && activeMidiClip"' in studio_text
+
+
+def test_music_studio_mixer_window_replaces_inspector_rack():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'class="mixer-panel"' in studio_text
+    assert ":class=\"['mixer-strip', { active: activeTrack?.id === track.id }]\"" in studio_text
+    assert 'v-for="track in mixerTracks"' in studio_text
+    assert (
+        "const mixerTracks = computed(() => tracks.value.filter("
+        "track => !isAutomationTrack(track)))"
+        in studio_text
+    )
+    assert 'class="mixer-strip master-strip"' in studio_text
+    assert "Master Bus" in studio_text
+    assert 'class="mixer-master-dock"' in studio_text
+    assert 'class="plugin-rack"' not in studio_text
+    assert "const rackSlots =" not in studio_text
+    assert ">Mixer\n          </div>" not in studio_text
+
+
+def test_music_studio_mixer_uses_dynamic_inserts_duplicate_labels_and_sends():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "function mixerInsertSlots(track)" in studio_text
+    assert "function nextInsertSlotId(track)" in studio_text
+    assert "function insertSlotNumber(slotId)" in studio_text
+    assert "return `insert_${nextNumber}`" in studio_text
+    assert "function uniqueMixerPluginLabel(track, slot)" in studio_text
+    assert (
+        "return duplicateIndex === 0 ? baseLabel : `${baseLabel} (${duplicateIndex})`"
+        in studio_text
+    )
+    assert "function mixerSendRows(track)" in studio_text
+    assert "function updateTrackSend(track, index, patch)" in studio_text
+    assert "function addTrackSend(track, targetBusId)" in studio_text
+    assert "function removeTrackSend(track, index)" in studio_text
+    assert (
+        "@contextmenu.prevent=\"openAutomationMenu($event, automationTargetForTrackPan(track), "
+        "`${track.name} Pan`)\""
+    ) in studio_text
+    assert (
+        "@contextmenu.prevent=\"openAutomationMenu($event, automationTargetForTrackVolume(track), "
+        "`${track.name} Volume`)\""
+    ) in studio_text
+    assert ".mixer-pan-center-line" in studio_text
+
+
+def test_music_studio_mixer_docks_master_and_preserves_pan_fader_space():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'class="mixer-strip-body"' in studio_text
+    assert 'class="mixer-track-strip-scroll"' in studio_text
+    assert 'class="mixer-master-dock"' in studio_text
+    assert (
+        ".mixer-strip-body {\n"
+        "  flex: 1 1 auto;\n"
+        "  min-height: 0;\n"
+        "  min-width: 0;\n"
+        "  display: grid;\n"
+        "  grid-template-columns: minmax(0, 1fr) 154px;"
+    ) in studio_text
+    assert (
+        ".mixer-track-strip-scroll {\n"
+        "  min-height: 0;\n"
+        "  min-width: 0;\n"
+        "  overflow: auto;"
+    ) in studio_text
+    assert (
+        ".mixer-strip {\n"
+        "  width: 154px;\n"
+        "  min-width: 154px;\n"
+        "  height: 100%;\n"
+        "  min-height: 0;\n"
+        "  display: grid;\n"
+        "  grid-template-rows: auto minmax(48px, 1fr) auto minmax(40px, auto) auto 132px;"
+    ) in studio_text
+    assert ".mixer-pan {\n  min-height: 40px;" in studio_text
+    assert ".mixer-fader {\n  min-height: 132px;" in studio_text
+    assert (
+        ".master-strip {\n"
+        "  height: 100%;\n"
+        "  grid-template-rows: auto minmax(48px, 1fr) minmax(40px, auto) auto 132px;"
+        in studio_text
+    )
+
+
+def test_music_studio_master_bus_uses_editable_strip_controls_without_sends():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert (
+        "const masterBus = computed(() => normalizeMasterBus(project.value?.master_bus))"
+        in studio_text
+    )
+    assert "function normalizeMasterBus(bus = {})" in studio_text
+    assert "function updateMasterBus(patch)" in studio_text
+    assert "function setMasterBusPlugin(plugin, slotId)" in studio_text
+    assert "async function onMasterBusPluginSelect(slotId, value)" in studio_text
+    assert "{{ masterBus.name }}" in studio_text
+    assert ":style=\"{ background: masterBus.color }\"" in studio_text
+    assert 'v-for="slot in mixerInsertSlots(masterBus)"' in studio_text
+    assert "@change=\"onMasterBusPluginSelect(slot.id, $event.target.value)\"" in studio_text
+    assert '@change="updateMasterBus({ pan: Number($event.target.value) })"' in studio_text
+    assert '@click.stop="updateMasterBus({ mute: !masterBus.mute })"' in studio_text
+    assert '@click.stop="updateMasterBus({ solo: !masterBus.solo })"' in studio_text
+    assert '@change="updateMasterBus({ volume: Number($event.target.value) })"' in studio_text
+    assert 'class="mixer-master-body"' not in studio_text
 
 
 def test_music_studio_automation_tracks_can_be_drawn_like_controller_lanes():

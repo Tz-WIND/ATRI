@@ -77,6 +77,15 @@ def default_project() -> dict[str, Any]:
         "length_beats": 16.0,
         "updated_at": _now_iso(),
         "automation_learned_parameters": [],
+        "master_bus": {
+            "name": "Master Bus",
+            "color": DEFAULT_TRACK_COLORS[5],
+            "volume": 1.0,
+            "pan": 0.0,
+            "mute": False,
+            "solo": False,
+            "plugin_slots": [],
+        },
         "tracks": [
             {
                 "id": 1,
@@ -162,6 +171,7 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         "automation_learned_parameters": _normalize_learned_parameters(
             project.get("automation_learned_parameters")
         ),
+        "master_bus": _normalize_master_bus(project.get("master_bus")),
         "tracks": [],
     }
 
@@ -462,8 +472,12 @@ def set_track_plugin(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     project = load_project()
     track = find_track(project, track_id)
-    if track.get("type") != "instrument":
-        raise ValueError("only instrument tracks support instrument plugins")
+    track_type = str(track.get("type") or "instrument")
+    slot_id = str(slot_id or "instrument").strip() or "instrument"
+    if track_type == "bus" and slot_id == "instrument":
+        raise ValueError("bus tracks only support insert plugins")
+    if track_type not in {"instrument", "bus"}:
+        raise ValueError("only instrument and bus tracks support plugin inserts")
     slot = _normalize_plugin_slot(plugin, slot_id=slot_id)
     slots = [s for s in track.get("plugin_slots", []) if s.get("id") != slot["id"]]
     track["plugin_slots"] = _sort_plugin_slots([slot, *slots])
@@ -3371,6 +3385,20 @@ def _normalize_track_channel_type(value: Any, *, track_type: str) -> str:
     if parsed in {"multi", "multichannel", "multi_channel", "stereo"}:
         return "multichannel"
     return "multichannel"
+
+
+def _normalize_master_bus(bus: Any) -> dict[str, Any]:
+    raw = bus if isinstance(bus, dict) else {}
+    return {
+        "host_track_id": _nullable_non_negative_int(raw.get("host_track_id")),
+        "name": str(raw.get("name") or "Master Bus"),
+        "color": _track_color(raw.get("color"), 5),
+        "volume": _bounded_float(raw.get("volume"), 1.0, 0.0, 2.0),
+        "pan": _bounded_float(raw.get("pan"), 0.0, -1.0, 1.0),
+        "mute": bool(raw.get("mute", False)),
+        "solo": bool(raw.get("solo", False)),
+        "plugin_slots": _normalize_plugin_slots(raw, track_type="bus"),
+    }
 
 
 def _normalize_plugin_slots(

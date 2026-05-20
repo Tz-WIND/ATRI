@@ -682,6 +682,24 @@ def _route_sends_for_host(
     return sends, skipped
 
 
+def _master_bus_for_host(project: dict[str, Any]) -> dict[str, Any] | None:
+    master_bus = project.get("master_bus")
+    if not isinstance(master_bus, dict):
+        return None
+    master_bus["type"] = "bus"
+    master_bus["name"] = str(master_bus.get("name") or "Master Bus")
+    master_bus.setdefault("volume", 1.0)
+    master_bus.setdefault("pan", 0.0)
+    master_bus.setdefault("mute", False)
+    master_bus.setdefault("solo", False)
+    master_bus.setdefault("plugin_slots", [])
+    master_bus.setdefault("notes", [])
+    master_bus.setdefault("midi_events", [])
+    master_bus.setdefault("clips", [])
+    master_bus.setdefault("sends", [])
+    return master_bus
+
+
 def _automation_lanes_for_host(
     project: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -823,7 +841,10 @@ async def _load_track_slots(
 ) -> list[dict[str, Any]]:
     if track.get("type") == "audio":
         return []
-    slots = track.get("plugin_slots") or [_instrument_slot(track)]
+    if track.get("type") == "bus":
+        slots = track.get("plugin_slots") if isinstance(track.get("plugin_slots"), list) else []
+    else:
+        slots = track.get("plugin_slots") or [_instrument_slot(track)]
     commands = []
     for slot in slots:
         if isinstance(slot, dict):
@@ -977,6 +998,7 @@ async def _sync_project_to_host(
         int(track.get("id", -1)) for track in status.get("tracks", []) if isinstance(track, dict)
     }
     project_host_track_ids: set[int] = set()
+    master_bus = _master_bus_for_host(project)
     for track in project.get("tracks", []):
         if not isinstance(track, dict):
             continue
@@ -985,6 +1007,8 @@ async def _sync_project_to_host(
         project_host_track_id = track.get("host_track_id")
         if project_host_track_id is not None:
             project_host_track_ids.add(int(project_host_track_id))
+    if master_bus is not None and master_bus.get("host_track_id") is not None:
+        project_host_track_ids.add(int(master_bus["host_track_id"]))
 
     meter = project.get("time_signature") or [4, 4]
     commands.append(
@@ -1004,6 +1028,7 @@ async def _sync_project_to_host(
     routing_skipped: list[dict[str, Any]] = []
     routing_routes = 0
     route_tracks: list[dict[str, Any]] = []
+    master_slots_loaded = False
     for track in project.get("tracks", []):
         if not isinstance(track, dict):
             continue
@@ -1025,6 +1050,31 @@ async def _sync_project_to_host(
         host_track_id = int(host_track_id)
         route_tracks.append(track)
 
+    if master_bus is not None:
+        host_track_id = master_bus.get("host_track_id")
+        if host_track_id is None or int(host_track_id) not in host_track_ids:
+            response = await host.send_command(
+                "add_track",
+                {"name": master_bus.get("name", "Master Bus")},
+            )
+            commands.append(response)
+            host_track_id = _response_data(response).get("track_id")
+            if host_track_id is not None:
+                master_bus["host_track_id"] = int(host_track_id)
+                host_track_ids.add(int(host_track_id))
+                project_changed = True
+                commands.extend(await _load_track_slots(host, int(host_track_id), master_bus))
+                master_slots_loaded = True
+
+        if host_track_id is not None:
+            route_tracks.append(master_bus)
+
+    master_host_track_id = (
+        int(master_bus["host_track_id"])
+        if master_bus is not None and master_bus.get("host_track_id") is not None
+        else None
+    )
+
     for track in route_tracks:
         host_track_id = int(track["host_track_id"])
         commands.append(
@@ -1041,7 +1091,17 @@ async def _sync_project_to_host(
 
     for track in route_tracks:
         host_track_id = int(track["host_track_id"])
-        output_track_id, routing_skip = _route_output_for_host(project, track)
+        if track is master_bus:
+            output_track_id, routing_skip = None, None
+        else:
+            output_track_id, routing_skip = _route_output_for_host(project, track)
+            if (
+                output_track_id is None
+                and routing_skip is None
+                and master_host_track_id is not None
+                and track.get("output_bus_id") is None
+            ):
+                output_track_id = master_host_track_id
         if routing_skip is not None:
             routing_skipped.append(routing_skip)
         commands.append(
@@ -1063,6 +1123,15 @@ async def _sync_project_to_host(
                     "track_id": host_track_id,
                     "sends": route_sends,
                 },
+            )
+        )
+
+    if master_host_track_id is not None and not master_slots_loaded:
+        commands.extend(
+            await _load_track_slots(
+                host,
+                master_host_track_id,
+                cast(dict[str, Any], master_bus),
             )
         )
 

@@ -74,6 +74,55 @@ def test_create_track_supports_bus_tracks_and_output_routing(tmp_path, monkeypat
     assert project["tracks"][-1]["output_bus_id"] == bus_track["id"]
 
 
+def test_project_normalizes_master_bus_controls_and_insert_slots(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    project = save_project(
+        {
+            "master_bus": {
+                "host_track_id": 12,
+                "name": "Main",
+                "color": "#bad-color",
+                "volume": 2.5,
+                "pan": -2,
+                "mute": 1,
+                "solo": 0,
+                "plugin_slots": [
+                    {"id": "instrument", "type": "vst3", "name": "Ignored"},
+                    {
+                        "id": "insert_1",
+                        "type": "vst3",
+                        "name": "Limiter",
+                        "path": "C:/VST3/Limiter.vst3",
+                    },
+                ],
+            },
+            "tracks": [{"id": 1, "name": "Lead"}],
+        }
+    )
+
+    master_bus = project["master_bus"]
+    assert master_bus["host_track_id"] == 12
+    assert master_bus["name"] == "Main"
+    assert master_bus["color"] == "#58a7b8"
+    assert master_bus["volume"] == 2.0
+    assert master_bus["pan"] == -1.0
+    assert master_bus["mute"] is True
+    assert master_bus["solo"] is False
+    assert master_bus["plugin_slots"] == [
+        {
+            "id": "insert_1",
+            "type": "vst3",
+            "name": "Limiter",
+            "path": "C:/VST3/Limiter.vst3",
+            "dll_path": "",
+            "vendor": "",
+            "category": "",
+            "version": "",
+        }
+    ]
+
+
 def test_project_repairs_invalid_and_cyclic_output_buses(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
@@ -1357,6 +1406,50 @@ def test_set_track_plugin_updates_insert_slot_without_changing_instrument(tmp_pa
     assert slots["insert_1"]["type"] == "vst3"
     assert slots["insert_1"]["name"] == "Space Verb"
     assert track["instrument"] == "ATRI Basic Synth"
+
+
+def test_set_track_plugin_updates_bus_insert_slot(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    _, bus_track = create_track("FX Bus", track_type="bus")
+
+    _, track = set_track_plugin(
+        bus_track["id"],
+        {
+            "type": "vst3",
+            "name": "Bus Compressor",
+            "path": "C:/VST3/BusCompressor.vst3",
+        },
+        slot_id="insert_1",
+    )
+
+    assert track["type"] == "bus"
+    assert track["instrument"] == "Bus"
+    assert track["plugin_slots"] == [
+        {
+            "id": "insert_1",
+            "type": "vst3",
+            "name": "Bus Compressor",
+            "path": "C:/VST3/BusCompressor.vst3",
+            "dll_path": "",
+            "vendor": "",
+            "category": "",
+            "version": "",
+        }
+    ]
+
+
+def test_set_track_plugin_rejects_bus_instrument_slot(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    _, bus_track = create_track("FX Bus", track_type="bus")
+
+    with pytest.raises(ValueError, match="bus tracks only support insert plugins"):
+        set_track_plugin(
+            bus_track["id"],
+            {"type": "vst3", "name": "Synth", "path": "C:/VST3/Synth.vst3"},
+            slot_id="instrument",
+        )
 
 
 def test_set_track_plugin_can_clear_insert_slot(tmp_path, monkeypatch):
