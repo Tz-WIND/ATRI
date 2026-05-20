@@ -231,9 +231,7 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
             ),
             "plugin_slots": _normalize_plugin_slots(raw_track, track_type=track_type),
             "output_bus_id": _nullable_non_negative_int(raw_track.get("output_bus_id")),
-            "sends": []
-            if track_type == "automation"
-            else _normalize_track_sends(raw_track),
+            "sends": [] if track_type == "automation" else _normalize_track_sends(raw_track),
             "clips": clips,
             "notes": notes,
             "midi_events": midi_events,
@@ -3453,11 +3451,11 @@ def _repair_output_bus_routing(tracks: list[dict[str, Any]]) -> None:
         if int(output_bus_id) not in bus_ids or int(output_bus_id) == int(track["id"]):
             track["output_bus_id"] = None
 
-    outputs = {
-        int(track["id"]): track.get("output_bus_id")
-        for track in tracks
-        if track.get("output_bus_id") is not None
-    }
+    outputs: dict[int, int] = {}
+    for track in tracks:
+        output_bus_id = track.get("output_bus_id")
+        if output_bus_id is not None:
+            outputs[int(track["id"])] = int(output_bus_id)
 
     def has_cycle(start_id: int) -> bool:
         seen: set[int] = set()
@@ -3466,7 +3464,7 @@ def _repair_output_bus_routing(tracks: list[dict[str, Any]]) -> None:
             if current_id in seen:
                 return True
             seen.add(current_id)
-            current_id = int(outputs[current_id])
+            current_id = outputs[current_id]
         return False
 
     for track in tracks:

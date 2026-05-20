@@ -611,11 +611,17 @@ def _host_track_id_for_project_track(
     project_track_id: object,
 ) -> int | None:
     try:
-        wanted = int(project_track_id)
+        wanted = int(cast(Any, project_track_id))
     except (TypeError, ValueError):
         return None
     for track in project.get("tracks", []):
-        if not isinstance(track, dict) or int(track.get("id", -1)) != wanted:
+        if not isinstance(track, dict):
+            continue
+        try:
+            track_id = int(cast(Any, track.get("id", -1)))
+        except (TypeError, ValueError):
+            continue
+        if track_id != wanted:
             continue
         host_track_id = track.get("host_track_id")
         if host_track_id is None:
@@ -1725,11 +1731,7 @@ async def studio_create_track():
         track_type=track_type,
         channel_type=str(data.get("channel_type") or "multichannel"),
     )
-    routing_updates = {
-        key: data[key]
-        for key in ("output_bus_id", "sends")
-        if key in data
-    }
+    routing_updates = {key: data[key] for key in ("output_bus_id", "sends") if key in data}
     if routing_updates:
         project, track = update_project_track(int(track["id"]), routing_updates)
     sync = await _sync_project_to_host(project, broadcast=True)
