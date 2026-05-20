@@ -446,8 +446,7 @@ def test_music_studio_mixer_window_replaces_inspector_rack():
     assert 'v-for="track in mixerTracks"' in studio_text
     assert (
         "const mixerTracks = computed(() => tracks.value.filter("
-        "track => !isAutomationTrack(track)))"
-        in studio_text
+        "track => !isAutomationTrack(track)))" in studio_text
     )
     assert 'class="mixer-strip master-strip"' in studio_text
     assert "Master Bus" in studio_text
@@ -474,12 +473,12 @@ def test_music_studio_mixer_uses_dynamic_inserts_duplicate_labels_and_sends():
     assert "function addTrackSend(track, targetBusId)" in studio_text
     assert "function removeTrackSend(track, index)" in studio_text
     assert (
-        "@contextmenu.prevent=\"openAutomationMenu($event, automationTargetForTrackPan(track), "
-        "`${track.name} Pan`)\""
+        '@contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackPan(track), '
+        '`${track.name} Pan`)"'
     ) in studio_text
     assert (
-        "@contextmenu.prevent=\"openAutomationMenu($event, automationTargetForTrackVolume(track), "
-        "`${track.name} Volume`)\""
+        '@contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackVolume(track), '
+        '`${track.name} Volume`)"'
     ) in studio_text
     assert ".mixer-pan-center-line" in studio_text
 
@@ -499,10 +498,7 @@ def test_music_studio_mixer_docks_master_and_preserves_pan_fader_space():
         "  grid-template-columns: minmax(0, 1fr) 154px;"
     ) in studio_text
     assert (
-        ".mixer-track-strip-scroll {\n"
-        "  min-height: 0;\n"
-        "  min-width: 0;\n"
-        "  overflow: auto;"
+        ".mixer-track-strip-scroll {\n  min-height: 0;\n  min-width: 0;\n  overflow: auto;"
     ) in studio_text
     assert (
         ".mixer-strip {\n"
@@ -518,8 +514,7 @@ def test_music_studio_mixer_docks_master_and_preserves_pan_fader_space():
     assert (
         ".master-strip {\n"
         "  height: 100%;\n"
-        "  grid-template-rows: auto minmax(48px, 1fr) minmax(40px, auto) auto 132px;"
-        in studio_text
+        "  grid-template-rows: auto minmax(48px, 1fr) minmax(40px, auto) auto 132px;" in studio_text
     )
 
 
@@ -535,9 +530,9 @@ def test_music_studio_master_bus_uses_editable_strip_controls_without_sends():
     assert "function setMasterBusPlugin(plugin, slotId)" in studio_text
     assert "async function onMasterBusPluginSelect(slotId, value)" in studio_text
     assert "{{ masterBus.name }}" in studio_text
-    assert ":style=\"{ background: masterBus.color }\"" in studio_text
+    assert ':style="{ background: masterBus.color }"' in studio_text
     assert 'v-for="slot in mixerInsertSlots(masterBus)"' in studio_text
-    assert "@change=\"onMasterBusPluginSelect(slot.id, $event.target.value)\"" in studio_text
+    assert '@change="onMasterBusPluginSelect(slot.id, $event.target.value)"' in studio_text
     assert '@change="updateMasterBus({ pan: Number($event.target.value) })"' in studio_text
     assert '@click.stop="updateMasterBus({ mute: !masterBus.mute })"' in studio_text
     assert '@click.stop="updateMasterBus({ solo: !masterBus.solo })"' in studio_text
