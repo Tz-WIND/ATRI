@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -41,6 +42,7 @@ from core.music_project import (
 from core.music_project import (
     update_track as update_project_track,
 )
+from dashboard.routes._helpers import resolve_workspace_path
 
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
@@ -124,8 +126,25 @@ def _audio_waveform_from_form(raw: Any) -> list[float | dict[str, float]]:
     return normalize_audio_waveform(loaded)
 
 
+def _audio_waveform_from_payload(raw: Any) -> list[float | dict[str, float]]:
+    if isinstance(raw, str):
+        return _audio_waveform_from_form(raw)
+    return normalize_audio_waveform(raw)
+
+
 def _audio_type_error(message: str, **extra: Any) -> tuple[Response, int]:
     return jsonify({"type": "error", "error_type": "type_error", "error": message, **extra}), 400
+
+
+def _audio_file_missing_or_empty(path: Path) -> bool:
+    return not path.exists() or path.stat().st_size == 0
+
+
+def _delete_audio_import_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _is_in_music_dirs(filepath: str) -> bool:
@@ -1685,8 +1704,8 @@ async def studio_automation_write():
     target_payload = data.get("target")
     target: dict[str, Any] = target_payload if isinstance(target_payload, dict) else {}
     raw_track_id = data.get("track_id")
-    track_id = None if raw_track_id in (None, "") else int(str(raw_track_id))
     try:
+        track_id = None if raw_track_id in (None, "") else int(str(raw_track_id))
         project, summary = automation_write(
             target,
             points=data.get("points") if isinstance(data.get("points"), list) else [],
@@ -1695,7 +1714,31 @@ async def studio_automation_write():
             color=str(data.get("color") or "") or None,
         )
     except (TypeError, ValueError) as e:
-        return jsonify({"error": str(e)}), 400
+        message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
+        return jsonify({"error": message}), 400
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/automation/global", methods=["POST"])
+async def studio_global_automation_write():
+    data = await _json_payload()
+    kind = str(data.get("kind") or "").strip().lower()
+    if kind not in {"tempo_bpm", "time_signature_numerator"}:
+        return jsonify({"error": "kind must be tempo_bpm or time_signature_numerator"}), 400
+    raw_track_id = data.get("track_id")
+    try:
+        track_id = None if raw_track_id in (None, "") else int(str(raw_track_id))
+        project, summary = automation_write(
+            {"kind": kind},
+            points=data.get("points") if isinstance(data.get("points"), list) else [],
+            name=str(data.get("name") or ""),
+            track_id=track_id,
+            color=str(data.get("color") or "") or None,
+        )
+    except (TypeError, ValueError) as e:
+        message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
+        return jsonify({"error": message}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
 
@@ -1740,34 +1783,84 @@ async def studio_import_audio():
 
     saved_path = _audio_import_dir() / f"{uuid4().hex[:10]}_{safe_name}"
     try:
+        saved_path.parent.mkdir(parents=True, exist_ok=True)
         await uploaded.save(saved_path)
-        if not saved_path.exists() or saved_path.stat().st_size == 0:
-            saved_path.unlink(missing_ok=True)
+    except OSError as e:
+        _delete_audio_import_file(saved_path)
+        return jsonify({"error": str(e)}), 400
+    return await _finish_audio_import(
+        saved_path,
+        original_name=original_name,
+        start=form.get("start"),
+        duration_seconds=form.get("duration_seconds"),
+        waveform=_audio_waveform_from_form(form.get("waveform")),
+    )
+
+
+@bp.route("/studio/audio/import-file", methods=["POST"])
+async def studio_import_audio_file():
+    data = await _json_payload()
+    raw_path = str(data.get("file_path") or data.get("path") or "").strip()
+    if not raw_path:
+        return jsonify({"error": "file_path is required"}), 400
+
+    try:
+        _, source_path = resolve_workspace_path(str(_cfg().get("workspace") or "."), raw_path)
+    except PermissionError:
+        return jsonify({"error": "path outside workspace"}), 403
+
+    if not source_path.exists() or not source_path.is_file():
+        return jsonify({"error": f"audio file not found: {raw_path}"}), 400
+    if source_path.suffix.lower() not in HOST_AUDIO_EXTS:
+        return _audio_type_error("unsupported audio file type")
+
+    safe_name = _safe_audio_filename(source_path.name)
+    saved_path = _audio_import_dir() / f"{uuid4().hex[:10]}_{safe_name}"
+    try:
+        saved_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, saved_path)
+    except OSError as e:
+        _delete_audio_import_file(saved_path)
+        return jsonify({"error": str(e)}), 400
+
+    original_name = str(data.get("original_name") or data.get("name") or source_path.name)
+    start = data["start"] if "start" in data else data.get("start_beat")
+    return await _finish_audio_import(
+        saved_path,
+        original_name=original_name,
+        start=start,
+        duration_seconds=data.get("duration_seconds"),
+        waveform=_audio_waveform_from_payload(data.get("waveform")),
+    )
+
+
+async def _finish_audio_import(
+    saved_path: Path,
+    *,
+    original_name: str,
+    start: Any = None,
+    duration_seconds: Any = None,
+    waveform: list[float | dict[str, float]] | None = None,
+):
+    try:
+        if _audio_file_missing_or_empty(saved_path):
+            _delete_audio_import_file(saved_path)
             return jsonify({"error": "audio file is empty"}), 400
-        duration_seconds = _audio_duration_seconds(saved_path, form.get("duration_seconds"))
-        start = float(form.get("start") or 0.0)
-        waveform = _audio_waveform_from_form(form.get("waveform"))
         project, track, clip = import_audio_clip(
             saved_path,
             name=Path(original_name.replace("\\", "/")).stem,
-            start=start,
-            duration_seconds=duration_seconds,
-            waveform=waveform,
+            start=float(start or 0.0),
+            duration_seconds=_audio_duration_seconds(saved_path, duration_seconds),
+            waveform=waveform or [],
         )
     except (OSError, TypeError, ValueError) as e:
-        try:
-            saved_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _delete_audio_import_file(saved_path)
         return jsonify({"error": str(e)}), 400
 
     sync = await _sync_project_to_host(project, broadcast=False)
     audio_error = _sync_audio_clip_error(sync)
     if audio_error:
-        try:
-            saved_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _delete_audio_import_file(saved_path)
         rollback_project = None
         try:
             rollback_project, _ = delete_project_track(int(track["id"]))

@@ -21,6 +21,8 @@ NO_SYNC_NEEDED_HINT = (
     "host state looks stale or the user asks to force resync."
 )
 _dashboard_session_token = ""
+STUDIO_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
+STUDIO_AUDIO_FORMATS = "AAC, FLAC, M4A, MP3, WAV"
 
 
 def set_dashboard_session_token(token: str | None) -> None:
@@ -441,21 +443,25 @@ class StudioPluginTool(_StudioDashboardTool):
 class StudioAudioImportTool(_StudioDashboardTool):
     name = "studio_audio_import"
     description = (
-        "Import an audio file from the workspace into Music Studio by uploading it through "
-        "the existing audio import endpoint. Supported host formats are AAC, FLAC, M4A, "
-        "MP3, and WAV. Successful imports already return a sync result; do not call "
-        "studio_sync again unless sync failed, is missing, or the user asks."
+        "Import a workspace audio file into Music Studio using an AI-friendly JSON "
+        "request. Prefer path/name/start_beat for natural tool calls; file_path, "
+        "original_name, and start are also accepted. Supported host formats are AAC, "
+        "FLAC, M4A, MP3, and WAV. Successful imports already return a sync result; "
+        "do not call studio_sync again unless sync failed, is missing, or the user asks."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "file_path": {"type": "string", "description": "Workspace-relative audio file path."},
+            "path": {"type": "string", "description": "Alias for file_path."},
             "start": {"type": "number", "minimum": 0, "default": 0},
+            "start_beat": {"type": "number", "minimum": 0, "description": "Alias for start."},
             "duration_seconds": {"type": "number", "minimum": 0},
             "waveform": {"type": "array"},
             "original_name": {"type": "string"},
+            "name": {"type": "string", "description": "Alias for original_name."},
         },
-        "required": ["file_path"],
+        "anyOf": [{"required": ["file_path"]}, {"required": ["path"]}],
     }
     capabilities = ToolCapabilities(
         capability="music.studio.audio",
@@ -465,25 +471,39 @@ class StudioAudioImportTool(_StudioDashboardTool):
 
     def execute(
         self,
-        file_path: str,
+        file_path: str = "",
+        path: str = "",
         start: float = 0.0,
+        start_beat: float | None = None,
         duration_seconds: float | None = None,
         waveform: list[Any] | None = None,
         original_name: str = "",
+        name: str = "",
         **kwargs: Any,
     ) -> str:
-        path = self.resolve_path(file_path)
-        if not path.exists() or not path.is_file():
-            return f"Error: audio file not found: {file_path}"
+        requested_path = str(file_path or path or "").strip()
+        if not requested_path:
+            return "Error: file_path or path is required"
+        try:
+            resolved_path = self.resolve_path(requested_path)
+        except PermissionError as e:
+            return f"Error: {e}"
+        if not resolved_path.exists() or not resolved_path.is_file():
+            return f"Error: audio file not found: {requested_path}"
+        if resolved_path.suffix.lower() not in STUDIO_AUDIO_EXTS:
+            return f"Error: unsupported audio file type. Supported formats: {STUDIO_AUDIO_FORMATS}"
+
+        start_value = float(start_beat if start_beat is not None else start)
         metadata = _compact_payload(
             {
-                "start": start,
+                "file_path": requested_path,
+                "start": start_value,
                 "duration_seconds": duration_seconds,
                 "waveform": waveform,
-                "original_name": original_name or path.name,
+                "original_name": original_name or name or resolved_path.name,
             }
         )
-        return _dump(_with_agent_sync_hint(_dashboard_audio_import(path, metadata)))
+        return _dump(_with_agent_sync_hint(_dashboard_audio_import_file(metadata)))
 
 
 class StudioSyncTool(_StudioDashboardTool):
@@ -581,6 +601,10 @@ def _dashboard_audio_import(path: Path, metadata: dict[str, Any]) -> dict[str, A
         return {"ok": False, "error": f"dashboard request failed: {e}"}
     except ValueError:
         return {"ok": False, "error": "dashboard returned invalid JSON"}
+
+
+def _dashboard_audio_import_file(metadata: dict[str, Any]) -> dict[str, Any]:
+    return _dashboard_json("POST", "/api/music/studio/audio/import-file", metadata, timeout=30)
 
 
 def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:

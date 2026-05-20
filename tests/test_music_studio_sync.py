@@ -1,4 +1,5 @@
 import io
+from types import SimpleNamespace
 from typing import Any
 
 from quart import Quart
@@ -775,6 +776,100 @@ async def test_captured_plugin_parameters_are_learned_without_creating_tracks(
     assert ("poll_captured_plugin_parameters", {}) in host.commands
 
 
+async def test_studio_global_automation_write_creates_tempo_track_and_syncs(
+    tmp_path,
+    monkeypatch,
+):
+    sync_calls = []
+    monkeypatch.chdir(tmp_path)
+    music.load_project()
+
+    async def fake_sync(project, *, broadcast=True):
+        sync_calls.append({"project": project, "broadcast": broadcast})
+        return {"host_running": False, "broadcast": broadcast}
+
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/automation/global",
+        json={
+            "kind": "tempo_bpm",
+            "points": [
+                {"beat": 0, "value": 90},
+                {"beat": 8, "value": 132},
+            ],
+            "name": "Tempo Map",
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["summary"]["target"] == {"kind": "tempo_bpm", "label": "Tempo BPM"}
+    assert body["summary"]["target_status"] == "valid"
+    assert body["project"]["tracks"][-1]["name"] == "Tempo Map"
+    points = body["project"]["tracks"][-1]["automation"]["points"]
+    assert [(point["beat"], point["value"], point["curve"]) for point in points] == [
+        (0.0, 90.0, "linear"),
+        (8.0, 132.0, "linear"),
+    ]
+    assert body["sync"] == {"host_running": False, "broadcast": True}
+    assert sync_calls and sync_calls[0]["broadcast"] is True
+
+
+async def test_studio_global_automation_write_rejects_track_targets():
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/automation/global",
+        json={"kind": "track_volume", "points": [{"beat": 0, "value": 1}]},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == "kind must be tempo_bpm or time_signature_numerator"
+
+
+async def test_studio_global_automation_write_rejects_invalid_track_id():
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/automation/global",
+        json={"kind": "tempo_bpm", "track_id": "abc", "points": [{"beat": 0, "value": 120}]},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == "invalid track_id"
+
+
+async def test_studio_automation_write_rejects_invalid_track_id():
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/automation",
+        json={
+            "target": {"kind": "track_volume", "track_id": 1},
+            "track_id": "abc",
+            "points": [{"beat": 0, "value": 0.8}],
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == "invalid track_id"
+
+
 async def test_studio_create_track_passes_requested_color(monkeypatch):
     captured = {}
 
@@ -920,6 +1015,111 @@ async def test_studio_import_audio_rejects_host_unsupported_extension_with_type_
     assert body["type"] == "error"
     assert body["error_type"] == "type_error"
     assert body["error"] == "unsupported audio file type"
+
+
+async def test_studio_import_audio_file_imports_workspace_file_with_ai_friendly_payload(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    source_dir = workspace / "samples"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "drum.wav"
+    source_path.write_bytes(b"RIFF....WAVE")
+    import_dir = tmp_path / "imports"
+    captured: dict[str, Any] = {}
+
+    def fake_import_audio_clip(path, **kwargs):
+        captured["path"] = path
+        captured["kwargs"] = kwargs
+        clip = {"id": "clip_drum", "path": str(path), "name": kwargs["name"]}
+        track = {"id": 11, "name": "Main Beat", "clips": [clip]}
+        return {"tracks": [track]}, track, clip
+
+    async def fake_sync(project, *, broadcast=True):
+        captured["sync_broadcast"] = broadcast
+        return {"host_running": False, "commands": [], "project": project}
+
+    monkeypatch.setattr(music, "_lifecycle", SimpleNamespace(config={"workspace": str(workspace)}))
+    monkeypatch.setattr(music, "_audio_import_dir", lambda: import_dir)
+    monkeypatch.setattr(music, "import_audio_clip", fake_import_audio_clip)
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/audio/import-file",
+        json={
+            "path": "samples/drum.wav",
+            "name": "Main Beat",
+            "start_beat": 8,
+            "duration_seconds": 3.5,
+            "waveform": [0.25, {"min": -0.5, "max": 0.75}],
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert captured["path"].parent == import_dir
+    assert captured["path"].name.endswith("_drum.wav")
+    assert captured["path"].read_bytes() == b"RIFF....WAVE"
+    assert captured["kwargs"]["name"] == "Main Beat"
+    assert captured["kwargs"]["start"] == 8.0
+    assert captured["kwargs"]["duration_seconds"] == 3.5
+    assert captured["kwargs"]["waveform"][0] == 0.25
+    assert captured["sync_broadcast"] is False
+    assert body["ok"] is True
+    assert body["clip"]["id"] == "clip_drum"
+
+
+async def test_studio_import_audio_file_rejects_unsupported_extension_with_type_error(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "loop.ogg").write_bytes(b"not playable")
+
+    monkeypatch.setattr(music, "_lifecycle", SimpleNamespace(config={"workspace": str(workspace)}))
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/audio/import-file",
+        json={"file_path": "loop.ogg"},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 400
+    assert body["type"] == "error"
+    assert body["error_type"] == "type_error"
+    assert body["error"] == "unsupported audio file type"
+
+
+async def test_studio_import_audio_file_rejects_paths_outside_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"RIFF....WAVE")
+
+    monkeypatch.setattr(music, "_lifecycle", SimpleNamespace(config={"workspace": str(workspace)}))
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/audio/import-file",
+        json={"path": str(outside)},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 403
+    assert body["error"] == "path outside workspace"
 
 
 async def test_studio_import_audio_returns_type_error_when_host_rejects_clip(tmp_path, monkeypatch):

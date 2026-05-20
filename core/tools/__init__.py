@@ -3,6 +3,7 @@
 from .agent_tool import AgentResultTool, AgentTool
 from .automation import (
     AutomationDiffTool,
+    AutomationGlobalWriteTool,
     AutomationQueryTool,
     AutomationRetargetTool,
     AutomationWriteTool,
@@ -81,6 +82,7 @@ def create_tools(
         VstParamSetTool(workspace),
         AutomationQueryTool(workspace),
         AutomationWriteTool(workspace),
+        AutomationGlobalWriteTool(workspace),
         AutomationDiffTool(workspace),
         AutomationRetargetTool(workspace),
         StudioProjectQueryTool(workspace),

@@ -9,9 +9,15 @@ from quart import Quart
 
 from core.pipeline.stages.process import _extract_confirmation_command
 from core.tools import studio
-from core.tools.automation import VstParamQueryTool
+from core.tools.automation import (
+    AutomationGlobalWriteTool,
+    AutomationRetargetTool,
+    AutomationWriteTool,
+    VstParamQueryTool,
+)
 from core.tools.bash import CONFIRM_MARKER
 from core.tools.studio import (
+    StudioAudioImportTool,
     StudioHostControlTool,
     StudioPluginTool,
     StudioProjectQueryTool,
@@ -222,6 +228,77 @@ def test_studio_plugin_clear_requires_approval(monkeypatch, tmp_path):
     ]
 
 
+def test_studio_audio_import_accepts_ai_friendly_aliases(monkeypatch, tmp_path):
+    calls = []
+    sample_dir = tmp_path / "samples"
+    sample_dir.mkdir()
+    (sample_dir / "kick.wav").write_bytes(b"RIFF....WAVE")
+
+    def fake_dashboard_json(method, path, payload=None, timeout=3):
+        calls.append((method, path, payload, timeout))
+        return {
+            "ok": True,
+            "clip": {"id": "clip_kick", "name": payload["original_name"]},
+            "sync": {"host_running": False},
+        }
+
+    monkeypatch.setattr("core.tools.studio._dashboard_json", fake_dashboard_json)
+
+    result = json.loads(
+        StudioAudioImportTool(str(tmp_path)).execute(
+            path="samples/kick.wav",
+            name="Kick Layer",
+            start_beat=8,
+            duration_seconds=1.25,
+            waveform=[0.2],
+        )
+    )
+
+    assert calls == [
+        (
+            "POST",
+            "/api/music/studio/audio/import-file",
+            {
+                "file_path": "samples/kick.wav",
+                "start": 8.0,
+                "duration_seconds": 1.25,
+                "waveform": [0.2],
+                "original_name": "Kick Layer",
+            },
+            30,
+        )
+    ]
+    assert result["clip"] == {"id": "clip_kick", "name": "Kick Layer"}
+    assert result["agent_sync_hint"] == (
+        "This operation already requested project-to-host sync. Do not call studio_sync "
+        "again unless sync reports an error, sync is missing, or the user asks to force resync."
+    )
+
+
+def test_studio_audio_import_rejects_unsupported_format_before_dashboard(monkeypatch, tmp_path):
+    calls = []
+    (tmp_path / "loop.ogg").write_bytes(b"not playable")
+
+    def fake_dashboard_json(method, path, payload=None, timeout=3):
+        calls.append((method, path, payload, timeout))
+        return {"ok": True}
+
+    monkeypatch.setattr("core.tools.studio._dashboard_json", fake_dashboard_json)
+
+    result = StudioAudioImportTool(str(tmp_path)).execute(path="loop.ogg")
+
+    assert result == (
+        "Error: unsupported audio file type. Supported formats: AAC, FLAC, M4A, MP3, WAV"
+    )
+    assert calls == []
+
+
+def test_studio_audio_import_schema_requires_file_path_or_path(tmp_path):
+    schema = StudioAudioImportTool(str(tmp_path)).parameters
+
+    assert schema["anyOf"] == [{"required": ["file_path"]}, {"required": ["path"]}]
+
+
 def test_studio_sync_description_marks_tool_as_manual_repair_path():
     assert "force or repair project-to-host sync" in StudioSyncTool.description
     assert "Most studio write tools already return a sync result" in StudioSyncTool.description
@@ -406,6 +483,103 @@ def test_vst_param_query_sends_configured_dashboard_session(monkeypatch, tmp_pat
             {"headers": {"X-ATRI-Session": "session-token"}, "timeout": 3},
         )
     ]
+
+
+def test_automation_global_write_posts_ai_friendly_payload(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_dashboard_json(method, path, payload=None, timeout=3):
+        calls.append((method, path, payload, timeout))
+        return {
+            "ok": True,
+            "summary": {
+                "track_id": 9,
+                "target": {"kind": "time_signature_numerator"},
+                "points": 2,
+            },
+            "sync": {"host_running": False},
+        }
+
+    monkeypatch.setattr("core.tools.automation._dashboard_json", fake_dashboard_json)
+
+    result = json.loads(
+        AutomationGlobalWriteTool(str(tmp_path)).execute(
+            kind="time_signature_numerator",
+            points=[{"beat": 0, "value": 3.2}, {"beat": 8, "value": 7.6}],
+            name="Meter Map",
+            color="#58a7b8",
+        )
+    )
+
+    assert calls == [
+        (
+            "POST",
+            "/api/music/studio/automation/global",
+            {
+                "kind": "time_signature_numerator",
+                "points": [{"beat": 0, "value": 3.2}, {"beat": 8, "value": 7.6}],
+                "name": "Meter Map",
+                "color": "#58a7b8",
+            },
+            3,
+        )
+    ]
+    assert result["summary"]["track_id"] == 9
+    assert result["sync"] == {"host_running": False}
+
+
+def test_automation_write_schema_requires_track_id_for_track_targets(tmp_path):
+    target_schema = AutomationWriteTool(str(tmp_path)).parameters["properties"]["target"]
+
+    assert target_schema["anyOf"] == [
+        {
+            "properties": {"kind": {"enum": ["track_volume", "track_pan"]}},
+            "required": ["kind", "track_id"],
+        },
+        {
+            "properties": {"kind": {"enum": ["plugin_parameter"]}},
+            "required": ["kind", "track_id", "param_index"],
+        },
+    ]
+    assert target_schema["properties"]["kind"]["enum"] == [
+        "plugin_parameter",
+        "track_volume",
+        "track_pan",
+    ]
+
+
+def test_automation_write_rejects_track_target_without_track_id(tmp_path):
+    result = AutomationWriteTool(str(tmp_path)).execute(
+        target={"kind": "track_volume"},
+        points=[{"beat": 0, "value": 0.8}],
+    )
+
+    assert result == "Error: target.track_id is required for track automation targets"
+
+
+def test_automation_write_rejects_global_targets(tmp_path):
+    result = AutomationWriteTool(str(tmp_path)).execute(
+        target={"kind": "tempo_bpm"},
+        points=[{"beat": 0, "value": 120}],
+    )
+
+    assert result == "Error: use automation_global_write for tempo or time signature automation"
+
+
+def test_automation_retarget_schema_accepts_global_targets(tmp_path):
+    target_schema = AutomationRetargetTool(str(tmp_path)).parameters["properties"]["target"]
+
+    assert target_schema["properties"]["kind"]["enum"] == [
+        "plugin_parameter",
+        "track_volume",
+        "track_pan",
+        "tempo_bpm",
+        "time_signature_numerator",
+    ]
+    assert {
+        "properties": {"kind": {"enum": ["tempo_bpm", "time_signature_numerator"]}},
+        "required": ["kind"],
+    } in target_schema["anyOf"]
 
 
 def _extract_approval_id(text: str) -> str:

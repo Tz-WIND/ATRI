@@ -18,7 +18,7 @@ from .midi import _request_dashboard_sync
 from .studio import _dashboard_json
 
 
-def _automation_target_schema() -> dict[str, Any]:
+def _automation_track_target_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
@@ -28,8 +28,6 @@ def _automation_target_schema() -> dict[str, Any]:
                     "plugin_parameter",
                     "track_volume",
                     "track_pan",
-                    "tempo_bpm",
-                    "time_signature_numerator",
                 ],
             },
             "track_id": {"type": "integer"},
@@ -38,8 +36,36 @@ def _automation_target_schema() -> dict[str, Any]:
             "param_id": {"type": "integer", "minimum": 0},
             "label": {"type": "string"},
         },
-        "required": ["kind", "track_id"],
+        "anyOf": [
+            {
+                "properties": {"kind": {"enum": ["track_volume", "track_pan"]}},
+                "required": ["kind", "track_id"],
+            },
+            {
+                "properties": {"kind": {"enum": ["plugin_parameter"]}},
+                "required": ["kind", "track_id", "param_index"],
+            },
+        ],
     }
+
+
+def _automation_retarget_schema() -> dict[str, Any]:
+    schema = _automation_track_target_schema()
+    schema["properties"]["kind"]["enum"] = [
+        "plugin_parameter",
+        "track_volume",
+        "track_pan",
+        "tempo_bpm",
+        "time_signature_numerator",
+    ]
+    schema["anyOf"] = [
+        *schema["anyOf"],
+        {
+            "properties": {"kind": {"enum": ["tempo_bpm", "time_signature_numerator"]}},
+            "required": ["kind"],
+        },
+    ]
+    return schema
 
 
 def _automation_write_properties() -> dict[str, Any]:
@@ -50,7 +76,7 @@ def _automation_write_properties() -> dict[str, Any]:
         },
         "name": {"type": "string"},
         "color": {"type": "string"},
-        "target": _automation_target_schema(),
+        "target": _automation_track_target_schema(),
         "points": {
             "type": "array",
             "items": {
@@ -185,7 +211,8 @@ class AutomationQueryTool(Tool):
 class AutomationWriteTool(Tool):
     name = "automation_write"
     description = (
-        "Create or replace a first-class automation track in the ATRI music project. "
+        "Create or replace a track-scoped automation track in the ATRI music project. "
+        "Use automation_global_write for tempo BPM or time signature numerator automation. "
         "This writes timeline automation and requests dashboard/host sync."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
@@ -204,6 +231,20 @@ class AutomationWriteTool(Tool):
         color: str | None = None,
         **kwargs: Any,
     ) -> str:
+        normalized_kind = str((target or {}).get("kind") or "").strip().lower()
+        if not normalized_kind:
+            return "Error: target.kind is required"
+        if normalized_kind in {"tempo_bpm", "time_signature_numerator"}:
+            return "Error: use automation_global_write for tempo or time signature automation"
+        if normalized_kind in {"track_volume", "track_pan", "plugin_parameter"} and (
+            target or {}
+        ).get("track_id") in (None, ""):
+            return "Error: target.track_id is required for track automation targets"
+        if normalized_kind == "plugin_parameter" and (target or {}).get("param_index") in (
+            None,
+            "",
+        ):
+            return "Error: target.param_index is required for plugin parameter automation"
         project, summary = automation_write(
             target,
             points=points,
@@ -213,6 +254,63 @@ class AutomationWriteTool(Tool):
         )
         sync_note = _request_dashboard_sync()
         return _format_automation_result("Automation written", summary, project, sync_note)
+
+
+class AutomationGlobalWriteTool(Tool):
+    name = "automation_global_write"
+    description = (
+        "Create or replace global Music Studio automation for tempo BPM or time signature "
+        "numerator. Use this instead of automation_write when automating tempo or meter so "
+        "no track_id is required."
+    )
+    parameters: dict[str, Any] = {  # noqa: RUF012
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["tempo_bpm", "time_signature_numerator"],
+                "description": "Global automation target to write.",
+            },
+            "points": _automation_write_properties()["points"],
+            "track_id": {
+                "type": "integer",
+                "description": "Existing automation track id to replace; omit to create one.",
+            },
+            "name": {"type": "string"},
+            "color": {"type": "string"},
+        },
+        "required": ["kind", "points"],
+    }
+    capabilities = ToolCapabilities(capability="music.automation.write", network=True)
+
+    def execute(
+        self,
+        kind: str,
+        points: list[dict[str, Any]],
+        track_id: int | None = None,
+        name: str = "",
+        color: str = "",
+        **kwargs: Any,
+    ) -> str:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in {"tempo_bpm", "time_signature_numerator"}:
+            return "Error: kind must be tempo_bpm or time_signature_numerator"
+        payload = {
+            "kind": normalized_kind,
+            "points": points,
+            **_compact_payload(
+                {
+                    "track_id": track_id,
+                    "name": name,
+                    "color": color,
+                }
+            ),
+        }
+        return json.dumps(
+            _dashboard_json("POST", "/api/music/studio/automation/global", payload),
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 class AutomationDiffTool(Tool):
@@ -263,7 +361,7 @@ class AutomationRetargetTool(Tool):
         "type": "object",
         "properties": {
             "track_id": {"type": "integer", "description": "Automation track id."},
-            "target": _automation_target_schema(),
+            "target": _automation_retarget_schema(),
         },
         "required": ["track_id", "target"],
     }
@@ -290,3 +388,11 @@ def _format_automation_result(
             sync_note,
         ]
     )
+
+
+def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if value is not None and value != "" and value != []
+    }
