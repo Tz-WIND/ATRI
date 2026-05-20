@@ -485,6 +485,7 @@ struct Vst3EventListState {
 pub(crate) struct Vst3EventListHandle {
     _wrapper: ComWrapper<Vst3EventList>,
     ptr: ComPtr<IEventList>,
+    state: Arc<Mutex<Vst3EventListState>>,
 }
 
 impl Vst3EventListHandle {
@@ -492,18 +493,35 @@ impl Vst3EventListHandle {
         Self::with_events(Vec::new())
     }
 
+    #[cfg(test)]
     pub(crate) fn from_midi(events: &[ScheduledMidiEvent], nframes: usize) -> Self {
-        let mut vst_events = Vec::with_capacity(events.len());
-        let mut sysex = Vec::new();
+        let mut handle = Self::empty();
+        handle.set_midi(events, nframes);
+        handle
+    }
+
+    pub(crate) fn clear(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.events.clear();
+            state.sysex.clear();
+        }
+    }
+
+    pub(crate) fn set_midi(&mut self, events: &[ScheduledMidiEvent], nframes: usize) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.events.clear();
+        state.sysex.clear();
+        state.events.reserve(events.len());
+        let mut sysex = std::mem::take(&mut state.sysex);
         for event in events {
-            if let Some(event) = midi_event_to_vst3(event, nframes, &mut sysex) {
-                vst_events.push(event);
+            let event = midi_event_to_vst3(event, nframes, &mut sysex);
+            if let Some(event) = event {
+                state.events.push(event);
             }
         }
-        Self::with_state(Vst3EventListState {
-            events: vst_events,
-            sysex,
-        })
+        state.sysex = sysex;
     }
 
     fn with_events(events: Vec<Event>) -> Self {
@@ -515,18 +533,27 @@ impl Vst3EventListHandle {
 
     fn with_state(state: Vst3EventListState) -> Self {
         let state = Arc::new(Mutex::new(state));
-        let wrapper = ComWrapper::new(Vst3EventList { state });
+        let wrapper = ComWrapper::new(Vst3EventList {
+            state: Arc::clone(&state),
+        });
         let ptr = wrapper
             .to_com_ptr::<IEventList>()
             .expect("Vst3EventList exposes IEventList");
         Self {
             _wrapper: wrapper,
             ptr,
+            state,
         }
     }
 
     pub(crate) fn as_ptr(&self) -> *mut IEventList {
         self.ptr.as_ptr()
+    }
+}
+
+impl Default for Vst3EventListHandle {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -585,14 +612,28 @@ pub(crate) struct ParameterChangePoint {
 pub(crate) struct ParameterChangesHandle {
     _wrapper: ComWrapper<ParameterChanges>,
     ptr: ComPtr<IParameterChanges>,
+    state: Arc<Mutex<ParameterChangesState>>,
 }
 
 impl ParameterChangesHandle {
     pub(crate) fn empty() -> Self {
-        Self::from_changes(Vec::new())
+        Self::with_empty_state()
     }
 
+    #[cfg(test)]
     pub(crate) fn from_changes(changes: Vec<ParameterChangePoint>) -> Self {
+        let mut handle = Self::empty();
+        handle.set_changes(&changes);
+        handle
+    }
+
+    pub(crate) fn clear(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.queues.clear();
+        }
+    }
+
+    pub(crate) fn set_changes(&mut self, changes: &[ParameterChangePoint]) {
         let mut grouped: BTreeMap<ParamID, Vec<ParameterPoint>> = BTreeMap::new();
         for change in changes {
             grouped.entry(change.id).or_default().push(ParameterPoint {
@@ -601,20 +642,33 @@ impl ParameterChangesHandle {
             });
         }
 
-        let mut queues = Vec::with_capacity(grouped.len());
-        for (id, mut points) in grouped {
+        let queue_count = grouped.len();
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        for (queue_index, (id, mut points)) in grouped.into_iter().enumerate() {
             points.sort_by_key(|point| point.sample_offset);
-            queues.push(ParamValueQueueHandle::new(id, points).ptr);
+            if let Some(queue) = state.queues.get_mut(queue_index) {
+                queue.set_points(id, points);
+            } else {
+                state.queues.push(ParamValueQueueHandle::new(id, points));
+            }
         }
+        state.queues.truncate(queue_count);
+    }
 
-        let state = Arc::new(Mutex::new(ParameterChangesState { queues }));
-        let wrapper = ComWrapper::new(ParameterChanges { state });
+    fn with_empty_state() -> Self {
+        let state = Arc::new(Mutex::new(ParameterChangesState { queues: Vec::new() }));
+        let wrapper = ComWrapper::new(ParameterChanges {
+            state: Arc::clone(&state),
+        });
         let ptr = wrapper
             .to_com_ptr::<IParameterChanges>()
             .expect("ParameterChanges exposes IParameterChanges");
         Self {
             _wrapper: wrapper,
             ptr,
+            state,
         }
     }
 
@@ -623,8 +677,14 @@ impl ParameterChangesHandle {
     }
 }
 
+impl Default for ParameterChangesHandle {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 struct ParameterChangesState {
-    queues: Vec<ComPtr<IParamValueQueue>>,
+    queues: Vec<ParamValueQueueHandle>,
 }
 
 struct ParameterChanges {
@@ -653,7 +713,7 @@ impl IParameterChangesTrait for ParameterChanges {
         state
             .queues
             .get(index as usize)
-            .map(ComPtr::as_ptr)
+            .map(ParamValueQueueHandle::as_ptr)
             .unwrap_or(ptr::null_mut())
     }
 
@@ -682,7 +742,7 @@ impl IParameterChangesTrait for ParameterChanges {
         };
 
         for (queue_index, queue) in state.queues.iter().enumerate() {
-            if unsafe { queue.getParameterId() } == id {
+            if queue.id() == id {
                 if !index.is_null() {
                     unsafe {
                         *index = queue_index.min(i32::MAX as usize) as int32;
@@ -692,7 +752,7 @@ impl IParameterChangesTrait for ParameterChanges {
             }
         }
 
-        let queue = ParamValueQueueHandle::new(id, Vec::new()).ptr;
+        let queue = ParamValueQueueHandle::new(id, Vec::new());
         let queue_ptr = queue.as_ptr();
         let queue_index = state.queues.len();
         state.queues.push(queue);
@@ -719,18 +779,37 @@ struct ParamValueQueueState {
 struct ParamValueQueueHandle {
     _wrapper: ComWrapper<ParamValueQueue>,
     ptr: ComPtr<IParamValueQueue>,
+    state: Arc<Mutex<ParamValueQueueState>>,
 }
 
 impl ParamValueQueueHandle {
     fn new(id: ParamID, points: Vec<ParameterPoint>) -> Self {
         let state = Arc::new(Mutex::new(ParamValueQueueState { id, points }));
-        let wrapper = ComWrapper::new(ParamValueQueue { state });
+        let wrapper = ComWrapper::new(ParamValueQueue {
+            state: Arc::clone(&state),
+        });
         let ptr = wrapper
             .to_com_ptr::<IParamValueQueue>()
             .expect("ParamValueQueue exposes IParamValueQueue");
         Self {
             _wrapper: wrapper,
             ptr,
+            state,
+        }
+    }
+
+    fn as_ptr(&self) -> *mut IParamValueQueue {
+        self.ptr.as_ptr()
+    }
+
+    fn id(&self) -> ParamID {
+        self.state.lock().map(|state| state.id).unwrap_or(0)
+    }
+
+    fn set_points(&mut self, id: ParamID, points: Vec<ParameterPoint>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.id = id;
+            state.points = points;
         }
     }
 }

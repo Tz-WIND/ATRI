@@ -3,12 +3,14 @@ use std::mem;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 
+use atri_core::audio::buffer::AudioBuffer;
 use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::ScheduledMidiEvent;
 use atri_core::plugin::{
     CapturedPluginParameterEdit, EditorParentHandle, Plugin, PluginEditorContext,
     PluginEditorHandle, PluginParameterInfo,
 };
+use atri_core::time::tempo::{Meter, Tempo, TempoMetric};
 use vst3::{
     ComPtr, ComWrapper,
     Steinberg::{
@@ -33,6 +35,7 @@ use crate::runtime::{
 };
 
 const DEFAULT_SAMPLE_RATE: f64 = 48_000.0;
+const MIN_REALTIME_PROCESSING_MAX_SAMPLES: usize = 4096;
 const STATE_MAGIC: &[u8; 8] = b"ATRI3ST\0";
 const STATE_VERSION: u32 = 1;
 const STATE_HEADER_LEN: usize = 8 + 4 + 8 + 8;
@@ -45,6 +48,7 @@ pub struct Vst3Plugin {
     pub active: bool,
     pub block_size: usize,
     sample_rate: f64,
+    tempo_metric: TempoMetric,
     instance: Option<Vst3Instance>,
     factory: Option<PluginFactory>,
     state_chunk: Vec<u8>,
@@ -59,6 +63,7 @@ impl Vst3Plugin {
             active: false,
             block_size: 256,
             sample_rate: DEFAULT_SAMPLE_RATE,
+            tempo_metric: default_tempo_metric(),
             instance: None,
             factory: None,
             state_chunk: Vec::new(),
@@ -77,6 +82,7 @@ impl Vst3Plugin {
             active: false,
             block_size: 256,
             sample_rate: DEFAULT_SAMPLE_RATE,
+            tempo_metric: default_tempo_metric(),
             instance: Some(instance),
             factory: Some(factory),
             state_chunk: Vec::new(),
@@ -99,6 +105,7 @@ impl Vst3Plugin {
             active: false,
             block_size: 256,
             sample_rate: sample_rate.max(1.0),
+            tempo_metric: default_tempo_metric(),
             instance: None,
             factory: Some(factory),
             state_chunk: Vec::new(),
@@ -140,10 +147,36 @@ impl Plugin for Vst3Plugin {
 
     fn set_block_size(&mut self, nframes: usize) {
         self.block_size = nframes;
+        if let Some(instance) = &mut self.instance {
+            if instance.processing_active {
+                let max_samples = processing_max_samples_for_block_size(self.block_size);
+                if let Err(err) = instance.ensure_processing(self.sample_rate, max_samples) {
+                    log::warn!(
+                        "failed to update VST3 block size for '{}': {err}",
+                        self.name
+                    );
+                }
+            }
+        }
     }
 
     fn set_sample_rate(&mut self, sample_rate: f64) {
         self.sample_rate = sample_rate.max(1.0);
+        if let Some(instance) = &mut self.instance {
+            if instance.processing_active {
+                let max_samples = processing_max_samples_for_block_size(self.block_size);
+                if let Err(err) = instance.ensure_processing(self.sample_rate, max_samples) {
+                    log::warn!(
+                        "failed to update VST3 sample rate for '{}': {err}",
+                        self.name
+                    );
+                }
+            }
+        }
+    }
+
+    fn set_tempo_context(&mut self, metric: TempoMetric) {
+        self.tempo_metric = metric;
     }
 
     fn signal_latency(&self) -> usize {
@@ -154,7 +187,12 @@ impl Plugin for Vst3Plugin {
     }
 
     fn prepare_for_processing(&mut self) -> Result<(), String> {
-        self.ensure_instance()
+        self.ensure_instance()?;
+        if let Some(instance) = &mut self.instance {
+            let max_samples = processing_max_samples_for_block_size(self.block_size);
+            instance.ensure_processing(self.sample_rate, max_samples)?;
+        }
+        Ok(())
     }
 
     fn connect_and_run(
@@ -202,6 +240,7 @@ impl Plugin for Vst3Plugin {
             nframes,
             self.sample_rate,
             self.block_size,
+            self.tempo_metric,
         ) {
             log::warn!("VST3 process failed for '{}': {err}", self.name);
         }
@@ -433,6 +472,72 @@ struct Vst3Instance {
     processing_max_samples: usize,
     queued_parameter_changes: Vec<ParameterChangePoint>,
     captured_parameter_edits: Arc<Mutex<Vec<CapturedPluginParameterEdit>>>,
+    process_scratch: ProcessScratch,
+}
+
+struct ProcessScratch {
+    input_channel_ptrs: Vec<*mut f32>,
+    output_channel_ptrs: Vec<*mut f32>,
+    input_events: Vst3EventListHandle,
+    output_events: Vst3EventListHandle,
+    input_params: ParameterChangesHandle,
+    output_params: ParameterChangesHandle,
+    parameter_changes: Vec<ParameterChangePoint>,
+}
+
+// The cached raw channel pointers are refreshed for each process call and are
+// only dereferenced by the VST3 processor during that call.
+unsafe impl Send for ProcessScratch {}
+unsafe impl Sync for ProcessScratch {}
+
+impl Default for ProcessScratch {
+    fn default() -> Self {
+        Self {
+            input_channel_ptrs: Vec::new(),
+            output_channel_ptrs: Vec::new(),
+            input_events: Vst3EventListHandle::empty(),
+            output_events: Vst3EventListHandle::empty(),
+            input_params: ParameterChangesHandle::empty(),
+            output_params: ParameterChangesHandle::empty(),
+            parameter_changes: Vec::new(),
+        }
+    }
+}
+
+impl ProcessScratch {
+    fn reserve_audio_buffers(&mut self, input_channels: usize, output_channels: usize) {
+        self.input_channel_ptrs.reserve(input_channels);
+        self.output_channel_ptrs.reserve(output_channels);
+    }
+
+    fn prepare_audio_buffers(
+        &mut self,
+        buffer: &mut AudioBuffer,
+        input_channels: usize,
+        output_channels: usize,
+    ) {
+        self.input_channel_ptrs.clear();
+        self.output_channel_ptrs.clear();
+        self.reserve_audio_buffers(input_channels, output_channels);
+
+        let shared_channel_count = input_channels.max(output_channels);
+        for channel in 0..shared_channel_count {
+            let channel_ptr = buffer.channel_mut(channel as u16).as_mut_ptr();
+            if channel < input_channels {
+                self.input_channel_ptrs.push(channel_ptr);
+            }
+            if channel < output_channels {
+                self.output_channel_ptrs.push(channel_ptr);
+            }
+        }
+    }
+
+    fn prepare_events_and_parameters(&mut self, midi: &[ScheduledMidiEvent], nframes: usize) {
+        self.input_events.set_midi(midi, nframes);
+        self.output_events.clear();
+        self.input_params.set_changes(&self.parameter_changes);
+        self.output_params.clear();
+    }
 }
 
 impl Vst3Instance {
@@ -478,6 +583,7 @@ impl Vst3Instance {
             processing_max_samples: 0,
             queued_parameter_changes: Vec::new(),
             captured_parameter_edits: Arc::new(Mutex::new(Vec::new())),
+            process_scratch: ProcessScratch::default(),
         };
         Ok(instance)
     }
@@ -576,14 +682,14 @@ impl Vst3Instance {
         });
     }
 
-    fn drain_parameter_changes(&mut self, nframes: usize) -> Vec<ParameterChangePoint> {
-        let mut changes = Vec::new();
-        std::mem::swap(&mut changes, &mut self.queued_parameter_changes);
+    fn drain_parameter_changes_into(&mut self, nframes: usize) {
+        let changes = &mut self.process_scratch.parameter_changes;
+        changes.clear();
         let max_offset = nframes.saturating_sub(1);
-        for change in &mut changes {
+        for mut change in self.queued_parameter_changes.drain(..) {
             change.sample_offset = change.sample_offset.min(max_offset);
+            changes.push(change);
         }
-        changes
     }
 
     fn drain_captured_parameter_edits(&mut self) -> Vec<CapturedPluginParameterEdit> {
@@ -729,6 +835,7 @@ impl Vst3Instance {
         nframes: usize,
         sample_rate: f64,
         configured_block_size: usize,
+        tempo_metric: TempoMetric,
     ) -> Result<(), String> {
         if self.audio_processor.is_none() {
             return Err("VST3 component does not expose IAudioProcessor".to_string());
@@ -743,7 +850,18 @@ impl Vst3Instance {
             return Ok(());
         }
 
-        self.ensure_processing(sample_rate, configured_block_size.max(nframes))?;
+        if !processing_is_prepared_for_block(
+            self.processing_active,
+            self.processing_sample_rate,
+            self.processing_max_samples,
+            sample_rate,
+            nframes,
+        ) {
+            return Err(format!(
+                "VST3 processor is not prepared for realtime block: sample_rate={sample_rate}, nframes={nframes}, prepared_sample_rate={}, prepared_max_samples={}, configured_block_size={configured_block_size}",
+                self.processing_sample_rate, self.processing_max_samples
+            ));
+        }
         let audio_processor = self
             .audio_processor
             .as_ref()
@@ -755,32 +873,24 @@ impl Vst3Instance {
         } else {
             0
         };
-        let mut input_channel_storage = Vec::with_capacity(input_channels);
-        for channel in 0..input_channels {
-            input_channel_storage.push(buffer.channel(channel as u16)[..nframes].to_vec());
-        }
-        let mut input_channel_ptrs = input_channel_storage
-            .iter_mut()
-            .map(|channel| channel.as_mut_ptr())
-            .collect::<Vec<_>>();
-
-        let mut output_channel_ptrs = Vec::with_capacity(output_channels);
-        for channel in 0..output_channels {
-            output_channel_ptrs.push(buffer.channel_mut(channel as u16).as_mut_ptr());
-        }
+        self.drain_parameter_changes_into(nframes);
+        let mut context = build_process_context(start_sample, speed, sample_rate, tempo_metric);
+        let scratch = &mut self.process_scratch;
+        scratch.prepare_audio_buffers(buffer, input_channels, output_channels);
+        scratch.prepare_events_and_parameters(midi, nframes);
 
         let mut output_bus = AudioBusBuffers {
             numChannels: output_channels as i32,
             silenceFlags: 0,
             __field0: AudioBusBuffers__type0 {
-                channelBuffers32: output_channel_ptrs.as_mut_ptr(),
+                channelBuffers32: scratch.output_channel_ptrs.as_mut_ptr(),
             },
         };
         let mut input_bus = AudioBusBuffers {
             numChannels: input_channels as i32,
             silenceFlags: 0,
             __field0: AudioBusBuffers__type0 {
-                channelBuffers32: input_channel_ptrs.as_mut_ptr(),
+                channelBuffers32: scratch.input_channel_ptrs.as_mut_ptr(),
             },
         };
         let input_buses = if input_channels > 0 {
@@ -789,12 +899,6 @@ impl Vst3Instance {
             &mut []
         };
         let output_buses = std::slice::from_mut(&mut output_bus);
-        let input_events = Vst3EventListHandle::from_midi(midi, nframes);
-        let output_events = Vst3EventListHandle::empty();
-        let input_params =
-            ParameterChangesHandle::from_changes(self.drain_parameter_changes(nframes));
-        let output_params = ParameterChangesHandle::empty();
-        let mut context = self.process_context(start_sample, speed, sample_rate);
         let mut data = ProcessData {
             processMode: ProcessModes_::kRealtime,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32,
@@ -803,10 +907,10 @@ impl Vst3Instance {
             numOutputs: output_buses.len() as i32,
             inputs: input_buses.as_mut_ptr(),
             outputs: output_buses.as_mut_ptr(),
-            inputParameterChanges: input_params.as_ptr(),
-            outputParameterChanges: output_params.as_ptr(),
-            inputEvents: input_events.as_ptr(),
-            outputEvents: output_events.as_ptr(),
+            inputParameterChanges: scratch.input_params.as_ptr(),
+            outputParameterChanges: scratch.output_params.as_ptr(),
+            inputEvents: scratch.input_events.as_ptr(),
+            outputEvents: scratch.output_events.as_ptr(),
             processContext: &mut context,
         };
 
@@ -985,6 +1089,19 @@ impl Vst3Instance {
         self.processing_active = true;
         self.processing_sample_rate = sample_rate;
         self.processing_max_samples = max_samples;
+        let input_channels = if self.audio_input_bus_count > 0 && self.input_channels > 0 {
+            usize::from(self.input_channels)
+        } else {
+            0
+        };
+        let output_channels = if self.audio_output_bus_count > 0 && self.output_channels > 0 {
+            usize::from(self.output_channels)
+        } else {
+            0
+        };
+        self.process_scratch
+            .reserve_audio_buffers(input_channels, output_channels);
+        self.process_scratch.parameter_changes.reserve(16);
         Ok(())
     }
 
@@ -1043,23 +1160,50 @@ impl Vst3Instance {
     fn output_channels(&self) -> u16 {
         self.output_channels
     }
+}
 
-    fn process_context(&self, start_sample: i64, speed: f64, sample_rate: f64) -> ProcessContext {
-        let mut context = unsafe { mem::zeroed::<ProcessContext>() };
-        context.state = (ProcessContext_::StatesAndFlags_::kPlaying
-            | ProcessContext_::StatesAndFlags_::kSystemTimeValid) as u32;
-        context.sampleRate = sample_rate;
-        context.projectTimeSamples = start_sample;
-        context.continousTimeSamples = start_sample;
-        context.systemTime = current_system_time_nanos();
-        context.tempo = 120.0;
-        context.timeSigNumerator = 4;
-        context.timeSigDenominator = 4;
-        if speed == 0.0 {
-            context.state &= !(ProcessContext_::StatesAndFlags_::kPlaying as u32);
-        }
-        context
+fn processing_is_prepared_for_block(
+    processing_active: bool,
+    processing_sample_rate: f64,
+    processing_max_samples: usize,
+    sample_rate: f64,
+    nframes: usize,
+) -> bool {
+    processing_active && processing_sample_rate == sample_rate && processing_max_samples >= nframes
+}
+
+fn processing_max_samples_for_block_size(block_size: usize) -> usize {
+    block_size
+        .max(MIN_REALTIME_PROCESSING_MAX_SAMPLES)
+        .min(i32::MAX as usize)
+}
+
+fn default_tempo_metric() -> TempoMetric {
+    TempoMetric::new(Tempo::new(120.0, 4), Meter::new(4, 4))
+}
+
+fn build_process_context(
+    start_sample: i64,
+    speed: f64,
+    sample_rate: f64,
+    tempo_metric: TempoMetric,
+) -> ProcessContext {
+    let mut context = unsafe { mem::zeroed::<ProcessContext>() };
+    context.state = (ProcessContext_::StatesAndFlags_::kPlaying
+        | ProcessContext_::StatesAndFlags_::kSystemTimeValid
+        | ProcessContext_::StatesAndFlags_::kTempoValid
+        | ProcessContext_::StatesAndFlags_::kTimeSigValid) as u32;
+    context.sampleRate = sample_rate;
+    context.projectTimeSamples = start_sample;
+    context.continousTimeSamples = start_sample;
+    context.systemTime = current_system_time_nanos();
+    context.tempo = tempo_metric.tempo.bpm;
+    context.timeSigNumerator = i32::from(tempo_metric.meter.num);
+    context.timeSigDenominator = i32::from(tempo_metric.meter.denom);
+    if speed == 0.0 {
+        context.state &= !(ProcessContext_::StatesAndFlags_::kPlaying as u32);
     }
+    context
 }
 
 impl Drop for Vst3Instance {
@@ -1386,6 +1530,85 @@ mod tests {
         let parts = decode_state_chunk(&chunk).unwrap();
         assert_eq!(parts.component, chunk);
         assert!(parts.controller.is_none());
+    }
+
+    #[test]
+    fn process_scratch_reuses_in_place_audio_channel_pointers() {
+        let mut scratch = ProcessScratch::default();
+        let mut bufs = BufferSet::new(1, 2, 128);
+        let buffer = bufs.get_mut(0).unwrap();
+
+        scratch.prepare_audio_buffers(buffer, 2, 2);
+        let first_input_ptr = scratch.input_channel_ptrs[0];
+        let first_output_ptr = scratch.output_channel_ptrs[0];
+        let input_capacity = scratch.input_channel_ptrs.capacity();
+        let output_capacity = scratch.output_channel_ptrs.capacity();
+
+        scratch.prepare_audio_buffers(buffer, 2, 2);
+
+        assert_eq!(scratch.input_channel_ptrs[0], first_input_ptr);
+        assert_eq!(scratch.output_channel_ptrs[0], first_output_ptr);
+        assert_eq!(
+            scratch.input_channel_ptrs[0],
+            scratch.output_channel_ptrs[0]
+        );
+        assert_eq!(scratch.input_channel_ptrs.capacity(), input_capacity);
+        assert_eq!(scratch.output_channel_ptrs.capacity(), output_capacity);
+    }
+
+    #[test]
+    fn process_scratch_reuses_event_and_parameter_handles() {
+        let mut scratch = ProcessScratch::default();
+        let input_events_ptr = scratch.input_events.as_ptr();
+        let output_events_ptr = scratch.output_events.as_ptr();
+        let input_params_ptr = scratch.input_params.as_ptr();
+        let output_params_ptr = scratch.output_params.as_ptr();
+
+        scratch.prepare_events_and_parameters(&[], 128);
+        scratch.prepare_events_and_parameters(&[], 128);
+
+        assert_eq!(scratch.input_events.as_ptr(), input_events_ptr);
+        assert_eq!(scratch.output_events.as_ptr(), output_events_ptr);
+        assert_eq!(scratch.input_params.as_ptr(), input_params_ptr);
+        assert_eq!(scratch.output_params.as_ptr(), output_params_ptr);
+    }
+
+    #[test]
+    fn realtime_processing_requires_prepared_block_capacity() {
+        assert!(processing_is_prepared_for_block(
+            true, 48_000.0, 256, 48_000.0, 128
+        ));
+        assert!(!processing_is_prepared_for_block(
+            true, 48_000.0, 128, 48_000.0, 256
+        ));
+        assert!(!processing_is_prepared_for_block(
+            false, 48_000.0, 256, 48_000.0, 128
+        ));
+        assert!(!processing_is_prepared_for_block(
+            true, 44_100.0, 256, 48_000.0, 128
+        ));
+    }
+
+    #[test]
+    fn processing_setup_uses_realtime_headroom_above_configured_block_size() {
+        assert_eq!(processing_max_samples_for_block_size(128), 4096);
+        assert_eq!(processing_max_samples_for_block_size(8192), 8192);
+    }
+
+    #[test]
+    fn process_context_uses_host_tempo_metric() {
+        let metric = atri_core::time::tempo::TempoMetric::new(
+            atri_core::time::tempo::Tempo::new(93.5, 4),
+            atri_core::time::tempo::Meter::new(7, 8),
+        );
+
+        let context = build_process_context(12_345, 1.0, 48_000.0, metric);
+
+        assert_eq!(context.tempo, 93.5);
+        assert_eq!(context.timeSigNumerator, 7);
+        assert_eq!(context.timeSigDenominator, 8);
+        assert!(context.state & (ProcessContext_::StatesAndFlags_::kTempoValid as u32) != 0);
+        assert!(context.state & (ProcessContext_::StatesAndFlags_::kTimeSigValid as u32) != 0);
     }
 
     #[test]

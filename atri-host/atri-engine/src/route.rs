@@ -4,6 +4,7 @@ use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::{MidiEvent, ScheduledMidiEvent};
 use atri_core::midi::note::MidiNote;
 use atri_core::midi::sequencer::MidiSequencer;
+use atri_core::time::tempo::TempoMetric;
 use atri_core::time::tempo_map::TempoMap;
 
 use super::audio_clip::{AudioClip, render_audio_clips};
@@ -126,7 +127,7 @@ impl Route {
         self.processors
             .iter()
             .filter_map(|processor| processor.as_ref())
-            .filter_map(|processor| processor.lock().ok())
+            .filter_map(|processor| processor.try_lock().ok())
             .filter(|processor| processor.is_active())
             .map(|processor| processor.signal_latency())
             .sum()
@@ -141,6 +142,7 @@ impl Route {
         end_sample: i64,
         speed: f64,
         nframes: usize,
+        tempo_metric: TempoMetric,
     ) {
         if self.mute {
             bufs.silence(nframes);
@@ -152,7 +154,8 @@ impl Route {
             let Some(proc) = proc else {
                 continue;
             };
-            if let Ok(mut p) = proc.lock() {
+            if let Ok(mut p) = proc.try_lock() {
+                p.set_tempo_context(tempo_metric);
                 p.run(bufs, midi, start_sample, end_sample, speed, nframes, true);
             }
         }
@@ -162,5 +165,77 @@ impl Route {
             .run(bufs, &[], start_sample, end_sample, speed, nframes, true);
         self.pan
             .run(bufs, &[], start_sample, end_sample, speed, nframes, true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct LockHeldProcessor;
+
+    impl Processor for LockHeldProcessor {
+        fn name(&self) -> &str {
+            "lock-held"
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut BufferSet,
+            _midi: &[ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+        }
+
+        fn activate(&mut self) {}
+        fn deactivate(&mut self) {}
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn input_channels(&self) -> u16 {
+            2
+        }
+        fn output_channels(&self) -> u16 {
+            2
+        }
+    }
+
+    #[test]
+    fn process_when_processor_locked_should_skip_without_waiting() {
+        let processor: Arc<Mutex<dyn Processor>> = Arc::new(Mutex::new(LockHeldProcessor));
+        let guard = processor.lock().unwrap();
+        let mut route = Route::new(0, "Track".to_string());
+        route.add_processor(Arc::clone(&processor));
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let handle = std::thread::spawn(move || {
+            let mut bufs = BufferSet::new(1, 2, 16);
+            route.process(
+                &mut bufs,
+                &[],
+                0,
+                16,
+                1.0,
+                16,
+                TempoMetric::new(
+                    atri_core::time::tempo::Tempo::new(120.0, 4),
+                    atri_core::time::tempo::Meter::new(4, 4),
+                ),
+            );
+            done_tx.send(()).unwrap();
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("route processing blocked on a processor mutex");
+
+        drop(guard);
+        handle.join().unwrap();
     }
 }

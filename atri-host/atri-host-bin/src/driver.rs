@@ -11,6 +11,8 @@ use crossbeam::channel::{Receiver, Sender};
 
 use crate::commands::AppCommand;
 
+const MAX_COMMANDS_PER_RENDER_CYCLE: usize = 64;
+
 pub struct AudioBlock {
     data: Vec<f32>,
 }
@@ -525,19 +527,29 @@ fn render_cycle(
     cmd_rx: &Receiver<AppCommand>,
     output: &mut [f32],
 ) {
-    drain_commands(engine, cmd_rx);
-    if let Ok(eng) = engine.lock() {
-        eng.with_session(|session| session.process(output));
+    let Ok(eng) = engine.try_lock() else {
+        output.fill(0.0);
+        return;
+    };
+
+    if eng
+        .try_with_session(|session| {
+            drain_commands(session, cmd_rx);
+            session.process(output);
+        })
+        .is_some()
+    {
         return;
     }
     output.fill(0.0);
 }
 
-fn drain_commands(engine: &Arc<Mutex<AudioEngine>>, cmd_rx: &Receiver<AppCommand>) {
-    while let Ok(cmd) = cmd_rx.try_recv() {
-        if let Ok(eng) = engine.lock() {
-            eng.with_session(|session| apply_command(session, cmd));
-        }
+fn drain_commands(session: &mut atri_engine::session::Session, cmd_rx: &Receiver<AppCommand>) {
+    for _ in 0..MAX_COMMANDS_PER_RENDER_CYCLE {
+        let Ok(cmd) = cmd_rx.try_recv() else {
+            return;
+        };
+        apply_command(session, cmd);
     }
 }
 
@@ -598,6 +610,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn audio_block_derives_frames_from_stereo_data() {
@@ -610,5 +623,43 @@ mod tests {
     #[test]
     fn audio_block_rejects_incomplete_stereo_frame() {
         assert!(AudioBlock::from_stereo(vec![0.0, 0.1, 0.2]).is_none());
+    }
+
+    #[test]
+    fn render_cycle_when_engine_locked_should_return_silence_without_waiting() {
+        let engine = Arc::new(Mutex::new(AudioEngine::new(48_000, 128)));
+        let _engine_guard = engine.lock().unwrap();
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        let (done_tx, done_rx) = crossbeam::channel::bounded(1);
+        cmd_tx.send(AppCommand::Play).unwrap();
+
+        let render_engine = Arc::clone(&engine);
+        let handle = thread::spawn(move || {
+            let mut output = vec![1.0; 16];
+            render_cycle(&render_engine, &cmd_rx, &mut output);
+            done_tx.send(output).unwrap();
+        });
+
+        let output = done_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("render_cycle blocked while the control thread held the engine lock");
+
+        assert!(output.iter().all(|sample| *sample == 0.0));
+        drop(_engine_guard);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn render_cycle_limits_command_drain_per_callback() {
+        let engine = Arc::new(Mutex::new(AudioEngine::new(48_000, 128)));
+        let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
+        for _ in 0..66 {
+            cmd_tx.send(AppCommand::Play).unwrap();
+        }
+
+        let mut output = vec![0.0; 16];
+        render_cycle(&engine, &cmd_rx, &mut output);
+
+        assert_eq!(cmd_rx.len(), 2);
     }
 }

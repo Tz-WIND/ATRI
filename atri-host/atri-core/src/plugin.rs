@@ -1,5 +1,6 @@
 use crate::audio::buffer_set::BufferSet;
 use crate::midi::event::ScheduledMidiEvent;
+use crate::time::tempo::TempoMetric;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,7 @@ pub trait Plugin: Send + Sync {
     fn deactivate(&mut self);
     fn set_block_size(&mut self, nframes: usize);
     fn set_sample_rate(&mut self, _sample_rate: f64) {}
+    fn set_tempo_context(&mut self, _metric: TempoMetric) {}
     fn signal_latency(&self) -> usize {
         0
     }

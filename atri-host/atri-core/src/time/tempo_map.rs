@@ -190,11 +190,10 @@ impl TempoMap {
             bbt_position: bbt,
         };
         // insert ordered by position
-        let idx = new
-            .tempo_points
-            .binary_search_by(|p| p.position.cmp(&sc))
-            .unwrap_or_else(|i| i);
-        new.tempo_points.insert(idx, point);
+        match new.tempo_points.binary_search_by(|p| p.position.cmp(&sc)) {
+            Ok(idx) => new.tempo_points[idx] = point,
+            Err(idx) => new.tempo_points.insert(idx, point),
+        }
         new
     }
 
@@ -208,11 +207,10 @@ impl TempoMap {
             beat_position: at,
             bbt_position: bbt,
         };
-        let idx = new
-            .meter_points
-            .binary_search_by(|p| p.position.cmp(&sc))
-            .unwrap_or_else(|i| i);
-        new.meter_points.insert(idx, point);
+        match new.meter_points.binary_search_by(|p| p.position.cmp(&sc)) {
+            Ok(idx) => new.meter_points[idx] = point,
+            Err(idx) => new.meter_points.insert(idx, point),
+        }
         new
     }
 

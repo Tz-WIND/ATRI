@@ -322,9 +322,19 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn real_system_vst_tests_enabled() -> bool {
+        std::env::var("ATRI_RUN_SYSTEM_VST_TESTS").as_deref() == Ok("1")
+    }
+
     /// Real integration test: load a system VST3 plugin and verify it exports GetPluginFactory.
     #[test]
+    #[ignore = "requires ATRI_RUN_SYSTEM_VST_TESTS=1 and real system VST3 plugins"]
     fn load_real_vst3_dll() {
+        if !real_system_vst_tests_enabled() {
+            eprintln!("Skipping: set ATRI_RUN_SYSTEM_VST_TESTS=1 to load real system VST3 plugins");
+            return;
+        }
+
         let dll_path =
             PathBuf::from("C:/Program Files/Common Files/VST3/VSL/Vienna Synchron Player.vst3");
         if !dll_path.exists() {
@@ -368,7 +378,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires ATRI_RUN_SYSTEM_VST_TESTS=1 and real system VST3 plugins"]
     fn factory_from_scanned_plugin() {
+        if !real_system_vst_tests_enabled() {
+            eprintln!("Skipping: set ATRI_RUN_SYSTEM_VST_TESTS=1 to load real system VST3 plugins");
+            return;
+        }
+
         let system_path = PathBuf::from("C:/Program Files/Common Files/VST3");
         if !system_path.exists() {
             eprintln!("Skipping: system VST3 path not found");

@@ -4,6 +4,7 @@ use atri_core::plugin::{
     CapturedPluginParameterEdit, EditorParentHandle, Plugin, PluginEditorContext,
     PluginEditorHandle, PluginParameterInfo,
 };
+use atri_core::time::tempo::TempoMetric;
 
 use super::processor::Processor;
 
@@ -86,6 +87,10 @@ impl Processor for PluginInsert {
 
     fn set_sample_rate(&mut self, sample_rate: f64) {
         self.plugin.set_sample_rate(sample_rate);
+    }
+
+    fn set_tempo_context(&mut self, metric: TempoMetric) {
+        self.plugin.set_tempo_context(metric);
     }
 
     fn prepare_for_processing(&mut self) -> Result<(), String> {

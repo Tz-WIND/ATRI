@@ -463,6 +463,9 @@ impl Session {
         if self.transport.is_rolling() {
             self.apply_automation_lanes(start_sample, end_sample, &tempo_map, nframes);
         }
+        let render_tempo_map = self.tempo_map.read().clone();
+        let tempo_metric =
+            render_tempo_map.metric_at_beats(render_tempo_map.beats_at_sample(start_sample));
 
         for idx in 0..self.route_bufs.len() {
             self.route_bufs[idx].silence(nframes);
@@ -483,10 +486,18 @@ impl Session {
                 continue;
             }
 
-            self.prepare_route_source(idx, start_sample, end_sample, &tempo_map, nframes);
+            self.prepare_route_source(idx, start_sample, end_sample, &render_tempo_map, nframes);
             let compensation =
                 max_route_latency.saturating_sub(route_latencies.get(idx).copied().unwrap_or(0));
-            self.process_route_buffer(idx, start_sample, end_sample, speed, nframes, compensation);
+            self.process_route_buffer(
+                idx,
+                start_sample,
+                end_sample,
+                speed,
+                nframes,
+                compensation,
+                tempo_metric,
+            );
             self.accumulate_route_sends(idx, nframes);
             self.accumulate_route_output(idx, nframes);
         }
@@ -528,6 +539,11 @@ impl Session {
     fn route(&self, track_id: u32) -> Option<&Arc<Mutex<Route>>> {
         self.route_index(track_id)
             .and_then(|index| self.routes.get(index))
+    }
+
+    /// Returns whether a route exists for the given track id.
+    pub fn has_route(&self, track_id: u32) -> bool {
+        self.route_index(track_id).is_some()
     }
 
     fn route_index(&self, track_id: u32) -> Option<usize> {
@@ -773,6 +789,7 @@ impl Session {
         speed: f64,
         nframes: usize,
         compensation: usize,
+        tempo_metric: atri_core::time::tempo::TempoMetric,
     ) {
         let Ok(mut route) = self.routes[idx].lock() else {
             return;
@@ -784,6 +801,7 @@ impl Session {
             end_sample,
             speed,
             nframes,
+            tempo_metric,
         );
         if let Some(buf) = self.route_bufs[idx].get_mut(0) {
             if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
@@ -869,7 +887,7 @@ impl Session {
                     let Some(processor) = self.processor_slot(track_id, slot_index) else {
                         continue;
                     };
-                    let Ok(mut processor) = processor.lock() else {
+                    let Ok(mut processor) = processor.try_lock() else {
                         continue;
                     };
                     for (sample_offset, value, _beat) in events {
@@ -1443,6 +1461,33 @@ mod tests {
     }
 
     #[test]
+    fn process_forwards_current_tempo_metric_to_processors() {
+        let mut session = Session::new(48_000, 128);
+        let track_id = session.add_track("Tempo Sync".to_string());
+        let captured_metric = Arc::new(Mutex::new(None));
+        assert!(session.set_processor_slot(
+            track_id,
+            0,
+            Some(Arc::new(Mutex::new(TempoCaptureProcessor {
+                captured_metric: Arc::clone(&captured_metric),
+            }))),
+        ));
+        session.tempo_map.update(|tempo_map| {
+            tempo_map
+                .with_tempo(Tempo::new(93.5, 4), Beats::from_beats(0.0))
+                .with_meter(Meter::new(7, 8), Beats::from_beats(0.0))
+        });
+
+        let mut output = vec![0.0; 256];
+        session.process(&mut output);
+
+        let metric = captured_metric.lock().unwrap().unwrap();
+        assert_eq!(metric.tempo.bpm, 93.5);
+        assert_eq!(metric.meter.num, 7);
+        assert_eq!(metric.meter.denom, 8);
+    }
+
+    #[test]
     fn pdc_delays_lower_latency_routes_to_match_slowest_route() {
         let mut session = Session::new(48_000, 16);
         let dry_track = session.add_track("Dry".into());
@@ -1490,6 +1535,10 @@ mod tests {
         latency: usize,
         amplitude: f32,
         emitted: bool,
+    }
+
+    struct TempoCaptureProcessor {
+        captured_metric: Arc<Mutex<Option<atri_core::time::tempo::TempoMetric>>>,
     }
 
     impl PdcImpulseProcessor {
@@ -1586,6 +1635,44 @@ mod tests {
 
         fn signal_latency(&self) -> usize {
             self.latency
+        }
+    }
+
+    impl Processor for TempoCaptureProcessor {
+        fn name(&self) -> &str {
+            "tempo-capture"
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut BufferSet,
+            _midi: &[ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+        }
+
+        fn activate(&mut self) {}
+
+        fn deactivate(&mut self) {}
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn input_channels(&self) -> u16 {
+            2
+        }
+
+        fn output_channels(&self) -> u16 {
+            2
+        }
+
+        fn set_tempo_context(&mut self, metric: atri_core::time::tempo::TempoMetric) {
+            *self.captured_metric.lock().unwrap() = Some(metric);
         }
     }
 

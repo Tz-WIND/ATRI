@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use super::session::Session;
 
@@ -33,6 +33,17 @@ impl AudioEngine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         f(&mut session)
+    }
+
+    pub fn try_with_session<T>(&self, f: impl FnOnce(&mut Session) -> T) -> Option<T> {
+        match self.session.try_lock() {
+            Ok(mut session) => Some(f(&mut session)),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                let mut session = poisoned.into_inner();
+                Some(f(&mut session))
+            }
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 
     pub fn reconfigure(&mut self, sample_rate: u32, buffer_size: usize) {
@@ -85,5 +96,17 @@ mod tests {
         assert_eq!(route.gain.target, 0.5);
         assert_eq!(route.pan.value, -0.25);
         assert!(route.mute);
+    }
+
+    #[test]
+    fn try_with_session_returns_none_when_session_is_locked() {
+        let engine = AudioEngine::new(48_000, 128);
+        let _session_guard = engine.session.lock().unwrap();
+
+        assert!(
+            engine
+                .try_with_session(|session| session.sample_rate)
+                .is_none()
+        );
     }
 }

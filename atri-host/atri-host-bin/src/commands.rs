@@ -588,6 +588,9 @@ fn execute(
             slot_index,
         } => {
             let slot_index = usize::from(slot_index.unwrap_or(0));
+            if !with_session(engine, |session| session.has_route(track_id)) {
+                return CommandResponse::error(Some("load_vst3"), "track not found");
+            }
             let path = resolve_vst3_library_path(PathBuf::from(path));
             let factory = match PluginFactory::load(&path) {
                 Ok(factory) => factory,
@@ -1564,6 +1567,31 @@ mod tests {
         assert_eq!(
             tracks[0].processor_slots,
             vec![Some("ATRI Basic Synth".to_string())]
+        );
+    }
+
+    #[test]
+    fn load_vst3_rejects_missing_track_before_loading_plugin() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+
+        let response = execute(
+            Command::LoadVst3 {
+                track_id: u32::MAX,
+                path: "missing-plugin.vst3".to_string(),
+                name: None,
+                slot_index: None,
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(
+            matches!(&response, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "load_vst3" && message == "track not found"),
+            "unexpected response: {response:?}"
         );
     }
 

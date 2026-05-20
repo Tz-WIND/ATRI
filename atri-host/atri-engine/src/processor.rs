@@ -4,6 +4,7 @@ use atri_core::plugin::{
     CapturedPluginParameterEdit, EditorParentHandle, PluginEditorContext, PluginEditorHandle,
     PluginParameterInfo,
 };
+use atri_core::time::tempo::TempoMetric;
 
 /// The Processor trait — every signal processing node in a Route chain.
 pub trait Processor: Send + Sync {
@@ -55,6 +56,8 @@ pub trait Processor: Send + Sync {
     fn set_block_size(&mut self, _nframes: usize) {}
     /// Notify the processor of the current sample rate.
     fn set_sample_rate(&mut self, _sample_rate: f64) {}
+    /// Notify the processor of the tempo/meter at the current processing position.
+    fn set_tempo_context(&mut self, _metric: TempoMetric) {}
 
     /// Prepare plugin resources on the host/control thread before the realtime callback sees it.
     fn prepare_for_processing(&mut self) -> Result<(), String> {

@@ -466,10 +466,20 @@ mod tests {
     use std::fs;
     use std::io::Write;
 
+    fn real_system_vst_tests_enabled() -> bool {
+        std::env::var("ATRI_RUN_SYSTEM_VST_TESTS").as_deref() == Ok("1")
+    }
+
     // ── integration: scan real system VST3 directory ────────────────
 
     #[test]
+    #[ignore = "requires ATRI_RUN_SYSTEM_VST_TESTS=1 and real system VST3 plugins"]
     fn scan_system_vst3_directory() {
+        if !real_system_vst_tests_enabled() {
+            eprintln!("Skipping: set ATRI_RUN_SYSTEM_VST_TESTS=1 to scan real system VST3 plugins");
+            return;
+        }
+
         let system_path = PathBuf::from("C:/Program Files/Common Files/VST3");
         if !system_path.exists() {
             eprintln!("Skipping: system VST3 path not found");
@@ -528,7 +538,15 @@ mod tests {
     // ── unit: single-file VST3 parsing ─────────────────────────────
 
     #[test]
+    #[ignore = "requires ATRI_RUN_SYSTEM_VST_TESTS=1 and real system VST3 plugins"]
     fn parse_single_file_vst3() {
+        if !real_system_vst_tests_enabled() {
+            eprintln!(
+                "Skipping: set ATRI_RUN_SYSTEM_VST_TESTS=1 to parse real system VST3 plugins"
+            );
+            return;
+        }
+
         // We test parse_single_file directly with a known file
         let path =
             PathBuf::from("C:/Program Files/Common Files/VST3/VSL/Vienna Synchron Player.vst3");
