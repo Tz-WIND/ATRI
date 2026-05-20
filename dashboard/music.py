@@ -841,10 +841,13 @@ async def _load_track_slots(
 ) -> list[dict[str, Any]]:
     if track.get("type") == "audio":
         return []
+    raw_slots = track.get("plugin_slots")
     if track.get("type") == "bus":
-        slots = track.get("plugin_slots") if isinstance(track.get("plugin_slots"), list) else []
+        slots = raw_slots if isinstance(raw_slots, list) else []
     else:
-        slots = track.get("plugin_slots") or [_instrument_slot(track)]
+        slots = (
+            raw_slots if isinstance(raw_slots, list) and raw_slots else [_instrument_slot(track)]
+        )
     commands = []
     for slot in slots:
         if isinstance(slot, dict):
