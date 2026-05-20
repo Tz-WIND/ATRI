@@ -358,6 +358,23 @@
                             {{ plugin.name }} (VST2)
                           </option>
                         </select>
+                        <select
+                          class="track-plugin-select track-output-select"
+                          :value="track.output_bus_id ?? ''"
+                          title="Output"
+                          @change.stop="updateTrackOutputBus(track, $event.target.value)"
+                        >
+                          <option value="">
+                            Master
+                          </option>
+                          <option
+                            v-for="bus in availableOutputBuses(track.id)"
+                            :key="`out-${track.id}-${bus.id}`"
+                            :value="bus.id"
+                          >
+                            {{ bus.name }}
+                          </option>
+                        </select>
                         <button
                           :class="['track-plugin-open', { active: isPluginEditorOpen(track.id) }]"
                           :disabled="!canOpenPluginEditor(track)"
@@ -397,6 +414,46 @@
                           </option>
                           <option value="multichannel">
                             Multi-channel
+                          </option>
+                        </select>
+                        <select
+                          class="track-plugin-select track-output-select"
+                          :value="track.output_bus_id ?? ''"
+                          title="Output"
+                          @change.stop="updateTrackOutputBus(track, $event.target.value)"
+                        >
+                          <option value="">
+                            Master
+                          </option>
+                          <option
+                            v-for="bus in availableOutputBuses(track.id)"
+                            :key="`out-${track.id}-${bus.id}`"
+                            :value="bus.id"
+                          >
+                            {{ bus.name }}
+                          </option>
+                        </select>
+                      </span>
+                      <span
+                        v-else-if="isBusTrack(track)"
+                        class="track-plugin-bar bus-output-bar"
+                        @click.stop
+                      >
+                        <select
+                          class="track-plugin-select track-output-select"
+                          :value="track.output_bus_id ?? ''"
+                          title="Output"
+                          @change.stop="updateTrackOutputBus(track, $event.target.value)"
+                        >
+                          <option value="">
+                            Master
+                          </option>
+                          <option
+                            v-for="bus in availableOutputBuses(track.id)"
+                            :key="`out-${track.id}-${bus.id}`"
+                            :value="bus.id"
+                          >
+                            {{ bus.name }}
                           </option>
                         </select>
                       </span>
@@ -1029,8 +1086,29 @@
               <option value="audio">
                 Audio
               </option>
+              <option value="bus">
+                Bus
+              </option>
               <option value="automation">
                 Automation
+              </option>
+            </select>
+          </label>
+          <label
+            v-if="trackCreateType !== 'automation'"
+            class="track-create-field"
+          >
+            <span>Output</span>
+            <select v-model="trackCreateOutputBusId">
+              <option :value="null">
+                Master
+              </option>
+              <option
+                v-for="bus in availableOutputBuses(null)"
+                :key="bus.id"
+                :value="bus.id"
+              >
+                {{ bus.name }}
               </option>
             </select>
           </label>
@@ -1328,6 +1406,7 @@ const trackCreateNameInput = ref(null)
 const trackCreateColor = ref(trackCreatePalette[0])
 const trackCreateType = ref('instrument')
 const trackCreateChannelType = ref('multichannel')
+const trackCreateOutputBusId = ref(null)
 const trackCreateAutomationTarget = ref(null)
 const automationParameterPicker = ref({ open: false, mode: 'create', trackId: null })
 const pianoPanelHeight = ref(null)
@@ -1720,7 +1799,9 @@ async function setTimeSignatureDenominator(denominator) {
 }
 
 function defaultTrackNameForType(type) {
-  return type === 'audio' ? 'Audio Track' : 'Instrument'
+  if (type === 'audio') return 'Audio Track'
+  if (type === 'bus') return 'Bus'
+  return 'Instrument'
 }
 
 function defaultTrackCreateColor() {
@@ -1732,6 +1813,7 @@ function openTrackCreateDialog() {
   trackCreateColor.value = defaultTrackCreateColor()
   trackCreateType.value = 'instrument'
   trackCreateChannelType.value = 'multichannel'
+  trackCreateOutputBusId.value = null
   trackCreateAutomationTarget.value = automationUnassignedTarget()
   trackCreateDialogOpen.value = true
   nextTick(() => trackCreateNameInput.value?.focus?.())
@@ -1775,13 +1857,18 @@ async function createSelectedTrack() {
     closeTrackCreateDialog()
     return res
   }
-  const type = trackCreateType.value === 'audio' ? 'audio' : 'instrument'
+  const type = trackCreateType.value === 'audio'
+    ? 'audio'
+    : trackCreateType.value === 'bus'
+      ? 'bus'
+      : 'instrument'
   const channelType = trackCreateChannelType.value === 'mono' ? 'mono' : 'multichannel'
   const name = trackCreateName.value.trim() || defaultTrackNameForType(type)
   const res = await createTrack(name, {
     type,
     color: trackCreateColor.value,
     channel_type: type === 'audio' ? channelType : 'multichannel',
+    output_bus_id: trackCreateOutputBusId.value,
   })
   closeTrackCreateDialog()
   return res
@@ -3504,8 +3591,40 @@ function isAudioTrack(track) {
   return track?.type === 'audio'
 }
 
+function isBusTrack(track) {
+  return track?.type === 'bus'
+}
+
 function isAutomationTrack(track) {
   return track?.type === 'automation'
+}
+
+function outputChainContainsTrack(bus, trackId) {
+  if (trackId == null) return false
+  const wantedId = Number(trackId)
+  const seen = new Set()
+  let outputId = bus?.output_bus_id
+  while (outputId != null) {
+    const numericOutputId = Number(outputId)
+    if (numericOutputId === wantedId) return true
+    if (seen.has(numericOutputId)) return false
+    seen.add(numericOutputId)
+    const nextBus = tracks.value.find(track => Number(track.id) === numericOutputId)
+    outputId = nextBus?.output_bus_id
+  }
+  return false
+}
+
+function availableOutputBuses(trackId = null) {
+  return tracks.value.filter(track => (
+    isBusTrack(track)
+    && (trackId == null || Number(track.id) !== Number(trackId))
+    && !outputChainContainsTrack(track, trackId)
+  ))
+}
+
+function updateTrackOutputBus(track, value) {
+  return updateTrack(track.id, { output_bus_id: value ? Number(value) : null })
 }
 
 function trackChannelLabel(track) {
@@ -3514,6 +3633,7 @@ function trackChannelLabel(track) {
 
 function trackTypeLabel(track) {
   if (isAutomationTrack(track)) return 'Automation'
+  if (isBusTrack(track)) return 'Bus'
   return isAudioTrack(track) ? `Audio ${trackChannelLabel(track)}` : 'Instrument'
 }
 
@@ -5657,11 +5777,15 @@ watch(positionBeats, (value) => {
   min-width: 0;
   height: 24px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px;
+  grid-template-columns: minmax(0, 1fr) 70px 24px;
   gap: 5px;
 }
 
 .track-plugin-bar.audio-channel-bar {
+  grid-template-columns: minmax(0, 1fr) 70px;
+}
+
+.track-plugin-bar.bus-output-bar {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -5697,6 +5821,10 @@ watch(positionBeats, (value) => {
   background: #101215;
   color: var(--t2);
   font-size: 11px;
+}
+
+.track-output-select {
+  color: var(--t3);
 }
 
 .track-plugin-open {

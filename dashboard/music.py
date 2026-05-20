@@ -606,6 +606,76 @@ def _host_track_id_for_project_target(
     return int(host_track_id)
 
 
+def _host_track_id_for_project_track(
+    project: dict[str, Any],
+    project_track_id: object,
+) -> int | None:
+    try:
+        wanted = int(project_track_id)
+    except (TypeError, ValueError):
+        return None
+    for track in project.get("tracks", []):
+        if not isinstance(track, dict) or int(track.get("id", -1)) != wanted:
+            continue
+        host_track_id = track.get("host_track_id")
+        if host_track_id is None:
+            return None
+        return int(host_track_id)
+    return None
+
+
+def _route_kind_for_host(track: dict[str, Any]) -> str:
+    return "bus" if str(track.get("type") or "").strip().lower() == "bus" else "track"
+
+
+def _route_output_for_host(
+    project: dict[str, Any],
+    track: dict[str, Any],
+) -> tuple[int | None, dict[str, Any] | None]:
+    output_bus_id = track.get("output_bus_id")
+    if output_bus_id is None:
+        return None, None
+    host_output_id = _host_track_id_for_project_track(project, output_bus_id)
+    if host_output_id is not None:
+        return host_output_id, None
+    return None, {
+        "track_id": track.get("id"),
+        "output_bus_id": output_bus_id,
+        "reason": "output bus is not synced",
+    }
+
+
+def _route_sends_for_host(
+    project: dict[str, Any],
+    track: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    sends: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for send in track.get("sends", []):
+        if not isinstance(send, dict):
+            continue
+        target_bus_id = send.get("target_bus_id")
+        host_target_id = _host_track_id_for_project_track(project, target_bus_id)
+        if host_target_id is None:
+            skipped.append(
+                {
+                    "track_id": track.get("id"),
+                    "send_id": send.get("id"),
+                    "target_bus_id": target_bus_id,
+                    "reason": "send target bus is not synced",
+                }
+            )
+            continue
+        sends.append(
+            {
+                "target_track_id": host_target_id,
+                "level": float(send.get("level", 1.0) or 0.0),
+                "enabled": bool(send.get("enabled", True)),
+            }
+        )
+    return sends, skipped
+
+
 def _automation_lanes_for_host(
     project: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -925,6 +995,9 @@ async def _sync_project_to_host(
             host_track_ids.remove(stale_host_track_id)
 
     project_changed = False
+    routing_skipped: list[dict[str, Any]] = []
+    routing_routes = 0
+    route_tracks: list[dict[str, Any]] = []
     for track in project.get("tracks", []):
         if not isinstance(track, dict):
             continue
@@ -944,6 +1017,51 @@ async def _sync_project_to_host(
             commands.extend(await _load_track_slots(host, int(host_track_id), track))
 
         host_track_id = int(host_track_id)
+        route_tracks.append(track)
+
+    for track in route_tracks:
+        host_track_id = int(track["host_track_id"])
+        commands.append(
+            await host.send_command(
+                "set_route_config",
+                {
+                    "track_id": host_track_id,
+                    "kind": _route_kind_for_host(track),
+                    "output_track_id": None,
+                },
+            )
+        )
+        routing_routes += 1
+
+    for track in route_tracks:
+        host_track_id = int(track["host_track_id"])
+        output_track_id, routing_skip = _route_output_for_host(project, track)
+        if routing_skip is not None:
+            routing_skipped.append(routing_skip)
+        commands.append(
+            await host.send_command(
+                "set_route_config",
+                {
+                    "track_id": host_track_id,
+                    "kind": None,
+                    "output_track_id": output_track_id,
+                },
+            )
+        )
+        route_sends, send_skips = _route_sends_for_host(project, track)
+        routing_skipped.extend(send_skips)
+        commands.append(
+            await host.send_command(
+                "set_route_sends",
+                {
+                    "track_id": host_track_id,
+                    "sends": route_sends,
+                },
+            )
+        )
+
+    for track in route_tracks:
+        host_track_id = int(track["host_track_id"])
         notes = [
             {
                 "pitch": int(note["pitch"]),
@@ -1043,6 +1161,10 @@ async def _sync_project_to_host(
         "automation": {
             "lanes": len(automation_lanes),
             "skipped": skipped_automation,
+        },
+        "routing": {
+            "routes": routing_routes,
+            "skipped": routing_skipped,
         },
         "project": project,
         "summary": project_summary(project),
@@ -1603,6 +1725,13 @@ async def studio_create_track():
         track_type=track_type,
         channel_type=str(data.get("channel_type") or "multichannel"),
     )
+    routing_updates = {
+        key: data[key]
+        for key in ("output_bus_id", "sends")
+        if key in data
+    }
+    if routing_updates:
+        project, track = update_project_track(int(track["id"]), routing_updates)
     sync = await _sync_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
 

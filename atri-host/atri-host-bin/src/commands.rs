@@ -9,6 +9,7 @@ use atri_engine::audio_clip::{AudioChannelMode, AudioClip, AudioClipSpec};
 use atri_engine::engine::AudioEngine;
 use atri_engine::plugin_proc::PluginInsert;
 use atri_engine::processor::Processor;
+use atri_engine::route::{RouteKind, RouteSend};
 use atri_engine::session::{
     AutomationCurve, AutomationLane, AutomationPoint, AutomationTarget, Session,
 };
@@ -95,6 +96,9 @@ pub struct AudioDeviceInfo {
 pub struct TrackStatus {
     id: u32,
     name: String,
+    kind: String,
+    output_track_id: Option<u32>,
+    sends: Vec<RouteSendStatus>,
     volume: f32,
     pan: f32,
     mute: bool,
@@ -104,6 +108,13 @@ pub struct TrackStatus {
     audio_clip_count: usize,
     processors: Vec<String>,
     processor_slots: Vec<Option<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RouteSendStatus {
+    target_track_id: u32,
+    level: f32,
+    enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,6 +172,16 @@ pub enum Command {
     SetSolo {
         track_id: u32,
         value: bool,
+    },
+    SetRouteConfig {
+        track_id: u32,
+        kind: Option<RouteKindData>,
+        output_track_id: Option<u32>,
+    },
+    SetRouteSends {
+        track_id: u32,
+        #[serde(default)]
+        sends: Vec<RouteSendData>,
     },
     LoadBuiltinSynth {
         track_id: u32,
@@ -224,6 +245,44 @@ pub enum Command {
     },
     GetStatus,
     Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteKindData {
+    Track,
+    Bus,
+}
+
+impl From<RouteKindData> for RouteKind {
+    fn from(value: RouteKindData) -> Self {
+        match value {
+            RouteKindData::Track => RouteKind::Track,
+            RouteKindData::Bus => RouteKind::Bus,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RouteSendData {
+    pub target_track_id: u32,
+    pub level: f32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl From<RouteSendData> for RouteSend {
+    fn from(value: RouteSendData) -> Self {
+        Self {
+            target_track_id: value.target_track_id,
+            level: value.level,
+            enabled: value.enabled,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -476,6 +535,29 @@ fn execute(
                 CommandResponse::ack("set_solo")
             } else {
                 CommandResponse::error(Some("set_solo"), "track not found")
+            }
+        }
+        Command::SetRouteConfig {
+            track_id,
+            kind,
+            output_track_id,
+        } => {
+            let kind = kind.map(RouteKind::from);
+            let ok = with_session(engine, |session| {
+                session.set_route_config(track_id, kind, output_track_id)
+            });
+            if ok {
+                CommandResponse::ack("set_route_config")
+            } else {
+                CommandResponse::error(Some("set_route_config"), "invalid route config")
+            }
+        }
+        Command::SetRouteSends { track_id, sends } => {
+            let sends = sends.into_iter().map(RouteSend::from).collect::<Vec<_>>();
+            if with_session(engine, |session| session.set_route_sends(track_id, sends)) {
+                CommandResponse::ack("set_route_sends")
+            } else {
+                CommandResponse::error(Some("set_route_sends"), "invalid route sends")
             }
         }
         Command::LoadBuiltinSynth {
@@ -1610,6 +1692,98 @@ mod tests {
     }
 
     #[test]
+    fn set_route_config_updates_kind_and_output() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track = with_session(&engine, |session| session.add_track("Lead".to_string()));
+        let bus = with_session(&engine, |session| session.add_bus("Bus".to_string()));
+
+        let response = execute(
+            Command::SetRouteConfig {
+                track_id: track,
+                kind: Some(RouteKindData::Track),
+                output_track_id: Some(bus),
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "set_route_config"));
+        assert_eq!(
+            with_session(&engine, |session| session.route_output(track)),
+            Some(Some(bus))
+        );
+    }
+
+    #[test]
+    fn set_route_config_error_does_not_partially_update_kind() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track = with_session(&engine, |session| session.add_track("Lead".to_string()));
+        let non_bus_target =
+            with_session(&engine, |session| session.add_track("Audio".to_string()));
+
+        let response = execute(
+            Command::SetRouteConfig {
+                track_id: track,
+                kind: Some(RouteKindData::Bus),
+                output_track_id: Some(non_bus_target),
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(
+            matches!(response, CommandResponse::Error { cmd: Some(cmd), .. } if cmd == "set_route_config")
+        );
+        assert_eq!(
+            with_session(&engine, |session| session.route_kind(track)),
+            Some(RouteKind::Track)
+        );
+        assert_eq!(
+            with_session(&engine, |session| session.route_output(track)),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn set_route_sends_updates_send_targets() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track = with_session(&engine, |session| session.add_track("Lead".to_string()));
+        let bus = with_session(&engine, |session| session.add_bus("FX".to_string()));
+
+        let response = execute(
+            Command::SetRouteSends {
+                track_id: track,
+                sends: vec![RouteSendData {
+                    target_track_id: bus,
+                    level: 0.5,
+                    enabled: true,
+                }],
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "set_route_sends"));
+        assert_eq!(
+            with_session(&engine, |session| session.route_sends(track)),
+            Some(vec![RouteSend {
+                target_track_id: bus,
+                level: 0.5,
+                enabled: true,
+            }])
+        );
+    }
+
+    #[test]
     fn clear_processor_slot_removes_only_target_slot() {
         let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
         let track_id = with_session(&engine, |session| session.add_track("Keys".to_string()));
@@ -1877,6 +2051,20 @@ fn status(
                 Some(TrackStatus {
                     id: route.id,
                     name: route.name.clone(),
+                    kind: match route.kind {
+                        RouteKind::Track => "track".to_string(),
+                        RouteKind::Bus => "bus".to_string(),
+                    },
+                    output_track_id: route.output_track_id,
+                    sends: route
+                        .sends
+                        .iter()
+                        .map(|send| RouteSendStatus {
+                            target_track_id: send.target_track_id,
+                            level: send.level,
+                            enabled: send.enabled,
+                        })
+                        .collect(),
                     volume: route.gain.value,
                     pan: route.pan.value,
                     mute: route.mute,

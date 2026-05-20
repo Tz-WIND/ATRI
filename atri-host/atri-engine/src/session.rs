@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use atri_core::audio::buffer::AudioBuffer;
@@ -13,7 +13,7 @@ use atri_core::time::tempo_map::{SwapLock, TempoMap};
 use super::audio_clip::AudioClip;
 use super::mixer::Mixer;
 use super::processor::Processor;
-use super::route::Route;
+use super::route::{Route, RouteKind, RouteSend};
 use super::transport::Transport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,10 +153,19 @@ impl Session {
     }
 
     pub fn add_track(&mut self, name: String) -> u32 {
+        self.add_route(name, RouteKind::Track)
+    }
+
+    pub fn add_bus(&mut self, name: String) -> u32 {
+        self.add_route(name, RouteKind::Bus)
+    }
+
+    fn add_route(&mut self, name: String, kind: RouteKind) -> u32 {
         let id = self.next_route_id;
         self.next_route_id = self.next_route_id.saturating_add(1);
         let index = self.routes.len();
-        self.routes.push(Arc::new(Mutex::new(Route::new(id, name))));
+        self.routes
+            .push(Arc::new(Mutex::new(Route::new_with_kind(id, name, kind))));
         self.route_indices.insert(id, index);
         self.route_bufs.push(BufferSet::new(1, 2, self.buffer_size));
         self.route_delay_lines.push(RouteDelayLine::default());
@@ -200,6 +209,14 @@ impl Session {
         for route_index in self.route_indices.values_mut() {
             if *route_index > index {
                 *route_index -= 1;
+            }
+        }
+        for route in &self.routes {
+            if let Ok(mut route) = route.lock() {
+                if route.output_track_id == Some(track_id) {
+                    route.output_track_id = None;
+                }
+                route.sends.retain(|send| send.target_track_id != track_id);
             }
         }
         true
@@ -290,6 +307,115 @@ impl Session {
         self.with_route(track_id, |route| route.solo = value)
     }
 
+    pub fn set_route_kind(&mut self, track_id: u32, kind: RouteKind) -> bool {
+        self.with_route(track_id, |route| route.kind = kind)
+    }
+
+    pub fn set_route_output(&mut self, track_id: u32, output_track_id: Option<u32>) -> bool {
+        if !self.route_output_is_valid(track_id, output_track_id) {
+            return false;
+        }
+        self.with_route(track_id, |route| route.output_track_id = output_track_id)
+    }
+
+    pub fn set_route_config(
+        &mut self,
+        track_id: u32,
+        kind: Option<RouteKind>,
+        output_track_id: Option<u32>,
+    ) -> bool {
+        if !self.route_output_is_valid(track_id, output_track_id) {
+            return false;
+        }
+        let Some(index) = self.route_index(track_id) else {
+            return false;
+        };
+        self.routes[index]
+            .lock()
+            .map(|mut route| {
+                if let Some(kind) = kind {
+                    route.kind = kind;
+                }
+                route.output_track_id = output_track_id;
+            })
+            .is_ok()
+    }
+
+    fn route_output_is_valid(&self, track_id: u32, output_track_id: Option<u32>) -> bool {
+        if self.route_index(track_id).is_none() {
+            return false;
+        }
+        if output_track_id == Some(track_id) {
+            return false;
+        }
+        if let Some(output_id) = output_track_id {
+            let Some(output_index) = self.route_index(output_id) else {
+                return false;
+            };
+            let Ok(output_route) = self.routes[output_index].lock() else {
+                return false;
+            };
+            if output_route.kind != RouteKind::Bus {
+                return false;
+            }
+        }
+        if output_track_id.is_some()
+            && self.route_graph_has_cycle(Some((track_id, output_track_id)), None)
+        {
+            return false;
+        }
+        true
+    }
+
+    pub fn route_output(&self, track_id: u32) -> Option<Option<u32>> {
+        let route = self.route(track_id)?;
+        route.lock().ok().map(|route| route.output_track_id)
+    }
+
+    pub fn route_kind(&self, track_id: u32) -> Option<RouteKind> {
+        let route = self.route(track_id)?;
+        route.lock().ok().map(|route| route.kind)
+    }
+
+    pub fn set_route_sends(&mut self, track_id: u32, sends: Vec<RouteSend>) -> bool {
+        if self.route_index(track_id).is_none() {
+            return false;
+        }
+
+        let mut normalized = Vec::new();
+        let mut seen_targets = HashSet::new();
+        for send in sends {
+            if send.target_track_id == track_id || !seen_targets.insert(send.target_track_id) {
+                return false;
+            }
+            let Some(target_index) = self.route_index(send.target_track_id) else {
+                return false;
+            };
+            let Ok(target_route) = self.routes[target_index].lock() else {
+                return false;
+            };
+            if target_route.kind != RouteKind::Bus {
+                return false;
+            }
+            normalized.push(RouteSend {
+                target_track_id: send.target_track_id,
+                level: send.level.clamp(0.0, 2.0),
+                enabled: send.enabled,
+            });
+        }
+
+        if self.route_graph_has_cycle(None, Some((track_id, normalized.as_slice()))) {
+            return false;
+        }
+
+        self.with_route(track_id, |route| route.sends = normalized)
+    }
+
+    pub fn route_sends(&self, track_id: u32) -> Option<Vec<RouteSend>> {
+        let route = self.route(track_id)?;
+        route.lock().ok().map(|route| route.sends.clone())
+    }
+
     pub fn set_automation_lanes(&mut self, mut lanes: Vec<AutomationLane>) {
         for lane in &mut lanes {
             lane.points.sort_by(|a, b| {
@@ -328,11 +454,9 @@ impl Session {
         }
         let end_sample = start_sample + nframes as i64;
         let tempo_map = self.tempo_map.read().clone();
-        let any_solo = self
-            .routes
-            .iter()
-            .any(|route| route.lock().map(|route| route.solo).unwrap_or(false));
-        let route_latencies = self.route_mix_latencies(any_solo);
+        let solo_indices = self.solo_route_indices();
+        let any_solo = !solo_indices.is_empty();
+        let route_latencies = self.route_mix_latencies(&solo_indices);
         let max_route_latency = route_latencies.iter().copied().max().unwrap_or(0);
 
         self.master_buf.silence(nframes);
@@ -340,66 +464,31 @@ impl Session {
             self.apply_automation_lanes(start_sample, end_sample, &tempo_map, nframes);
         }
 
-        for (idx, route_arc) in self.routes.iter().enumerate() {
-            let Ok(mut route) = route_arc.lock() else {
-                continue;
-            };
+        for idx in 0..self.route_bufs.len() {
+            self.route_bufs[idx].silence(nframes);
+            self.midi_events[idx].clear();
+        }
 
-            if route.mute || (any_solo && !route.solo) {
-                self.route_bufs[idx].silence(nframes);
+        for idx in self.route_render_order() {
+            let muted = self.routes[idx]
+                .lock()
+                .map(|route| route.mute)
+                .unwrap_or(true);
+            let muted_or_unsoloed =
+                muted || (any_solo && !self.route_feeds_solo_path(idx, &solo_indices));
+            if muted_or_unsoloed {
                 if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
                     delay_line.clear();
                 }
                 continue;
             }
 
-            self.route_bufs[idx].silence(nframes);
-            if self.transport.is_rolling() {
-                route.render_audio_clips(
-                    &mut self.route_bufs[idx],
-                    start_sample,
-                    end_sample,
-                    &tempo_map,
-                    nframes,
-                );
-            }
-            if self.transport.is_rolling() {
-                route.sequencer.collect_events_in_samples(
-                    start_sample,
-                    end_sample,
-                    &tempo_map,
-                    &mut self.midi_events[idx],
-                );
-            } else {
-                // On pause/stop, inject AllNotesOff so synth voices release
-                // instead of sustaining forever mid-note.
-                self.midi_events[idx].clear();
-                self.midi_events[idx].push(ScheduledMidiEvent::new(
-                    MidiEvent::new(0, MidiMessage::AllNotesOff { channel: 0 }),
-                    0,
-                ));
-            }
-
-            route.process(
-                &mut self.route_bufs[idx],
-                &self.midi_events[idx],
-                start_sample,
-                end_sample,
-                speed,
-                nframes,
-            );
-
+            self.prepare_route_source(idx, start_sample, end_sample, &tempo_map, nframes);
             let compensation =
                 max_route_latency.saturating_sub(route_latencies.get(idx).copied().unwrap_or(0));
-            if let Some(buf) = self.route_bufs[idx].get_mut(0) {
-                if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
-                    delay_line.process(buf, nframes, compensation);
-                }
-            }
-
-            if let Some(buf) = self.route_bufs[idx].get(0) {
-                self.mixer.add(buf, &mut self.master_buf, nframes);
-            }
+            self.process_route_buffer(idx, start_sample, end_sample, speed, nframes, compensation);
+            self.accumulate_route_sends(idx, nframes);
+            self.accumulate_route_output(idx, nframes);
         }
 
         // Detailed MIDI log: print every block that has events.
@@ -445,17 +534,312 @@ impl Session {
         self.route_indices.get(&track_id).copied()
     }
 
-    fn route_mix_latencies(&self, any_solo: bool) -> Vec<usize> {
+    fn route_output_index(&self, route_index: usize) -> Option<usize> {
+        let route = self.routes.get(route_index)?.lock().ok()?;
+        route
+            .output_track_id
+            .and_then(|track_id| self.route_index(track_id))
+    }
+
+    fn route_depth_to_master(&self, route_index: usize) -> usize {
+        let mut seen = HashSet::new();
+        self.route_depth_to_master_inner(route_index, &mut seen)
+    }
+
+    fn route_depth_to_master_inner(&self, route_index: usize, seen: &mut HashSet<usize>) -> usize {
+        if !seen.insert(route_index) {
+            return 0;
+        }
+        let depth = self
+            .route_target_indices(route_index)
+            .into_iter()
+            .map(|target_index| {
+                1usize.saturating_add(self.route_depth_to_master_inner(target_index, seen))
+            })
+            .max()
+            .unwrap_or(0);
+        seen.remove(&route_index);
+        depth
+    }
+
+    fn route_render_order(&self) -> Vec<usize> {
+        let mut indices = (0..self.routes.len()).collect::<Vec<_>>();
+        indices.sort_by(|left, right| {
+            self.route_depth_to_master(*right)
+                .cmp(&self.route_depth_to_master(*left))
+                .then_with(|| left.cmp(right))
+        });
+        indices
+    }
+
+    fn route_target_indices(&self, route_index: usize) -> Vec<usize> {
+        self.route_target_indices_with_override(route_index, None, None)
+    }
+
+    fn route_target_indices_with_override(
+        &self,
+        route_index: usize,
+        override_output: Option<(u32, Option<u32>)>,
+        override_sends: Option<(u32, &[RouteSend])>,
+    ) -> Vec<usize> {
+        let Some(route_arc) = self.routes.get(route_index) else {
+            return Vec::new();
+        };
+        let Ok(route) = route_arc.lock() else {
+            return Vec::new();
+        };
+        let route_id = route.id;
+        let output_track_id = if let Some((override_track_id, output_track_id)) = override_output {
+            if override_track_id == route_id {
+                output_track_id
+            } else {
+                route.output_track_id
+            }
+        } else {
+            route.output_track_id
+        };
+        let send_target_ids = if let Some((override_track_id, sends)) = override_sends {
+            if override_track_id == route_id {
+                sends
+                    .iter()
+                    .filter(|send| send.enabled && send.level > 0.0)
+                    .map(|send| send.target_track_id)
+                    .collect::<Vec<_>>()
+            } else {
+                route
+                    .sends
+                    .iter()
+                    .filter(|send| send.enabled && send.level > 0.0)
+                    .map(|send| send.target_track_id)
+                    .collect::<Vec<_>>()
+            }
+        } else {
+            route
+                .sends
+                .iter()
+                .filter(|send| send.enabled && send.level > 0.0)
+                .map(|send| send.target_track_id)
+                .collect::<Vec<_>>()
+        };
+        drop(route);
+
+        let mut target_indices = Vec::new();
+        if let Some(output_index) = output_track_id.and_then(|track_id| self.route_index(track_id))
+        {
+            target_indices.push(output_index);
+        }
+        target_indices.extend(
+            send_target_ids
+                .into_iter()
+                .filter_map(|track_id| self.route_index(track_id)),
+        );
+        target_indices
+    }
+
+    fn route_reaches(&self, route_index: usize, wanted_index: usize) -> bool {
+        let mut stack = self.route_target_indices(route_index);
+        let mut seen = HashSet::new();
+        while let Some(index) = stack.pop() {
+            if index == wanted_index {
+                return true;
+            }
+            if !seen.insert(index) {
+                continue;
+            }
+            stack.extend(self.route_target_indices(index));
+        }
+        false
+    }
+
+    fn route_feeds_solo_path(&self, route_index: usize, solo_indices: &HashSet<usize>) -> bool {
+        if solo_indices.contains(&route_index) {
+            return true;
+        }
+        solo_indices.iter().any(|solo_index| {
+            self.route_reaches(route_index, *solo_index)
+                || self.route_reaches(*solo_index, route_index)
+        })
+    }
+
+    fn route_graph_has_cycle(
+        &self,
+        override_output: Option<(u32, Option<u32>)>,
+        override_sends: Option<(u32, &[RouteSend])>,
+    ) -> bool {
+        let mut visited = HashSet::new();
+        for route_index in 0..self.routes.len() {
+            let mut visiting = HashSet::new();
+            if self.route_graph_has_cycle_from(
+                route_index,
+                override_output,
+                override_sends,
+                &mut visiting,
+                &mut visited,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn route_graph_has_cycle_from(
+        &self,
+        route_index: usize,
+        override_output: Option<(u32, Option<u32>)>,
+        override_sends: Option<(u32, &[RouteSend])>,
+        visiting: &mut HashSet<usize>,
+        visited: &mut HashSet<usize>,
+    ) -> bool {
+        if visited.contains(&route_index) {
+            return false;
+        }
+        if !visiting.insert(route_index) {
+            return true;
+        }
+        for target_index in
+            self.route_target_indices_with_override(route_index, override_output, override_sends)
+        {
+            if self.route_graph_has_cycle_from(
+                target_index,
+                override_output,
+                override_sends,
+                visiting,
+                visited,
+            ) {
+                return true;
+            }
+        }
+        visiting.remove(&route_index);
+        visited.insert(route_index);
+        false
+    }
+
+    fn solo_route_indices(&self) -> HashSet<usize> {
         self.routes
             .iter()
-            .map(|route| {
-                let Ok(route) = route.lock() else {
-                    return 0;
-                };
-                if route.mute || (any_solo && !route.solo) {
+            .enumerate()
+            .filter_map(|(idx, route)| {
+                route
+                    .lock()
+                    .ok()
+                    .and_then(|route| if route.solo { Some(idx) } else { None })
+            })
+            .collect()
+    }
+
+    fn prepare_route_source(
+        &mut self,
+        idx: usize,
+        start_sample: i64,
+        end_sample: i64,
+        tempo_map: &TempoMap,
+        nframes: usize,
+    ) {
+        let Ok(route) = self.routes[idx].lock() else {
+            return;
+        };
+        if route.kind == RouteKind::Bus {
+            return;
+        }
+        if self.transport.is_rolling() {
+            route.render_audio_clips(
+                &mut self.route_bufs[idx],
+                start_sample,
+                end_sample,
+                tempo_map,
+                nframes,
+            );
+            route.sequencer.collect_events_in_samples(
+                start_sample,
+                end_sample,
+                tempo_map,
+                &mut self.midi_events[idx],
+            );
+        } else {
+            // On pause/stop, inject AllNotesOff so synth voices release
+            // instead of sustaining forever mid-note.
+            self.midi_events[idx].push(ScheduledMidiEvent::new(
+                MidiEvent::new(0, MidiMessage::AllNotesOff { channel: 0 }),
+                0,
+            ));
+        }
+    }
+
+    fn process_route_buffer(
+        &mut self,
+        idx: usize,
+        start_sample: i64,
+        end_sample: i64,
+        speed: f64,
+        nframes: usize,
+        compensation: usize,
+    ) {
+        let Ok(mut route) = self.routes[idx].lock() else {
+            return;
+        };
+        route.process(
+            &mut self.route_bufs[idx],
+            &self.midi_events[idx],
+            start_sample,
+            end_sample,
+            speed,
+            nframes,
+        );
+        if let Some(buf) = self.route_bufs[idx].get_mut(0) {
+            if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
+                delay_line.process(buf, nframes, compensation);
+            }
+        }
+    }
+
+    fn accumulate_route_output(&mut self, idx: usize, nframes: usize) {
+        let Some(source) = self.route_bufs[idx].get(0).cloned() else {
+            return;
+        };
+        if let Some(output_idx) = self.route_output_index(idx) {
+            if let Some(dest) = self.route_bufs[output_idx].get_mut(0) {
+                self.mixer.add(&source, dest, nframes);
+            }
+        } else {
+            self.mixer.add(&source, &mut self.master_buf, nframes);
+        }
+    }
+
+    fn accumulate_route_sends(&mut self, idx: usize, nframes: usize) {
+        let Some(source) = self.route_bufs[idx].get(0).cloned() else {
+            return;
+        };
+        let sends = self.routes[idx]
+            .lock()
+            .map(|route| route.sends.clone())
+            .unwrap_or_default();
+        for send in sends {
+            if !send.enabled || send.level <= 0.0 {
+                continue;
+            }
+            let Some(target_idx) = self.route_index(send.target_track_id) else {
+                continue;
+            };
+            if let Some(dest) = self.route_bufs[target_idx].get_mut(0) {
+                add_scaled_buffer(&source, dest, nframes, send.level);
+            }
+        }
+    }
+
+    fn route_mix_latencies(&self, solo_indices: &HashSet<usize>) -> Vec<usize> {
+        let any_solo = !solo_indices.is_empty();
+        self.routes
+            .iter()
+            .enumerate()
+            .map(|(idx, route)| {
+                let muted = route.lock().map(|route| route.mute).unwrap_or(true);
+                if muted || (any_solo && !self.route_feeds_solo_path(idx, solo_indices)) {
                     return 0;
                 }
-                route.signal_latency()
+                route
+                    .lock()
+                    .map(|route| route.signal_latency())
+                    .unwrap_or(0)
             })
             .collect()
     }
@@ -600,6 +984,19 @@ fn automation_events_in_block(
     events
 }
 
+fn add_scaled_buffer(source: &AudioBuffer, dest: &mut AudioBuffer, nframes: usize, level: f32) {
+    if source.channels() < 2 || dest.channels() < 2 {
+        return;
+    }
+    let n = nframes.min(source.capacity()).min(dest.capacity());
+    for i in 0..n {
+        let left = dest.channel(0)[i] + source.channel(0)[i] * level;
+        let right = dest.channel(1)[i] + source.channel(1)[i] * level;
+        dest.channel_mut(0)[i] = left;
+        dest.channel_mut(1)[i] = right;
+    }
+}
+
 fn rescale_sample_position(position: i64, old_sample_rate: u32, new_sample_rate: u32) -> i64 {
     if old_sample_rate == 0 {
         return position;
@@ -643,6 +1040,158 @@ mod tests {
         assert_eq!(session.route_index(third), Some(1));
         assert!(session.set_track_pan(third, 0.25));
         assert!(!session.set_track_mute(second, true));
+    }
+
+    #[test]
+    fn route_config_sets_kind_and_output_target() {
+        let mut session = Session::new(48_000, 64);
+        let track = session.add_track("Lead".to_string());
+        let bus = session.add_bus("Lead Bus".to_string());
+
+        assert!(session.set_route_output(track, Some(bus)));
+        assert_eq!(session.route_output(track), Some(Some(bus)));
+        assert_eq!(session.route_kind(track), Some(RouteKind::Track));
+        assert_eq!(session.route_kind(bus), Some(RouteKind::Bus));
+    }
+
+    #[test]
+    fn route_output_rejects_bus_output_cycle() {
+        let mut session = Session::new(48_000, 64);
+        let bus_a = session.add_bus("Bus A".to_string());
+        let bus_b = session.add_bus("Bus B".to_string());
+
+        assert!(session.set_route_output(bus_a, Some(bus_b)));
+        assert!(!session.set_route_output(bus_b, Some(bus_a)));
+
+        assert_eq!(session.route_output(bus_a), Some(Some(bus_b)));
+        assert_eq!(session.route_output(bus_b), Some(None));
+    }
+
+    #[test]
+    fn route_output_rejects_cycle_through_existing_send() {
+        let mut session = Session::new(48_000, 64);
+        let bus_a = session.add_bus("Bus A".to_string());
+        let bus_b = session.add_bus("Bus B".to_string());
+
+        assert!(session.set_route_sends(
+            bus_a,
+            vec![RouteSend {
+                target_track_id: bus_b,
+                level: 0.5,
+                enabled: true,
+            }],
+        ));
+        assert!(!session.set_route_output(bus_b, Some(bus_a)));
+
+        assert_eq!(session.route_output(bus_b), Some(None));
+    }
+
+    #[test]
+    fn route_output_bus_sums_to_master() {
+        let mut session = Session::new(48_000, 16);
+        let track = session.add_track("Tone".to_string());
+        let bus = session.add_bus("Bus".to_string());
+        assert!(session.set_route_output(track, Some(bus)));
+        assert!(session.set_processor_slot(
+            track,
+            0,
+            Some(Arc::new(Mutex::new(PdcImpulseProcessor::new(0, 1.0)))),
+        ));
+
+        let mut output = vec![0.0; 16 * 2];
+        session.process(&mut output);
+
+        assert!((output[0] - 0.5).abs() < 0.0001);
+        assert!((output[1] - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn route_render_order_places_nested_buses_after_sources() {
+        let mut session = Session::new(48_000, 4);
+        let track = session.add_track("Track".to_string());
+        let child_bus = session.add_bus("Child".to_string());
+        let parent_bus = session.add_bus("Parent".to_string());
+        assert!(session.set_route_output(track, Some(child_bus)));
+        assert!(session.set_route_output(child_bus, Some(parent_bus)));
+
+        let names: Vec<String> = session
+            .route_render_order()
+            .into_iter()
+            .map(|idx| session.routes[idx].lock().unwrap().name.clone())
+            .collect();
+
+        assert_eq!(names, vec!["Track", "Child", "Parent"]);
+    }
+
+    #[test]
+    fn route_render_order_places_send_sources_before_targets() {
+        let mut session = Session::new(48_000, 4);
+        let bus = session.add_bus("FX".to_string());
+        let track = session.add_track("Track".to_string());
+        assert!(session.set_route_sends(
+            track,
+            vec![RouteSend {
+                target_track_id: bus,
+                level: 0.5,
+                enabled: true,
+            }],
+        ));
+
+        let names: Vec<String> = session
+            .route_render_order()
+            .into_iter()
+            .map(|idx| session.routes[idx].lock().unwrap().name.clone())
+            .collect();
+
+        assert_eq!(names, vec!["Track", "FX"]);
+    }
+
+    #[test]
+    fn route_send_copies_post_fader_signal_to_target_bus() {
+        let mut session = Session::new(48_000, 16);
+        let track = session.add_track("Tone".to_string());
+        let bus = session.add_bus("FX".to_string());
+        assert!(session.set_route_sends(
+            track,
+            vec![RouteSend {
+                target_track_id: bus,
+                level: 0.5,
+                enabled: true,
+            }],
+        ));
+        assert!(session.set_processor_slot(
+            track,
+            0,
+            Some(Arc::new(Mutex::new(PdcImpulseProcessor::new(0, 1.0)))),
+        ));
+
+        let mut output = vec![0.0; 16 * 2];
+        session.process(&mut output);
+
+        let direct = std::f32::consts::FRAC_PI_4.cos();
+        let sent = direct * 0.5 * std::f32::consts::FRAC_PI_4.cos();
+        assert!((output[0] - (direct + sent)).abs() < 0.0001);
+        assert!((output[1] - (direct + sent)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn soloed_track_feeds_through_output_bus() {
+        let mut session = Session::new(48_000, 16);
+        let track = session.add_track("Tone".to_string());
+        let bus = session.add_bus("Bus".to_string());
+        assert!(session.set_route_output(track, Some(bus)));
+        assert!(session.set_track_solo(track, true));
+        assert!(session.set_processor_slot(
+            track,
+            0,
+            Some(Arc::new(Mutex::new(PdcImpulseProcessor::new(0, 1.0)))),
+        ));
+
+        let mut output = vec![0.0; 16 * 2];
+        session.process(&mut output);
+
+        assert!((output[0] - 0.5).abs() < 0.0001);
+        assert!((output[1] - 0.5).abs() < 0.0001);
     }
 
     #[test]

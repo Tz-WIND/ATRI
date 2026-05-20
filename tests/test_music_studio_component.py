@@ -98,6 +98,15 @@ def test_music_studio_supports_track_type_and_audio_channel_controls():
     assert "body: JSON.stringify({ name, ...options })" in api_text
 
 
+def test_music_studio_exposes_bus_track_creation_and_output_selector():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert '<option value="bus">' in studio_text
+    assert "trackCreateType.value === 'bus'" in studio_text
+    assert "output_bus_id" in studio_text
+    assert "availableOutputBuses" in studio_text
+
+
 def test_music_studio_supports_external_audio_drop_import():
     studio_text = _read(STUDIO_COMPONENT)
     host_text = _read(DAW_HOST)

@@ -231,6 +231,9 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
             ),
             "plugin_slots": _normalize_plugin_slots(raw_track, track_type=track_type),
             "output_bus_id": _nullable_non_negative_int(raw_track.get("output_bus_id")),
+            "sends": []
+            if track_type == "automation"
+            else _normalize_track_sends(raw_track),
             "clips": clips,
             "notes": notes,
             "midi_events": midi_events,
@@ -310,6 +313,7 @@ def create_track(
             track_type=normalized_type,
         ),
         "output_bus_id": None,
+        "sends": [],
         "clips": [],
         "notes": [],
         "midi_events": [],
@@ -393,6 +397,11 @@ def delete_track(track_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
     for item in project["tracks"]:
         if item.get("output_bus_id") == deleted_id:
             item["output_bus_id"] = None
+        item["sends"] = [
+            send
+            for send in item.get("sends", [])
+            if isinstance(send, dict) and send.get("target_bus_id") != deleted_id
+        ]
     project = save_project(project)
     return project, track
 
@@ -414,6 +423,8 @@ def update_track(track_id: int, updates: dict[str, Any]) -> tuple[dict[str, Any]
         track["solo"] = bool(updates["solo"])
     if "output_bus_id" in updates:
         track["output_bus_id"] = _nullable_non_negative_int(updates.get("output_bus_id"))
+    if "sends" in updates and isinstance(updates["sends"], list):
+        track["sends"] = _normalize_track_sends({"sends": updates["sends"]})
     if "type" in updates or "track_type" in updates:
         track["type"] = _normalize_track_type(
             {"type": updates.get("type", updates.get("track_type"))},
@@ -3402,6 +3413,35 @@ def _normalize_plugin_slots(
     return _sort_plugin_slots(slots)
 
 
+def _normalize_track_sends(track: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_sends = track.get("sends")
+    if not isinstance(raw_sends, list):
+        return []
+
+    sends_by_target: dict[int, dict[str, Any]] = {}
+    target_order: list[int] = []
+    for raw_send in raw_sends:
+        if not isinstance(raw_send, dict):
+            continue
+        target_bus_id = _nullable_non_negative_int(
+            raw_send.get("target_bus_id", raw_send.get("target_track_id"))
+        )
+        if target_bus_id is None:
+            continue
+        send_id = str(raw_send.get("id") or f"send_{target_bus_id}").strip()
+        if not send_id:
+            send_id = f"send_{target_bus_id}"
+        if target_bus_id not in sends_by_target:
+            target_order.append(target_bus_id)
+        sends_by_target[target_bus_id] = {
+            "id": send_id,
+            "target_bus_id": target_bus_id,
+            "level": _bounded_float(raw_send.get("level"), 1.0, 0.0, 2.0),
+            "enabled": bool(raw_send.get("enabled", True)),
+        }
+    return [sends_by_target[target_bus_id] for target_bus_id in target_order]
+
+
 def _repair_output_bus_routing(tracks: list[dict[str, Any]]) -> None:
     bus_ids = {int(track["id"]) for track in tracks if track.get("type") == "bus"}
 
@@ -3432,6 +3472,68 @@ def _repair_output_bus_routing(tracks: list[dict[str, Any]]) -> None:
     for track in tracks:
         if has_cycle(int(track["id"])):
             track["output_bus_id"] = None
+
+    _repair_track_sends(tracks)
+
+
+def _repair_track_sends(tracks: list[dict[str, Any]]) -> None:
+    bus_ids = {int(track["id"]) for track in tracks if track.get("type") == "bus"}
+    outputs = {
+        int(track["id"]): int(track["output_bus_id"])
+        for track in tracks
+        if track.get("output_bus_id") is not None
+    }
+    send_edges: dict[int, list[int]] = {int(track["id"]): [] for track in tracks}
+
+    for track in tracks:
+        source_id = int(track["id"])
+        repaired: list[dict[str, Any]] = []
+        seen_targets: set[int] = set()
+        for send in track.get("sends", []):
+            if not isinstance(send, dict):
+                continue
+            target_bus_id = _nullable_non_negative_int(send.get("target_bus_id"))
+            if target_bus_id is None:
+                continue
+            if target_bus_id not in bus_ids or target_bus_id == source_id:
+                continue
+            if target_bus_id in seen_targets:
+                continue
+            if _route_reaches(
+                target_bus_id,
+                source_id,
+                outputs=outputs,
+                sends=send_edges,
+            ):
+                continue
+            send["target_bus_id"] = target_bus_id
+            repaired.append(send)
+            send_edges[source_id].append(target_bus_id)
+            seen_targets.add(target_bus_id)
+        track["sends"] = repaired
+
+
+def _route_reaches(
+    start_id: int,
+    wanted_id: int,
+    *,
+    outputs: dict[int, int],
+    sends: dict[int, list[int]],
+) -> bool:
+    seen: set[int] = set()
+    stack = [start_id]
+    while stack:
+        current_id = stack.pop()
+        if current_id == wanted_id:
+            return True
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        output_id = outputs.get(current_id)
+        if output_id is not None:
+            stack.append(output_id)
+        stack.extend(sends.get(current_id, []))
+    return False
 
 
 def _normalize_plugin_slot(

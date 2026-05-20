@@ -107,6 +107,48 @@ def test_delete_bus_track_retargets_dependents_to_master(tmp_path, monkeypatch):
     assert lead_after["output_bus_id"] is None
 
 
+def test_track_sends_normalize_to_valid_bus_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    _, bus_track = create_track("FX Bus", track_type="bus")
+    _, lead = create_track("Lead")
+
+    project, lead = update_track(
+        lead["id"],
+        {
+            "sends": [
+                {"id": "lead-fx", "target_bus_id": bus_track["id"], "level": 0.5},
+                {"id": "missing", "target_bus_id": 999, "level": 1.0},
+                {"id": "not-bus", "target_bus_id": lead["id"], "level": 1.0},
+            ]
+        },
+    )
+
+    assert lead["sends"] == [
+        {
+            "id": "lead-fx",
+            "target_bus_id": bus_track["id"],
+            "level": 0.5,
+            "enabled": True,
+        }
+    ]
+    assert project["tracks"][-1]["sends"] == lead["sends"]
+
+
+def test_delete_bus_track_removes_dependent_sends(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    _, bus_track = create_track("Delay Bus", track_type="bus")
+    _, lead = create_track("Lead")
+    update_track(lead["id"], {"sends": [{"target_bus_id": bus_track["id"], "level": 0.4}]})
+
+    project, deleted = delete_track(bus_track["id"])
+
+    lead_after = next(track for track in project["tracks"] if track["id"] == lead["id"])
+    assert deleted["type"] == "bus"
+    assert lead_after["sends"] == []
+
+
 def test_automation_write_creates_first_class_automation_track(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     load_project()
@@ -144,6 +186,21 @@ def test_automation_write_creates_first_class_automation_track(tmp_path, monkeyp
         (0.0, 0.4),
         (4.0, 0.9),
     ]
+
+
+def test_automation_targets_can_address_bus_tracks(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    _, bus_track = create_track("Vocal Bus", track_type="bus")
+
+    project, summary = automation_write(
+        {"kind": "track_volume", "track_id": bus_track["id"], "label": "Vocal Bus Volume"},
+        points=[{"beat": 0, "value": 0.6}, {"beat": 4, "value": 1.0}],
+    )
+
+    automation_track = project["tracks"][-1]
+    assert summary["target_status"] == "valid"
+    assert automation_track["target"]["track_id"] == bus_track["id"]
 
 
 def test_automation_write_accepts_global_tempo_and_meter_targets(tmp_path, monkeypatch):

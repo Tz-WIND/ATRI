@@ -9,9 +9,25 @@ use atri_core::time::tempo_map::TempoMap;
 use super::audio_clip::{AudioClip, render_audio_clips};
 use super::processor::{Gain, Pan, Processor};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteKind {
+    Track,
+    Bus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteSend {
+    pub target_track_id: u32,
+    pub level: f32,
+    pub enabled: bool,
+}
+
 pub struct Route {
     pub id: u32,
     pub name: String,
+    pub kind: RouteKind,
+    pub output_track_id: Option<u32>,
+    pub sends: Vec<RouteSend>,
     pub processors: Vec<Option<Arc<Mutex<dyn Processor>>>>,
     pub gain: Gain,
     pub pan: Pan,
@@ -23,9 +39,16 @@ pub struct Route {
 
 impl Route {
     pub fn new(id: u32, name: String) -> Self {
+        Self::new_with_kind(id, name, RouteKind::Track)
+    }
+
+    pub fn new_with_kind(id: u32, name: String, kind: RouteKind) -> Self {
         Self {
             id,
             name,
+            kind,
+            output_track_id: None,
+            sends: Vec::new(),
             processors: Vec::new(),
             gain: Gain::new(1.0),
             pan: Pan::new(),

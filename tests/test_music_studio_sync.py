@@ -96,6 +96,34 @@ class AddTrackWithoutDataHost:
         return {"type": "ack", "cmd": cmd}
 
 
+class FreshRoutingHost:
+    def __init__(self):
+        self.is_running = True
+        self.commands = []
+        self.next_track_id = 1
+        self.route_kinds: dict[int, str] = {}
+
+    async def send_command(self, cmd, params=None):
+        params = params or {}
+        self.commands.append((cmd, params))
+        if cmd == "get_status":
+            return {"tracks": []}
+        if cmd == "add_track":
+            track_id = self.next_track_id
+            self.next_track_id += 1
+            self.route_kinds[track_id] = "track"
+            return {"type": "ack", "cmd": "add_track", "data": {"track_id": track_id}}
+        if cmd == "set_route_config":
+            track_id = int(params["track_id"])
+            kind = params.get("kind")
+            if kind is not None:
+                self.route_kinds[track_id] = kind
+            output_track_id = params.get("output_track_id")
+            if output_track_id is not None and self.route_kinds.get(int(output_track_id)) != "bus":
+                return {"type": "error", "cmd": "set_route_config", "message": "target is not bus"}
+        return {"type": "ack", "cmd": cmd}
+
+
 async def test_sync_project_to_host_removes_stale_host_tracks(monkeypatch):
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
@@ -310,6 +338,202 @@ async def test_sync_project_to_host_skips_automation_routes_and_sends_lanes(monk
     ]
 
 
+async def test_sync_project_to_host_sends_route_kind_and_output_bus(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Bus Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Kick",
+                "output_bus_id": 2,
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+            {
+                "id": 2,
+                "host_track_id": 2,
+                "type": "bus",
+                "name": "Drum Bus",
+                "output_bus_id": None,
+                "volume": 0.9,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [],
+            },
+        ],
+    }
+
+    sync = await music._sync_project_to_host(project)
+
+    configs = [params for cmd, params in host.commands if cmd == "set_route_config"]
+    assert configs == [
+        {"track_id": 1, "kind": "track", "output_track_id": None},
+        {"track_id": 2, "kind": "bus", "output_track_id": None},
+        {"track_id": 1, "kind": None, "output_track_id": 2},
+        {"track_id": 2, "kind": None, "output_track_id": None},
+    ]
+    assert sync["routing"] == {"routes": 2, "skipped": []}
+
+
+async def test_sync_project_to_host_sends_route_send_targets(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Send Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "output_bus_id": None,
+                "sends": [
+                    {"id": "lead-fx", "target_bus_id": 2, "level": 0.5, "enabled": True},
+                    {"id": "missing", "target_bus_id": 99, "level": 1.0, "enabled": True},
+                ],
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+            {
+                "id": 2,
+                "host_track_id": 2,
+                "type": "bus",
+                "name": "FX Bus",
+                "output_bus_id": None,
+                "sends": [],
+                "volume": 0.9,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [],
+            },
+        ],
+    }
+
+    sync = await music._sync_project_to_host(project)
+
+    sends = [params for cmd, params in host.commands if cmd == "set_route_sends"]
+    assert sends == [
+        {
+            "track_id": 1,
+            "sends": [{"target_track_id": 2, "level": 0.5, "enabled": True}],
+        },
+        {"track_id": 2, "sends": []},
+    ]
+    assert sync["routing"]["skipped"] == [
+        {
+            "track_id": 1,
+            "send_id": "missing",
+            "target_bus_id": 99,
+            "reason": "send target bus is not synced",
+        }
+    ]
+
+
+async def test_sync_project_to_host_resolves_track_to_later_bus_on_fresh_host(monkeypatch):
+    host = FreshRoutingHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Fresh Bus Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": None,
+                "type": "instrument",
+                "name": "Lead",
+                "output_bus_id": 2,
+                "sends": [{"id": "lead-fx", "target_bus_id": 2, "level": 0.25}],
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+            {
+                "id": 2,
+                "host_track_id": None,
+                "type": "bus",
+                "name": "FX Bus",
+                "output_bus_id": None,
+                "sends": [],
+                "volume": 1.0,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [],
+            },
+        ],
+    }
+
+    sync = await music._sync_project_to_host(project)
+
+    assert sync["routing"] == {"routes": 2, "skipped": []}
+    assert project["tracks"][0]["host_track_id"] == 1
+    assert project["tracks"][1]["host_track_id"] == 2
+    configs = [params for cmd, params in host.commands if cmd == "set_route_config"]
+    assert configs == [
+        {"track_id": 1, "kind": "track", "output_track_id": None},
+        {"track_id": 2, "kind": "bus", "output_track_id": None},
+        {"track_id": 1, "kind": None, "output_track_id": 2},
+        {"track_id": 2, "kind": None, "output_track_id": None},
+    ]
+    sends = [params for cmd, params in host.commands if cmd == "set_route_sends"]
+    assert sends == [
+        {
+            "track_id": 1,
+            "sends": [{"target_track_id": 2, "level": 0.25, "enabled": True}],
+        },
+        {"track_id": 2, "sends": []},
+    ]
+
+
 async def test_plugin_parameter_metadata_route_translates_project_track(monkeypatch):
     host = ParameterStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
@@ -442,6 +666,72 @@ async def test_studio_create_track_passes_requested_color(monkeypatch):
         "channel_type": "mono",
     }
     assert body["track"]["color"] == "#ff4fa3"
+
+
+async def test_studio_create_track_applies_requested_routing(monkeypatch):
+    captured_create = {}
+    captured_update = {}
+
+    def fake_create_track(
+        name,
+        *,
+        color=None,
+        track_type="instrument",
+        channel_type="multichannel",
+    ):
+        captured_create.update(
+            {
+                "name": name,
+                "color": color,
+                "track_type": track_type,
+                "channel_type": channel_type,
+            }
+        )
+        track = {"id": 3, "name": name, "type": track_type, "sends": []}
+        return {"tracks": [track]}, track
+
+    def fake_update_track(track_id, updates):
+        captured_update.update({"track_id": track_id, "updates": updates})
+        track = {
+            "id": track_id,
+            "name": "Lead",
+            "type": "instrument",
+            "output_bus_id": updates["output_bus_id"],
+            "sends": updates["sends"],
+        }
+        return {"tracks": [track]}, track
+
+    async def fake_sync(project, *, broadcast=True):
+        return {"host_running": False, "broadcast": broadcast}
+
+    monkeypatch.setattr(music, "create_project_track", fake_create_track)
+    monkeypatch.setattr(music, "update_project_track", fake_update_track)
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/tracks",
+        json={
+            "name": "Lead",
+            "output_bus_id": 2,
+            "sends": [{"target_bus_id": 4, "level": 0.35, "enabled": True}],
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert captured_create["name"] == "Lead"
+    assert captured_update == {
+        "track_id": 3,
+        "updates": {
+            "output_bus_id": 2,
+            "sends": [{"target_bus_id": 4, "level": 0.35, "enabled": True}],
+        },
+    }
+    assert body["track"]["output_bus_id"] == 2
 
 
 async def test_studio_import_audio_rejects_host_unsupported_extension_with_type_error():
