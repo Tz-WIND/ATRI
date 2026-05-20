@@ -1025,14 +1025,15 @@ class _RuntimeTurnRecorder:
                 item_id=item_id,
             )
         )
-        if needs_confirm and name == "bash":
+        if needs_confirm:
+            command = args.get("command", "") or _extract_confirmation_command(result)
             self.broadcast_sync(
                 self.record_event(
                     "confirm_command",
                     {
                         "type": "confirm_command",
                         "session_id": self.session_id,
-                        "command": args.get("command", ""),
+                        "command": command,
                         "reason": result.split(f"{CONFIRM_MARKER}: ")[-1].split("\n")[0],
                     },
                     item_id=item_id,
@@ -1099,6 +1100,13 @@ def _extract_tool_result_id(result: str) -> str:
         if line.startswith("tool_result_id:"):
             return line.split(":", 1)[1].strip()
         if line.startswith("Tool result id:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _extract_confirmation_command(result: str) -> str:
+    for line in result.splitlines()[:8]:
+        if line.startswith("Command: "):
             return line.split(":", 1)[1].strip()
     return ""
 

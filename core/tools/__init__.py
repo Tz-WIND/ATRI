@@ -26,6 +26,15 @@ from .read import ReadFileTool
 from .retrieve_tool_result import RetrieveToolResultTool
 from .search import SearchTool
 from .skill import LoadSkillTool
+from .studio import (
+    StudioAudioImportTool,
+    StudioHostControlTool,
+    StudioPluginTool,
+    StudioProjectQueryTool,
+    StudioSyncTool,
+    StudioTrackTool,
+    StudioTransportTool,
+)
 from .task_result import TaskResultTool
 from .terminal import TerminalTool
 from .tree import TreeTool
@@ -74,6 +83,13 @@ def create_tools(
         AutomationWriteTool(workspace),
         AutomationDiffTool(workspace),
         AutomationRetargetTool(workspace),
+        StudioProjectQueryTool(workspace),
+        StudioHostControlTool(workspace),
+        StudioTransportTool(workspace),
+        StudioTrackTool(workspace),
+        StudioPluginTool(workspace),
+        StudioAudioImportTool(workspace),
+        StudioSyncTool(workspace),
         WebSearchTool(workspace),
         WebFetchTool(workspace),
     ]

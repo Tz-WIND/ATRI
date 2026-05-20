@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import threading
+import uuid
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
@@ -141,7 +142,9 @@ class BashTool(Tool):
             )
 
         if level == DangerLevel.CONFIRM:
+            approval_id = uuid.uuid4().hex
             self._pending_approval = {
+                "approval_id": approval_id,
                 "command": command,
                 "reason": reason,
                 "timeout": timeout,
@@ -150,6 +153,7 @@ class BashTool(Tool):
                 self._on_confirm_request(command, reason)
             return (
                 f"⚠ {CONFIRM_MARKER}: {reason}\n"
+                f"Approval ID: {approval_id}\n"
                 f"Command: {command}\n"
                 f"This command is potentially destructive. "
                 f"Please confirm execution via the WebUI approve button, "
@@ -222,22 +226,27 @@ class BashTool(Tool):
         if not self._pending_approval:
             return None
         return {
+            "approval_id": self._pending_approval["approval_id"],
             "command": self._pending_approval["command"],
             "reason": self._pending_approval["reason"],
         }
 
-    def approve_pending(self) -> str | None:
+    def approve_pending(self, approval_id: str = "") -> str | None:
         """Execute a previously held command after user approval."""
         if not self._pending_approval:
+            return None
+        if approval_id and approval_id != self._pending_approval.get("approval_id"):
             return None
         cmd = self._pending_approval["command"]
         timeout = self._pending_approval.get("timeout", 120)
         self._pending_approval = None
         return self._run_command(cmd, timeout)
 
-    def reject_pending(self) -> str | None:
+    def reject_pending(self, approval_id: str = "") -> str | None:
         """Reject and discard the pending command."""
         if not self._pending_approval:
+            return None
+        if approval_id and approval_id != self._pending_approval.get("approval_id"):
             return None
         cmd = self._pending_approval["command"]
         self._pending_approval = None

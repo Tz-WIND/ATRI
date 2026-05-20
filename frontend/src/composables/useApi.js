@@ -101,7 +101,10 @@ export function useApi() {
     getAgentMode: () => request('/api/agent-mode'),
     setAgentMode: (mode, reason = '') => request('/api/agent-mode', { method: 'POST', body: JSON.stringify({ mode, reason }) }),
     getTools: () => request('/api/tools'),
-    approveCommand: (sessionId) => request('/api/approve-command', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
+    approveCommand: (sessionId, approvalId = '') => request('/api/approve-command', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, approval_id: approvalId }),
+    }),
 
     // Files
     listFiles: (path) => request(`/api/filelist?path=${encodeURIComponent(path || '')}`),

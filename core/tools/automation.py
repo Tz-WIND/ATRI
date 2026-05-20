@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any
 
 from core.music_project import (
@@ -16,8 +15,7 @@ from core.music_project import (
 
 from .base import Tool, ToolCapabilities
 from .midi import _request_dashboard_sync
-
-logger = logging.getLogger("atri.automation_tools")
+from .studio import _dashboard_json
 
 
 def _automation_target_schema() -> dict[str, Any]:
@@ -292,30 +290,3 @@ def _format_automation_result(
             sync_note,
         ]
     )
-
-
-def _dashboard_json(
-    method: str,
-    path: str,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    try:
-        import httpx
-    except ImportError:
-        return {"ok": False, "error": "dashboard HTTP client is unavailable"}
-
-    url = f"http://127.0.0.1:6185{path}"
-    try:
-        if method == "GET":
-            response = httpx.get(url, timeout=3)
-        else:
-            response = httpx.post(url, json=payload or {}, timeout=3)
-        data = response.json()
-        if not isinstance(data, dict):
-            return {"ok": False, "error": "dashboard returned a non-object response"}
-        if response.status_code >= 400:
-            return {"ok": False, "status": response.status_code, **data}
-        return data
-    except httpx.HTTPError as e:
-        logger.debug("Automation dashboard request failed: %s", e)
-        return {"ok": False, "error": "dashboard request failed"}

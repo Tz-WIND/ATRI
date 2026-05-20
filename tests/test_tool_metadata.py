@@ -83,6 +83,19 @@ def test_registered_tools_expose_capability_metadata(tmp_path):
     assert tools["automation_write"].metadata()["capability"] == "music.automation.write"
     assert tools["automation_diff"].metadata()["capability"] == "music.automation.write"
     assert tools["automation_retarget"].metadata()["capability"] == "music.automation.write"
+    assert tools["studio_project_query"].metadata()["capability"] == "music.studio.read"
+    assert tools["studio_project_query"].metadata()["read_only"] is True
+    assert tools["studio_project_query"].metadata()["supports_parallel"] is True
+    assert tools["studio_host_control"].metadata()["capability"] == "music.studio.host"
+    assert tools["studio_host_control"].metadata()["requires_approval"] is True
+    assert tools["studio_transport"].metadata()["capability"] == "music.studio.transport"
+    assert tools["studio_track"].metadata()["capability"] == "music.studio.track"
+    assert tools["studio_track"].metadata()["requires_approval"] is True
+    assert tools["studio_plugin"].metadata()["capability"] == "music.studio.plugin"
+    assert tools["studio_plugin"].metadata()["requires_approval"] is True
+    assert tools["studio_audio_import"].metadata()["capability"] == "music.studio.audio"
+    assert tools["studio_audio_import"].metadata()["writes_files"] is True
+    assert tools["studio_sync"].metadata()["capability"] == "music.studio.sync"
 
     assert all(tool.metadata()["capability"] != "general" for tool in tools.values())
 

@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import inspect
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from quart import jsonify, request
 
@@ -210,13 +211,22 @@ def register(dashboard: Dashboard) -> None:
     async def approve_command():
         data = await request.get_json()
         session_id = normalize_session_id(data.get("session_id", ""))
-        bash_tool = dashboard._find_bash_tool(session_id)
-        if bash_tool and bash_tool.has_pending:
-            result = bash_tool.approve_pending()
+        approval_id = str(data.get("approval_id") or "")
+        approval_tool = dashboard._find_approval_tool(session_id, approval_id=approval_id)
+        if approval_tool and approval_tool.has_pending:
+            result = await asyncio.to_thread(
+                _call_pending_approval_method,
+                approval_tool,
+                "approve_pending",
+                approval_id,
+            )
+            if result is None:
+                return jsonify({"error": "no pending command"}), 404
             await dashboard.broadcast(
                 {
                     "type": "command_approved",
                     "session_id": session_id,
+                    "approval_id": approval_id,
                     "result": result,
                 }
             )
@@ -227,13 +237,22 @@ def register(dashboard: Dashboard) -> None:
     async def reject_command():
         data = await request.get_json()
         session_id = normalize_session_id(data.get("session_id", ""))
-        bash_tool = dashboard._find_bash_tool(session_id)
-        if bash_tool and bash_tool.has_pending:
-            result = bash_tool.reject_pending()
+        approval_id = str(data.get("approval_id") or "")
+        approval_tool = dashboard._find_approval_tool(session_id, approval_id=approval_id)
+        if approval_tool and approval_tool.has_pending:
+            result = await asyncio.to_thread(
+                _call_pending_approval_method,
+                approval_tool,
+                "reject_pending",
+                approval_id,
+            )
+            if result is None:
+                return jsonify({"error": "no pending command"}), 404
             await dashboard.broadcast(
                 {
                     "type": "command_rejected",
                     "session_id": session_id,
+                    "approval_id": approval_id,
                     "result": result,
                 }
             )
@@ -245,7 +264,28 @@ def register(dashboard: Dashboard) -> None:
         """Check if there is a pending dangerous command for a session."""
         data = await request.get_json()
         session_id = normalize_session_id(data.get("session_id", ""))
-        bash_tool = dashboard._find_bash_tool(session_id)
-        if bash_tool and bash_tool.has_pending:
-            return jsonify({"pending": True, **bash_tool.pending_info})
+        approval_id = str(data.get("approval_id") or "")
+        approval_tool = dashboard._find_approval_tool(session_id, approval_id=approval_id)
+        if approval_tool and approval_tool.has_pending:
+            pending_info = _pending_approval_info(approval_tool, approval_id)
+            if pending_info:
+                return jsonify({"pending": True, **pending_info})
         return jsonify({"pending": False})
+
+
+def _call_pending_approval_method(tool: object, method_name: str, approval_id: str) -> str | None:
+    method = getattr(tool, method_name)
+    if approval_id and inspect.signature(method).parameters:
+        return cast(str | None, method(approval_id))
+    return cast(str | None, method())
+
+
+def _pending_approval_info(tool: object, approval_id: str) -> dict[str, str] | None:
+    if approval_id:
+        infos = getattr(tool, "pending_infos", None)
+        if isinstance(infos, list):
+            for info in infos:
+                if str(info.get("approval_id") or "") == approval_id:
+                    return cast(dict[str, str], info)
+    info = getattr(tool, "pending_info", None)
+    return cast(dict[str, str], info) if isinstance(info, dict) else None

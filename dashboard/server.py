@@ -39,6 +39,7 @@ class Dashboard:
         self.port = port
         self._sync_auth_from_config()
         self.auth_session_token = secrets.token_urlsafe(32)
+        self._publish_auth_token_to_tools()
         self._mcp_push_fingerprint = ""
         self._loop = asyncio.get_running_loop()
 
@@ -221,6 +222,12 @@ class Dashboard:
             self.auth_session_token,
         )
 
+    def _publish_auth_token_to_tools(self) -> None:
+        """Share the current dashboard session token with in-process Agent tools."""
+        from core.tools.studio import set_dashboard_session_token
+
+        set_dashboard_session_token(self.auth_session_token)
+
     def _credentials_ok(self, username: str, password: str) -> bool:
         return (
             self.auth_enabled
@@ -289,19 +296,27 @@ class Dashboard:
 
     # ── Instance helpers ──
 
-    def _find_bash_tool(self, session_id: str):
-        """Find the BashTool instance for a given session's agent."""
-        from core.tools.bash import BashTool
-
+    def _find_approval_tool(self, session_id: str, approval_id: str = ""):
+        """Find any live tool with a pending WebUI approval request."""
         if not self.lifecycle.process_stage:
             return None
         agent = self.lifecycle.process_stage.get_agent(session_id)
         if not agent:
             return None
         for tool in agent.tools:
-            if isinstance(tool, BashTool):
+            if not getattr(tool, "has_pending", False):
+                continue
+            if approval_id and not _tool_has_pending_approval(tool, approval_id):
+                continue
+            if approval_id and _tool_has_pending_approval(tool, approval_id):
+                return tool
+            if not approval_id:
                 return tool
         return None
+
+    def _find_bash_tool(self, session_id: str):
+        """Backward-compatible alias for the shared approval lookup."""
+        return self._find_approval_tool(session_id)
 
     def _runtime_store(self):
         if not self.lifecycle.process_stage:
@@ -365,3 +380,13 @@ class Dashboard:
     async def stop(self):
         if hasattr(self, "shutdown_event"):
             self.shutdown_event.set()
+
+
+def _tool_has_pending_approval(tool: object, approval_id: str) -> bool:
+    infos = getattr(tool, "pending_infos", None)
+    if isinstance(infos, list):
+        return any(str(info.get("approval_id") or "") == approval_id for info in infos)
+    info = getattr(tool, "pending_info", None)
+    if isinstance(info, dict):
+        return str(info.get("approval_id") or "") == approval_id
+    return False

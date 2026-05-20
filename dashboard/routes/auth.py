@@ -80,6 +80,7 @@ def register(dashboard: Dashboard) -> None:
         dashboard.lifecycle.save_config()
         dashboard._sync_auth_from_config()
         dashboard.auth_session_token = secrets.token_urlsafe(32)
+        dashboard._publish_auth_token_to_tools()
 
         resp = jsonify({"ok": True})
         resp.set_cookie(
