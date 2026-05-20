@@ -20,6 +20,7 @@ from core.music_project import (
     project_summary,
     save_project,
     set_track_plugin,
+    update_track,
 )
 
 
@@ -56,6 +57,54 @@ def test_create_track_supports_instrument_and_audio_track_types(tmp_path, monkey
     assert audio_track["type"] == "audio"
     assert audio_track["channel_type"] == "mono"
     assert audio_track["plugin_slots"] == []
+
+
+def test_create_track_supports_bus_tracks_and_output_routing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    _, bus_track = create_track("Drum Bus", track_type="bus")
+    project, routed = create_track("Kick", track_type="audio")
+    project, routed = update_track(routed["id"], {"output_bus_id": bus_track["id"]})
+
+    assert bus_track["type"] == "bus"
+    assert bus_track["instrument"] == "Bus"
+    assert bus_track["plugin_slots"] == []
+    assert routed["output_bus_id"] == bus_track["id"]
+    assert project["tracks"][-1]["output_bus_id"] == bus_track["id"]
+
+
+def test_project_repairs_invalid_and_cyclic_output_buses(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    project = save_project(
+        {
+            "tracks": [
+                {"id": 1, "name": "Lead", "type": "instrument", "output_bus_id": 99},
+                {"id": 2, "name": "Bus A", "type": "bus", "output_bus_id": 3},
+                {"id": 3, "name": "Bus B", "type": "bus", "output_bus_id": 2},
+            ]
+        }
+    )
+
+    tracks = {track["id"]: track for track in project["tracks"]}
+    assert tracks[1]["output_bus_id"] is None
+    assert tracks[2]["output_bus_id"] is None
+    assert tracks[3]["output_bus_id"] is None
+
+
+def test_delete_bus_track_retargets_dependents_to_master(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+    _, bus_track = create_track("FX Bus", track_type="bus")
+    _, lead = create_track("Lead")
+    update_track(lead["id"], {"output_bus_id": bus_track["id"]})
+
+    project, deleted = delete_track(bus_track["id"])
+
+    lead_after = next(track for track in project["tracks"] if track["id"] == lead["id"])
+    assert deleted["type"] == "bus"
+    assert lead_after["output_bus_id"] is None
 
 
 def test_automation_write_creates_first_class_automation_track(tmp_path, monkeypatch):

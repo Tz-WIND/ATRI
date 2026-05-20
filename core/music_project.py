@@ -222,12 +222,15 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
                 or (
                     "Automation"
                     if track_type == "automation"
+                    else "Bus"
+                    if track_type == "bus"
                     else "Audio Track"
                     if track_type == "audio"
                     else "ATRI Basic Synth"
                 )
             ),
             "plugin_slots": _normalize_plugin_slots(raw_track, track_type=track_type),
+            "output_bus_id": _nullable_non_negative_int(raw_track.get("output_bus_id")),
             "clips": clips,
             "notes": notes,
             "midi_events": midi_events,
@@ -242,6 +245,8 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
 
     if not normalized["tracks"]:
         normalized["tracks"] = deepcopy(base["tracks"])
+
+    _repair_output_bus_routing(normalized["tracks"])
 
     max_clip_end = max(
         (
@@ -292,10 +297,19 @@ def create_track(
         "pan": 0.0,
         "mute": False,
         "solo": False,
-        "instrument": "Audio Track" if normalized_type == "audio" else "ATRI Basic Synth",
-        "plugin_slots": []
+        "instrument": "Bus"
+        if normalized_type == "bus"
+        else "Audio Track"
         if normalized_type == "audio"
-        else [_normalize_plugin_slot({"type": "builtin", "name": "ATRI Basic Synth"})],
+        else "ATRI Basic Synth",
+        "plugin_slots": _normalize_plugin_slots(
+            {
+                "plugin_slots": [] if normalized_type == "bus" else None,
+                "instrument": "ATRI Basic Synth",
+            },
+            track_type=normalized_type,
+        ),
+        "output_bus_id": None,
         "clips": [],
         "notes": [],
         "midi_events": [],
@@ -376,6 +390,9 @@ def delete_track(track_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
     project["tracks"] = [
         item for item in project["tracks"] if int(item.get("id", -1)) != deleted_id
     ]
+    for item in project["tracks"]:
+        if item.get("output_bus_id") == deleted_id:
+            item["output_bus_id"] = None
     project = save_project(project)
     return project, track
 
@@ -395,6 +412,8 @@ def update_track(track_id: int, updates: dict[str, Any]) -> tuple[dict[str, Any]
         track["mute"] = bool(updates["mute"])
     if "solo" in updates:
         track["solo"] = bool(updates["solo"])
+    if "output_bus_id" in updates:
+        track["output_bus_id"] = _nullable_non_negative_int(updates.get("output_bus_id"))
     if "type" in updates or "track_type" in updates:
         track["type"] = _normalize_track_type(
             {"type": updates.get("type", updates.get("track_type"))},
@@ -403,6 +422,9 @@ def update_track(track_id: int, updates: dict[str, Any]) -> tuple[dict[str, Any]
         if track["type"] == "audio":
             track["instrument"] = "Audio Track"
             track["plugin_slots"] = []
+        elif track["type"] == "bus":
+            track["instrument"] = "Bus"
+            track["plugin_slots"] = _normalize_plugin_slots(track, track_type="bus")
         else:
             track["plugin_slots"] = _normalize_plugin_slots(track, track_type="instrument")
     if "channel_type" in updates:
@@ -3322,7 +3344,7 @@ def _nullable_non_negative_int(value: Any) -> int | None:
 
 def _normalize_track_type(track: dict[str, Any], *, clips: list[dict[str, Any]]) -> str:
     raw_type = str(track.get("type", track.get("track_type", "")) or "").strip().lower()
-    if raw_type in {"instrument", "audio", "automation"}:
+    if raw_type in {"instrument", "audio", "automation", "bus"}:
         return raw_type
     if str(track.get("instrument") or "").strip().lower() == "audio track":
         return "audio"
@@ -3347,10 +3369,11 @@ def _normalize_plugin_slots(
     *,
     track_type: str = "instrument",
 ) -> list[dict[str, Any]]:
-    if track_type != "instrument":
+    if track_type not in {"instrument", "bus"}:
         return []
 
     raw_slots = track.get("plugin_slots")
+    slots: list[dict[str, Any]] = []
     if isinstance(raw_slots, list) and raw_slots:
         slot_map: dict[str, dict[str, Any]] = {}
         slot_order: list[str] = []
@@ -3358,13 +3381,14 @@ def _normalize_plugin_slots(
             if not isinstance(raw_slot, dict):
                 continue
             slot = _normalize_plugin_slot(raw_slot)
+            if track_type == "bus" and slot["id"] == "instrument":
+                continue
             if slot["id"] not in slot_map:
                 slot_order.append(slot["id"])
             slot_map[slot["id"]] = slot
         slots = [slot_map[slot_id] for slot_id in slot_order]
-    else:
-        slots = []
-    if not any(slot.get("id") == "instrument" for slot in slots):
+
+    if track_type == "instrument" and not any(slot.get("id") == "instrument" for slot in slots):
         slots.insert(
             0,
             _normalize_plugin_slot(
@@ -3376,6 +3400,38 @@ def _normalize_plugin_slots(
             ),
         )
     return _sort_plugin_slots(slots)
+
+
+def _repair_output_bus_routing(tracks: list[dict[str, Any]]) -> None:
+    bus_ids = {int(track["id"]) for track in tracks if track.get("type") == "bus"}
+
+    for track in tracks:
+        output_bus_id = track.get("output_bus_id")
+        if output_bus_id is None:
+            track["output_bus_id"] = None
+            continue
+        if int(output_bus_id) not in bus_ids or int(output_bus_id) == int(track["id"]):
+            track["output_bus_id"] = None
+
+    outputs = {
+        int(track["id"]): track.get("output_bus_id")
+        for track in tracks
+        if track.get("output_bus_id") is not None
+    }
+
+    def has_cycle(start_id: int) -> bool:
+        seen: set[int] = set()
+        current_id = start_id
+        while current_id in outputs:
+            if current_id in seen:
+                return True
+            seen.add(current_id)
+            current_id = int(outputs[current_id])
+        return False
+
+    for track in tracks:
+        if has_cycle(int(track["id"])):
+            track["output_bus_id"] = None
 
 
 def _normalize_plugin_slot(
