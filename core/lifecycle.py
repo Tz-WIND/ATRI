@@ -40,6 +40,7 @@ class Lifecycle:
         self.onebot11: OneBot11Adapter | None = None
         self.webchat: WebChatAdapter | None = None
         self.process_stage: Any = None
+        self.knowledge_manager: Any = None
         self._tasks: list[asyncio.Task] = []
         self._shutdown_event = asyncio.Event()
 
@@ -92,6 +93,11 @@ class Lifecycle:
         self.plugin_manager = PluginManager(plugins_dir)
         await self.plugin_manager.initialize(self.config)
 
+        from core.knowledge import KnowledgeBaseManager
+
+        self.knowledge_manager = KnowledgeBaseManager(config=self.config)
+        await self.knowledge_manager.initialize()
+
         # Platform adapters
         platforms: dict = {}
 
@@ -139,6 +145,8 @@ class Lifecycle:
             "novelai": self.config.get("novelai", {}),
             "image_transcription": self.config.get("image_transcription", {}),
             "mcp_servers": self.config.get("mcp_servers", {}),
+            "knowledge": self.config.get("knowledge", {}),
+            "knowledge_manager": self.knowledge_manager,
             "sessions_dir": self.config.get("sessions_dir"),
             "runtime_dir": self.config.get("runtime_dir"),
             "wake_words": self.config.get("wake_words", []),
@@ -293,6 +301,9 @@ class Lifecycle:
             await host.stop()
 
         get_mcp_registry().close()
+
+        if self.knowledge_manager:
+            await self.knowledge_manager.close()
 
         logger.info("ATRI stopped.")
 

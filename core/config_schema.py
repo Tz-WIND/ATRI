@@ -58,6 +58,14 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "workspace": {"type": "string", "default": "./workspace"},
         "sessions_dir": {"type": "string", "default": "data/sessions"},
         "runtime_dir": {"type": "string", "default": "data/runtime"},
+        "knowledge": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "default": False},
+                "active_bases": {"type": "array", "default": []},
+                "top_k": {"type": "integer", "default": 5, "minimum": 1},
+            },
+        },
         "wake_words": {"type": "array", "default": ["atri"]},
         "extra_instructions": {"type": "string", "default": ""},
         "persona": {"type": "string", "default": ""},

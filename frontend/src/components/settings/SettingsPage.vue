@@ -602,6 +602,11 @@ const form = ref({
     base_url: 'https://image.novelai.net',
     model: 'nai-diffusion-4-5-full',
   },
+  knowledge: {
+    enabled: false,
+    active_bases: [],
+    top_k: 5,
+  },
   audio_host: {
     sample_rate: 48000,
     buffer_size: 256,
@@ -665,6 +670,7 @@ async function loadSettings() {
     form.value.tavily_api_key = d.tavily_api_key || ''
     form.value.image_transcription = normalizeImageTranscription(d.image_transcription)
     form.value.novelai = normalizeNovelai(d.novelai)
+    form.value.knowledge = normalizeKnowledge(d.knowledge)
     imageTranscriptionExpanded.value = Boolean(form.value.image_transcription.enabled)
     if (d.audio_host) {
       form.value.audio_host = {
@@ -707,6 +713,15 @@ function normalizeNovelai(value = {}) {
   }
 }
 
+function normalizeKnowledge(value = {}) {
+  const activeBases = Array.isArray(value.active_bases) ? value.active_bases : []
+  return {
+    enabled: Boolean(value.enabled),
+    active_bases: activeBases.map(item => String(item).trim()).filter(Boolean),
+    top_k: Number(value.top_k || 5),
+  }
+}
+
 async function loadMusicDirs() {
   try {
     const d = await api.musicDirs()
@@ -730,6 +745,8 @@ async function saveSettings() {
   if (saving.value) return
   saving.value = true
   try {
+    const latest = await api.getSettings().catch(() => ({}))
+    form.value.knowledge = normalizeKnowledge(latest.knowledge || form.value.knowledge)
     await api.saveSettings({
       wake_words: form.value.wake_words.split(',').map(s => s.trim()).filter(Boolean),
       persona: form.value.persona,
@@ -747,6 +764,7 @@ async function saveSettings() {
         base_url: form.value.novelai.base_url.trim(),
         model: form.value.novelai.model.trim(),
       },
+      knowledge: form.value.knowledge,
       audio_host: {
         sample_rate: form.value.audio_host.sample_rate,
         buffer_size: form.value.audio_host.buffer_size,

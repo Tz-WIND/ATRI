@@ -109,6 +109,18 @@ def _prepend_recent_group_context(
     return f"{context}\n\n[Current request]\n{content}"
 
 
+def _prepend_knowledge_context(
+    content: str | list[dict],
+    context_text: str,
+) -> str | list[dict]:
+    if not context_text.strip():
+        return content
+    prefix = context_text.strip() + "\n\n[Current request]\n"
+    if isinstance(content, list):
+        return [{"type": "text", "text": prefix}, *content]
+    return prefix + content
+
+
 def _event_allows_high_privilege_tools(event: MessageEvent) -> bool:
     if event.platform_name != "onebot11":
         return True
@@ -156,6 +168,8 @@ class ProcessStage(Stage):
         self.novelai: dict = dict(ctx.get("novelai", {}) or {})
         self.mcp_servers: dict = dict(ctx.get("mcp_servers", {}))
         self.image_transcription: dict = dict(ctx.get("image_transcription", {}) or {})
+        self.knowledge: dict = dict(ctx.get("knowledge", {}) or {})
+        self.knowledge_manager = ctx.get("knowledge_manager")
         self.mode_controller = AgentModeController(
             ctx.get("agent_mode", "agent"),
             on_change=self._on_agent_mode_changed,
@@ -482,7 +496,36 @@ class ProcessStage(Stage):
             content = _event_user_content_with_transcription(event, transcription)
         else:
             content = _event_user_content(event)
-        return _prepend_recent_group_context(event, content)
+        content = _prepend_recent_group_context(event, content)
+        context_text = await self._knowledge_context_for_event(event)
+        return _prepend_knowledge_context(content, context_text)
+
+    async def _knowledge_context_for_event(self, event: MessageEvent) -> str:
+        knowledge = getattr(self, "knowledge", {})
+        if not knowledge.get("enabled"):
+            return ""
+        manager = getattr(self, "knowledge_manager", None)
+        if manager is None:
+            return ""
+        active_bases = knowledge.get("active_bases", [])
+        if not isinstance(active_bases, list) or not active_bases:
+            return ""
+        query = _event_plain_text(event) or event.message_str
+        if not query.strip():
+            return ""
+        try:
+            result = await manager.retrieve(
+                query=query,
+                kb_ids=[str(item) for item in active_bases if str(item or "").strip()],
+                kb_names=[],
+                top_k=int(knowledge.get("top_k") or 5),
+            )
+        except Exception as e:
+            logger.warning(f"Knowledge retrieval skipped: {e}")
+            return ""
+        if not result.get("results"):
+            return ""
+        return str(result.get("context_text") or "")
 
     def _transcribe_event_images(self, event: MessageEvent, images: list[Image]) -> str:
         cfg = self.image_transcription
@@ -671,6 +714,33 @@ class ProcessStage(Stage):
                     agent.reload_tools(mcp_servers=self.mcp_servers)
         if "image_transcription" in kwargs:
             self.image_transcription = dict(kwargs["image_transcription"] or {})
+        if "knowledge" in kwargs:
+            self.knowledge = dict(kwargs["knowledge"] or {})
+        if "knowledge_manager" in kwargs:
+            self.knowledge_manager = kwargs["knowledge_manager"]
+        if getattr(self, "knowledge_manager", None) is not None and any(
+            key in kwargs
+            for key in (
+                "providers",
+                "active_embedding_models",
+                "active_rerank_models",
+                "embedding_model",
+                "embedding_provider",
+                "rerank_model",
+                "rerank_provider",
+            )
+        ):
+            self.knowledge_manager.update_config(
+                {
+                    "providers": self.providers,
+                    "active_embedding_models": self.active_embedding_models,
+                    "active_rerank_models": self.active_rerank_models,
+                    "embedding_model": self.embedding_model,
+                    "embedding_provider": self.embedding_provider,
+                    "rerank_model": self.rerank_model,
+                    "rerank_provider": self.rerank_provider,
+                }
+            )
         if "agent_mode" in kwargs:
             self.set_agent_mode(
                 normalize_agent_mode(kwargs["agent_mode"]),

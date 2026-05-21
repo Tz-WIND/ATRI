@@ -67,6 +67,41 @@ export function useApi() {
     reloadMcpServer: (name) => request(`/api/mcp/servers/${encodeURIComponent(name)}/reload`, { method: 'POST' }),
     deleteMcpServer: (name) => request(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
+    // Knowledge
+    getKnowledgeBases: () => request('/api/knowledge/bases'),
+    createKnowledgeBase: (data) => request('/api/knowledge/bases', { method: 'POST', body: JSON.stringify(data) }),
+    getKnowledgeBase: (kbId) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}`),
+    updateKnowledgeBase: (kbId, data) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    deleteKnowledgeBase: (kbId) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}`, { method: 'DELETE' }),
+    getKnowledgeDocuments: (kbId) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}/documents`),
+    importKnowledgeDocument: (kbId, data) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}/documents/import`, { method: 'POST', body: JSON.stringify(data) }),
+    uploadKnowledgeDocument: (kbId, file) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      return fetch(BASE + `/api/knowledge/bases/${encodeURIComponent(kbId)}/documents/upload`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: formData,
+      }).then(async res => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          if (res.status === 428 && body.setup_required) {
+            markSetupRequired(body.error || 'setup required')
+          }
+          if (res.status === 401) {
+            markUnauthenticated(body.error || 'authentication required')
+          }
+          throw new Error(body.error || `HTTP ${res.status}`)
+        }
+        return res.json()
+      })
+    },
+    deleteKnowledgeDocument: (docId) => request(`/api/knowledge/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' }),
+    getKnowledgeChunks: (docId, page = 1, pageSize = 100) => request(`/api/knowledge/documents/${encodeURIComponent(docId)}/chunks?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`),
+    deleteKnowledgeChunk: (chunkId) => request(`/api/knowledge/chunks/${encodeURIComponent(chunkId)}`, { method: 'DELETE' }),
+    retrieveKnowledge: (data) => request('/api/knowledge/retrieve', { method: 'POST', body: JSON.stringify(data) }),
+    getKnowledgeTask: (taskId) => request(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`),
+
     // Skills
     getSkills: () => request('/api/skills'),
     getSkill: (name) => request(`/api/skills/${encodeURIComponent(name)}`),

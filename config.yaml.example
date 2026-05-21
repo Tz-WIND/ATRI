@@ -57,6 +57,13 @@ persona: ''
 extra_instructions: ''
 agent_mode: agent  # agent or plan
 
+# Knowledge base retrieval. `active_bases` stores knowledge base IDs created
+# through the backend API and is used to inject retrieved context into chat.
+knowledge:
+  enabled: false
+  active_bases: []
+  top_k: 5
+
 # Optional image transcription model. When enabled, image attachments are
 # transcribed here before the main chat model receives the request.
 image_transcription:

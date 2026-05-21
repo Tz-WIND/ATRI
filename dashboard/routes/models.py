@@ -41,6 +41,7 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "agent_mode",
     "image_transcription",
     "novelai",
+    "knowledge",
     "skills_root",
     "skill_search_roots",
     "tavily_api_key",
@@ -107,6 +108,27 @@ def _merge_audio_host_config(current: dict, incoming: dict) -> tuple[dict, bool]
     restart_keys = {"sample_rate", "buffer_size", "audio_engine", "bit_depth", "binary_path"}
     needs_restart = any(before.get(key) != current.get(key) for key in restart_keys)
     return current, needs_restart
+
+
+def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
+    """Merge chat-context knowledge settings from dashboard forms."""
+    if not isinstance(incoming, dict):
+        raise ValueError("knowledge must be an object")
+    merged = dict(current if isinstance(current, dict) else {})
+    if "enabled" in incoming:
+        merged["enabled"] = bool(incoming["enabled"])
+    if "active_bases" in incoming:
+        if not isinstance(incoming["active_bases"], list):
+            raise ValueError("knowledge.active_bases must be an array")
+        merged["active_bases"] = [
+            str(item).strip() for item in incoming["active_bases"] if str(item or "").strip()
+        ]
+    if "top_k" in incoming:
+        merged["top_k"] = _positive_int(incoming["top_k"], "knowledge.top_k")
+    merged.setdefault("enabled", False)
+    merged.setdefault("active_bases", [])
+    merged.setdefault("top_k", 5)
+    return merged
 
 
 def _model_pool_config_key(pool: object) -> str:
@@ -586,6 +608,7 @@ def register(dashboard: Dashboard) -> None:
                 "rerank_provider": c.get("rerank_provider", ""),
                 "active_rerank_models": c.get("active_rerank_models", []),
                 "image_transcription": _mask_image_transcription(c.get("image_transcription", {})),
+                "knowledge": c.get("knowledge", {}),
                 "novelai": mask_novelai_config(c.get("novelai", {})),
                 "skills_root": c.get("skills_root", "skills"),
                 "skill_search_roots": c.get("skill_search_roots", []),
@@ -657,6 +680,15 @@ def register(dashboard: Dashboard) -> None:
                 )
                 data["novelai"] = lc.config["novelai"]
                 set_novelai_config(lc.config["novelai"])
+            except (TypeError, ValueError) as e:
+                return jsonify({"error": str(e)}), 400
+        if "knowledge" in data:
+            try:
+                lc.config["knowledge"] = _merge_knowledge_config(
+                    lc.config.get("knowledge", {}),
+                    data["knowledge"],
+                )
+                data["knowledge"] = lc.config["knowledge"]
             except (TypeError, ValueError) as e:
                 return jsonify({"error": str(e)}), 400
         # audio_host settings

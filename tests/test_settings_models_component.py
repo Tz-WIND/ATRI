@@ -24,6 +24,14 @@ def test_settings_models_page_has_embedding_and_rerank_pool_sections():
     assert "Generation Parameters" not in source
 
 
+def test_settings_page_preserves_knowledge_config_when_saving():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+
+    assert "knowledge:" in source
+    assert "normalizeKnowledge" in source
+    assert "form.value.knowledge" in source
+
+
 def test_model_pool_section_uses_pool_activation_api():
     source = _read("frontend/src/components/settings/ModelPoolSection.vue")
 

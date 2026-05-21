@@ -62,6 +62,7 @@ import WorkspacePage from './components/pages/WorkspacePage.vue'
 import AdaptersPage from './components/pages/AdaptersPage.vue'
 import McpPage from './components/pages/McpPage.vue'
 import SkillsPage from './components/pages/SkillsPage.vue'
+import KnowledgePage from './components/pages/KnowledgePage.vue'
 import SettingsPage from './components/settings/SettingsPage.vue'
 import MusicStudio from './components/music/MusicStudio.vue'
 import MusicPage from './components/music/MusicPage.vue'
@@ -84,6 +85,7 @@ const navPages = [
   { id: 'adapters', label: 'Adapters', icon: 'plug' },
   { id: 'mcp', label: 'MCP', icon: 'server' },
   { id: 'skills', label: 'Skills', icon: 'wand' },
+  { id: 'knowledge', label: 'Knowledge', icon: 'knowledge' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
 ]
 
@@ -97,6 +99,7 @@ const pageMap = {
   adapters: markRaw(AdaptersPage),
   mcp: markRaw(McpPage),
   skills: markRaw(SkillsPage),
+  knowledge: markRaw(KnowledgePage),
   settings: markRaw(SettingsPage),
 }
 
