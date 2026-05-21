@@ -8,6 +8,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 from quart import jsonify, request
 
+from core.config_schema import (
+    CHAT_MODEL_CONFIG_DEFAULT,
+    EMBEDDING_MODEL_CONFIG_DEFAULT,
+    RERANK_MODEL_CONFIG_DEFAULT,
+)
 from core.tools.novelai_image import mask_novelai_config, merge_novelai_config, set_novelai_config
 
 if TYPE_CHECKING:
@@ -18,7 +23,14 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "api_key",
     "base_url",
     "api_format",
+    "model_provider",
     "active_models",
+    "embedding_model",
+    "embedding_provider",
+    "active_embedding_models",
+    "rerank_model",
+    "rerank_provider",
+    "active_rerank_models",
     "providers",
     "max_tokens",
     "max_context_tokens",
@@ -37,6 +49,26 @@ _PROCESS_STAGE_SETTING_KEYS = {
 
 
 _BIT_DEPTHS = {"i16", "i24", "f32"}
+_MODEL_POOL_KEYS = {
+    "chat": "active_models",
+    "chat_model": "active_models",
+    "embedding": "active_embedding_models",
+    "embeddings": "active_embedding_models",
+    "embed": "active_embedding_models",
+    "rerank": "active_rerank_models",
+    "reranker": "active_rerank_models",
+    "reranking": "active_rerank_models",
+}
+_MODEL_POOL_CURRENT_KEYS = {
+    "active_models": ("model", "model_provider"),
+    "active_embedding_models": ("embedding_model", "embedding_provider"),
+    "active_rerank_models": ("rerank_model", "rerank_provider"),
+}
+_MODEL_POOL_DEFAULT_CONFIGS = {
+    "active_models": CHAT_MODEL_CONFIG_DEFAULT,
+    "active_embedding_models": EMBEDDING_MODEL_CONFIG_DEFAULT,
+    "active_rerank_models": RERANK_MODEL_CONFIG_DEFAULT,
+}
 _AUDIO_HOST_RESTART_MESSAGES = {
     "audio device and bit depth changes require restarting the audio host",
     "sample_rate and buffer_size changes require restarting the audio host",
@@ -75,6 +107,189 @@ def _merge_audio_host_config(current: dict, incoming: dict) -> tuple[dict, bool]
     restart_keys = {"sample_rate", "buffer_size", "audio_engine", "bit_depth", "binary_path"}
     needs_restart = any(before.get(key) != current.get(key) for key in restart_keys)
     return current, needs_restart
+
+
+def _model_pool_config_key(pool: object) -> str:
+    key = _MODEL_POOL_KEYS.get(str(pool or "").strip().lower())
+    if not key:
+        raise ValueError("pool must be chat, embedding, or rerank")
+    return key
+
+
+def _default_model_config(pool_key: str, config: dict | None = None) -> dict:
+    if pool_key == "active_models" and isinstance(config, dict):
+        return {
+            "max_tokens": int(config.get("max_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_tokens"]),
+            "temperature": float(
+                config.get("temperature", CHAT_MODEL_CONFIG_DEFAULT["temperature"])
+            ),
+            "max_context_tokens": int(
+                config.get("max_context_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_context_tokens"]
+            ),
+            "max_rounds": int(config.get("max_rounds") or CHAT_MODEL_CONFIG_DEFAULT["max_rounds"]),
+        }
+    return dict(_MODEL_POOL_DEFAULT_CONFIGS[pool_key])
+
+
+def _merge_model_config(pool_key: str, existing: dict | None, incoming: object) -> dict:
+    if not isinstance(incoming, dict):
+        raise ValueError("config must be an object")
+    merged = {**_default_model_config(pool_key), **(existing if isinstance(existing, dict) else {})}
+
+    def positive_int(key: str) -> None:
+        if key in incoming:
+            merged[key] = _positive_int(incoming[key], key)
+
+    def number(key: str) -> None:
+        if key in incoming:
+            try:
+                merged[key] = float(incoming[key])
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"{key} must be a number") from e
+
+    if pool_key == "active_models":
+        positive_int("max_tokens")
+        number("temperature")
+        positive_int("max_context_tokens")
+        positive_int("max_rounds")
+    elif pool_key == "active_embedding_models":
+        positive_int("dimensions")
+        positive_int("batch_size")
+        if "encoding_format" in incoming:
+            encoding_format = str(incoming.get("encoding_format") or "float").strip().lower()
+            if encoding_format not in {"float", "base64"}:
+                raise ValueError("encoding_format is not supported")
+            merged["encoding_format"] = encoding_format
+    elif pool_key == "active_rerank_models":
+        positive_int("top_n")
+        number("score_threshold")
+        positive_int("max_input_tokens")
+    return merged
+
+
+def _model_pool_entries(config: dict, pool_key: str) -> list:
+    return config.setdefault(pool_key, [])
+
+
+def _find_model_pool_entry(
+    config: dict,
+    pool_key: str,
+    provider_name: str,
+    model: str,
+) -> dict | None:
+    for entry in _model_pool_entries(config, pool_key):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("model", "") == model and entry.get("provider", "") == provider_name:
+            return entry
+    return None
+
+
+def _model_pool_entry_exists(entries: list, provider_name: str, model: str) -> bool:
+    return any(
+        isinstance(entry, dict)
+        and entry.get("model", "") == model
+        and entry.get("provider", "") == provider_name
+        for entry in entries
+    )
+
+
+def _ensure_model_pool_entry(
+    config: dict,
+    pool_key: str,
+    provider_name: str,
+    model: str,
+) -> dict:
+    entry = _find_model_pool_entry(config, pool_key, provider_name, model)
+    if entry is not None:
+        entry.setdefault("config", _default_model_config(pool_key, config))
+        return entry
+    entry = {
+        "model": model,
+        "provider": provider_name,
+        "config": _default_model_config(pool_key, config),
+    }
+    _model_pool_entries(config, pool_key).append(entry)
+    return entry
+
+
+def _select_model_pool_entry(
+    dashboard: Dashboard,
+    pool_key: str,
+    provider_name: str,
+    model: str,
+) -> None:
+    model_key, provider_key = _MODEL_POOL_CURRENT_KEYS[pool_key]
+    dashboard.lifecycle.config[model_key] = model
+    dashboard.lifecycle.config[provider_key] = provider_name
+    if pool_key == "active_models":
+        dashboard._apply_model(provider_name, model)
+        return
+    _push_provider_pool_config(dashboard)
+
+
+def _select_first_model_pool_entry_or_clear(dashboard: Dashboard, pool_key: str) -> None:
+    model_key, provider_key = _MODEL_POOL_CURRENT_KEYS[pool_key]
+    entries = [
+        entry
+        for entry in dashboard.lifecycle.config.get(pool_key, [])
+        if isinstance(entry, dict) and entry.get("model")
+    ]
+    if entries:
+        first = entries[0]
+        _select_model_pool_entry(
+            dashboard,
+            pool_key,
+            str(first.get("provider") or ""),
+            str(first.get("model") or ""),
+        )
+        return
+    dashboard.lifecycle.config[model_key] = ""
+    dashboard.lifecycle.config[provider_key] = ""
+    if pool_key == "active_models":
+        dashboard._clear_current_model()
+    else:
+        _push_provider_pool_config(dashboard)
+
+
+def _push_provider_pool_config(dashboard: Dashboard) -> None:
+    ps = dashboard.lifecycle.process_stage
+    if not ps:
+        return
+    ps.update_config(
+        model_provider=dashboard.lifecycle.config.get("model_provider", ""),
+        active_models=dashboard.lifecycle.config.get("active_models", []),
+        embedding_model=dashboard.lifecycle.config.get("embedding_model", ""),
+        embedding_provider=dashboard.lifecycle.config.get("embedding_provider", ""),
+        active_embedding_models=dashboard.lifecycle.config.get("active_embedding_models", []),
+        rerank_model=dashboard.lifecycle.config.get("rerank_model", ""),
+        rerank_provider=dashboard.lifecycle.config.get("rerank_provider", ""),
+        active_rerank_models=dashboard.lifecycle.config.get("active_rerank_models", []),
+        providers=dashboard.lifecycle.config.get("providers", {}),
+    )
+
+
+def _remove_provider_from_model_pools(config: dict, provider_name: str) -> None:
+    for key in ("active_models", "active_embedding_models", "active_rerank_models"):
+        entries = config.setdefault(key, [])
+        config[key] = [
+            entry
+            for entry in entries
+            if not (isinstance(entry, dict) and entry.get("provider", "") == provider_name)
+        ]
+    for pool_key, (model_key, provider_key) in _MODEL_POOL_CURRENT_KEYS.items():
+        if config.get(provider_key, "") == provider_name:
+            entries = [
+                entry
+                for entry in config.get(pool_key, [])
+                if isinstance(entry, dict) and entry.get("model")
+            ]
+            if entries:
+                config[model_key] = entries[0].get("model", "")
+                config[provider_key] = str(entries[0].get("provider") or "")
+            else:
+                config[model_key] = ""
+                config[provider_key] = ""
 
 
 def _normalize_audio_engine(value: Any) -> str:
@@ -318,7 +533,14 @@ def register(dashboard: Dashboard) -> None:
                 "status": "running",
                 "uptime": int(time.time() - lc.start_time) if lc.start_time else 0,
                 "model": lc.config.get("model", ""),
+                "model_provider": lc.config.get("model_provider", ""),
                 "active_models": lc.config.get("active_models", []),
+                "embedding_model": lc.config.get("embedding_model", ""),
+                "embedding_provider": lc.config.get("embedding_provider", ""),
+                "active_embedding_models": lc.config.get("active_embedding_models", []),
+                "rerank_model": lc.config.get("rerank_model", ""),
+                "rerank_provider": lc.config.get("rerank_provider", ""),
+                "active_rerank_models": lc.config.get("active_rerank_models", []),
                 "workspace": lc.config.get("workspace", ""),
                 "api_format": lc.config.get("api_format", "openai"),
                 "agent_mode": (
@@ -341,6 +563,7 @@ def register(dashboard: Dashboard) -> None:
         return jsonify(
             {
                 "model": c.get("model", ""),
+                "model_provider": c.get("model_provider", ""),
                 "api_key": "***" if c.get("api_key") else "",
                 "base_url": c.get("base_url") or "",
                 "api_format": c.get("api_format", "openai"),
@@ -352,6 +575,12 @@ def register(dashboard: Dashboard) -> None:
                 "extra_instructions": c.get("extra_instructions", ""),
                 "persona": c.get("persona", ""),
                 "agent_mode": c.get("agent_mode", "agent"),
+                "embedding_model": c.get("embedding_model", ""),
+                "embedding_provider": c.get("embedding_provider", ""),
+                "active_embedding_models": c.get("active_embedding_models", []),
+                "rerank_model": c.get("rerank_model", ""),
+                "rerank_provider": c.get("rerank_provider", ""),
+                "active_rerank_models": c.get("active_rerank_models", []),
                 "image_transcription": _mask_image_transcription(c.get("image_transcription", {})),
                 "novelai": mask_novelai_config(c.get("novelai", {})),
                 "skills_root": c.get("skills_root", "skills"),
@@ -478,11 +707,7 @@ def register(dashboard: Dashboard) -> None:
             "api_format": data.get("api_format", "openai"),
             "models": existing.get("models", []),
         }
-        if dashboard.lifecycle.process_stage:
-            dashboard.lifecycle.process_stage.update_config(
-                providers=providers,
-                active_models=dashboard.lifecycle.config.get("active_models", []),
-            )
+        _push_provider_pool_config(dashboard)
         dashboard.lifecycle.save_config()
         return jsonify({"ok": True})
 
@@ -492,24 +717,13 @@ def register(dashboard: Dashboard) -> None:
         name = data.get("name", "")
         lc = dashboard.lifecycle
         providers = lc.config.setdefault("providers", {})
+        current_provider_before_delete = lc.config.get("model_provider", "")
         removed_provider = providers.pop(name, None)
-        active_models = lc.config.setdefault("active_models", [])
-        removed_entries = [
-            m for m in active_models if isinstance(m, dict) and m.get("provider", "") == name
-        ]
-        lc.config["active_models"] = [
-            m for m in active_models if not (isinstance(m, dict) and m.get("provider", "") == name)
-        ]
-        current_model = lc.config.get("model", "")
-        current_was_removed = any(m.get("model", "") == current_model for m in removed_entries)
-        current_still_active = any(
-            dashboard._active_model_entry_available(m) and m.get("model", "") == current_model
-            for m in lc.config.get("active_models", [])
-        )
-        if current_was_removed and (
-            not current_still_active or dashboard._current_uses_provider_config(removed_provider)
+        _remove_provider_from_model_pools(lc.config, name)
+        if current_provider_before_delete == name or dashboard._current_uses_provider_config(
+            removed_provider
         ):
-            dashboard._select_first_active_model_or_clear()
+            _select_first_model_pool_entry_or_clear(dashboard, "active_models")
         else:
             dashboard._push_model_config()
         dashboard.lifecycle.save_config()
@@ -559,11 +773,7 @@ def register(dashboard: Dashboard) -> None:
             providers[name]["api_format"] = api_format
             if data.get("api_key") and data["api_key"] != "***":
                 providers[name]["api_key"] = api_key
-            if dashboard.lifecycle.process_stage:
-                dashboard.lifecycle.process_stage.update_config(
-                    providers=providers,
-                    active_models=dashboard.lifecycle.config.get("active_models", []),
-                )
+            _push_provider_pool_config(dashboard)
             dashboard.lifecycle.save_config()
             return jsonify({"models": models})
         except Exception as e:
@@ -578,13 +788,116 @@ def register(dashboard: Dashboard) -> None:
         if not model:
             return jsonify({"error": "model required"}), 400
         lc = dashboard.lifecycle
-        active_models = lc.config.setdefault("active_models", [])
-        entry = {"model": model, "provider": provider_name}
-        if not any(m["model"] == model and m["provider"] == provider_name for m in active_models):
-            active_models.append(entry)
+        _ensure_model_pool_entry(lc.config, "active_models", provider_name, model)
         dashboard._apply_model(provider_name, model)
         lc.save_config()
         return jsonify({"ok": True})
+
+    @app.route("/api/provider/pool/activate", methods=["POST"])
+    async def activate_model_pool_entry():
+        """Add a provider model to a non-chat model pool."""
+        data = await request.get_json()
+        try:
+            pool_key = _model_pool_config_key(data.get("pool", ""))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        provider_name = str(data.get("provider", "") or "")
+        model = str(data.get("model", "") or "")
+        if not model:
+            return jsonify({"error": "model required"}), 400
+
+        lc = dashboard.lifecycle
+        _ensure_model_pool_entry(lc.config, pool_key, provider_name, model)
+        _select_model_pool_entry(dashboard, pool_key, provider_name, model)
+        lc.save_config()
+        return jsonify({"ok": True, "models": lc.config.get(pool_key, [])})
+
+    @app.route("/api/provider/pool/select", methods=["POST"])
+    async def select_model_pool_entry():
+        """Select the active model for a chat, embedding, or rerank pool."""
+        data = await request.get_json()
+        try:
+            pool_key = _model_pool_config_key(data.get("pool", ""))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        provider_name = str(data.get("provider", "") or "")
+        model = str(data.get("model", "") or "")
+        if not model:
+            return jsonify({"error": "model required"}), 400
+        lc = dashboard.lifecycle
+        if _find_model_pool_entry(lc.config, pool_key, provider_name, model) is None:
+            return jsonify({"error": "model is not enabled in this pool"}), 404
+        _select_model_pool_entry(dashboard, pool_key, provider_name, model)
+        lc.save_config()
+        return jsonify({"ok": True})
+
+    @app.route("/api/provider/pool/config", methods=["POST"])
+    async def save_model_pool_config():
+        """Save per-model configuration for a chat, embedding, or rerank model."""
+        data = await request.get_json()
+        try:
+            pool_key = _model_pool_config_key(data.get("pool", ""))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        provider_name = str(data.get("provider", "") or "")
+        model = str(data.get("model", "") or "")
+        if not model:
+            return jsonify({"error": "model required"}), 400
+        lc = dashboard.lifecycle
+        entry = _find_model_pool_entry(lc.config, pool_key, provider_name, model)
+        if entry is None:
+            return jsonify({"error": "model is not enabled in this pool"}), 404
+        try:
+            entry["config"] = _merge_model_config(
+                pool_key,
+                entry.get("config"),
+                data.get("config", {}),
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        model_key, provider_key = _MODEL_POOL_CURRENT_KEYS[pool_key]
+        if (
+            lc.config.get(model_key, "") == model
+            and lc.config.get(provider_key, "") == provider_name
+        ):
+            _select_model_pool_entry(dashboard, pool_key, provider_name, model)
+        else:
+            _push_provider_pool_config(dashboard)
+        lc.save_config()
+        return jsonify({"ok": True, "config": entry["config"]})
+
+    @app.route("/api/provider/pool/deactivate", methods=["POST"])
+    async def deactivate_model_pool_entry():
+        """Remove a provider model from a non-chat model pool."""
+        data = await request.get_json()
+        try:
+            pool_key = _model_pool_config_key(data.get("pool", ""))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        provider_name = str(data.get("provider", "") or "")
+        model = str(data.get("model", "") or "")
+        lc = dashboard.lifecycle
+        entries = _model_pool_entries(lc.config, pool_key)
+        lc.config[pool_key] = [
+            entry
+            for entry in entries
+            if not (
+                isinstance(entry, dict)
+                and entry.get("model", "") == model
+                and entry.get("provider", "") == provider_name
+            )
+        ]
+        model_key, provider_key = _MODEL_POOL_CURRENT_KEYS[pool_key]
+        if (
+            lc.config.get(model_key, "") == model
+            and lc.config.get(provider_key, "") == provider_name
+        ):
+            _select_first_model_pool_entry_or_clear(dashboard, pool_key)
+        else:
+            _push_provider_pool_config(dashboard)
+        lc.save_config()
+        return jsonify({"ok": True, "models": lc.config.get(pool_key, [])})
 
     @app.route("/api/provider/deactivate", methods=["POST"])
     async def deactivate_model():
@@ -613,17 +926,21 @@ def register(dashboard: Dashboard) -> None:
             )
         ]
         current_model = lc.config.get("model", "")
+        current_provider = lc.config.get("model_provider", "")
         current_still_active = any(
-            dashboard._active_model_entry_available(m) and m.get("model", "") == current_model
+            dashboard._active_model_entry_available(m)
+            and m.get("model", "") == current_model
+            and m.get("provider", "") == current_provider
             for m in lc.config.get("active_models", [])
         )
         provider_cfg = lc.config.get("providers", {}).get(provider_name)
         if (
             removed_entries
             and current_model == model
+            and current_provider == provider_name
             and (not current_still_active or dashboard._current_uses_provider_config(provider_cfg))
         ):
-            dashboard._select_first_active_model_or_clear()
+            _select_first_model_pool_entry_or_clear(dashboard, "active_models")
         else:
             dashboard._push_model_config()
         lc.save_config()

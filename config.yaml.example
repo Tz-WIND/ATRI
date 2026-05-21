@@ -13,9 +13,36 @@ base_url: https://api.deepseek.com/v1
 api_format: openai
 
 # 已激活的模型列表（可在 WebUI Settings 中管理）
+model_provider: DeepSeek
 active_models:
   - model: deepseek-chat
     provider: DeepSeek
+    config:
+      max_tokens: 20000
+      temperature: 0.5
+      max_context_tokens: 1000000
+      max_rounds: 50
+
+# Embedding and rerank model pools. These use the same provider/model entry
+# shape as active_models and can be managed in WebUI Settings -> Models.
+embedding_model: text-embedding-3-small
+embedding_provider: OpenAI
+active_embedding_models:
+  - model: text-embedding-3-small
+    provider: OpenAI
+    config:
+      dimensions: 1536
+      batch_size: 64
+      encoding_format: float
+rerank_model: bge-reranker-v2-m3
+rerank_provider: Local
+active_rerank_models:
+  - model: bge-reranker-v2-m3
+    provider: Local
+    config:
+      top_n: 5
+      score_threshold: 0
+      max_input_tokens: 8192
 
 # 生成参数
 max_tokens: 20000
@@ -115,6 +142,18 @@ providers:
     api_format: anthropic
     models:
       - claude-sonnet-4-6
+  OpenAI:
+    base_url: https://api.openai.com/v1
+    api_key: sk-your-api-key-here
+    api_format: openai
+    models:
+      - text-embedding-3-small
+  Local:
+    base_url: http://localhost:11434/v1
+    api_key: ''
+    api_format: openai
+    models:
+      - bge-reranker-v2-m3
 
 # MCP Server 配置（可在 WebUI 中管理）
 mcp_servers: {}

@@ -14,6 +14,7 @@
       :name="selectedName"
       :active-models="activeModels"
       :active-model="activeModel"
+      :active-provider="activeModelProvider"
       :fetching-models="fetchingModels"
       :fetch-error="modelFetchError"
       @save="handleSaveProvider"
@@ -120,6 +121,7 @@ const {
   providerList,
   activeModels,
   activeModel,
+  activeModelProvider,
   selectProvider,
   saveProvider,
   removeProvider,

@@ -44,6 +44,10 @@ export function useApi() {
     activateModel: (provider, model) => request('/api/provider/activate', { method: 'POST', body: JSON.stringify({ provider, model }) }),
     deactivateModel: (provider, model) => request('/api/provider/deactivate', { method: 'POST', body: JSON.stringify({ provider, model }) }),
     selectModel: (provider, model) => request('/api/provider/select', { method: 'POST', body: JSON.stringify({ provider, model }) }),
+    activatePoolModel: (pool, provider, model) => request('/api/provider/pool/activate', { method: 'POST', body: JSON.stringify({ pool, provider, model }) }),
+    deactivatePoolModel: (pool, provider, model) => request('/api/provider/pool/deactivate', { method: 'POST', body: JSON.stringify({ pool, provider, model }) }),
+    selectPoolModel: (pool, provider, model) => request('/api/provider/pool/select', { method: 'POST', body: JSON.stringify({ pool, provider, model }) }),
+    savePoolModelConfig: (pool, provider, model, config) => request('/api/provider/pool/config', { method: 'POST', body: JSON.stringify({ pool, provider, model, config }) }),
 
     // Workspace
     getWorkspace: () => request('/api/workspace'),

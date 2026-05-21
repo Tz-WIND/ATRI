@@ -20,6 +20,7 @@ from core.agent.context import TOOL_OUTPUT_COMPRESSED_MARKER
 from core.agent.llm import LLM
 from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
+from core.config_schema import CHAT_MODEL_CONFIG_DEFAULT
 from core.pipeline.stage import Stage, register_stage
 from core.platform.message import Image, MessageEvent, MessageType, Plain, normalize_session_id
 from core.runtime import RuntimeTimelineStore, TaskStore, summarize_text
@@ -119,15 +120,33 @@ class ProcessStage(Stage):
     async def initialize(self, ctx: dict) -> None:
         self.workspace: str = ctx.get("workspace", ".")
         self.model: str = ctx.get("model", "gpt-4o")
+        self.model_provider: str = ctx.get("model_provider", "")
         self.api_key: str = ctx.get("api_key", "")
         self.base_url: str | None = ctx.get("base_url")
         self.api_format: str = ctx.get("api_format", "openai")
         self.active_models: list[dict] = list(ctx.get("active_models", []))
+        self.embedding_model: str = ctx.get("embedding_model", "")
+        self.embedding_provider: str = ctx.get("embedding_provider", "")
+        self.active_embedding_models: list[dict] = list(ctx.get("active_embedding_models", []))
+        self.rerank_model: str = ctx.get("rerank_model", "")
+        self.rerank_provider: str = ctx.get("rerank_provider", "")
+        self.active_rerank_models: list[dict] = list(ctx.get("active_rerank_models", []))
         self.providers: dict = dict(ctx.get("providers", {}))
-        self.max_tokens: int = ctx.get("max_tokens", 4096)
-        self.temperature: float = ctx.get("temperature", 0.0)
-        self.max_context_tokens: int = ctx.get("max_context_tokens", 128_000)
-        self.max_rounds: int = ctx.get("max_rounds", 50)
+        chat_config = _chat_model_config_from_entries(
+            self.active_models,
+            self.model,
+            self.model_provider,
+            {
+                "max_tokens": ctx.get("max_tokens", 4096),
+                "temperature": ctx.get("temperature", 0.0),
+                "max_context_tokens": ctx.get("max_context_tokens", 128_000),
+                "max_rounds": ctx.get("max_rounds", 50),
+            },
+        )
+        self.max_tokens: int = int(chat_config["max_tokens"])
+        self.temperature: float = float(chat_config["temperature"])
+        self.max_context_tokens: int = int(chat_config["max_context_tokens"])
+        self.max_rounds: int = int(chat_config["max_rounds"])
         self.extra_instructions: str = ctx.get("extra_instructions", "")
         self.persona: str = ctx.get("persona", "")
         self.skills_root: str = ctx.get("skills_root", "skills")
@@ -301,6 +320,16 @@ class ProcessStage(Stage):
             if not isinstance(provider_cfg, dict):
                 raise ValueError(f"unknown provider '{requested_provider}'")
             cfg.update(_llm_config_from_provider(provider_cfg))
+            cfg.update(
+                _llm_options_from_chat_config(
+                    _chat_model_config_from_entries(
+                        self.active_models,
+                        requested_model,
+                        requested_provider,
+                        cfg,
+                    )
+                )
+            )
             cfg["model"] = requested_model
             return cfg
 
@@ -321,6 +350,17 @@ class ProcessStage(Stage):
             if not isinstance(provider_cfg, dict):
                 raise ValueError(f"unknown provider '{providers[0]}'")
             cfg.update(_llm_config_from_provider(provider_cfg))
+        resolved_provider = providers[0] if len(providers) == 1 else ""
+        cfg.update(
+            _llm_options_from_chat_config(
+                _chat_model_config_from_entries(
+                    self.active_models,
+                    requested_model,
+                    resolved_provider,
+                    cfg,
+                )
+            )
+        )
 
         cfg["model"] = requested_model
         return cfg
@@ -523,6 +563,8 @@ class ProcessStage(Stage):
             self.model = kwargs["model"]
             self._llm_template["model"] = kwargs["model"]
             llm_updates["model"] = kwargs["model"]
+        if "model_provider" in kwargs:
+            self.model_provider = kwargs["model_provider"]
         if "api_key" in kwargs and kwargs["api_key"] != "***":
             self.api_key = kwargs["api_key"]
             self._llm_template["api_key"] = kwargs["api_key"]
@@ -537,6 +579,18 @@ class ProcessStage(Stage):
             llm_updates["api_format"] = kwargs["api_format"]
         if "active_models" in kwargs:
             self.active_models = list(kwargs["active_models"] or [])
+        if "embedding_model" in kwargs:
+            self.embedding_model = kwargs["embedding_model"]
+        if "embedding_provider" in kwargs:
+            self.embedding_provider = kwargs["embedding_provider"]
+        if "active_embedding_models" in kwargs:
+            self.active_embedding_models = list(kwargs["active_embedding_models"] or [])
+        if "rerank_model" in kwargs:
+            self.rerank_model = kwargs["rerank_model"]
+        if "rerank_provider" in kwargs:
+            self.rerank_provider = kwargs["rerank_provider"]
+        if "active_rerank_models" in kwargs:
+            self.active_rerank_models = list(kwargs["active_rerank_models"] or [])
         if "providers" in kwargs:
             self.providers = dict(kwargs["providers"] or {})
         if "max_tokens" in kwargs:
@@ -1176,6 +1230,42 @@ def _attach_generated_images_to_assistant_message(
                 *attachments,
             ]
             return
+
+
+def _chat_model_config_from_entries(
+    entries: list[dict],
+    model: str,
+    provider: str,
+    fallback: dict,
+) -> dict:
+    defaults = {
+        "max_tokens": int(fallback.get("max_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_tokens"]),
+        "temperature": float(fallback.get("temperature", CHAT_MODEL_CONFIG_DEFAULT["temperature"])),
+        "max_context_tokens": int(
+            fallback.get("max_context_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_context_tokens"]
+        ),
+        "max_rounds": int(fallback.get("max_rounds") or CHAT_MODEL_CONFIG_DEFAULT["max_rounds"]),
+    }
+    matches = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and entry.get("model", "") == model
+        and (not provider or entry.get("provider", "") == provider)
+    ]
+    if not matches:
+        return defaults
+    entry_config = matches[0].get("config")
+    if not isinstance(entry_config, dict):
+        return defaults
+    return {**defaults, **entry_config}
+
+
+def _llm_options_from_chat_config(config: dict) -> dict:
+    return {
+        "max_tokens": int(config.get("max_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_tokens"]),
+        "temperature": float(config.get("temperature", CHAT_MODEL_CONFIG_DEFAULT["temperature"])),
+    }
 
 
 def _llm_config_from_provider(provider_cfg: dict) -> dict:

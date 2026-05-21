@@ -96,6 +96,45 @@ def test_process_stage_allows_high_privilege_tools_for_onebot_admin_only():
     assert _event_allows_high_privilege_tools(onebot_normal) is False
 
 
+def test_process_stage_resolves_per_model_chat_generation_config():
+    stage = ProcessStage()
+    stage._llm_template = {
+        "model": "chat-a",
+        "api_key": "root-key",
+        "base_url": "https://root.example/v1",
+        "api_format": "openai",
+        "max_tokens": 4096,
+        "temperature": 0,
+    }
+    stage.active_models = [
+        {
+            "model": "chat-b",
+            "provider": "OpenAI",
+            "config": {
+                "max_tokens": 12000,
+                "temperature": 0.4,
+                "max_context_tokens": 256000,
+                "max_rounds": 25,
+            },
+        }
+    ]
+    stage.providers = {
+        "OpenAI": {
+            "api_key": "provider-key",
+            "base_url": "https://provider.example/v1",
+            "api_format": "openai",
+        }
+    }
+
+    cfg = stage._resolve_llm_config(model="chat-b", provider="OpenAI")
+
+    assert cfg["model"] == "chat-b"
+    assert cfg["api_key"] == "provider-key"
+    assert cfg["base_url"] == "https://provider.example/v1"
+    assert cfg["max_tokens"] == 12000
+    assert cfg["temperature"] == 0.4
+
+
 @pytest.mark.asyncio
 async def test_process_stage_routes_images_through_transcription_when_enabled(monkeypatch):
     stage = ProcessStage()

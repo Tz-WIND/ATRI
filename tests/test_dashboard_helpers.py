@@ -12,6 +12,23 @@ from dashboard import music as music_routes
 from dashboard.routes import _helpers, chat, management, models
 from dashboard.server import DASHBOARD_MAX_CONTENT_LENGTH, Dashboard
 
+EXPECTED_CHAT_MODEL_CONFIG_DEFAULT = {
+    "max_tokens": 4096,
+    "temperature": 0.0,
+    "max_context_tokens": 128000,
+    "max_rounds": 50,
+}
+EXPECTED_EMBEDDING_MODEL_CONFIG_DEFAULT = {
+    "dimensions": 1536,
+    "batch_size": 64,
+    "encoding_format": "float",
+}
+EXPECTED_RERANK_MODEL_CONFIG_DEFAULT = {
+    "top_n": 5,
+    "score_threshold": 0.0,
+    "max_input_tokens": 8192,
+}
+
 
 class _FakeDashboardLifecycle:
     def __init__(self, tmp_path, password_hash: str):
@@ -26,10 +43,25 @@ class _FakeDashboardLifecycle:
             "workspace": str(tmp_path),
             "audio_host": {},
             "mcp_servers": {},
+            "model": "chat-current",
+            "model_provider": "OpenAI",
+            "active_models": [{"model": "chat-current", "provider": "OpenAI"}],
+            "embedding_model": "",
+            "embedding_provider": "",
+            "active_embedding_models": [],
+            "rerank_model": "",
+            "rerank_provider": "",
+            "active_rerank_models": [],
+            "providers": {},
+            "max_tokens": 4096,
+            "temperature": 0.0,
+            "max_context_tokens": 128000,
+            "max_rounds": 50,
         }
         self.process_stage = None
         self.onebot11 = None
         self.webchat = None
+        self.start_time = 0
         self.saved = 0
 
     def save_config(self):
@@ -182,6 +214,299 @@ def test_dashboard_masks_and_merges_novelai_config():
     assert merged["api_key"] == "nai-existing"
     assert merged["base_url"] == "https://image.example.test"
     assert merged["model"] == "nai-new"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_status_includes_embedding_and_rerank_model_pools(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    dashboard.lifecycle.config["active_embedding_models"] = [
+        {
+            "model": "text-embedding-3-large",
+            "provider": "OpenAI",
+            "config": dict(EXPECTED_EMBEDDING_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    dashboard.lifecycle.config["embedding_model"] = "text-embedding-3-large"
+    dashboard.lifecycle.config["embedding_provider"] = "OpenAI"
+    dashboard.lifecycle.config["active_rerank_models"] = [
+        {
+            "model": "bge-reranker-v2",
+            "provider": "Local",
+            "config": dict(EXPECTED_RERANK_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    dashboard.lifecycle.config["rerank_model"] = "bge-reranker-v2"
+    dashboard.lifecycle.config["rerank_provider"] = "Local"
+
+    response = await dashboard.app.test_client().get(
+        "/api/status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload["active_embedding_models"] == [
+        {
+            "model": "text-embedding-3-large",
+            "provider": "OpenAI",
+            "config": dict(EXPECTED_EMBEDDING_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    assert payload["embedding_model"] == "text-embedding-3-large"
+    assert payload["embedding_provider"] == "OpenAI"
+    assert payload["active_rerank_models"] == [
+        {
+            "model": "bge-reranker-v2",
+            "provider": "Local",
+            "config": dict(EXPECTED_RERANK_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    assert payload["rerank_model"] == "bge-reranker-v2"
+    assert payload["rerank_provider"] == "Local"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_provider_pool_routes_manage_embedding_and_rerank_models(
+    monkeypatch, tmp_path
+):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    client = dashboard.app.test_client()
+
+    embed_response = await client.post(
+        "/api/provider/pool/activate",
+        json={
+            "pool": "embedding",
+            "provider": "OpenAI",
+            "model": "text-embedding-3-large",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    rerank_response = await client.post(
+        "/api/provider/pool/activate",
+        json={
+            "pool": "rerank",
+            "provider": "Local",
+            "model": "bge-reranker-v2",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    duplicate_response = await client.post(
+        "/api/provider/pool/activate",
+        json={
+            "pool": "embedding",
+            "provider": "OpenAI",
+            "model": "text-embedding-3-large",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    remove_response = await client.post(
+        "/api/provider/pool/deactivate",
+        json={
+            "pool": "embedding",
+            "provider": "OpenAI",
+            "model": "text-embedding-3-large",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert embed_response.status_code == 200
+    assert rerank_response.status_code == 200
+    assert duplicate_response.status_code == 200
+    assert remove_response.status_code == 200
+    assert dashboard.lifecycle.config["embedding_model"] == ""
+    assert dashboard.lifecycle.config["embedding_provider"] == ""
+    assert dashboard.lifecycle.config["active_embedding_models"] == []
+    assert dashboard.lifecycle.config["rerank_model"] == "bge-reranker-v2"
+    assert dashboard.lifecycle.config["rerank_provider"] == "Local"
+    assert dashboard.lifecycle.config["active_rerank_models"] == [
+        {
+            "model": "bge-reranker-v2",
+            "provider": "Local",
+            "config": dict(EXPECTED_RERANK_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    assert dashboard.lifecycle.saved == 4
+
+
+@pytest.mark.asyncio
+async def test_dashboard_pool_select_switches_embedding_and_rerank_active_models(
+    monkeypatch, tmp_path
+):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    dashboard.lifecycle.config["active_embedding_models"] = [
+        {
+            "model": "embed-a",
+            "provider": "OpenAI",
+            "config": dict(EXPECTED_EMBEDDING_MODEL_CONFIG_DEFAULT),
+        },
+        {
+            "model": "embed-b",
+            "provider": "Local",
+            "config": dict(EXPECTED_EMBEDDING_MODEL_CONFIG_DEFAULT),
+        },
+    ]
+    dashboard.lifecycle.config["active_rerank_models"] = [
+        {
+            "model": "rerank-a",
+            "provider": "OpenAI",
+            "config": dict(EXPECTED_RERANK_MODEL_CONFIG_DEFAULT),
+        },
+        {
+            "model": "rerank-b",
+            "provider": "Local",
+            "config": dict(EXPECTED_RERANK_MODEL_CONFIG_DEFAULT),
+        },
+    ]
+    client = dashboard.app.test_client()
+
+    embed_response = await client.post(
+        "/api/provider/pool/select",
+        json={"pool": "embedding", "provider": "Local", "model": "embed-b"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    rerank_response = await client.post(
+        "/api/provider/pool/select",
+        json={"pool": "rerank", "provider": "OpenAI", "model": "rerank-a"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert embed_response.status_code == 200
+    assert rerank_response.status_code == 200
+    assert dashboard.lifecycle.config["embedding_model"] == "embed-b"
+    assert dashboard.lifecycle.config["embedding_provider"] == "Local"
+    assert dashboard.lifecycle.config["rerank_model"] == "rerank-a"
+    assert dashboard.lifecycle.config["rerank_provider"] == "OpenAI"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_model_config_route_saves_pool_specific_config(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    dashboard.lifecycle.config["active_models"] = [
+        {
+            "model": "chat-current",
+            "provider": "OpenAI",
+            "config": dict(EXPECTED_CHAT_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    dashboard.lifecycle.config["active_embedding_models"] = [
+        {
+            "model": "embed-a",
+            "provider": "OpenAI",
+            "config": dict(EXPECTED_EMBEDDING_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    dashboard.lifecycle.config["active_rerank_models"] = [
+        {
+            "model": "rerank-a",
+            "provider": "OpenAI",
+            "config": dict(EXPECTED_RERANK_MODEL_CONFIG_DEFAULT),
+        }
+    ]
+    client = dashboard.app.test_client()
+
+    chat_response = await client.post(
+        "/api/provider/pool/config",
+        json={
+            "pool": "chat",
+            "provider": "OpenAI",
+            "model": "chat-current",
+            "config": {
+                "max_tokens": "12000",
+                "temperature": "0.4",
+                "max_context_tokens": "256000",
+                "max_rounds": "25",
+            },
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    embedding_response = await client.post(
+        "/api/provider/pool/config",
+        json={
+            "pool": "embedding",
+            "provider": "OpenAI",
+            "model": "embed-a",
+            "config": {"dimensions": "768", "batch_size": "24", "encoding_format": "base64"},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    rerank_response = await client.post(
+        "/api/provider/pool/config",
+        json={
+            "pool": "rerank",
+            "provider": "OpenAI",
+            "model": "rerank-a",
+            "config": {"top_n": "20", "score_threshold": "0.15", "max_input_tokens": "4096"},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert chat_response.status_code == 200
+    assert embedding_response.status_code == 200
+    assert rerank_response.status_code == 200
+    assert dashboard.lifecycle.config["active_models"][0]["config"] == {
+        "max_tokens": 12000,
+        "temperature": 0.4,
+        "max_context_tokens": 256000,
+        "max_rounds": 25,
+    }
+    assert dashboard.lifecycle.config["active_embedding_models"][0]["config"] == {
+        "dimensions": 768,
+        "batch_size": 24,
+        "encoding_format": "base64",
+    }
+    assert dashboard.lifecycle.config["active_rerank_models"][0]["config"] == {
+        "top_n": 20,
+        "score_threshold": 0.15,
+        "max_input_tokens": 4096,
+    }
+
+
+@pytest.mark.asyncio
+async def test_dashboard_delete_provider_removes_embedding_and_rerank_pool_entries(
+    monkeypatch, tmp_path
+):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    dashboard.lifecycle.config["providers"] = {
+        "OpenAI": {
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test",
+            "api_format": "openai",
+            "models": ["gpt-4o", "text-embedding-3-small"],
+        },
+        "Local": {
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "",
+            "api_format": "openai",
+            "models": ["bge-reranker-v2"],
+        },
+    }
+    dashboard.lifecycle.config["active_embedding_models"] = [
+        {"model": "text-embedding-3-small", "provider": "OpenAI"},
+        {"model": "local-embed", "provider": "Local"},
+    ]
+    dashboard.lifecycle.config["active_rerank_models"] = [
+        {"model": "jina-reranker", "provider": "OpenAI"},
+        {"model": "bge-reranker-v2", "provider": "Local"},
+    ]
+
+    response = await dashboard.app.test_client().post(
+        "/api/provider/delete",
+        json={"name": "OpenAI"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert dashboard.lifecycle.config["active_embedding_models"] == [
+        {"model": "local-embed", "provider": "Local"}
+    ]
+    assert dashboard.lifecycle.config["active_rerank_models"] == [
+        {"model": "bge-reranker-v2", "provider": "Local"}
+    ]
 
 
 def test_adapter_payload_includes_recent_group_message_settings():

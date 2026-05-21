@@ -87,61 +87,44 @@
           >
             <div class="section-heading-row">
               <div>
-                <h3>Active Models</h3>
+                <h3>Model Pools</h3>
                 <p class="section-desc">
-                  Models enabled for Chat. Switch between them from the composer.
+                  Enable models, choose the active entry for each pool, and tune model-specific settings.
                 </p>
               </div>
             </div>
             <div class="settings-card">
-              <ActiveModelsList />
-            </div>
-          </section>
-
-          <section
-            v-else-if="activeTab === 'generation'"
-            class="settings-section"
-          >
-            <div class="section-heading-row">
-              <div>
-                <h3>Generation Parameters</h3>
-                <p class="section-desc">
-                  Defaults used by the agent when a model does not override them.
-                </p>
-              </div>
+              <ModelPoolSection
+                pool="chat"
+                title="Chat Models"
+                description="Models enabled for agent conversations and sub-agent selection."
+                :models="activeModels"
+                :active-model="activeModel"
+                :active-provider="activeModelProvider"
+                empty-text="No chat models enabled. Pick a provider model to add one."
+              />
             </div>
             <div class="settings-card">
-              <div class="setting-grid">
-                <label class="setting-field">
-                  <span>Max Tokens</span>
-                  <input
-                    v-model.number="form.max_tokens"
-                    type="number"
-                  >
-                </label>
-                <label class="setting-field">
-                  <span>Temperature</span>
-                  <input
-                    v-model.number="form.temperature"
-                    type="number"
-                    step="0.1"
-                  >
-                </label>
-                <label class="setting-field">
-                  <span>Max Context Tokens</span>
-                  <input
-                    v-model.number="form.max_context_tokens"
-                    type="number"
-                  >
-                </label>
-                <label class="setting-field">
-                  <span>Max Rounds</span>
-                  <input
-                    v-model.number="form.max_rounds"
-                    type="number"
-                  >
-                </label>
-              </div>
+              <ModelPoolSection
+                pool="embedding"
+                title="Embedding Models"
+                description="Models reserved for vector embedding and retrieval indexing workflows."
+                :models="activeEmbeddingModels"
+                :active-model="activeEmbeddingModel"
+                :active-provider="activeEmbeddingProvider"
+                empty-text="No embedding models enabled. Pick a provider model to add one."
+              />
+            </div>
+            <div class="settings-card">
+              <ModelPoolSection
+                pool="rerank"
+                title="Rerank Models"
+                description="Models reserved for search result reranking and retrieval refinement."
+                :models="activeRerankModels"
+                :active-model="activeRerankModel"
+                :active-provider="activeRerankProvider"
+                empty-text="No rerank models enabled. Pick a provider model to add one."
+              />
             </div>
           </section>
 
@@ -539,12 +522,24 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ProviderWorkbench from './ProviderWorkbench.vue'
-import ActiveModelsList from './ActiveModelsList.vue'
+import ModelPoolSection from './ModelPoolSection.vue'
 import { useApi } from '@/composables/useApi.js'
 import { useProviders } from '@/composables/useProviders.js'
 
 const api = useApi()
-const { loadProviders, loadStatus } = useProviders()
+const {
+  loadProviders,
+  loadStatus,
+  activeModels,
+  activeModel,
+  activeModelProvider,
+  activeEmbeddingModels,
+  activeEmbeddingModel,
+  activeEmbeddingProvider,
+  activeRerankModels,
+  activeRerankModel,
+  activeRerankProvider,
+} = useProviders()
 
 const icon = {
   server: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M4.22 4.22l2.83 2.83m9.9 9.9l2.83 2.83M1 12h4m14 0h4M4.22 19.78l2.83-2.83m9.9-9.9l2.83-2.83"/></svg>',
@@ -563,7 +558,6 @@ const settingsGroups = [
     tabs: [
       { id: 'providers', label: 'Providers', description: 'Endpoints, credentials, and model discovery.', icon: icon.server },
       { id: 'models', label: 'Models', description: 'Enabled chat models across providers.', icon: icon.cpu },
-      { id: 'generation', label: 'Generation', description: 'Token, temperature, context, and round limits.', icon: icon.sliders },
     ],
   },
   {
@@ -589,10 +583,6 @@ const activeTab = ref('providers')
 const activeTabMeta = computed(() => flatTabs.find(tab => tab.id === activeTab.value) || flatTabs[0])
 
 const form = ref({
-  max_tokens: 4096,
-  temperature: 0,
-  max_context_tokens: 128000,
-  max_rounds: 50,
   wake_words: '',
   persona: '',
   extra_instructions: '',
@@ -669,10 +659,6 @@ const currentAudioDeviceOption = computed(() => {
 async function loadSettings() {
   try {
     const d = await api.getSettings()
-    form.value.max_tokens = d.max_tokens || 4096
-    form.value.temperature = d.temperature || 0
-    form.value.max_context_tokens = d.max_context_tokens || 128000
-    form.value.max_rounds = d.max_rounds || 50
     form.value.wake_words = (d.wake_words || []).join(', ')
     form.value.persona = d.persona || ''
     form.value.extra_instructions = d.extra_instructions || ''
@@ -745,10 +731,6 @@ async function saveSettings() {
   saving.value = true
   try {
     await api.saveSettings({
-      max_tokens: form.value.max_tokens,
-      temperature: form.value.temperature,
-      max_context_tokens: form.value.max_context_tokens,
-      max_rounds: form.value.max_rounds,
       wake_words: form.value.wake_words.split(',').map(s => s.trim()).filter(Boolean),
       persona: form.value.persona,
       extra_instructions: form.value.extra_instructions,

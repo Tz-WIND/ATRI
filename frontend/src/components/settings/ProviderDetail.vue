@@ -105,14 +105,14 @@
             class="model-row"
           >
             <div class="model-info">
-              <div :class="['model-name', { active: m === activeModel }]">
+              <div :class="['model-name', { active: m === activeModel && name === activeProvider }]">
                 {{ m }}
               </div>
             </div>
             <div class="model-actions">
               <template v-if="isModelActive(name, m)">
                 <span class="model-state">
-                  {{ m === activeModel ? '✓ current' : 'enabled' }}
+                  {{ m === activeModel && name === activeProvider ? '✓ current' : 'enabled' }}
                 </span>
                 <button
                   class="btn btn-danger"
@@ -144,6 +144,7 @@ const props = defineProps({
   name: { type: String, default: '' },
   activeModels: { type: Array, default: () => [] },
   activeModel: { type: String, default: '' },
+  activeProvider: { type: String, default: '' },
   fetchingModels: { type: Boolean, default: false },
   fetchError: { type: String, default: '' },
 })

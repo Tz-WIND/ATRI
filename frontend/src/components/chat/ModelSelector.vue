@@ -58,10 +58,10 @@
         <div
           v-for="m in filteredModels"
           :key="m.model + m.provider"
-          :class="['menu-item', { active: m.model === activeModel }]"
+          :class="['menu-item', { active: isActive(m) }]"
           @click="selectModel(m)"
         >
-          <span class="mi-check">{{ m.model === activeModel ? '✓' : '' }}</span>
+          <span class="mi-check">{{ isActive(m) ? '✓' : '' }}</span>
           <span class="mi-name">{{ m.model }}</span>
           <span
             v-if="m.provider"
@@ -77,7 +77,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useProviders } from '@/composables/useProviders.js'
 
-const { activeModel, activeModels, switchModel, loadStatus } = useProviders()
+const { activeModel, activeModelProvider, activeModels, switchModel, loadStatus } = useProviders()
 
 const open = ref(false)
 const search = ref('')
@@ -99,6 +99,10 @@ function toggleOpen() {
     search.value = ''
     nextTick(() => searchInput.value?.focus())
   }
+}
+
+function isActive(model) {
+  return model.model === activeModel.value && (model.provider || '') === activeModelProvider.value
 }
 
 async function selectModel(m) {

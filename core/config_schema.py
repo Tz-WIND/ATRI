@@ -11,6 +11,25 @@ DEFAULT_IMAGE_TRANSCRIPTION_PROMPT = (
     "and any details needed to answer the user's request. Be concise and factual."
 )
 
+CHAT_MODEL_CONFIG_DEFAULT: dict[str, Any] = {
+    "max_tokens": 4096,
+    "temperature": 0.0,
+    "max_context_tokens": 128000,
+    "max_rounds": 50,
+}
+
+EMBEDDING_MODEL_CONFIG_DEFAULT: dict[str, Any] = {
+    "dimensions": 1536,
+    "batch_size": 64,
+    "encoding_format": "float",
+}
+
+RERANK_MODEL_CONFIG_DEFAULT: dict[str, Any] = {
+    "top_n": 5,
+    "score_threshold": 0.0,
+    "max_input_tokens": 8192,
+}
+
 
 class ConfigValidationError(ValueError):
     """Raised when config.yaml contains an invalid value."""
@@ -23,7 +42,14 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "api_key": {"type": "string", "default": ""},
         "base_url": {"type": ["string", "null"], "default": None},
         "api_format": {"type": "string", "default": "openai"},
+        "model_provider": {"type": "string", "default": ""},
         "active_models": {"type": "array", "default": []},
+        "embedding_model": {"type": "string", "default": ""},
+        "embedding_provider": {"type": "string", "default": ""},
+        "active_embedding_models": {"type": "array", "default": []},
+        "rerank_model": {"type": "string", "default": ""},
+        "rerank_provider": {"type": "string", "default": ""},
+        "active_rerank_models": {"type": "array", "default": []},
         "providers": {"type": "object", "default": {}},
         "max_tokens": {"type": "integer", "default": 4096, "minimum": 1},
         "temperature": {"type": "number", "default": 0.0},
@@ -277,6 +303,184 @@ def _migrate_dashboard_auth(config: dict[str, Any]) -> bool:
     return changed
 
 
+def _positive_int_config(value: Any, path: str) -> int:
+    if isinstance(value, bool):
+        raise ConfigValidationError(f"{path} must be an integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise ConfigValidationError(f"{path} must be an integer") from e
+    if parsed < 1:
+        raise ConfigValidationError(f"{path} must be >= 1")
+    return parsed
+
+
+def _number_config(value: Any, path: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigValidationError(f"{path} must be a number")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as e:
+        raise ConfigValidationError(f"{path} must be a number") from e
+
+
+def _chat_model_config_defaults(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "max_tokens": int(config.get("max_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_tokens"]),
+        "temperature": float(config.get("temperature", CHAT_MODEL_CONFIG_DEFAULT["temperature"])),
+        "max_context_tokens": int(
+            config.get("max_context_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_context_tokens"]
+        ),
+        "max_rounds": int(config.get("max_rounds") or CHAT_MODEL_CONFIG_DEFAULT["max_rounds"]),
+    }
+
+
+def _coerce_model_config(
+    incoming: Any,
+    defaults: dict[str, Any],
+    path: str,
+) -> tuple[dict[str, Any], bool]:
+    if incoming is None:
+        incoming = {}
+    if not isinstance(incoming, dict):
+        raise ConfigValidationError(f"{path} must be an object")
+
+    changed = False
+    result = deepcopy(defaults)
+    for key, default_value in defaults.items():
+        if key not in incoming:
+            changed = True
+            continue
+        raw_value = incoming[key]
+        child_path = f"{path}.{key}"
+        if isinstance(default_value, int):
+            value = _positive_int_config(raw_value, child_path)
+        elif isinstance(default_value, float):
+            value = _number_config(raw_value, child_path)
+        elif key == "encoding_format":
+            value = str(raw_value or default_value).strip().lower()
+            if value not in {"float", "base64"}:
+                raise ConfigValidationError(f"{child_path} must be one of: float, base64")
+        else:
+            value = str(raw_value or default_value)
+        result[key] = value
+        changed = changed or value != raw_value
+    return result, changed
+
+
+def _normalize_model_pool_entries(
+    config: dict[str, Any],
+    key: str,
+    defaults: dict[str, Any],
+) -> bool:
+    changed = False
+    normalized = []
+    for index, item in enumerate(config.get(key, [])):
+        if not isinstance(item, dict):
+            normalized.append(item)
+            continue
+        model = str(item.get("model") or "").strip()
+        if not model:
+            normalized.append(item)
+            continue
+        entry = dict(item)
+        entry["model"] = model
+        entry["provider"] = str(item.get("provider") or "").strip()
+        entry["config"], config_changed = _coerce_model_config(
+            item.get("config", {}),
+            defaults,
+            f"{key}[{index}].config",
+        )
+        changed = changed or config_changed or entry != item
+        normalized.append(entry)
+    if normalized != config.get(key, []):
+        config[key] = normalized
+        changed = True
+    return changed
+
+
+def _normalize_selected_model_pool(
+    config: dict[str, Any],
+    *,
+    list_key: str,
+    model_key: str,
+    provider_key: str,
+) -> bool:
+    entries = [
+        entry
+        for entry in config.get(list_key, [])
+        if isinstance(entry, dict) and str(entry.get("model") or "").strip()
+    ]
+    current_model = str(config.get(model_key) or "").strip()
+    current_provider = str(config.get(provider_key) or "").strip()
+    config[model_key] = current_model
+    config[provider_key] = current_provider
+
+    if not entries:
+        changed = bool(current_model or current_provider)
+        config[model_key] = ""
+        config[provider_key] = ""
+        return changed
+
+    if any(
+        entry.get("model") == current_model and str(entry.get("provider") or "") == current_provider
+        for entry in entries
+    ):
+        return False
+
+    first = entries[0]
+    config[model_key] = first.get("model", "")
+    config[provider_key] = str(first.get("provider") or "")
+    return True
+
+
+def _normalize_model_pool_config(config: dict[str, Any]) -> bool:
+    changed = False
+    changed = (
+        _normalize_model_pool_entries(
+            config,
+            "active_models",
+            _chat_model_config_defaults(config),
+        )
+        or changed
+    )
+    changed = (
+        _normalize_model_pool_entries(
+            config,
+            "active_embedding_models",
+            EMBEDDING_MODEL_CONFIG_DEFAULT,
+        )
+        or changed
+    )
+    changed = (
+        _normalize_model_pool_entries(
+            config,
+            "active_rerank_models",
+            RERANK_MODEL_CONFIG_DEFAULT,
+        )
+        or changed
+    )
+    changed = (
+        _normalize_selected_model_pool(
+            config,
+            list_key="active_embedding_models",
+            model_key="embedding_model",
+            provider_key="embedding_provider",
+        )
+        or changed
+    )
+    changed = (
+        _normalize_selected_model_pool(
+            config,
+            list_key="active_rerank_models",
+            model_key="rerank_model",
+            provider_key="rerank_provider",
+        )
+        or changed
+    )
+    return changed
+
+
 def normalize_config(user_config: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
     """Return a validated config and whether it should be written back to disk."""
     if user_config is None:
@@ -289,4 +493,5 @@ def normalize_config(user_config: dict[str, Any] | None) -> tuple[dict[str, Any]
     config, validate_changed = _validate_object(config, CONFIG_SCHEMA, "")
     changed = changed or validate_changed
     changed = _migrate_dashboard_auth(config) or changed
+    changed = _normalize_model_pool_config(config) or changed
     return config, changed

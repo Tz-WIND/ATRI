@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from quart import Quart, Response, jsonify, request, send_from_directory
 
 from core import logger
-from core.config_schema import CONFIG_SCHEMA
+from core.config_schema import CHAT_MODEL_CONFIG_DEFAULT, CONFIG_SCHEMA
 from dashboard.routes._helpers import (
     AUTH_COOKIE,
     AUTH_EXEMPT_API_PATHS,
@@ -127,14 +127,27 @@ class Dashboard:
             lc.config["base_url"] = pcfg.get("base_url") or None
             lc.config["api_format"] = pcfg.get("api_format", "openai")
         lc.config["model"] = model
+        lc.config["model_provider"] = provider_name
+        model_config = _chat_model_entry_config(lc.config, provider_name, model)
         if lc.process_stage:
             lc.process_stage.update_config(
                 model=model,
+                model_provider=provider_name,
                 api_key=lc.config["api_key"],
                 base_url=lc.config.get("base_url"),
                 api_format=lc.config.get("api_format", "openai"),
                 active_models=lc.config.get("active_models", []),
+                embedding_model=lc.config.get("embedding_model", ""),
+                embedding_provider=lc.config.get("embedding_provider", ""),
+                active_embedding_models=lc.config.get("active_embedding_models", []),
+                rerank_model=lc.config.get("rerank_model", ""),
+                rerank_provider=lc.config.get("rerank_provider", ""),
+                active_rerank_models=lc.config.get("active_rerank_models", []),
                 providers=lc.config.get("providers", {}),
+                max_tokens=model_config["max_tokens"],
+                temperature=model_config["temperature"],
+                max_context_tokens=model_config["max_context_tokens"],
+                max_rounds=model_config["max_rounds"],
             )
 
     def _clear_current_model(self):
@@ -144,6 +157,7 @@ class Dashboard:
         lc.config["api_key"] = ""
         lc.config["base_url"] = None
         lc.config["api_format"] = "openai"
+        lc.config["model_provider"] = ""
         self._push_model_config()
 
     def _push_model_config(self):
@@ -151,10 +165,17 @@ class Dashboard:
         if lc.process_stage:
             lc.process_stage.update_config(
                 model=lc.config.get("model", ""),
+                model_provider=lc.config.get("model_provider", ""),
                 api_key=lc.config.get("api_key", ""),
                 base_url=lc.config.get("base_url"),
                 api_format=lc.config.get("api_format", "openai"),
                 active_models=lc.config.get("active_models", []),
+                embedding_model=lc.config.get("embedding_model", ""),
+                embedding_provider=lc.config.get("embedding_provider", ""),
+                active_embedding_models=lc.config.get("active_embedding_models", []),
+                rerank_model=lc.config.get("rerank_model", ""),
+                rerank_provider=lc.config.get("rerank_provider", ""),
+                active_rerank_models=lc.config.get("active_rerank_models", []),
                 providers=lc.config.get("providers", {}),
             )
 
@@ -416,3 +437,22 @@ def _tool_has_pending_approval(tool: object, approval_id: str) -> bool:
     if isinstance(info, dict):
         return str(info.get("approval_id") or "") == approval_id
     return False
+
+
+def _chat_model_entry_config(config: dict, provider_name: str, model: str) -> dict:
+    fallback = {
+        "max_tokens": int(config.get("max_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_tokens"]),
+        "temperature": float(config.get("temperature", CHAT_MODEL_CONFIG_DEFAULT["temperature"])),
+        "max_context_tokens": int(
+            config.get("max_context_tokens") or CHAT_MODEL_CONFIG_DEFAULT["max_context_tokens"]
+        ),
+        "max_rounds": int(config.get("max_rounds") or CHAT_MODEL_CONFIG_DEFAULT["max_rounds"]),
+    }
+    for entry in config.get("active_models", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("model", "") != model or entry.get("provider", "") != provider_name:
+            continue
+        entry_config = entry.get("config")
+        return {**fallback, **(entry_config if isinstance(entry_config, dict) else {})}
+    return fallback
