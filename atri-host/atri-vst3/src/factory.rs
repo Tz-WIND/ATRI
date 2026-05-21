@@ -4,9 +4,6 @@ use std::mem;
 use std::path::Path;
 use std::ptr;
 
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStrExt;
-
 use vst3::{
     ComPtr, Interface,
     Steinberg::{
@@ -62,36 +59,27 @@ impl fmt::Debug for PluginFactory {
     }
 }
 
-/// Windows: add `plugin_dir` to the DLL search path while running `f`,
-/// then restore the default search order. This ensures that the plugin's
-/// own DLLs (e.g. platform interface modules loaded via boost::dll) can
-/// be found by Windows.
 #[cfg(target_os = "windows")]
-fn with_plugin_dll_dir<T>(plugin_dir: &Path, f: impl FnOnce() -> T) -> T {
-    unsafe extern "system" {
-        fn SetDllDirectoryW(lpPathName: *const u16) -> i32;
-    }
+fn windows_plugin_load_flags() -> u32 {
+    libloading::os::windows::LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+        | libloading::os::windows::LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+}
 
-    let wide: Vec<u16> = plugin_dir
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    unsafe {
-        SetDllDirectoryW(wide.as_ptr());
+#[cfg(target_os = "windows")]
+fn load_plugin_library(path: &Path) -> Result<libloading::Library, String> {
+    let full_path = path
+        .canonicalize()
+        .map_err(|err| format!("Failed to resolve plugin path {}: {}", path.display(), err))?;
+    let library = unsafe {
+        libloading::os::windows::Library::load_with_flags(&full_path, windows_plugin_load_flags())
     }
-    let result = f();
-    // Restore default DLL search order
-    unsafe {
-        SetDllDirectoryW(ptr::null());
-    }
-    result
+    .map_err(|err| err.to_string())?;
+    Ok(library.into())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn with_plugin_dll_dir<T>(_plugin_dir: &Path, f: impl FnOnce() -> T) -> T {
-    f()
+fn load_plugin_library(path: &Path) -> Result<libloading::Library, String> {
+    unsafe { libloading::Library::new(path) }.map_err(|err| err.to_string())
 }
 
 impl PluginFactory {
@@ -109,9 +97,7 @@ impl PluginFactory {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "Unknown".to_string());
 
-        let plugin_dir = path.parent().unwrap_or(Path::new("."));
-
-        let library = with_plugin_dll_dir(plugin_dir, || unsafe { libloading::Library::new(path) })
+        let library = load_plugin_library(path)
             .map_err(|err| format!("Failed to load plugin {}: {}", path_str, err))?;
 
         let get_factory_fn: GetPluginFactory = unsafe {
@@ -366,6 +352,21 @@ mod tests {
         let result = PluginFactory::load(&PathBuf::from("Z:/nonexistent/plugin.vst3"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_plugin_load_flags_use_dll_load_dir_and_default_dirs() {
+        let flags = windows_plugin_load_flags();
+
+        assert_ne!(
+            flags & libloading::os::windows::LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+            0
+        );
+        assert_ne!(
+            flags & libloading::os::windows::LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+            0
+        );
     }
 
     #[test]

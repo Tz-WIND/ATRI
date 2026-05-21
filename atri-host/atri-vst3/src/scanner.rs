@@ -1,6 +1,18 @@
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+
+const MAX_SCAN_DEPTH: usize = 16;
+const MAX_SCAN_ENTRIES: usize = 20_000;
+const MAX_SCAN_PLUGINS: usize = 4096;
+const MAX_SCAN_DURATION: Duration = Duration::from_secs(15);
+const MAX_PE_SECTIONS: usize = 96;
+const MAX_PE_EXPORT_NAMES: u32 = 4096;
+const MAX_PE_SYMBOL_LEN: usize = 256;
 
 /// Information about a discovered VST3 plugin.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -31,6 +43,48 @@ pub struct Vst2PluginInfo {
 pub struct PluginScanner {
     vst3_paths: Vec<PathBuf>,
     vst2_paths: Vec<PathBuf>,
+}
+
+struct ScanState {
+    visited_dirs: HashSet<PathBuf>,
+    entries_seen: usize,
+    started_at: Instant,
+}
+
+impl ScanState {
+    fn new() -> Self {
+        Self {
+            visited_dirs: HashSet::new(),
+            entries_seen: 0,
+            started_at: Instant::now(),
+        }
+    }
+
+    fn enter_dir(&mut self, dir: &Path, depth: usize) -> bool {
+        if depth > MAX_SCAN_DEPTH || self.is_exhausted() {
+            return false;
+        }
+        let Ok(canonical) = dir.canonicalize() else {
+            return false;
+        };
+        self.visited_dirs.insert(canonical)
+    }
+
+    fn record_entry(&mut self) -> bool {
+        if self.is_exhausted() {
+            return false;
+        }
+        self.entries_seen += 1;
+        self.entries_seen <= MAX_SCAN_ENTRIES
+    }
+
+    fn can_add_plugin(&self, plugin_count: usize) -> bool {
+        plugin_count < MAX_SCAN_PLUGINS && !self.is_exhausted()
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.entries_seen >= MAX_SCAN_ENTRIES || self.started_at.elapsed() > MAX_SCAN_DURATION
+    }
 }
 
 impl PluginScanner {
@@ -98,31 +152,12 @@ impl PluginScanner {
 
     pub fn scan(&self) -> Vec<PluginInfo> {
         let mut plugins = Vec::new();
+        let mut state = ScanState::new();
 
         for base in &self.vst3_paths {
-            if !base.exists() {
-                continue;
-            }
-            if let Ok(entries) = std::fs::read_dir(base) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().map_or(false, |ext| ext == "vst3") {
-                        if path.is_dir() {
-                            // VST3 bundle directory format
-                            if let Some(info) = Self::parse_bundle_dir(&path) {
-                                plugins.push(info);
-                            }
-                        } else if path.is_file() {
-                            // VST3 single-file format (DLL renamed to .vst3)
-                            if let Some(info) = Self::parse_single_file(&path) {
-                                plugins.push(info);
-                            }
-                        }
-                    } else if path.is_dir() {
-                        // Recurse into vendor subdirectories (e.g. VST3/VSL/Plugin.vst3)
-                        Self::scan_dir(&path, &mut plugins);
-                    }
-                }
+            Self::scan_vst3_dir(base, 0, &mut state, &mut plugins);
+            if state.is_exhausted() || plugins.len() >= MAX_SCAN_PLUGINS {
+                break;
             }
         }
 
@@ -133,8 +168,12 @@ impl PluginScanner {
 
     pub fn scan_vst2(&self) -> Vec<Vst2PluginInfo> {
         let mut plugins = Vec::new();
+        let mut state = ScanState::new();
         for base in &self.vst2_paths {
-            Self::scan_vst2_dir(base, &mut plugins);
+            Self::scan_vst2_dir(base, 0, &mut state, &mut plugins);
+            if state.is_exhausted() || plugins.len() >= MAX_SCAN_PLUGINS {
+                break;
+            }
         }
         plugins.sort_by(|a, b| a.path.cmp(&b.path));
         plugins.dedup_by(|a, b| a.path == b.path);
@@ -142,9 +181,20 @@ impl PluginScanner {
     }
 
     /// Recurse into a vendor directory to find .vst3 bundles/files.
-    fn scan_dir(dir: &Path, plugins: &mut Vec<PluginInfo>) {
+    fn scan_vst3_dir(
+        dir: &Path,
+        depth: usize,
+        state: &mut ScanState,
+        plugins: &mut Vec<PluginInfo>,
+    ) {
+        if !state.enter_dir(dir, depth) {
+            return;
+        }
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
+                if !state.record_entry() || !state.can_add_plugin(plugins.len()) {
+                    return;
+                }
                 let path = entry.path();
                 if path.extension().map_or(false, |ext| ext == "vst3") {
                     if path.is_dir() {
@@ -157,14 +207,19 @@ impl PluginScanner {
                         }
                     }
                 } else if path.is_dir() {
-                    Self::scan_dir(&path, plugins);
+                    Self::scan_vst3_dir(&path, depth + 1, state, plugins);
                 }
             }
         }
     }
 
-    fn scan_vst2_dir(dir: &Path, plugins: &mut Vec<Vst2PluginInfo>) {
-        if !dir.exists() {
+    fn scan_vst2_dir(
+        dir: &Path,
+        depth: usize,
+        state: &mut ScanState,
+        plugins: &mut Vec<Vst2PluginInfo>,
+    ) {
+        if !state.enter_dir(dir, depth) {
             return;
         }
 
@@ -173,9 +228,12 @@ impl PluginScanner {
         };
 
         for entry in entries.flatten() {
+            if !state.record_entry() || !state.can_add_plugin(plugins.len()) {
+                return;
+            }
             let path = entry.path();
             if path.is_dir() {
-                Self::scan_vst2_dir(&path, plugins);
+                Self::scan_vst2_dir(&path, depth + 1, state, plugins);
                 continue;
             }
 
@@ -265,59 +323,76 @@ impl Default for PluginScanner {
 }
 
 fn is_vst2_dll(path: &Path) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(mut file) = File::open(path) else {
         return false;
     };
-    pe_exports_any_symbol(&bytes, &["VSTPluginMain", "main"])
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    pe_exports_any_symbol_from_read_seek(&mut file, metadata.len(), &["VSTPluginMain", "main"])
 }
 
+#[cfg(test)]
 fn pe_exports_any_symbol(bytes: &[u8], symbols: &[&str]) -> bool {
-    let Some(pe_offset) = read_u32(bytes, 0x3c).map(|offset| offset as usize) else {
+    let mut cursor = std::io::Cursor::new(bytes);
+    pe_exports_any_symbol_from_read_seek(&mut cursor, bytes.len() as u64, symbols)
+}
+
+fn pe_exports_any_symbol_from_read_seek<R>(reader: &mut R, file_len: u64, symbols: &[&str]) -> bool
+where
+    R: Read + Seek,
+{
+    let Some(pe_offset) = read_u32_at(reader, file_len, 0x3c).map(u64::from) else {
         return false;
     };
-    if bytes.get(0..2) != Some(b"MZ") || bytes.get(pe_offset..pe_offset + 4) != Some(b"PE\0\0") {
+    if read_exact_at::<2, _>(reader, file_len, 0) != Some(*b"MZ")
+        || read_exact_at::<4, _>(reader, file_len, pe_offset) != Some(*b"PE\0\0")
+    {
         return false;
     }
 
     let coff_offset = pe_offset + 4;
-    let section_count = read_u16(bytes, coff_offset + 2).unwrap_or(0) as usize;
-    let optional_header_size = read_u16(bytes, coff_offset + 16).unwrap_or(0) as usize;
+    let section_count = read_u16_at(reader, file_len, coff_offset + 2).unwrap_or(0) as usize;
+    let optional_header_size =
+        read_u16_at(reader, file_len, coff_offset + 16).unwrap_or(0) as usize;
     let optional_offset = coff_offset + 20;
-    let optional_magic = read_u16(bytes, optional_offset).unwrap_or(0);
+    let optional_magic = read_u16_at(reader, file_len, optional_offset).unwrap_or(0);
     let data_directory_offset = match optional_magic {
         0x10b => optional_offset + 96,
         0x20b => optional_offset + 112,
         _ => return false,
     };
 
-    let export_rva = read_u32(bytes, data_directory_offset).unwrap_or(0);
+    let export_rva = read_u32_at(reader, file_len, data_directory_offset).unwrap_or(0);
     if export_rva == 0 {
         return false;
     }
 
-    let section_offset = optional_offset + optional_header_size;
-    let export_offset = match rva_to_file_offset(bytes, section_offset, section_count, export_rva) {
+    let section_offset = optional_offset + optional_header_size as u64;
+    let sections = read_pe_sections(reader, file_len, section_offset, section_count);
+    let export_offset = match rva_to_file_offset_from_sections(&sections, export_rva, file_len) {
         Some(offset) => offset,
         None => return false,
     };
 
-    let name_count = read_u32(bytes, export_offset + 24).unwrap_or(0);
-    let names_rva = read_u32(bytes, export_offset + 32).unwrap_or(0);
-    let Some(names_offset) = rva_to_file_offset(bytes, section_offset, section_count, names_rva)
+    let name_count = read_u32_at(reader, file_len, export_offset + 24).unwrap_or(0);
+    let names_rva = read_u32_at(reader, file_len, export_offset + 32).unwrap_or(0);
+    let Some(names_offset) = rva_to_file_offset_from_sections(&sections, names_rva, file_len)
     else {
         return false;
     };
 
-    for idx in 0..name_count.min(4096) as usize {
-        let Some(name_rva) = read_u32(bytes, names_offset + idx * 4) else {
+    for idx in 0..name_count.min(MAX_PE_EXPORT_NAMES) {
+        let name_rva_offset = names_offset + u64::from(idx) * 4;
+        let Some(name_rva) = read_u32_at(reader, file_len, name_rva_offset) else {
             break;
         };
-        let Some(name_offset) = rva_to_file_offset(bytes, section_offset, section_count, name_rva)
+        let Some(name_offset) = rva_to_file_offset_from_sections(&sections, name_rva, file_len)
         else {
             continue;
         };
-        if let Some(name) = read_c_string(bytes, name_offset) {
-            if symbols.iter().any(|symbol| *symbol == name) {
+        if let Some(name) = read_c_string_at(reader, file_len, name_offset) {
+            if symbols.iter().any(|symbol| *symbol == name.as_str()) {
                 return true;
             }
         }
@@ -326,45 +401,115 @@ fn pe_exports_any_symbol(bytes: &[u8], symbols: &[&str]) -> bool {
     false
 }
 
-fn rva_to_file_offset(
-    bytes: &[u8],
-    section_offset: usize,
-    section_count: usize,
-    rva: u32,
-) -> Option<usize> {
-    let rva = rva as usize;
-    if rva < section_offset {
-        return Some(rva);
-    }
+#[derive(Debug, Clone, Copy)]
+struct PeSection {
+    virtual_size: u32,
+    virtual_address: u32,
+    raw_size: u32,
+    raw_offset: u32,
+}
 
-    for section in 0..section_count.min(96) {
-        let offset = section_offset + section * 40;
-        let virtual_size = read_u32(bytes, offset + 8)? as usize;
-        let virtual_address = read_u32(bytes, offset + 12)? as usize;
-        let raw_size = read_u32(bytes, offset + 16)? as usize;
-        let raw_offset = read_u32(bytes, offset + 20)? as usize;
-        let mapped_size = virtual_size.max(raw_size);
+fn read_pe_sections<R>(
+    reader: &mut R,
+    file_len: u64,
+    section_offset: u64,
+    section_count: usize,
+) -> Vec<PeSection>
+where
+    R: Read + Seek,
+{
+    let mut sections = Vec::new();
+    for section in 0..section_count.min(MAX_PE_SECTIONS) {
+        let Some(offset) = section_offset.checked_add((section * 40) as u64) else {
+            break;
+        };
+        let Some(virtual_size) = read_u32_at(reader, file_len, offset + 8) else {
+            break;
+        };
+        let Some(virtual_address) = read_u32_at(reader, file_len, offset + 12) else {
+            break;
+        };
+        let Some(raw_size) = read_u32_at(reader, file_len, offset + 16) else {
+            break;
+        };
+        let Some(raw_offset) = read_u32_at(reader, file_len, offset + 20) else {
+            break;
+        };
+        sections.push(PeSection {
+            virtual_size,
+            virtual_address,
+            raw_size,
+            raw_offset,
+        });
+    }
+    sections
+}
+
+fn rva_to_file_offset_from_sections(
+    sections: &[PeSection],
+    rva: u32,
+    file_len: u64,
+) -> Option<u64> {
+    let rva = u64::from(rva);
+    for section in sections {
+        let virtual_address = u64::from(section.virtual_address);
+        let mapped_size = u64::from(section.virtual_size.max(section.raw_size));
         if rva >= virtual_address && rva < virtual_address.saturating_add(mapped_size) {
-            return Some(raw_offset + (rva - virtual_address));
+            return u64::from(section.raw_offset).checked_add(rva - virtual_address);
         }
     }
-
-    None
+    (rva < file_len).then_some(rva)
 }
 
-fn read_c_string(bytes: &[u8], offset: usize) -> Option<&str> {
-    let end = bytes.get(offset..)?.iter().position(|byte| *byte == 0)? + offset;
-    std::str::from_utf8(bytes.get(offset..end)?).ok()
+fn read_c_string_at<R>(reader: &mut R, file_len: u64, offset: u64) -> Option<String>
+where
+    R: Read + Seek,
+{
+    let available = file_len.checked_sub(offset)?;
+    let len = available.min(MAX_PE_SYMBOL_LEN as u64) as usize;
+    let bytes = read_vec_at(reader, file_len, offset, len)?;
+    let end = bytes.iter().position(|byte| *byte == 0)?;
+    String::from_utf8(bytes[..end].to_vec()).ok()
 }
 
-fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    let data = bytes.get(offset..offset + 2)?;
-    Some(u16::from_le_bytes([data[0], data[1]]))
+fn read_u16_at<R>(reader: &mut R, file_len: u64, offset: u64) -> Option<u16>
+where
+    R: Read + Seek,
+{
+    read_exact_at::<2, _>(reader, file_len, offset).map(u16::from_le_bytes)
 }
 
-fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    let data = bytes.get(offset..offset + 4)?;
-    Some(u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+fn read_u32_at<R>(reader: &mut R, file_len: u64, offset: u64) -> Option<u32>
+where
+    R: Read + Seek,
+{
+    read_exact_at::<4, _>(reader, file_len, offset).map(u32::from_le_bytes)
+}
+
+fn read_exact_at<const N: usize, R>(reader: &mut R, file_len: u64, offset: u64) -> Option<[u8; N]>
+where
+    R: Read + Seek,
+{
+    if offset.checked_add(N as u64)? > file_len {
+        return None;
+    }
+    let mut data = [0u8; N];
+    reader.seek(SeekFrom::Start(offset)).ok()?;
+    reader.read_exact(&mut data).ok()?;
+    Some(data)
+}
+
+fn read_vec_at<R>(reader: &mut R, file_len: u64, offset: u64, len: usize) -> Option<Vec<u8>>
+where
+    R: Read + Seek,
+{
+    if offset.checked_add(len as u64)? > file_len {
+        return None;
+    }
+    let mut data = vec![0u8; len];
+    reader.seek(SeekFrom::Start(offset)).ok()?;
+    reader.read_exact(&mut data).ok()?;
+    Some(data)
 }
 
 pub fn vst3_bundle_library_path(bundle_path: &Path) -> Option<PathBuf> {
@@ -727,6 +872,53 @@ mod tests {
     }
 
     #[test]
+    fn scan_deduplicates_vst3_paths_by_canonical_directory() {
+        let tmp = std::env::temp_dir().join("atri-vst3-scan-canonical-dedup-test");
+        let _ = fs::remove_dir_all(&tmp);
+
+        let vendor_dir = tmp.join("FakeVendor");
+        fs::create_dir_all(&vendor_dir).unwrap();
+        fs::write(
+            vendor_dir.join("CanonicalDedup.vst3"),
+            b"fake single-file dll",
+        )
+        .unwrap();
+
+        let scanner = PluginScanner::new()
+            .with_path(tmp.clone())
+            .with_path(tmp.join("."));
+        let plugins = scanner.scan();
+        let matching_plugins: Vec<_> = plugins
+            .iter()
+            .filter(|plugin| plugin.name == "CanonicalDedup")
+            .collect();
+
+        assert_eq!(matching_plugins.len(), 1);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn scan_respects_max_recursion_depth() {
+        let tmp = std::env::temp_dir().join("atri-vst3-scan-depth-limit-test");
+        let _ = fs::remove_dir_all(&tmp);
+
+        let mut deep_dir = tmp.clone();
+        for depth in 0..=MAX_SCAN_DEPTH {
+            deep_dir = deep_dir.join(format!("d{depth}"));
+        }
+        fs::create_dir_all(&deep_dir).unwrap();
+        fs::write(deep_dir.join("TooDeep.vst3"), b"fake single-file dll").unwrap();
+
+        let scanner = PluginScanner::new().with_path(tmp.clone());
+        let plugins = scanner.scan();
+
+        assert!(!plugins.iter().any(|plugin| plugin.name == "TooDeep"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn scan_nonexistent_path_does_not_panic() {
         let scanner = PluginScanner::new().with_path(PathBuf::from("Z:/nonexistent/vst3/path"));
         let plugins = scanner.scan();
@@ -774,8 +966,33 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn vst2_export_detection_uses_bounded_reads() {
+        let image = fake_pe_with_export_at("VSTPluginMain", 8 * 1024 * 1024);
+        let image_len = image.len() as u64;
+        let mut reader = CountingCursor::new(image);
+
+        assert!(pe_exports_any_symbol_from_read_seek(
+            &mut reader,
+            image_len,
+            &["VSTPluginMain", "main"]
+        ));
+        assert!(
+            reader.bytes_read() < 4096,
+            "PE export detection read {} bytes",
+            reader.bytes_read()
+        );
+    }
+
     fn fake_pe_with_export(export_name: &str) -> Vec<u8> {
+        fake_pe_with_export_at(export_name, 0x200)
+    }
+
+    fn fake_pe_with_export_at(export_name: &str, export_offset: usize) -> Vec<u8> {
         let mut bytes = vec![0u8; 0x400];
+        if export_offset + 0x100 > bytes.len() {
+            bytes.resize(export_offset + 0x100, 0);
+        }
         bytes[0..2].copy_from_slice(b"MZ");
         write_u32_le(&mut bytes, 0x3c, 0x80);
 
@@ -796,9 +1013,8 @@ mod tests {
         write_u32_le(&mut bytes, section_offset + 8, 0x200);
         write_u32_le(&mut bytes, section_offset + 12, 0x1000);
         write_u32_le(&mut bytes, section_offset + 16, 0x200);
-        write_u32_le(&mut bytes, section_offset + 20, 0x200);
+        write_u32_le(&mut bytes, section_offset + 20, export_offset as u32);
 
-        let export_offset = 0x200;
         write_u32_le(&mut bytes, export_offset + 12, 0x1070);
         write_u32_le(&mut bytes, export_offset + 16, 1);
         write_u32_le(&mut bytes, export_offset + 20, 1);
@@ -807,12 +1023,44 @@ mod tests {
         write_u32_le(&mut bytes, export_offset + 32, 0x1050);
         write_u32_le(&mut bytes, export_offset + 36, 0x1060);
 
-        write_u32_le(&mut bytes, 0x240, 0x1080);
-        write_u32_le(&mut bytes, 0x250, 0x1090);
-        write_u16_le(&mut bytes, 0x260, 0);
-        write_c_string(&mut bytes, 0x270, "FakePlugin");
-        write_c_string(&mut bytes, 0x290, export_name);
+        write_u32_le(&mut bytes, export_offset + 0x40, 0x1080);
+        write_u32_le(&mut bytes, export_offset + 0x50, 0x1090);
+        write_u16_le(&mut bytes, export_offset + 0x60, 0);
+        write_c_string(&mut bytes, export_offset + 0x70, "FakePlugin");
+        write_c_string(&mut bytes, export_offset + 0x90, export_name);
         bytes
+    }
+
+    struct CountingCursor {
+        inner: std::io::Cursor<Vec<u8>>,
+        bytes_read: usize,
+    }
+
+    impl CountingCursor {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                inner: std::io::Cursor::new(bytes),
+                bytes_read: 0,
+            }
+        }
+
+        fn bytes_read(&self) -> usize {
+            self.bytes_read
+        }
+    }
+
+    impl std::io::Read for CountingCursor {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let read = self.inner.read(buf)?;
+            self.bytes_read += read;
+            Ok(read)
+        }
+    }
+
+    impl std::io::Seek for CountingCursor {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
     }
 
     fn write_c_string(bytes: &mut [u8], offset: usize, value: &str) {

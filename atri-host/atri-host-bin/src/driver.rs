@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -7,11 +7,12 @@ use atri_core::time::beats::Beats;
 use atri_core::time::tempo::{Meter, Tempo};
 use atri_engine::engine::AudioEngine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::channel::{Receiver, Sender, TrySendError};
 
 use crate::commands::AppCommand;
 
 const MAX_COMMANDS_PER_RENDER_CYCLE: usize = 64;
+pub const AUDIO_BLOCK_POOL_SIZE: usize = 8;
 
 pub struct AudioBlock {
     data: Vec<f32>,
@@ -32,8 +33,105 @@ impl AudioBlock {
         &self.data
     }
 
+    fn into_data(self) -> Vec<f32> {
+        self.data
+    }
+
     pub fn frames(&self) -> usize {
         self.data.len() / Self::CHANNELS
+    }
+}
+
+#[derive(Clone)]
+pub struct AudioBlockPool {
+    recycle_tx: Sender<Vec<f32>>,
+    recycle_rx: Receiver<Vec<f32>>,
+    resize_tx: Sender<()>,
+    resize_rx: Receiver<()>,
+    requested_samples: Arc<AtomicUsize>,
+}
+
+impl AudioBlockPool {
+    pub fn new(blocks: usize, block_samples: usize) -> Self {
+        let (recycle_tx, recycle_rx) = crossbeam::channel::bounded(blocks);
+        let (resize_tx, resize_rx) = crossbeam::channel::bounded(1);
+        for _ in 0..blocks {
+            let _ = recycle_tx.try_send(Vec::with_capacity(block_samples));
+        }
+        Self {
+            recycle_tx,
+            recycle_rx,
+            resize_tx,
+            resize_rx,
+            requested_samples: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn take_block_data(&self, required_samples: usize) -> Option<Vec<f32>> {
+        let Ok(mut data) = self.recycle_rx.try_recv() else {
+            return None;
+        };
+        if data.capacity() < required_samples {
+            self.recycle_data(data);
+            self.request_growth(required_samples);
+            return None;
+        }
+        data.clear();
+        Some(data)
+    }
+
+    pub fn recycle_block(&self, block: AudioBlock) {
+        self.recycle_data(block.into_data());
+    }
+
+    fn recycle_data(&self, mut data: Vec<f32>) {
+        data.clear();
+        let _ = self.recycle_tx.try_send(data);
+    }
+
+    fn request_growth(&self, required_samples: usize) {
+        let mut current = self.requested_samples.load(Ordering::Relaxed);
+        while current < required_samples {
+            match self.requested_samples.compare_exchange_weak(
+                current,
+                required_samples,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(next) => current = next,
+            }
+        }
+        let _ = self.resize_tx.try_send(());
+    }
+
+    pub fn resize_requests(&self) -> Receiver<()> {
+        self.resize_rx.clone()
+    }
+
+    pub fn grow_to_requested_capacity(&self) {
+        let required_samples = self.requested_samples.swap(0, Ordering::AcqRel);
+        if required_samples == 0 {
+            return;
+        }
+
+        let mut blocks = Vec::new();
+        while let Ok(mut data) = self.recycle_rx.try_recv() {
+            data.clear();
+            if data.capacity() < required_samples {
+                data.reserve_exact(required_samples);
+            }
+            blocks.push(data);
+        }
+
+        for data in blocks {
+            let _ = self.recycle_tx.try_send(data);
+        }
+    }
+
+    #[cfg(test)]
+    fn available_blocks(&self) -> usize {
+        self.recycle_rx.len()
     }
 }
 
@@ -56,6 +154,8 @@ impl AudioDriver {
         engine: Arc<Mutex<AudioEngine>>,
         cmd_rx: Receiver<AppCommand>,
         stream_tx: Sender<AudioBlock>,
+        streaming_enabled: Arc<AtomicBool>,
+        audio_block_pool: AudioBlockPool,
         preferred_sample_rate: u32,
         preferred_buffer_size: usize,
         audio_engine: String,
@@ -68,6 +168,8 @@ impl AudioDriver {
             cmd_rx.clone(),
             stream_tx.clone(),
             Arc::clone(&running),
+            Arc::clone(&streaming_enabled),
+            audio_block_pool.clone(),
             preferred_sample_rate,
             preferred_buffer_size,
             audio_engine.clone(),
@@ -104,6 +206,8 @@ impl AudioDriver {
                     cmd_rx,
                     stream_tx,
                     Arc::clone(&running),
+                    streaming_enabled,
+                    audio_block_pool,
                     preferred_sample_rate,
                     preferred_buffer_size,
                 );
@@ -133,6 +237,8 @@ fn start_cpal_driver(
     cmd_rx: Receiver<AppCommand>,
     stream_tx: Sender<AudioBlock>,
     running: Arc<AtomicBool>,
+    streaming_enabled: Arc<AtomicBool>,
+    audio_block_pool: AudioBlockPool,
     preferred_sample_rate: u32,
     preferred_buffer_size: usize,
     audio_engine: String,
@@ -154,6 +260,8 @@ fn start_cpal_driver(
         cmd_rx.clone(),
         stream_tx.clone(),
         Arc::clone(&running),
+        Arc::clone(&streaming_enabled),
+        audio_block_pool.clone(),
         output_channels,
     )
     .or_else(|err| {
@@ -171,6 +279,8 @@ fn start_cpal_driver(
             cmd_rx,
             stream_tx,
             Arc::clone(&running),
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         )
     })?;
@@ -352,6 +462,8 @@ fn build_output_stream_for_format(
     cmd_rx: Receiver<AppCommand>,
     stream_tx: Sender<AudioBlock>,
     running: Arc<AtomicBool>,
+    streaming_enabled: Arc<AtomicBool>,
+    audio_block_pool: AudioBlockPool,
     output_channels: usize,
 ) -> Result<cpal::Stream, String> {
     match sample_format {
@@ -362,6 +474,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::F32 => build_output_stream::<f32>(
@@ -371,6 +485,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::F64 => build_output_stream::<f64>(
@@ -380,6 +496,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::I16 => build_output_stream::<i16>(
@@ -389,6 +507,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::I32 => build_output_stream::<i32>(
@@ -398,6 +518,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::I64 => build_output_stream::<i64>(
@@ -407,6 +529,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::U8 => build_output_stream::<u8>(
@@ -416,6 +540,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::U16 => build_output_stream::<u16>(
@@ -425,6 +551,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::U32 => build_output_stream::<u32>(
@@ -434,6 +562,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         cpal::SampleFormat::U64 => build_output_stream::<u64>(
@@ -443,6 +573,8 @@ fn build_output_stream_for_format(
             cmd_rx,
             stream_tx,
             running,
+            streaming_enabled,
+            audio_block_pool,
             output_channels,
         ),
         format => Err(format!("unsupported output sample format: {format:?}")),
@@ -456,6 +588,8 @@ fn build_output_stream<T>(
     cmd_rx: Receiver<AppCommand>,
     stream_tx: Sender<AudioBlock>,
     running: Arc<AtomicBool>,
+    streaming_enabled: Arc<AtomicBool>,
+    audio_block_pool: AudioBlockPool,
     output_channels: usize,
 ) -> Result<cpal::Stream, String>
 where
@@ -488,10 +622,12 @@ where
 
                 render_cycle(&engine, &cmd_rx, &mut stereo[..needed]);
                 copy_stereo_to_device::<T>(&stereo[..needed], output, output_channels);
-                let Some(block) = AudioBlock::from_stereo(stereo[..needed].to_vec()) else {
-                    return;
-                };
-                let _ = stream_tx.try_send(block);
+                enqueue_audio_block_if_streaming(
+                    &stereo[..needed],
+                    &stream_tx,
+                    &streaming_enabled,
+                    &audio_block_pool,
+                );
             },
             err_fn,
             None,
@@ -504,6 +640,8 @@ fn start_null_driver(
     cmd_rx: Receiver<AppCommand>,
     stream_tx: Sender<AudioBlock>,
     running: Arc<AtomicBool>,
+    streaming_enabled: Arc<AtomicBool>,
+    audio_block_pool: AudioBlockPool,
     sample_rate: u32,
     buffer_size: usize,
 ) -> JoinHandle<()> {
@@ -513,10 +651,12 @@ fn start_null_driver(
 
         while running.load(Ordering::Relaxed) {
             render_cycle(&engine, &cmd_rx, &mut output);
-            let Some(block) = AudioBlock::from_stereo(output.clone()) else {
-                continue;
-            };
-            let _ = stream_tx.try_send(block);
+            enqueue_audio_block_if_streaming(
+                &output,
+                &stream_tx,
+                &streaming_enabled,
+                &audio_block_pool,
+            );
             thread::sleep(sleep);
         }
     })
@@ -568,12 +708,17 @@ fn apply_command(session: &mut atri_engine::session::Session, cmd: AppCommand) {
             session.transport.loop_end = None;
         }
         AppCommand::SetTempo { bpm, time_sig } => {
+            let Some(tempo) = Tempo::try_new(bpm, 4) else {
+                return;
+            };
+            let Some(meter) = Meter::try_new(time_sig.0, time_sig.1) else {
+                return;
+            };
             let new_map = session
                 .tempo_map
                 .read()
-                .with_tempo(Tempo::new(bpm, 4), Beats::from_beats(0.0));
-            let new_map =
-                new_map.with_meter(Meter::new(time_sig.0, time_sig.1), Beats::from_beats(0.0));
+                .with_tempo(tempo, Beats::from_beats(0.0));
+            let new_map = new_map.with_meter(meter, Beats::from_beats(0.0));
             session.tempo_map.update(|_| new_map);
         }
         AppCommand::Shutdown => {}
@@ -607,6 +752,32 @@ where
     }
 }
 
+fn enqueue_audio_block_if_streaming(
+    stereo: &[f32],
+    stream_tx: &Sender<AudioBlock>,
+    streaming_enabled: &AtomicBool,
+    audio_block_pool: &AudioBlockPool,
+) {
+    if !streaming_enabled.load(Ordering::Relaxed) || stereo.len() % AudioBlock::CHANNELS != 0 {
+        return;
+    }
+
+    let Some(mut data) = audio_block_pool.take_block_data(stereo.len()) else {
+        return;
+    };
+    data.extend_from_slice(stereo);
+
+    let Some(block) = AudioBlock::from_stereo(data) else {
+        return;
+    };
+    match stream_tx.try_send(block) {
+        Ok(()) => {}
+        Err(TrySendError::Full(block)) | Err(TrySendError::Disconnected(block)) => {
+            audio_block_pool.recycle_block(block);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +794,66 @@ mod tests {
     #[test]
     fn audio_block_rejects_incomplete_stereo_frame() {
         assert!(AudioBlock::from_stereo(vec![0.0, 0.1, 0.2]).is_none());
+    }
+
+    #[test]
+    fn stream_audio_block_skips_queue_and_pool_when_streaming_disabled() {
+        let streaming_enabled = AtomicBool::new(false);
+        let pool = AudioBlockPool::new(1, 4);
+        let (stream_tx, stream_rx) = crossbeam::channel::bounded(1);
+
+        enqueue_audio_block_if_streaming(
+            &[0.0, 0.1, 0.2, 0.3],
+            &stream_tx,
+            &streaming_enabled,
+            &pool,
+        );
+
+        assert!(stream_rx.try_recv().is_err());
+        assert_eq!(pool.available_blocks(), 1);
+    }
+
+    #[test]
+    fn stream_audio_block_uses_preallocated_pool_when_streaming_enabled() {
+        let streaming_enabled = AtomicBool::new(true);
+        let pool = AudioBlockPool::new(1, 4);
+        let (stream_tx, stream_rx) = crossbeam::channel::bounded(1);
+
+        enqueue_audio_block_if_streaming(
+            &[0.0, 0.1, 0.2, 0.3],
+            &stream_tx,
+            &streaming_enabled,
+            &pool,
+        );
+
+        let block = stream_rx.try_recv().unwrap();
+        assert_eq!(block.data(), &[0.0, 0.1, 0.2, 0.3]);
+        assert_eq!(pool.available_blocks(), 0);
+
+        pool.recycle_block(block);
+        assert_eq!(pool.available_blocks(), 1);
+    }
+
+    #[test]
+    fn stream_audio_block_recovers_after_oversized_callback_buffer() {
+        let streaming_enabled = AtomicBool::new(true);
+        let pool = AudioBlockPool::new(1, 4);
+        let resize_rx = pool.resize_requests();
+        let (stream_tx, stream_rx) = crossbeam::channel::bounded(1);
+        let oversized = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7];
+
+        enqueue_audio_block_if_streaming(&oversized, &stream_tx, &streaming_enabled, &pool);
+
+        assert!(stream_rx.try_recv().is_err());
+        resize_rx
+            .try_recv()
+            .expect("oversized block should request pool growth");
+        pool.grow_to_requested_capacity();
+
+        enqueue_audio_block_if_streaming(&oversized, &stream_tx, &streaming_enabled, &pool);
+
+        let block = stream_rx.try_recv().unwrap();
+        assert_eq!(block.data(), oversized.as_slice());
     }
 
     #[test]
@@ -661,5 +892,39 @@ mod tests {
         render_cycle(&engine, &cmd_rx, &mut output);
 
         assert_eq!(cmd_rx.len(), 2);
+    }
+
+    #[test]
+    fn set_tempo_command_ignores_invalid_values() {
+        let engine = AudioEngine::new(48_000, 128);
+
+        engine.with_session(|session| {
+            apply_command(
+                session,
+                AppCommand::SetTempo {
+                    bpm: 132.0,
+                    time_sig: (7, 8),
+                },
+            );
+            apply_command(
+                session,
+                AppCommand::SetTempo {
+                    bpm: f64::NAN,
+                    time_sig: (4, 4),
+                },
+            );
+            apply_command(
+                session,
+                AppCommand::SetTempo {
+                    bpm: 120.0,
+                    time_sig: (4, 0),
+                },
+            );
+
+            let tempo_map = session.tempo_map.read();
+            assert_eq!(tempo_map.current_tempo().bpm, 132.0);
+            assert_eq!(tempo_map.current_meter().num, 7);
+            assert_eq!(tempo_map.current_meter().denom, 8);
+        });
     }
 }

@@ -5,6 +5,7 @@ use atri_core::midi::event::MidiEvent;
 use atri_core::midi::message::MidiMessage;
 use atri_core::midi::note::MidiNote;
 use atri_core::time::beats::PPQN;
+use atri_core::time::tempo::{Meter, Tempo};
 use atri_engine::audio_clip::{AudioChannelMode, AudioClip, AudioClipSpec};
 use atri_engine::engine::AudioEngine;
 use atri_engine::plugin_proc::PluginInsert;
@@ -29,6 +30,9 @@ use crate::editor_host::{EditorKey, EditorWindowManager};
 use crate::stream::AudioStreamer;
 
 const VALID_BIT_DEPTHS: &[&str] = &["i16", "i24", "f32"];
+const SET_TEMPO_BPM_ERROR: &str = "bpm must be between 1 and 999";
+const SET_TEMPO_TIME_SIG_ERROR: &str =
+    "time_sig must have a positive numerator and a denominator of 1, 2, 4, 8, 16, 32, or 64";
 
 #[derive(Debug, Clone)]
 pub enum AppCommand {
@@ -476,13 +480,14 @@ fn execute(
             }
         }
         Command::SetTempo { bpm, time_sig } => {
-            if bpm <= 0.0 {
-                return CommandResponse::error(Some("set_tempo"), "bpm must be positive");
+            if !Tempo::is_valid_bpm(bpm) {
+                return CommandResponse::error(Some("set_tempo"), SET_TEMPO_BPM_ERROR);
             }
-            let _ = cmd_tx.send(AppCommand::SetTempo {
-                bpm,
-                time_sig: time_sig.unwrap_or((4, 4)),
-            });
+            let time_sig = time_sig.unwrap_or((4, 4));
+            if !Meter::is_valid(time_sig.0, time_sig.1) {
+                return CommandResponse::error(Some("set_tempo"), SET_TEMPO_TIME_SIG_ERROR);
+            }
+            let _ = cmd_tx.send(AppCommand::SetTempo { bpm, time_sig });
             CommandResponse::ack("set_tempo")
         }
         Command::SetLoop { start, end } => {
@@ -1352,7 +1357,11 @@ mod tests {
     ) {
         let engine = Arc::new(Mutex::new(AudioEngine::new(48_000, 128)));
         let (cmd_tx, cmd_rx) = crossbeam::channel::unbounded();
-        let streamer = Arc::new(Mutex::new(AudioStreamer::new(48_000, 2)));
+        let streamer = Arc::new(Mutex::new(AudioStreamer::with_enabled_flag(
+            48_000,
+            2,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )));
         (engine, cmd_tx, cmd_rx, streamer, HostConfig::default())
     }
 
@@ -1527,6 +1536,116 @@ mod tests {
                 if cmd == "seek" && message == "position must be finite")
         );
         assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn set_streaming_updates_shared_enabled_flag() {
+        let engine = Arc::new(Mutex::new(AudioEngine::new(48_000, 128)));
+        let (cmd_tx, _cmd_rx) = crossbeam::channel::unbounded();
+        let enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let streamer = Arc::new(Mutex::new(AudioStreamer::with_enabled_flag(
+            48_000,
+            2,
+            Arc::clone(&enabled),
+        )));
+        let config = HostConfig::default();
+
+        let response = execute(
+            Command::SetStreaming { enabled: true },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "set_streaming"));
+        assert!(enabled.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn set_tempo_rejects_invalid_bpm_without_sending_command() {
+        for bpm in [
+            -1.0,
+            0.0,
+            0.999,
+            1000.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let (engine, cmd_tx, cmd_rx, streamer, config) = command_context();
+
+            let response = execute(
+                Command::SetTempo {
+                    bpm,
+                    time_sig: Some((4, 4)),
+                },
+                &engine,
+                &cmd_tx,
+                &streamer,
+                &config,
+                None,
+            );
+
+            assert!(
+                matches!(response, CommandResponse::Error { cmd: Some(cmd), message }
+                    if cmd == "set_tempo" && message == "bpm must be between 1 and 999")
+            );
+            assert!(cmd_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn set_tempo_rejects_invalid_time_signature_without_sending_command() {
+        for time_sig in [(0, 4), (4, 0), (4, 3), (4, 128)] {
+            let (engine, cmd_tx, cmd_rx, streamer, config) = command_context();
+
+            let response = execute(
+                Command::SetTempo {
+                    bpm: 120.0,
+                    time_sig: Some(time_sig),
+                },
+                &engine,
+                &cmd_tx,
+                &streamer,
+                &config,
+                None,
+            );
+
+            assert!(
+                matches!(response, CommandResponse::Error { cmd: Some(cmd), message }
+                    if cmd == "set_tempo"
+                        && message == "time_sig must have a positive numerator and a denominator of 1, 2, 4, 8, 16, 32, or 64")
+            );
+            assert!(cmd_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn set_tempo_accepts_valid_bounds_and_time_signature() {
+        let (engine, cmd_tx, cmd_rx, streamer, config) = command_context();
+
+        let response = execute(
+            Command::SetTempo {
+                bpm: 999.0,
+                time_sig: Some((7, 8)),
+            },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "set_tempo"));
+        match cmd_rx.try_recv().unwrap() {
+            AppCommand::SetTempo { bpm, time_sig } => {
+                assert_eq!(bpm, 999.0);
+                assert_eq!(time_sig, (7, 8));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

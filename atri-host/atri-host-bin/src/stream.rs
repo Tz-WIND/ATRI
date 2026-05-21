@@ -1,4 +1,5 @@
 use std::io::{self, Stdout, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -9,7 +10,7 @@ pub type SharedStdout = Arc<Mutex<Stdout>>;
 pub struct AudioStreamer {
     sample_rate: u32,
     channels: u16,
-    enabled: bool,
+    enabled: Arc<AtomicBool>,
     #[cfg(target_endian = "big")]
     scratch: Vec<u8>,
 }
@@ -25,18 +26,22 @@ struct AudioHeader {
 }
 
 impl AudioStreamer {
-    pub fn new(sample_rate: u32, channels: u16) -> Self {
+    pub fn with_enabled_flag(sample_rate: u32, channels: u16, enabled: Arc<AtomicBool>) -> Self {
         Self {
             sample_rate,
             channels,
-            enabled: true,
+            enabled,
             #[cfg(target_endian = "big")]
             scratch: Vec::new(),
         }
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
     }
 
     pub fn write_chunk(
@@ -45,7 +50,7 @@ impl AudioStreamer {
         pcm: &[f32],
         nframes: usize,
     ) -> io::Result<()> {
-        if !self.enabled || pcm.is_empty() {
+        if !self.is_enabled() || pcm.is_empty() {
             return Ok(());
         }
 
@@ -176,5 +181,17 @@ mod tests {
             4 * std::mem::size_of::<f32>()
         );
         assert_eq!(&sink.bytes[newline + 1..newline + 5], &0.5f32.to_le_bytes());
+    }
+
+    #[test]
+    fn set_enabled_updates_shared_flag() {
+        let enabled = Arc::new(AtomicBool::new(false));
+        let mut streamer = AudioStreamer::with_enabled_flag(48_000, 2, Arc::clone(&enabled));
+
+        assert!(!enabled.load(Ordering::Relaxed));
+        streamer.set_enabled(true);
+        assert!(enabled.load(Ordering::Relaxed));
+        streamer.set_enabled(false);
+        assert!(!enabled.load(Ordering::Relaxed));
     }
 }

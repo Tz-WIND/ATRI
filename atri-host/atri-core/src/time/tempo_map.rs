@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use super::bbt::BBT_Time;
 use super::beats::{Beats, PPQN};
@@ -223,59 +223,118 @@ impl TempoMap {
     }
 }
 
-/// A lock-free, read-optimized shared tempo map.
+/// A read-optimized shared value with snapshot reads.
 ///
-/// Writers clone the map, modify it, then atomically swap the pointer.
-/// Readers perform an atomic load and get an immutable reference.
+/// Writers clone the current value, modify it, then publish a new snapshot.
+/// Readers get an `Arc` snapshot that remains valid across later updates.
 pub struct SwapLock<T> {
-    ptr: AtomicPtr<T>,
+    value: RwLock<Arc<T>>,
+    // Serializes writers while allowing readers during snapshot construction.
+    writer: Mutex<()>,
 }
 
 impl<T> SwapLock<T> {
     pub fn new(value: T) -> Self {
         Self {
-            ptr: AtomicPtr::new(Box::into_raw(Box::new(value))),
+            value: RwLock::new(Arc::new(value)),
+            writer: Mutex::new(()),
         }
     }
 
-    /// Acquire a read guard — atomically loads the pointer.
-    /// The returned reference is valid until the next write.
-    pub fn read(&self) -> &T {
-        unsafe { &*self.ptr.load(Ordering::Acquire) }
+    /// Acquire an immutable snapshot of the current value.
+    /// The returned snapshot remains valid across later writes.
+    pub fn read(&self) -> Arc<T> {
+        let guard = self
+            .value
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&guard)
     }
 
-    /// Update the value by cloning, modifying, and swapping.
+    /// Update the value by cloning, modifying, and publishing a new snapshot.
     pub fn update(&self, f: impl FnOnce(&T) -> T) {
-        let current = self.ptr.load(Ordering::Acquire);
-        let new = Box::into_raw(Box::new(f(unsafe { &*current })));
-        let old = self.ptr.swap(new, Ordering::AcqRel);
-        // Safety: old pointer is no longer reachable; drop it.
-        // Note: In a real implementation you'd use epoch-based reclamation
-        // or RCU to avoid dropping while a reader holds the old pointer.
-        // For Phase 1, we accept this small window of unsafety under the
-        // assumption that audio callbacks are short and won't be
-        // preempted across a swap.
-        unsafe {
-            drop(Box::from_raw(old));
-        }
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = self.read();
+        let next = Arc::new(f(current.as_ref()));
+        let mut guard = self
+            .value
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = next;
     }
 }
-
-impl<T> Drop for SwapLock<T> {
-    fn drop(&mut self) {
-        unsafe {
-            drop(Box::from_raw(self.ptr.load(Ordering::Acquire)));
-        }
-    }
-}
-
-unsafe impl<T: Send> Send for SwapLock<T> {}
-unsafe impl<T: Sync> Sync for SwapLock<T> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::time::tempo::{Meter, Tempo};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::Duration;
+
+    #[derive(Clone)]
+    struct DropTracked {
+        id: u8,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for DropTracked {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn swap_lock_read_snapshot_survives_update_until_released() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let lock = SwapLock::new(DropTracked {
+            id: 1,
+            drops: Arc::clone(&drops),
+        });
+
+        let snapshot = lock.read();
+        assert_eq!(snapshot.id, 1);
+
+        lock.update(|current| {
+            assert_eq!(current.id, 1);
+            DropTracked {
+                id: 2,
+                drops: Arc::clone(&drops),
+            }
+        });
+
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert_eq!(snapshot.id, 1);
+
+        drop(snapshot);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(lock.read().id, 2);
+    }
+
+    #[test]
+    fn swap_lock_update_does_not_hold_write_lock_while_building_snapshot() {
+        let lock = Arc::new(SwapLock::new(1usize));
+        let update_lock = Arc::clone(&lock);
+        let (done_tx, done_rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            update_lock.update(|current| {
+                assert_eq!(*current, 1);
+                assert_eq!(*update_lock.read(), 1);
+                2
+            });
+            done_tx.send(()).unwrap();
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_millis(200))
+            .expect("SwapLock::update held the write lock while running the update closure");
+        assert_eq!(*lock.read(), 2);
+    }
 
     #[test]
     fn test_default_tempo_map() {

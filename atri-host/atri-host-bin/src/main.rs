@@ -5,6 +5,7 @@ mod editor_host;
 mod ipc;
 mod stream;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -36,12 +37,18 @@ fn main() {
     let engine = Arc::new(Mutex::new(AudioEngine::new(sample_rate, buffer_size)));
 
     let (cmd_tx, cmd_rx) = channel::unbounded::<commands::AppCommand>();
-    let (audio_tx, audio_rx) = channel::bounded::<driver::AudioBlock>(8);
+    let (audio_tx, audio_rx) =
+        channel::bounded::<driver::AudioBlock>(driver::AUDIO_BLOCK_POOL_SIZE);
+    let streaming_enabled = Arc::new(AtomicBool::new(false));
+    let audio_block_pool =
+        driver::AudioBlockPool::new(driver::AUDIO_BLOCK_POOL_SIZE, buffer_size * 2);
 
     let (driver, config) = AudioDriver::start(
         Arc::clone(&engine),
         cmd_rx,
         audio_tx,
+        Arc::clone(&streaming_enabled),
+        audio_block_pool.clone(),
         sample_rate,
         buffer_size,
         host_config.audio_host.audio_engine.clone(),
@@ -56,11 +63,11 @@ fn main() {
     host_config.audio_host.audio_engine = config.audio_engine.clone();
     host_config.audio_host.bit_depth = config.bit_depth.clone();
     let host_config = Arc::new(host_config);
-    let streamer = Arc::new(Mutex::new({
-        let mut s = AudioStreamer::new(config.sample_rate, 2);
-        s.set_enabled(false); // stdout streaming off by default; enable via IPC when needed
-        s
-    }));
+    let streamer = Arc::new(Mutex::new(AudioStreamer::with_enabled_flag(
+        config.sample_rate,
+        2,
+        Arc::clone(&streaming_enabled),
+    )));
     let (editor_manager, editor_runtime) =
         match editor_host::EditorWindowManager::start_on_main_thread() {
             Ok((manager, runtime)) => (Some(Arc::new(manager)), Some(runtime)),
@@ -71,12 +78,29 @@ fn main() {
         };
 
     let streamer_thread = {
+        let audio_block_pool = audio_block_pool.clone();
+        let pool_resize_rx = audio_block_pool.resize_requests();
         let streamer = Arc::clone(&streamer);
         let stdout = Arc::clone(&stdout);
         thread::spawn(move || {
-            while let Ok(block) = audio_rx.recv() {
-                if let Ok(mut streamer) = streamer.lock() {
-                    let _ = streamer.write_chunk(&stdout, block.data(), block.frames());
+            loop {
+                channel::select! {
+                    recv(audio_rx) -> block => {
+                        let Ok(block) = block else {
+                            break;
+                        };
+                        if let Ok(mut streamer) = streamer.lock() {
+                            let _ = streamer.write_chunk(&stdout, block.data(), block.frames());
+                        }
+                        audio_block_pool.recycle_block(block);
+                        audio_block_pool.grow_to_requested_capacity();
+                    }
+                    recv(pool_resize_rx) -> resize => {
+                        if resize.is_err() {
+                            break;
+                        }
+                        audio_block_pool.grow_to_requested_capacity();
+                    }
                 }
             }
         })
