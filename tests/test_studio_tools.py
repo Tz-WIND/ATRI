@@ -407,11 +407,11 @@ def test_dashboard_publishes_session_token_to_studio_tools(monkeypatch):
     tokens: list[str] = []
     monkeypatch.setattr("core.tools.studio.set_dashboard_session_token", tokens.append)
     dashboard = Dashboard.__new__(Dashboard)
-    dashboard.auth_session_token = "dashboard-session"  # noqa: S105
+    dashboard.auth_tool_session_token = "dashboard-tool-session"  # noqa: S105
 
     dashboard._publish_auth_token_to_tools()
 
-    assert tokens == ["dashboard-session"]
+    assert tokens == ["dashboard-tool-session"]
 
 
 def test_confirmation_command_parser_reads_non_bash_tool_result():

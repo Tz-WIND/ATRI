@@ -82,6 +82,7 @@ class MCPDiscoveredTool:
     description: str
     parameters: dict
     kind: str = "tool"
+    read_only: bool = False
     raw: dict = field(default_factory=dict)
 
 
@@ -802,6 +803,7 @@ class MCPRegistry:
             )
             return base_state
 
+        read_only_tools = _mcp_read_only_tool_names(cfg)
         tool_summaries = []
         for remote in tools:
             remote_name = str(remote.get("name") or "").strip()
@@ -818,6 +820,11 @@ class MCPRegistry:
                 remote_name=remote_name,
                 description=f"[MCP:{name}] {description}",
                 parameters=parameters,
+                read_only=_mcp_tool_is_read_only(
+                    read_only_tools,
+                    remote_name=remote_name,
+                    registered_name=registered_name,
+                ),
                 kind="tool",
                 raw=remote,
             )
@@ -828,6 +835,7 @@ class MCPRegistry:
                     "registered_name": registered_name,
                     "description": description,
                     "input_schema": parameters,
+                    "read_only": info.read_only,
                 }
             )
 
@@ -848,6 +856,12 @@ class MCPRegistry:
                     },
                     "required": ["uri"],
                 },
+                read_only=_mcp_tool_is_read_only(
+                    read_only_tools,
+                    remote_name="resources/read",
+                    registered_name=registered_name,
+                    aliases=("read_resource",),
+                ),
                 kind="resource_reader",
             )
         if prompts:
@@ -868,6 +882,12 @@ class MCPRegistry:
                     },
                     "required": ["name"],
                 },
+                read_only=_mcp_tool_is_read_only(
+                    read_only_tools,
+                    remote_name="prompts/get",
+                    registered_name=registered_name,
+                    aliases=("get_prompt",),
+                ),
                 kind="prompt_getter",
             )
 
@@ -956,6 +976,11 @@ class MCPTool(Tool):
         self.name = info.registered_name
         self.description = info.description
         self.parameters = info.parameters
+        self.capabilities = ToolCapabilities(
+            capability="mcp.external",
+            read_only=info.read_only,
+            network=True,
+        )
 
     def execute(self, **kwargs: Any) -> str:
         result = self._registry.call(self.name, kwargs)
@@ -974,6 +999,37 @@ def _normalize_parameters(parameters: object) -> dict:
     if required is not None and not isinstance(required, list):
         normalized.pop("required", None)
     return normalized
+
+
+def _mcp_read_only_tool_names(cfg: dict) -> set[str]:
+    raw = cfg.get("read_only_tools")
+    if raw is None:
+        raw = cfg.get("read_only_allowlist")
+    names: set[str] = set()
+    if isinstance(raw, dict):
+        for name, value in raw.items():
+            allowed = value is True or (isinstance(value, dict) and value.get("read_only") is True)
+            if allowed:
+                normalized = str(name or "").strip()
+                if normalized:
+                    names.add(normalized)
+        return names
+    if isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            normalized = str(item or "").strip()
+            if normalized:
+                names.add(normalized)
+    return names
+
+
+def _mcp_tool_is_read_only(
+    read_only_tools: set[str],
+    *,
+    remote_name: str,
+    registered_name: str,
+    aliases: tuple[str, ...] = (),
+) -> bool:
+    return any(name in read_only_tools for name in (remote_name, registered_name, *aliases) if name)
 
 
 def _decode_http_rpc_response(body: bytes, content_type: str, request_id: Any) -> dict:

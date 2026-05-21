@@ -22,12 +22,21 @@ from .llm import LLM
 from .prompt import build_system_prompt
 from .tools_bridge import get_all_tools, get_tool
 
+_PLAN_MODE_TOOL_NAMES = {"set_agent_mode"}
+
 
 def _is_high_privilege_tool(tool) -> bool:
     capabilities = tool.capabilities
     return bool(
-        capabilities.writes_files or capabilities.executes_shell or capabilities.requires_approval
+        capabilities.writes_files
+        or capabilities.executes_shell
+        or capabilities.requires_approval
+        or not capabilities.read_only
     )
+
+
+def _is_plan_safe_tool(tool) -> bool:
+    return bool(tool.capabilities.read_only or tool.name in _PLAN_MODE_TOOL_NAMES)
 
 
 def _prepend_user_notice(user_input: str | list[dict], notice: str) -> str | list[dict]:
@@ -183,9 +192,16 @@ class Agent:
         return [t.schema() for t in self._available_tools()]
 
     def _available_tools(self):
-        if getattr(self, "high_privilege_tools_allowed", True):
-            return self.tools
-        return [tool for tool in self.tools if not _is_high_privilege_tool(tool)]
+        tools = list(self.tools)
+        if self._is_plan_mode():
+            tools = [tool for tool in tools if _is_plan_safe_tool(tool)]
+        if not getattr(self, "high_privilege_tools_allowed", True):
+            tools = [tool for tool in tools if not _is_high_privilege_tool(tool)]
+        return tools
+
+    def _is_plan_mode(self) -> bool:
+        mode_controller = getattr(self, "mode_controller", None)
+        return getattr(mode_controller, "mode", "agent") == "plan"
 
     def chat(
         self,
@@ -324,6 +340,10 @@ class Agent:
         tool = get_tool(tc.name, self.tools)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
+        if self._is_plan_mode() and not _is_plan_safe_tool(tool):
+            return (
+                f"Error: tool '{tc.name}' is restricted in PLAN mode. Switch to AGENT mode first."
+            )
         if not getattr(self, "high_privilege_tools_allowed", True) and _is_high_privilege_tool(
             tool
         ):

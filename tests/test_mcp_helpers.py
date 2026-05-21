@@ -1,6 +1,46 @@
 import pytest
 
+from core.agent.agent import Agent
+from core.agent.llm import ToolCall
 from core.tools import mcp
+
+
+class _FakeMCPClient:
+    alive = True
+    protocol_version = "test"
+    stderr_tail = ""
+
+    def __init__(self):
+        self.server_info = {"name": "fake"}
+
+    def start(self):
+        return None
+
+    def list_tools(self):
+        return [
+            {
+                "name": "safe_status",
+                "description": "Read server status.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "danger_write",
+                "description": "Mutate server state.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ]
+
+    def list_resources(self):
+        return []
+
+    def list_resource_templates(self):
+        return []
+
+    def list_prompts(self):
+        return []
+
+    def close(self):
+        return None
 
 
 def test_mcp_safe_names_and_registered_tool_names_are_provider_safe():
@@ -92,3 +132,39 @@ def test_mcp_format_result_flattens_content_resources_prompts_and_errors():
 def test_mcp_create_tools_returns_empty_for_none_or_empty_config(tmp_path):
     assert mcp.create_mcp_tools(str(tmp_path), None) == []
     assert mcp.create_mcp_tools(str(tmp_path), {}) == []
+
+
+def test_mcp_read_only_allowlist_exposes_only_named_tools_to_non_admin(
+    monkeypatch,
+    tmp_path,
+):
+    registry = mcp.MCPRegistry()
+    monkeypatch.setattr(
+        registry,
+        "_create_client",
+        lambda name, cfg, workspace: _FakeMCPClient(),
+    )
+    registry.refresh(
+        {
+            "demo": {
+                "command": "fake",
+                "read_only_tools": ["safe_status"],
+            }
+        },
+        workspace=str(tmp_path),
+        force=True,
+    )
+    tools = {tool.name: tool for tool in registry.create_tools(str(tmp_path))}
+    agent = Agent.__new__(Agent)
+    agent.tools = list(tools.values())
+    agent.high_privilege_tools_allowed = False
+
+    schema_names = {schema["function"]["name"] for schema in agent._tool_schemas()}
+
+    assert tools["mcp_demo_safe_status"].metadata()["read_only"] is True
+    assert tools["mcp_demo_danger_write"].metadata()["read_only"] is False
+    assert "mcp_demo_safe_status" in schema_names
+    assert "mcp_demo_danger_write" not in schema_names
+    assert agent._exec_tool(
+        ToolCall(id="danger", name="mcp_demo_danger_write", arguments={})
+    ).startswith("Error: high-privilege tool 'mcp_demo_danger_write' is restricted")

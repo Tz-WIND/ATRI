@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+from http.cookies import SimpleCookie
 from typing import Any
 
 import pytest
@@ -9,7 +10,57 @@ from core.tools import novelai_image
 from core.tools.novelai_image import NovelAIImageTool
 from dashboard import music as music_routes
 from dashboard.routes import _helpers, chat, management, models
-from dashboard.server import DASHBOARD_MAX_CONTENT_LENGTH
+from dashboard.server import DASHBOARD_MAX_CONTENT_LENGTH, Dashboard
+
+
+class _FakeDashboardLifecycle:
+    def __init__(self, tmp_path, password_hash: str):
+        self.config = {
+            "dashboard": {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": 6185,
+                "username": "admin",
+                "password": password_hash,
+            },
+            "workspace": str(tmp_path),
+            "audio_host": {},
+            "mcp_servers": {},
+        }
+        self.process_stage = None
+        self.onebot11 = None
+        self.webchat = None
+        self.saved = 0
+
+    def save_config(self):
+        self.saved += 1
+
+
+class _FakeDashboardHost:
+    def set_audio_callback(self, callback):
+        self.callback = callback
+
+
+def _set_test_dashboard_password_cost(monkeypatch):
+    monkeypatch.setattr(_helpers, "_PBKDF2_ITERATIONS", 1)
+
+
+def _dashboard_for_auth_tests(monkeypatch, tmp_path) -> Dashboard:
+    _set_test_dashboard_password_cost(monkeypatch)
+    monkeypatch.setattr(
+        "core.host.configure_host_manager",
+        lambda **kwargs: _FakeDashboardHost(),
+    )
+    monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
+    return Dashboard(
+        _FakeDashboardLifecycle(tmp_path, _helpers.hash_password("secret")),
+    )
+
+
+def _auth_cookie_from_response(response) -> str:
+    cookie = SimpleCookie()
+    cookie.load(response.headers["Set-Cookie"])
+    return cookie[_helpers.AUTH_COOKIE].value
 
 
 def test_dashboard_upload_limit_is_finite_and_large_enough_for_audio_imports():
@@ -343,6 +394,83 @@ def test_dashboard_cookie_value_parses_valid_cookie_headers():
     )
     assert _helpers.cookie_value("", "atri_dashboard_session") == ""
     assert _helpers.cookie_value("a=1", "missing") == ""
+
+
+@pytest.mark.asyncio
+async def test_dashboard_login_creates_distinct_server_sessions(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+
+    first = await client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+    )
+    second = await client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+    )
+    first_token = _auth_cookie_from_response(first)
+    second_token = _auth_cookie_from_response(second)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first_token != second_token
+    assert (
+        await client.get(
+            "/api/workspace",
+            headers={"Authorization": f"Bearer {first_token}"},
+        )
+    ).status_code == 200
+    assert (
+        await client.get(
+            "/api/workspace",
+            headers={"Authorization": f"Bearer {second_token}"},
+        )
+    ).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_dashboard_logout_revokes_presented_session_token(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+    login = await client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "secret"},
+    )
+    token = _auth_cookie_from_response(login)
+
+    assert (
+        await client.get(
+            "/api/workspace",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    ).status_code == 200
+
+    logout = await client.post(
+        "/api/auth/logout",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert logout.status_code == 200
+    assert (
+        await client.get(
+            "/api/workspace",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    ).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_dashboard_auth_reset_invalidates_existing_sessions(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    user_token = dashboard._create_auth_session()
+
+    assert dashboard._session_ok(user_token) is True
+
+    dashboard.lifecycle.config["dashboard"]["password"] = _helpers.hash_password("new-secret")
+    dashboard._sync_auth_from_config()
+
+    assert dashboard._session_ok(user_token) is False
 
 
 def test_dashboard_model_url_candidates_normalize_common_provider_urls():

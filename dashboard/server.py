@@ -37,9 +37,10 @@ class Dashboard:
         self.lifecycle = lifecycle
         self.host = host
         self.port = port
+        self.auth_session_tokens: set[str] = set()
+        self.auth_tool_session_token = ""
         self._sync_auth_from_config()
-        self.auth_session_token = secrets.token_urlsafe(32)
-        self._publish_auth_token_to_tools()
+        self._reset_auth_sessions()
         self._mcp_push_fingerprint = ""
         self._loop = asyncio.get_running_loop()
 
@@ -85,13 +86,13 @@ class Dashboard:
     # ── Config / auth state ──
 
     def _sync_auth_from_config(self):
-        """Refresh auth state from config.
-
-        NOTE: callers that change the stored username/password MUST regenerate
-        auth_session_token afterwards — this method intentionally does NOT
-        touch the session token so that simple config reloads don't log
-        everyone out.
-        """
+        """Refresh auth state from config and reset sessions on auth changes."""
+        previous_state = (
+            getattr(self, "auth_username", None),
+            getattr(self, "auth_password", None),
+            getattr(self, "auth_enabled", None),
+            getattr(self, "auth_setup_required", None),
+        )
         dashboard_cfg = self.lifecycle.config.get("dashboard", {})
         dashboard_enabled = bool(dashboard_cfg.get("enabled", True))
         self.auth_username = str(dashboard_cfg.get("username", "") or "")
@@ -101,6 +102,18 @@ class Dashboard:
             dashboard_enabled and (not self.auth_username or not self.auth_password)
         )
         self.auth_enabled = bool(dashboard_enabled and not self.auth_setup_required)
+        current_state = (
+            self.auth_username,
+            self.auth_password,
+            self.auth_enabled,
+            self.auth_setup_required,
+        )
+        if (
+            previous_state[0] is not None
+            and previous_state != current_state
+            and hasattr(self, "auth_session_tokens")
+        ):
+            self._reset_auth_sessions()
 
     # ── Model helpers ──
 
@@ -217,16 +230,29 @@ class Dashboard:
         return request.headers.get("X-ATRI-Session", "") or request.cookies.get(AUTH_COOKIE, "")
 
     def _session_ok(self, token: str) -> bool:
-        return bool(self.auth_enabled and token) and hmac.compare_digest(
-            token,
-            self.auth_session_token,
+        return bool(self.auth_enabled and token) and any(
+            hmac.compare_digest(token, session_token) for session_token in self.auth_session_tokens
         )
 
     def _publish_auth_token_to_tools(self) -> None:
-        """Share the current dashboard session token with in-process Agent tools."""
+        """Share the dashboard's internal tool session token with Agent tools."""
         from core.tools.studio import set_dashboard_session_token
 
-        set_dashboard_session_token(self.auth_session_token)
+        set_dashboard_session_token(self.auth_tool_session_token)
+
+    def _create_auth_session(self) -> str:
+        token = secrets.token_urlsafe(32)
+        self.auth_session_tokens.add(token)
+        return token
+
+    def _revoke_auth_session(self, token: str) -> None:
+        if token:
+            self.auth_session_tokens.discard(token)
+
+    def _reset_auth_sessions(self) -> None:
+        self.auth_session_tokens.clear()
+        self.auth_tool_session_token = self._create_auth_session() if self.auth_enabled else ""
+        self._publish_auth_token_to_tools()
 
     def _credentials_ok(self, username: str, password: str) -> bool:
         return (

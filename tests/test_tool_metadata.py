@@ -2,8 +2,10 @@ from typing import Any
 
 from core.agent.agent import Agent
 from core.agent.llm import ToolCall
+from core.agent.mode import AgentModeController
 from core.tools import create_tools
 from core.tools.base import Tool, ToolCapabilities
+from core.tools.mode import AgentModeTool
 from core.tools.read import ReadFileTool
 from core.tools.write import WriteFileTool
 
@@ -35,6 +37,11 @@ class _ParallelTool(_MetadataTool):
 class _SerialTool(_MetadataTool):
     name = "serial_tool"
     capabilities = ToolCapabilities(capability="test.write", writes_files=True)
+
+
+class _StateChangingTool(_MetadataTool):
+    name = "state_changing_tool"
+    capabilities = ToolCapabilities(capability="test.state.change")
 
 
 def test_tool_schema_is_stable_cached_and_metadata_opt_in(tmp_path):
@@ -134,6 +141,7 @@ def test_agent_blocks_high_privilege_tools_when_not_allowed(tmp_path):
         ReadFileTool(str(tmp_path)),
         WriteFileTool(str(tmp_path)),
         _MetadataTool(str(tmp_path)),
+        _StateChangingTool(str(tmp_path)),
     ]
     agent.high_privilege_tools_allowed = False
 
@@ -142,6 +150,7 @@ def test_agent_blocks_high_privilege_tools_when_not_allowed(tmp_path):
     assert "read_file" in schema_names
     assert "metadata_tool" in schema_names
     assert "write_file" not in schema_names
+    assert "state_changing_tool" not in schema_names
     assert agent._exec_tool(
         ToolCall(
             id="1",
@@ -149,4 +158,84 @@ def test_agent_blocks_high_privilege_tools_when_not_allowed(tmp_path):
             arguments={"file_path": "blocked.txt", "content": "nope"},
         )
     ).startswith("Error: high-privilege tool 'write_file' is restricted")
+    assert agent._exec_tool(
+        ToolCall(
+            id="2",
+            name="state_changing_tool",
+            arguments={},
+        )
+    ).startswith("Error: high-privilege tool 'state_changing_tool' is restricted")
     assert not (tmp_path / "blocked.txt").exists()
+
+
+def test_agent_blocks_music_state_tools_without_file_or_approval_flags(tmp_path):
+    tools = {tool.name: tool for tool in create_tools(str(tmp_path))}
+    mutating_tool_names = {
+        "midi_write",
+        "midi_diff",
+        "midi_batch_edit",
+        "vst_param_set",
+        "automation_write",
+        "automation_global_write",
+        "automation_diff",
+        "automation_retarget",
+    }
+    read_only_tool_names = {
+        "midi_query",
+        "midi_inspect",
+        "vst_param_query",
+        "automation_query",
+    }
+    agent = Agent.__new__(Agent)
+    agent.tools = [tools[name] for name in sorted(mutating_tool_names | read_only_tool_names)]
+    agent.high_privilege_tools_allowed = False
+
+    schema_names = {schema["function"]["name"] for schema in agent._tool_schemas()}
+
+    assert mutating_tool_names.isdisjoint(schema_names)
+    assert read_only_tool_names <= schema_names
+    for tool_name in mutating_tool_names:
+        assert agent._exec_tool(ToolCall(id=tool_name, name=tool_name, arguments={})).startswith(
+            f"Error: high-privilege tool '{tool_name}' is restricted"
+        )
+
+
+def test_agent_plan_mode_exposes_only_read_only_tools_and_mode_switch(tmp_path):
+    mode_controller = AgentModeController("plan")
+    agent = Agent.__new__(Agent)
+    agent.mode_controller = mode_controller
+    agent.tools = [
+        ReadFileTool(str(tmp_path)),
+        WriteFileTool(str(tmp_path)),
+        _MetadataTool(str(tmp_path)),
+        _StateChangingTool(str(tmp_path)),
+        AgentModeTool(str(tmp_path), mode_controller=mode_controller),
+    ]
+    agent.high_privilege_tools_allowed = True
+
+    schema_names = {schema["function"]["name"] for schema in agent._tool_schemas()}
+
+    assert "read_file" in schema_names
+    assert "metadata_tool" in schema_names
+    assert "set_agent_mode" in schema_names
+    assert "write_file" not in schema_names
+    assert "state_changing_tool" not in schema_names
+    assert agent._exec_tool(
+        ToolCall(
+            id="write",
+            name="write_file",
+            arguments={"file_path": "blocked.txt", "content": "nope"},
+        )
+    ).startswith("Error: tool 'write_file' is restricted in PLAN mode")
+    assert not (tmp_path / "blocked.txt").exists()
+
+    result = agent._exec_tool(
+        ToolCall(
+            id="mode",
+            name="set_agent_mode",
+            arguments={"mode": "agent", "reason": "implementation requested"},
+        )
+    )
+
+    assert result == "Switched to AGENT mode. Reason: implementation requested"
+    assert mode_controller.mode == "agent"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
 from typing import TYPE_CHECKING, Any
 
 from quart import jsonify, request
@@ -50,10 +49,11 @@ def register(dashboard: Dashboard) -> None:
             dashboard_cfg["password"] = hash_password(password)
             dashboard.lifecycle.save_config()
             dashboard._sync_auth_from_config()
+        token = dashboard._create_auth_session()
         resp = jsonify({"ok": True})
         resp.set_cookie(
             AUTH_COOKIE,
-            dashboard.auth_session_token,
+            token,
             httponly=True,
             samesite="Strict",
         )
@@ -79,13 +79,12 @@ def register(dashboard: Dashboard) -> None:
         dashboard_cfg["password"] = hash_password(password)
         dashboard.lifecycle.save_config()
         dashboard._sync_auth_from_config()
-        dashboard.auth_session_token = secrets.token_urlsafe(32)
-        dashboard._publish_auth_token_to_tools()
+        token = dashboard._create_auth_session()
 
         resp = jsonify({"ok": True})
         resp.set_cookie(
             AUTH_COOKIE,
-            dashboard.auth_session_token,
+            token,
             httponly=True,
             samesite="Strict",
         )
@@ -93,6 +92,7 @@ def register(dashboard: Dashboard) -> None:
 
     @app.route("/api/auth/logout", methods=["POST"])
     async def auth_logout():
+        dashboard._revoke_auth_session(dashboard._provided_session_token())
         resp = jsonify({"ok": True})
         resp.delete_cookie(AUTH_COOKIE)
         return resp
