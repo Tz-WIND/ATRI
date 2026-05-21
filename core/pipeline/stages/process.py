@@ -971,13 +971,18 @@ class _RuntimeTurnRecorder:
         )
 
     def on_tool_end(self, tc_id: str, name: str, args: dict, result: str) -> None:
-        if name == "novelai_image":
+        if name in {"novelai_image", "chem_draw"}:
             try:
-                from core.tools.novelai_image import pop_generated_images_from_result
+                if name == "chem_draw":
+                    from core.tools.chemistry import pop_generated_chem_images_from_result
 
-                generated_images = pop_generated_images_from_result(result)
+                    generated_images = pop_generated_chem_images_from_result(result)
+                else:
+                    from core.tools.novelai_image import pop_generated_images_from_result
+
+                    generated_images = pop_generated_images_from_result(result)
             except Exception:
-                logger.exception("Failed to consume NovelAI generated images")
+                logger.exception("Failed to consume generated tool images")
                 generated_images = []
             if generated_images:
                 self.event._extras.setdefault("generated_images", []).extend(generated_images)
@@ -988,9 +993,7 @@ class _RuntimeTurnRecorder:
         is_compressed = result.startswith(TOOL_OUTPUT_COMPRESSED_MARKER)
         result_id = _extract_tool_result_id(result) if is_compressed else ""
         preview_len = 8000 if name in {"edit_file", "write_file"} or is_compressed else 200
-        preview_source = (
-            _strip_generated_image_markers(result) if name == "novelai_image" else result
-        )
+        preview_source = _strip_generated_image_markers(result)
         preview = (
             preview_source[:preview_len] if len(preview_source) > preview_len else preview_source
         )
@@ -1116,6 +1119,7 @@ def _strip_generated_image_markers(result: str) -> str:
         line
         for line in str(result or "").splitlines()
         if not line.startswith("ATRI_GENERATED_IMAGE_BATCH:")
+        and not line.startswith("ATRI_GENERATED_CHEM_IMAGE_BATCH:")
     )
 
 

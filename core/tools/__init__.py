@@ -12,6 +12,7 @@ from .automation import (
 )
 from .base import Tool
 from .bash import BashTool
+from .chemistry import ChemDrawTool
 from .edit import EditFileTool
 from .find_replace import FindReplaceTool
 from .glob_tool import GlobTool
@@ -66,6 +67,7 @@ def create_tools(
         SearchTool(workspace),
         ListDirTool(workspace),
         TreeTool(workspace),
+        ChemDrawTool(workspace),
         AgentTool(workspace, task_store=task_store),
         AgentResultTool(workspace, task_store=task_store),
         TaskResultTool(workspace, task_store=task_store),

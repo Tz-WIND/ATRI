@@ -195,6 +195,10 @@ function isSafeUrl(url) {
 function safeImageSrc(url) {
   const value = String(url || '').trim()
   if (!value) return ''
+  // Generated chemistry drawings arrive as data:image/svg+xml attachments.
+  if (/^data:image\/svg\+xml;base64,[a-z0-9+/=\s]+$/i.test(value)) {
+    return value
+  }
   if (/^data:image\/(?:png|jpe?g|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(value)) {
     return value
   }

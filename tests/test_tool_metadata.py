@@ -72,6 +72,9 @@ def test_registered_tools_expose_capability_metadata(tmp_path):
     assert tools["bash"].metadata()["executes_shell"] is True
     assert tools["bash"].metadata()["requires_approval"] is True
     assert tools["web_search"].metadata()["network"] is True
+    assert tools["chem_draw"].metadata()["capability"] == "chemistry.draw"
+    assert tools["chem_draw"].metadata()["writes_files"] is True
+    assert tools["chem_draw"].metadata()["supports_parallel"] is True
     assert tools["novelai_image"].metadata()["network"] is True
     assert tools["novelai_image"].metadata()["writes_files"] is False
     assert tools["agent_result"].metadata()["read_only"] is True

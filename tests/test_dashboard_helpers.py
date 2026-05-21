@@ -328,6 +328,11 @@ def test_dashboard_normalize_chat_images_rejects_invalid_payloads(monkeypatch):
         chat._normalize_chat_images([{"dataUrl": "data:image/png;base64,aGVsbG8="}])
 
 
+def test_dashboard_chat_images_still_reject_svg_uploads():
+    with pytest.raises(ValueError, match="image type"):
+        chat._normalize_chat_images([{"dataUrl": "data:image/svg+xml;base64,PHN2Zy8+"}])
+
+
 def test_dashboard_csp_allows_chat_image_previews():
     assert "img-src 'self' data: blob:" in _helpers.DASHBOARD_CSP
 

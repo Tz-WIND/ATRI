@@ -12,6 +12,7 @@ dependencies = [
     "hypercorn>=0.17.0",
     "pyyaml>=6.0",
     "mutagen>=1.47.0",
+    "rdkit>=2026.3.2",
 ]
 
 [tool.uv]
