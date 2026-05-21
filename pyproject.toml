@@ -73,7 +73,7 @@ warn_unused_configs = true
 disallow_untyped_defs = false
 check_untyped_defs = true
 ignore_missing_imports = true
-exclude = ["参考/", "^workspace/"]
+exclude = ["参考/", "^workspace[\\\\/]", "^\\.venv[\\\\/]", "^venv[\\\\/]"]
 
 # ─── Pytest ──────────────────────────────────────────────────────────────────
 

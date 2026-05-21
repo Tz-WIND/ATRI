@@ -517,7 +517,7 @@ async def test_sync_project_to_host_resolves_track_to_later_bus_on_fresh_host(mo
     host = FreshRoutingHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
 
-    project = {
+    project: dict[str, Any] = {
         "title": "Fresh Bus Sync",
         "tempo": 120,
         "time_signature": [4, 4],
@@ -586,7 +586,7 @@ async def test_sync_project_to_host_routes_top_level_tracks_through_master_bus(m
     host = FreshRoutingHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
 
-    project = {
+    project: dict[str, Any] = {
         "title": "Master Sync",
         "tempo": 120,
         "time_signature": [4, 4],

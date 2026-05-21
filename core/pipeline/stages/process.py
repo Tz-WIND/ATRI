@@ -310,10 +310,12 @@ class ProcessStage(Stage):
         requested_provider = clean_optional_str(provider)
         cfg = dict(self._llm_template)
 
-        if not requested_model and not requested_provider:
+        if requested_model is None and requested_provider is None:
             return cfg
-        if requested_provider and not requested_model:
+        if requested_provider is not None and requested_model is None:
             raise ValueError("model is required when provider is specified")
+        if requested_model is None:
+            raise ValueError("model is required")
 
         if requested_provider:
             provider_cfg = self.providers.get(requested_provider)

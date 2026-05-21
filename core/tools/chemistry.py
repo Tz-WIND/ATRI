@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import secrets
 import threading
 from typing import Any
@@ -54,16 +55,17 @@ def _clamp_dimension(value: Any, default: int) -> int:
     return min(max(parsed, _MIN_DIMENSION), _MAX_DIMENSION)
 
 
-def _rdkit_modules():
+def _rdkit_modules() -> tuple[Any, Any, Any, Any]:
     try:
-        from rdkit import Chem, RDLogger
-        from rdkit.Chem import rdChemReactions
-        from rdkit.Chem.Draw import rdMolDraw2D
+        chem = importlib.import_module("rdkit.Chem")
+        rd_logger = importlib.import_module("rdkit.RDLogger")
+        rd_chem_reactions = importlib.import_module("rdkit.Chem.rdChemReactions")
+        rd_mol_draw_2d = importlib.import_module("rdkit.Chem.Draw.rdMolDraw2D")
     except ImportError as e:
         raise RuntimeError(
             "RDKit is not installed. Run `uv sync` to install the project dependencies."
         ) from e
-    return Chem, RDLogger, rdChemReactions, rdMolDraw2D
+    return chem, rd_logger, rd_chem_reactions, rd_mol_draw_2d
 
 
 def _parse_molecule(raw_input: str, input_format: str):
@@ -126,7 +128,7 @@ def _draw_molecule_svg(mol, width: int, height: int, legend: str) -> str:
     drawer = rd_mol_draw_2d.MolDraw2DSVG(width, height)
     drawer.DrawMolecule(mol, legend=legend)
     drawer.FinishDrawing()
-    return drawer.GetDrawingText()
+    return str(drawer.GetDrawingText())
 
 
 def _draw_reaction_svg(reaction, width: int, height: int) -> str:
@@ -134,7 +136,7 @@ def _draw_reaction_svg(reaction, width: int, height: int) -> str:
     drawer = rd_mol_draw_2d.MolDraw2DSVG(width, height)
     drawer.DrawReaction(reaction)
     drawer.FinishDrawing()
-    return drawer.GetDrawingText()
+    return str(drawer.GetDrawingText())
 
 
 def _svg_image(svg: str, name: str) -> dict[str, Any]:

@@ -2,7 +2,7 @@ import io
 import json
 import zipfile
 from http.cookies import SimpleCookie
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -11,6 +11,9 @@ from core.tools.novelai_image import NovelAIImageTool
 from dashboard import music as music_routes
 from dashboard.routes import _helpers, chat, management, models
 from dashboard.server import DASHBOARD_MAX_CONTENT_LENGTH, Dashboard
+
+if TYPE_CHECKING:
+    from core.lifecycle import Lifecycle
 
 EXPECTED_CHAT_MODEL_CONFIG_DEFAULT = {
     "max_tokens": 4096,
@@ -84,8 +87,9 @@ def _dashboard_for_auth_tests(monkeypatch, tmp_path) -> Dashboard:
         lambda **kwargs: _FakeDashboardHost(),
     )
     monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
+    lifecycle = _FakeDashboardLifecycle(tmp_path, _helpers.hash_password("secret"))
     return Dashboard(
-        _FakeDashboardLifecycle(tmp_path, _helpers.hash_password("secret")),
+        cast("Lifecycle", lifecycle),
     )
 
 
@@ -327,7 +331,7 @@ async def test_dashboard_provider_pool_routes_manage_embedding_and_rerank_models
             "config": dict(EXPECTED_RERANK_MODEL_CONFIG_DEFAULT),
         }
     ]
-    assert dashboard.lifecycle.saved == 4
+    assert cast(_FakeDashboardLifecycle, dashboard.lifecycle).saved == 4
 
 
 @pytest.mark.asyncio

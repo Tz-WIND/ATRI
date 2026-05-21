@@ -353,6 +353,7 @@ def _coerce_model_config(
             continue
         raw_value = incoming[key]
         child_path = f"{path}.{key}"
+        value: Any
         if isinstance(default_value, int):
             value = _positive_int_config(raw_value, child_path)
         elif isinstance(default_value, float):

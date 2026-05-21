@@ -1,4 +1,5 @@
 import base64
+from typing import Any
 
 from core.pipeline.stages.process import (
     _attach_generated_images_to_assistant_message,
@@ -95,7 +96,7 @@ def test_generated_svg_can_be_surfaced_as_assistant_attachment(tmp_path):
     images = pop_generated_chem_images_from_result(result)
 
     components = _image_components_from_extras(images)
-    messages = [{"role": "assistant", "content": "Here is the molecule."}]
+    messages: list[dict[str, Any]] = [{"role": "assistant", "content": "Here is the molecule."}]
     _attach_generated_images_to_assistant_message(messages, images)
 
     assert len(components) == 1

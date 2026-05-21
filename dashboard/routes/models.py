@@ -168,7 +168,11 @@ def _merge_model_config(pool_key: str, existing: dict | None, incoming: object) 
 
 
 def _model_pool_entries(config: dict, pool_key: str) -> list:
-    return config.setdefault(pool_key, [])
+    entries = config.setdefault(pool_key, [])
+    if not isinstance(entries, list):
+        entries = []
+        config[pool_key] = entries
+    return entries
 
 
 def _find_model_pool_entry(
