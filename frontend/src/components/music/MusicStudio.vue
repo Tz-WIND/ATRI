@@ -76,6 +76,8 @@
             min="1"
             step="1"
             aria-label="Tempo BPM"
+            @focus="tempoInputFocused = true"
+            @blur="tempoInputFocused = false; syncTempoField(project)"
             @change="updateTempo"
             @keydown.enter="updateTempo"
           >
@@ -91,7 +93,6 @@
             type="button"
             aria-label="Edit time signature"
             @click.stop="toggleTimeSignaturePopover"
-            @contextmenu.prevent.stop="openAutomationMenu($event, automationTargetForTimeSignatureNumerator(), 'Time Signature Numerator')"
           >
             {{ timeSignatureLabel }}
           </button>
@@ -109,6 +110,8 @@
                 max="255"
                 step="1"
                 aria-label="Time signature numerator"
+                @focus="timeSignatureNumeratorFocused = true"
+                @blur="timeSignatureNumeratorFocused = false; syncTimeSignatureFields(project)"
                 @change="updateTimeSignature"
                 @keydown.enter="updateTimeSignature"
               >
@@ -608,6 +611,24 @@
               >
                 吸附 {{ isPianoSnapActive ? '量化' : '关闭' }}
               </button>
+              <select
+                v-model="pianoSubtrackCreateValue"
+                class="piano-subtrack-select"
+                title="创建钢琴窗附属小轨道"
+                @change="createPianoSubtrack()"
+              >
+                <option value="">
+                  + 小轨道
+                </option>
+                <option
+                  v-for="option in pianoSubtrackOptions"
+                  :key="option.id"
+                  :value="option.id"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
               <button
                 :class="['mini-btn text', { active: pianoTool === 'select' }]"
                 title="Select and move notes"
@@ -674,7 +695,10 @@
               </button>
             </div>
           </div>
-          <div class="piano-workspace">
+          <div
+            ref="pianoWorkspace"
+            class="piano-workspace"
+          >
             <div
               ref="pianoWrap"
               class="piano-canvas-wrap"
@@ -808,6 +832,42 @@
                   </button>
                 </div>
               </div>
+            </div>
+            <div
+              v-if="pianoMeterEditor.open"
+              ref="pianoMeterEditorRoot"
+              class="piano-meter-popover"
+              :style="{ left: `${pianoMeterEditor.x}px`, top: `${pianoMeterEditor.y}px` }"
+              @pointerdown.stop
+              @click.stop
+            >
+              <label>
+                <span>拍号</span>
+                <input
+                  v-model.number="pianoMeterEditor.numerator"
+                  type="number"
+                  min="1"
+                  max="255"
+                  step="1"
+                  @change="applyPianoMeterEditor()"
+                  @keydown.enter.stop.prevent="applyPianoMeterEditor()"
+                >
+              </label>
+              <label>
+                <span>节拍时长</span>
+                <select
+                  v-model.number="pianoMeterEditor.denominator"
+                  @change="applyPianoMeterEditor()"
+                >
+                  <option
+                    v-for="denominator in timeSignatureDenominatorOptions"
+                    :key="denominator"
+                    :value="denominator"
+                  >
+                    {{ denominatorLabel(denominator) }}
+                  </option>
+                </select>
+              </label>
             </div>
           </div>
         </div>
@@ -1466,6 +1526,17 @@ import {
   quantizedBeatsBetween,
   snapBeatToGrid,
 } from './pianoQuantize.js'
+import {
+  beatsToSeconds,
+  effectiveTempoAtBeat,
+} from './tempoAutomation.js'
+import {
+  effectiveMeterAtBeat,
+  meterBarLinesBetween,
+  meterSegments,
+  meterPositionAtBeat,
+  normalizeMeterEvents,
+} from './meterEvents.js'
 
 defineProps({
   embedded: { type: Boolean, default: false },
@@ -1515,10 +1586,12 @@ const arrangementWrap = ref(null)
 const arrangementCanvas = ref(null)
 const editorStack = ref(null)
 const pianoPanel = ref(null)
+const pianoWorkspace = ref(null)
 const pianoWrap = ref(null)
 const pianoCanvas = ref(null)
 const controllerWrap = ref(null)
 const timeSignatureRoot = ref(null)
+const pianoMeterEditorRoot = ref(null)
 const controllerLaneCanvases = new Map()
 const automationMenu = ref({ open: false, x: 0, y: 0, target: null, label: '' })
 const trackContextMenu = ref({ open: false, x: 0, y: 0, trackId: null, name: '' })
@@ -1565,11 +1638,17 @@ const arrangementToolbarH = 34
 const arrangementTrackH = 72
 const pianoKeyW = 76
 const pianoRulerH = 24
+const pianoMeterLaneH = 28
 const pianoRowH = 12
 const controllerLaneTabH = 24
 const controllerLaneBodyH = 72
 const controllerLaneH = controllerLaneTabH + controllerLaneBodyH
 const controllerLaneFooterH = 28
+const automationPointHitRadius = 7
+const controllerPointHitRadius = 7
+const pianoDrawLongPressMs = 260
+const pianoDrawMoveTolerancePx = 5
+const pianoMeterEventHitRadius = 9
 const minPitch = 36
 const maxPitch = 84
 const trackCreatePalette = ['#4e79ff', '#d95b55', '#5f916b', '#d7b66f', '#b489d6', '#58a7b8']
@@ -1579,13 +1658,27 @@ const pianoTool = ref('select')
 const pianoQuantizeId = ref('1/16')
 const pianoSnapEnabled = ref(true)
 const pianoQuantizeMenuOpen = ref(false)
+const pianoSubtrackCreateValue = ref('')
 const tempoInput = ref(120)
+const tempoInputFocused = ref(false)
 const timeSignatureNumerator = ref(4)
 const timeSignatureDenominator = ref(4)
+const timeSignatureNumeratorFocused = ref(false)
 const timeSignaturePopoverOpen = ref(false)
 const timeSignatureDenominatorPopoverOpen = ref(false)
+const pianoMeterEditor = ref({
+  open: false,
+  x: 0,
+  y: 0,
+  eventIndex: -1,
+  beat: 0,
+  numerator: 4,
+  denominator: 4,
+})
 const selectedNoteIds = ref(new Set())
 const selectedClipIds = ref(new Set())
+const selectedAutomationPoint = ref({ trackId: null, index: -1 })
+const selectedControllerEventId = ref(null)
 const noteClipboard = ref([])
 const clipClipboard = ref([])
 const draftNote = ref(null)
@@ -1630,6 +1723,7 @@ let automationDrag = null
 let syncingPianoScroll = false
 let audioDecodeContext = null
 let tempoUpdateTimer = null
+let pianoLongPressTimer = null
 let learnedParameterPollTimer = null
 
 const snapStep = 0.25
@@ -1637,15 +1731,11 @@ const minFreehandStep = 0.0625
 const minArrangementPanelHeight = arrangementToolbarH + arrangementRulerH
 const minPianoPanelHeight = 140
 
-const tempo = computed(() => Number(project.value?.tempo || 120))
+const tempo = computed(() => effectiveTempoAtBeat(project.value, visualPositionBeats.value))
 const meterBeats = computed(() => {
   const numerator = normalizeTimeSignatureNumerator(project.value?.time_signature?.[0])
   const denominator = normalizeTimeSignatureDenominator(project.value?.time_signature?.[1])
   return numerator * (4 / denominator)
-})
-const beatUnit = computed(() => {
-  const numerator = normalizeTimeSignatureNumerator(project.value?.time_signature?.[0])
-  return meterBeats.value / numerator
 })
 const timeSignatureLabel = computed(() => (
   `${timeSignatureNumerator.value} / ${timeSignatureDenominator.value}`
@@ -1666,6 +1756,16 @@ const activePianoSnapStep = computed(() => (
   isPianoSnapActive.value ? pianoQuantizeStep.value : null
 ))
 const activeNoteStep = computed(() => activePianoSnapStep.value || minFreehandStep)
+const pianoMeterLaneVisible = computed(() => (
+  Array.isArray(project.value?.meter_events) && project.value.meter_events.length > 0
+))
+const pianoMeterLaneTop = computed(() => pianoRulerH)
+const pianoNoteTop = computed(() => (
+  pianoRulerH + (pianoMeterLaneVisible.value ? pianoMeterLaneH : 0)
+))
+const pianoSubtrackOptions = computed(() => [
+  { id: 'meter', label: '拍号轨', disabled: pianoMeterLaneVisible.value },
+])
 const activeMidiClip = computed(() => {
   for (const track of tracks.value) {
     for (const clip of track.clips || []) {
@@ -1694,14 +1794,8 @@ const arrangementWrapStyle = computed(() => ({
   '--arrangement-scroll-left': `${arrangementScrollLeft.value}px`,
 }))
 const positionLabel = computed(() => {
-  const beats = Math.max(0, visualPositionBeats.value)
-  const barLen = meterBeats.value
-  const unit = beatUnit.value
-  const bar = Math.floor(beats / barLen) + 1
-  const posInBar = beats % barLen
-  const beat = Math.floor(posInBar / unit) + 1
-  const ticks = Math.floor((posInBar % unit) / unit * 960)
-  return `${bar.toString().padStart(5, '0')}.${beat.toString().padStart(2, '0')}.${ticks.toString().padStart(3, '0')}`
+  const position = meterPositionAtBeat(project.value, visualPositionBeats.value)
+  return `${position.bar.toString().padStart(5, '0')}.${position.beat.toString().padStart(2, '0')}.${position.ticks.toString().padStart(3, '0')}`
 })
 const defaultAutomationTargets = computed(() => {
   const targets = [
@@ -1710,12 +1804,6 @@ const defaultAutomationTargets = computed(() => {
       label: 'Tempo BPM',
       detail: 'Session tempo',
       target: automationTargetForTempoBpm(),
-    },
-    {
-      key: "global-time-signature-numerator",
-      label: 'Time Signature Numerator',
-      detail: 'Session meter numerator',
-      target: automationTargetForTimeSignatureNumerator(),
     },
   ]
   for (const track of tracks.value) {
@@ -1807,7 +1895,8 @@ function normalizeTempo(value) {
 }
 
 function syncTempoField(nextProject) {
-  tempoInput.value = normalizeTempo(nextProject?.tempo ?? 120)
+  if (tempoInputFocused.value) return
+  tempoInput.value = normalizeTempo(effectiveTempoAtBeat(nextProject, visualPositionBeats.value))
 }
 
 async function updateTempo() {
@@ -1849,9 +1938,16 @@ function denominatorLabel(denominator) {
 }
 
 function syncTimeSignatureFields(nextProject) {
-  const meter = Array.isArray(nextProject?.time_signature) ? nextProject.time_signature : [4, 4]
-  timeSignatureNumerator.value = normalizeTimeSignatureNumerator(meter[0])
-  timeSignatureDenominator.value = normalizeTimeSignatureDenominator(meter[1])
+  const meter = effectiveMeterAtBeat(nextProject, visualPositionBeats.value)
+  if (!timeSignatureNumeratorFocused.value) {
+    timeSignatureNumerator.value = normalizeTimeSignatureNumerator(meter.numerator)
+  }
+  timeSignatureDenominator.value = normalizeTimeSignatureDenominator(meter.denominator)
+}
+
+function syncTransportDisplayFields(nextProject = project.value) {
+  syncTempoField(nextProject)
+  syncTimeSignatureFields(nextProject)
 }
 
 function toggleTimeSignaturePopover() {
@@ -1987,6 +2083,10 @@ function onDocumentPointerDown(event) {
   if (trackContextMenu.value.open) {
     closeTrackContextMenu()
   }
+  const meterRoot = pianoMeterEditorRoot.value
+  if (pianoMeterEditor.value.open && (!meterRoot || !meterRoot.contains(event.target))) {
+    closePianoMeterEditor()
+  }
   const root = timeSignatureRoot.value
   if (!root || root.contains(event.target)) return
   closeTimeSignaturePopover()
@@ -1998,15 +2098,103 @@ async function updateTimeSignature() {
   const denominator = normalizeTimeSignatureDenominator(timeSignatureDenominator.value)
   timeSignatureNumerator.value = numerator
   timeSignatureDenominator.value = denominator
-  await persistProjectUpdate((nextProject) => {
-    nextProject.time_signature = [numerator, denominator]
-  })
+  await applyTransportTimeSignatureChange()
 }
 
 async function setTimeSignatureDenominator(denominator) {
   timeSignatureDenominator.value = normalizeTimeSignatureDenominator(denominator)
   timeSignatureDenominatorPopoverOpen.value = false
   await updateTimeSignature()
+}
+
+function isAtTimelineStart(beat) {
+  return Math.abs(Number(beat || 0)) < 0.0001
+}
+
+async function applyTransportTimeSignatureChange() {
+  const numerator = normalizeTimeSignatureNumerator(timeSignatureNumerator.value)
+  const denominator = normalizeTimeSignatureDenominator(timeSignatureDenominator.value)
+  const changeBeat = Math.max(0, roundPianoBeat(visualPositionBeats.value))
+  await persistProjectUpdate((nextProject) => {
+    if (isAtTimelineStart(changeBeat)) {
+      nextProject.time_signature = [numerator, denominator]
+      nextProject.meter_events = normalizeEditableMeterEvents(nextProject.meter_events || [])
+        .map(event => (
+          isAtTimelineStart(event.beat)
+            ? { ...event, numerator, denominator }
+            : event
+        ))
+      return
+    }
+    ensureBaseMeterEventIfNeeded(nextProject, changeBeat)
+    upsertMeterEventInProject(nextProject, changeBeat, numerator, denominator)
+  })
+}
+
+async function createPianoSubtrack() {
+  const value = pianoSubtrackCreateValue.value
+  pianoSubtrackCreateValue.value = ''
+  if (value === 'meter') {
+    await createPianoMeterLane()
+  }
+}
+
+async function createPianoMeterLane() {
+  if (!project.value || pianoMeterLaneVisible.value) return
+  await persistProjectUpdate((nextProject) => {
+    nextProject.meter_events = normalizeMeterEvents(nextProject)
+  })
+}
+
+async function upsertMeterEventAtBeat(beat) {
+  if (!project.value) return
+  const numerator = normalizeTimeSignatureNumerator(timeSignatureNumerator.value)
+  const denominator = normalizeTimeSignatureDenominator(timeSignatureDenominator.value)
+  const nextBeat = Math.max(0, snapBeatToGrid(beat, activePianoSnapStep.value))
+  await persistProjectUpdate((nextProject) => {
+    upsertMeterEventInProject(nextProject, nextBeat, numerator, denominator)
+  })
+}
+
+async function persistMeterEvents(events) {
+  if (!project.value) return
+  const normalized = normalizeEditableMeterEvents(events)
+  await persistProjectUpdate((nextProject) => {
+    nextProject.meter_events = normalized
+  })
+}
+
+async function deleteMeterEventAtIndex(index) {
+  const events = editableMeterEvents()
+  if (!events[index]) return
+  events.splice(index, 1)
+  await persistMeterEvents(events)
+}
+
+function baseMeterEvent(nextProject) {
+  const meter = Array.isArray(nextProject?.time_signature) ? nextProject.time_signature : [4, 4]
+  return {
+    beat: 0,
+    numerator: normalizeTimeSignatureNumerator(meter[0]),
+    denominator: normalizeTimeSignatureDenominator(meter[1]),
+  }
+}
+
+function ensureBaseMeterEventIfNeeded(nextProject, changeBeat) {
+  if (isAtTimelineStart(changeBeat)) return
+  const events = normalizeEditableMeterEvents(nextProject.meter_events || [])
+  const hasPreviousMarker = events.some(event => Number(event.beat || 0) < changeBeat - 0.0001)
+  if (!hasPreviousMarker) {
+    events.push(baseMeterEvent(nextProject))
+  }
+  nextProject.meter_events = normalizeEditableMeterEvents(events)
+}
+
+function upsertMeterEventInProject(nextProject, beat, numerator, denominator) {
+  nextProject.meter_events = normalizeEditableMeterEvents([
+    ...(Array.isArray(nextProject.meter_events) ? nextProject.meter_events : []),
+    { beat, numerator, denominator },
+  ])
 }
 
 function defaultTrackNameForType(type) {
@@ -2342,7 +2530,7 @@ async function seekToBeat(beat) {
   const previousBeat = visualPositionBeats.value
   visualPositionBeats.value = nextBeat
   try {
-    await transport('seek', { position: (nextBeat * 60) / tempo.value })
+    await transport('seek', { position: beatsToSeconds(project.value, nextBeat) })
   } catch {
     visualPositionBeats.value = previousBeat
   }
@@ -2433,9 +2621,16 @@ async function onArrangementPointerDown(event) {
     selectTrack(track.id)
     if (isAutomationTrack(track) && point) {
       selectedClipIds.value = new Set()
+      const hit = hitTestAutomationPoint(track, point.x, point.y, point.trackIndex)
+      if (hit) {
+        startAutomationPointDrag(track, hit.index, event.pointerId)
+        return
+      }
+      selectedAutomationPoint.value = { trackId: null, index: -1 }
       startAutomationDrag(track, point, event.pointerId)
       return
     }
+    selectedAutomationPoint.value = { trackId: null, index: -1 }
     if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
       selectedClipIds.value = new Set()
     }
@@ -2546,6 +2741,21 @@ function startAutomationDrag(track, point, pointerId) {
   drawAll()
 }
 
+function startAutomationPointDrag(track, pointIndex, pointerId) {
+  const points = ensureAutomationTrackPoints(track)
+  const point = points[pointIndex]
+  if (!point) return
+  selectedAutomationPoint.value = { trackId: track.id, index: pointIndex }
+  automationDrag = {
+    type: 'automation-point',
+    pointerId,
+    trackId: track.id,
+    pointIndex,
+  }
+  bindAutomationDrag()
+  drawAll()
+}
+
 function bindAutomationDrag() {
   window.addEventListener('pointermove', onAutomationPointerMove)
   window.addEventListener('pointerup', onAutomationPointerUp)
@@ -2564,15 +2774,19 @@ function onAutomationPointerMove(event) {
   event.preventDefault()
   const beat = snapAutomationBeat(point.beat)
   const value = automationValueFromY(track, point.y)
-  writeAutomationDragPoints(
-    track,
-    automationDrag.lastBeat,
-    automationDrag.lastValue,
-    beat,
-    value
-  )
-  automationDrag.lastBeat = beat
-  automationDrag.lastValue = value
+  if (automationDrag.type === 'automation-point') {
+    automationDrag.pointIndex = moveAutomationPoint(track, automationDrag.pointIndex, beat, value)
+  } else {
+    writeAutomationDragPoints(
+      track,
+      automationDrag.lastBeat,
+      automationDrag.lastValue,
+      beat,
+      value
+    )
+    automationDrag.lastBeat = beat
+    automationDrag.lastValue = value
+  }
   drawAll()
 }
 
@@ -2633,10 +2847,7 @@ function roundAutomationValue(value) {
 
 function normalizeAutomationPoint(track, point) {
   const { min, max } = automationValueRange(track)
-  let value = clamp(roundAutomationValue(point?.value), min, max)
-  if (track?.target?.kind === 'time_signature_numerator') {
-    value = Math.round(value)
-  }
+  const value = clamp(roundAutomationValue(point?.value), min, max)
   return {
     beat: snapAutomationBeat(point?.beat),
     value,
@@ -2664,6 +2875,30 @@ function upsertAutomationPointAt(track, beat, value) {
   if (index >= 0) points[index] = { ...points[index], ...point }
   else points.push(point)
   points.sort(sortAutomationPoints)
+}
+
+function moveAutomationPoint(track, pointIndex, beat, value) {
+  const points = ensureAutomationTrackPoints(track)
+  if (!points[pointIndex]) return pointIndex
+  const point = normalizeAutomationPoint(track, { ...points[pointIndex], beat, value })
+  points.splice(pointIndex, 1, point)
+  points.sort(sortAutomationPoints)
+  const nextIndex = points.findIndex(item => item === point)
+  selectedAutomationPoint.value = { trackId: track.id, index: nextIndex >= 0 ? nextIndex : pointIndex }
+  return selectedAutomationPoint.value.index
+}
+
+function hitTestAutomationPoint(track, x, y, trackIndex) {
+  const points = ensureAutomationTrackPoints(track)
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const point = points[index]
+    const px = Number(point.beat || 0) * arrangementPxPerBeat.value
+    const py = automationPointY(track, point, trackIndex)
+    if (Math.hypot(x - px, y - py) <= automationPointHitRadius) {
+      return { point, index }
+    }
+  }
+  return null
 }
 
 function writeAutomationDragPoints(track, startBeat, startValue, endBeat, endValue) {
@@ -2916,6 +3151,7 @@ async function onPianoPointerDown(event) {
   event.preventDefault()
   const point = pianoPoint(event)
   if (!point || point.x < pianoKeyW) return
+  closePianoMeterEditor()
   if (point.ruler) {
     pianoDrag = {
       type: 'pan',
@@ -2928,9 +3164,32 @@ async function onPianoPointerDown(event) {
     bindPianoDrag()
     return
   }
+  if (point.meterLane) {
+    const meterHit = hitTestMeterEvent(point)
+    if (meterHit && isMeterEventLabelHit(point, meterHit)) {
+      openPianoMeterEditor(event, meterHit)
+      return
+    }
+    if (pianoTool.value === 'draw' && meterHit) {
+      startDrawMeterEventPress(event, point, meterHit)
+      return
+    }
+    if (meterHit) {
+      openPianoMeterEditor(event, meterHit)
+      return
+    }
+    if (pianoTool.value === 'draw') {
+      await upsertMeterEventAtBeat(point.beat)
+    }
+    return
+  }
   const hit = hitTestPianoNote(point.x, point.y)
 
   if (hit) {
+    if (pianoTool.value === 'draw') {
+      startDrawNotePress(event, point, hit)
+      return
+    }
     const noteId = hit.note.id
     if (event.ctrlKey || event.metaKey || event.shiftKey) {
       toggleNoteSelection(noteId)
@@ -2993,11 +3252,31 @@ async function onPianoPointerDown(event) {
 function bindPianoDrag() {
   window.addEventListener('pointermove', onPianoPointerMove)
   window.addEventListener('pointerup', onPianoPointerUp)
+  window.addEventListener('pointercancel', onPianoPointerCancel)
 }
 
 function unbindPianoDrag() {
   window.removeEventListener('pointermove', onPianoPointerMove)
   window.removeEventListener('pointerup', onPianoPointerUp)
+  window.removeEventListener('pointercancel', onPianoPointerCancel)
+}
+
+function schedulePianoLongPress(callback) {
+  clearPianoLongPressTimer()
+  pianoLongPressTimer = setTimeout(() => {
+    pianoLongPressTimer = null
+    callback()
+  }, pianoDrawLongPressMs)
+}
+
+function clearPianoLongPressTimer() {
+  if (!pianoLongPressTimer) return
+  clearTimeout(pianoLongPressTimer)
+  pianoLongPressTimer = null
+}
+
+function drawPressMoved(event, drag) {
+  return Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > pianoDrawMoveTolerancePx
 }
 
 function currentPianoPanelHeight() {
@@ -3103,6 +3382,80 @@ function onPianoResizeEnd() {
   nextTick(drawAll)
 }
 
+function startDrawNotePress(event, point, hit) {
+  const noteId = hit.note.id
+  const movingIds = selectedNoteIds.value.has(noteId) ? [...selectedNoteIds.value] : [noteId]
+  pianoDrag = {
+    type: 'draw-note-press',
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startBeat: point.beat,
+    startPitch: point.pitch,
+    noteId,
+    noteStart: hit.note.start,
+    editType: hit.edge === 'right' ? 'resize' : 'move',
+    movingIds,
+    originals: cloneNotesByIds(movingIds),
+    moved: false,
+    lastPoint: null,
+  }
+  schedulePianoLongPress(() => activateDrawNotePressDrag())
+  bindPianoDrag()
+  drawAll()
+}
+
+function activateDrawNotePressDrag() {
+  if (!pianoDrag || pianoDrag.type !== 'draw-note-press') return
+  const drag = pianoDrag
+  selectedNoteIds.value = new Set(drag.movingIds)
+  pianoDrag = {
+    type: drag.editType,
+    pointerId: drag.pointerId,
+    startBeat: drag.startBeat,
+    startPitch: drag.startPitch,
+    noteId: drag.noteId,
+    noteStart: drag.noteStart,
+    originals: drag.originals,
+  }
+  if (drag.lastPoint) applyPianoDragAtPoint(pianoDrag, drag.lastPoint)
+  drawAll()
+}
+
+function startDrawMeterEventPress(event, point, meterHit) {
+  const originalEvents = editableMeterEvents()
+  pianoDrag = {
+    type: 'draw-meter-event-press',
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startBeat: point.beat,
+    eventIndex: meterHit.index,
+    originalEvent: { ...meterHit.event },
+    originalEvents,
+    moved: false,
+    lastPoint: null,
+  }
+  schedulePianoLongPress(() => activateDrawMeterEventPressDrag())
+  bindPianoDrag()
+  drawAll()
+}
+
+function activateDrawMeterEventPressDrag() {
+  if (!pianoDrag || pianoDrag.type !== 'draw-meter-event-press') return
+  const drag = pianoDrag
+  pianoDrag = {
+    type: 'meter-event-move',
+    pointerId: drag.pointerId,
+    startBeat: drag.startBeat,
+    eventIndex: drag.eventIndex,
+    originalEvent: drag.originalEvent,
+    originalEvents: drag.originalEvents,
+  }
+  if (drag.lastPoint) applyPianoDragAtPoint(pianoDrag, drag.lastPoint)
+  drawAll()
+}
+
 function onPianoPointerMove(event) {
   if (!pianoDrag) return
   if (pianoDrag.type === 'pan') {
@@ -3118,44 +3471,57 @@ function onPianoPointerMove(event) {
   const point = pianoPoint(event)
   if (!point) return
 
-  if (pianoDrag.type === 'draw' && draftNote.value) {
-    const end = Math.max(pianoDrag.startBeat + activeNoteStep.value, snapPianoBeat(point.beat))
+  if (pianoDrag.type === 'draw-note-press' || pianoDrag.type === 'draw-meter-event-press') {
+    pianoDrag.lastPoint = point
+    if (drawPressMoved(event, pianoDrag)) pianoDrag.moved = true
+    return
+  }
+
+  applyPianoDragAtPoint(pianoDrag, point)
+  drawAll()
+}
+
+function applyPianoDragAtPoint(drag, point) {
+  if (drag.type === 'draw' && draftNote.value) {
+    const end = Math.max(drag.startBeat + activeNoteStep.value, snapPianoBeat(point.beat))
     draftNote.value = {
       ...draftNote.value,
       pitch: point.pitch,
-      duration: Math.max(activeNoteStep.value, end - pianoDrag.startBeat),
+      duration: Math.max(activeNoteStep.value, end - drag.startBeat),
     }
-  } else if (pianoDrag.type === 'select' && selectionBox.value) {
+  } else if (drag.type === 'select' && selectionBox.value) {
     selectionBox.value = {
       ...selectionBox.value,
       x2: point.x,
       y2: point.y,
     }
-  } else if (pianoDrag.type === 'move') {
-    const deltaBeat = snapPianoBeatDelta(point.beat - pianoDrag.startBeat)
-    const deltaPitch = point.pitch - pianoDrag.startPitch
+  } else if (drag.type === 'move') {
+    const deltaBeat = snapPianoBeatDelta(point.beat - drag.startBeat)
+    const deltaPitch = point.pitch - drag.startPitch
     applyDraggedNotes((note) => ({
       ...note,
       start: snapPianoBeat(Math.max(0, note.start + deltaBeat)),
       pitch: clamp(note.pitch + deltaPitch, minPitch, maxPitch),
     }))
-  } else if (pianoDrag.type === 'resize') {
+  } else if (drag.type === 'resize') {
     applyDraggedNotes((note) => {
-      if (note.id !== pianoDrag.noteId) return note
-      const duration = snapPianoDuration(point.beat - pianoDrag.noteStart)
+      if (note.id !== drag.noteId) return note
+      const duration = snapPianoDuration(point.beat - drag.noteStart)
       return {
         ...note,
         duration,
       }
     })
+  } else if (drag.type === 'meter-event-move') {
+    moveMeterEventDrag(drag, point)
   }
-  drawAll()
 }
 
 async function onPianoPointerUp() {
   if (!pianoDrag || !activeMidiClip.value) return
   const drag = pianoDrag
   pianoDrag = null
+  clearPianoLongPressTimer()
   unbindPianoDrag()
 
   if (drag.type === 'pan') {
@@ -3175,7 +3541,23 @@ async function onPianoPointerUp() {
     selectionBox.value = null
   } else if (drag.type === 'move' || drag.type === 'resize') {
     await persistActiveClipNotes(activeMidiClip.value.clip.notes)
+  } else if (drag.type === 'draw-note-press') {
+    if (!drag.moved) await deletePianoNoteById(drag.noteId)
+  } else if (drag.type === 'draw-meter-event-press') {
+    if (!drag.moved) await deleteMeterEventAtIndex(drag.eventIndex)
+  } else if (drag.type === 'meter-event-move') {
+    await persistMeterEvents(project.value.meter_events || [])
   }
+  drawAll()
+}
+
+function onPianoPointerCancel() {
+  if (!pianoDrag) return
+  pianoDrag = null
+  draftNote.value = null
+  selectionBox.value = null
+  clearPianoLongPressTimer()
+  unbindPianoDrag()
   drawAll()
 }
 
@@ -3211,11 +3593,16 @@ function pianoPoint(event) {
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
   const y = event.clientY - rect.top
-  const beat = Math.max(0, (x - pianoKeyW) / pianoPxPerBeat.value)
+  const localBeat = Math.max(0, (x - pianoKeyW) / pianoPxPerBeat.value)
   const ruler = y < pianoRulerH
-  const row = Math.floor((y - pianoRulerH) / pianoRowH)
+  const meterLane = pianoMeterLaneVisible.value
+    && y >= pianoMeterLaneTop.value
+    && y < pianoMeterLaneTop.value + pianoMeterLaneH
+  const clipStart = Number(activeMidiClip.value?.clip?.start || 0)
+  const beat = meterLane ? clipStart + localBeat : localBeat
+  const row = Math.floor((y - pianoNoteTop.value) / pianoRowH)
   const pitch = clamp(maxPitch - row, minPitch, maxPitch)
-  return { x, y, beat, pitch, ruler }
+  return { x, y, beat, localBeat, pitch, ruler, meterLane }
 }
 
 function hitTestPianoNote(x, y) {
@@ -3233,14 +3620,134 @@ function hitTestPianoNote(x, y) {
   return null
 }
 
+function hitTestMeterEvent(point) {
+  if (!point?.meterLane) return null
+  const clipStart = Number(activeMidiClip.value?.clip?.start || 0)
+  const events = editableMeterEvents()
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    const x = pianoKeyW + (Number(event.beat || 0) - clipStart) * pianoPxPerBeat.value
+    const label = `${event.numerator}/${event.denominator}`
+    const labelLeft = x + 4
+    const labelRight = labelLeft + 8 + label.length * 7
+    const markerHit = Math.abs(point.x - x) <= pianoMeterEventHitRadius
+    const labelHit = point.x >= labelLeft - 2 && point.x <= labelRight
+    if (markerHit || labelHit) {
+      return { event, index }
+    }
+  }
+  return null
+}
+
+function isMeterEventLabelHit(point, meterHit) {
+  if (!point?.meterLane || !meterHit?.event) return false
+  const clipStart = Number(activeMidiClip.value?.clip?.start || 0)
+  const x = pianoKeyW + (Number(meterHit.event.beat || 0) - clipStart) * pianoPxPerBeat.value
+  const label = `${meterHit.event.numerator}/${meterHit.event.denominator}`
+  const left = x + 4
+  const right = left + 8 + label.length * 7
+  return point.x >= left - 2
+    && point.x <= right
+    && point.y >= pianoMeterLaneTop.value
+    && point.y <= pianoMeterLaneTop.value + pianoMeterLaneH
+}
+
+function openPianoMeterEditor(event, meterHit) {
+  event.preventDefault()
+  event.stopPropagation()
+  const workspaceRect = pianoWorkspace.value?.getBoundingClientRect?.()
+  const x = workspaceRect
+    ? clamp(event.clientX - workspaceRect.left + 8, 8, Math.max(8, workspaceRect.width - 174))
+    : 8
+  const y = workspaceRect
+    ? clamp(event.clientY - workspaceRect.top + 8, 8, Math.max(8, workspaceRect.height - 92))
+    : pianoRulerH + 8
+  pianoMeterEditor.value = {
+    open: true,
+    x,
+    y,
+    eventIndex: meterHit.index,
+    beat: Number(meterHit.event.beat || 0),
+    numerator: normalizeTimeSignatureNumerator(meterHit.event.numerator),
+    denominator: normalizeTimeSignatureDenominator(meterHit.event.denominator),
+  }
+}
+
+function closePianoMeterEditor() {
+  if (!pianoMeterEditor.value.open) return
+  pianoMeterEditor.value = {
+    ...pianoMeterEditor.value,
+    open: false,
+  }
+}
+
+async function applyPianoMeterEditor() {
+  const editor = pianoMeterEditor.value
+  if (!editor.open || !project.value) return
+  const numerator = normalizeTimeSignatureNumerator(editor.numerator)
+  const denominator = normalizeTimeSignatureDenominator(editor.denominator)
+  pianoMeterEditor.value = {
+    ...editor,
+    numerator,
+    denominator,
+  }
+  await persistProjectUpdate((nextProject) => {
+    if (isAtTimelineStart(editor.beat)) {
+      nextProject.time_signature = [numerator, denominator]
+    }
+    const events = normalizeEditableMeterEvents(nextProject.meter_events || [])
+    if (events[editor.eventIndex]) {
+      events[editor.eventIndex] = {
+        ...events[editor.eventIndex],
+        numerator,
+        denominator,
+      }
+      nextProject.meter_events = normalizeEditableMeterEvents(events)
+    } else {
+      upsertMeterEventInProject(nextProject, editor.beat, numerator, denominator)
+    }
+  })
+}
+
 function noteRect(note) {
   const scale = pianoPxPerBeat.value
   return {
     x: pianoKeyW + Number(note.start) * scale,
-    y: pianoRulerH + (maxPitch - Number(note.pitch)) * pianoRowH + 1,
+    y: pianoNoteTop.value + (maxPitch - Number(note.pitch)) * pianoRowH + 1,
     w: Math.max(8, Number(note.duration) * scale),
     h: pianoRowH - 2,
   }
+}
+
+function editableMeterEvents() {
+  return normalizeEditableMeterEvents(project.value?.meter_events || [])
+}
+
+function normalizeEditableMeterEvents(events) {
+  const byBeat = new Map()
+  for (const rawEvent of Array.isArray(events) ? events : []) {
+    const beat = Math.max(0, roundPianoBeat(rawEvent?.beat ?? rawEvent?.start ?? 0))
+    byBeat.set(beat, {
+      beat,
+      numerator: normalizeTimeSignatureNumerator(rawEvent?.numerator),
+      denominator: normalizeTimeSignatureDenominator(rawEvent?.denominator),
+    })
+  }
+  return [...byBeat.values()].sort((a, b) => a.beat - b.beat)
+}
+
+function roundPianoBeat(value) {
+  return Math.round(Number(value || 0) * 1000000) / 1000000
+}
+
+function moveMeterEventDrag(drag, point) {
+  if (!project.value) return
+  const deltaBeat = snapPianoBeatDelta(point.beat - drag.startBeat)
+  const nextBeat = Math.max(0, snapBeatToGrid(Number(drag.originalEvent.beat || 0) + deltaBeat, activePianoSnapStep.value))
+  const nextEvents = drag.originalEvents.map((event, index) => (
+    index === drag.eventIndex ? { ...event, beat: nextBeat } : { ...event }
+  ))
+  project.value.meter_events = normalizeEditableMeterEvents(nextEvents)
 }
 
 function cloneNotesByIds(ids) {
@@ -3340,6 +3847,15 @@ async function deleteSelectedNotes() {
   const selected = selectedNoteIds.value
   const remaining = activeMidiClip.value.clip.notes.filter(note => !selected.has(note.id))
   selectedNoteIds.value = new Set()
+  await persistActiveClipNotes(remaining)
+}
+
+async function deletePianoNoteById(noteId) {
+  if (!activeMidiClip.value) return
+  const remaining = activeMidiClip.value.clip.notes.filter(note => note.id !== noteId)
+  const nextSelection = new Set(selectedNoteIds.value)
+  nextSelection.delete(noteId)
+  selectedNoteIds.value = nextSelection
   await persistActiveClipNotes(remaining)
 }
 
@@ -3509,6 +4025,7 @@ function onControllerLanePointerDown(event, lane) {
   const value = controllerValueFromY(point.y, definition)
 
   if (definition.type === 'velocity') {
+    selectedControllerEventId.value = null
     const note = findControllerVelocityNote(point.beat)
     if (!note) return
     updateNoteVelocity(note.id, value)
@@ -3519,8 +4036,22 @@ function onControllerLanePointerDown(event, lane) {
       definition,
     }
   } else {
+    const hit = hitTestControllerEvent(definition, point.x, point.y)
+    if (hit) {
+      selectedControllerEventId.value = hit.id
+      controllerDrag = {
+        type: 'event-point',
+        laneId: lane.id,
+        eventId: hit.id,
+        definition,
+      }
+      bindControllerDrag()
+      drawAll()
+      return
+    }
     const beat = snapControllerBeat(point.beat)
     const eventId = upsertControllerEventAtPoint(definition, beat, value)
+    selectedControllerEventId.value = eventId
     controllerDrag = {
       type: 'event',
       laneId: lane.id,
@@ -3553,6 +4084,9 @@ function onControllerPointerMove(event) {
   const value = controllerValueFromY(point.y, controllerDrag.definition)
   if (controllerDrag.type === 'velocity') {
     updateNoteVelocity(controllerDrag.noteId, value)
+  } else if (controllerDrag.type === 'event-point') {
+    const beat = snapControllerBeat(point.beat)
+    updateControllerEvent(controllerDrag.definition, controllerDrag.eventId, { beat, value })
   } else {
     const beat = snapControllerBeat(point.beat)
     controllerDrag.eventId = writeControllerDragPoints(
@@ -3668,13 +4202,27 @@ function findControllerEvent(definition, beat) {
     .find(event => Math.abs(Number(event.start || 0) - beat) <= threshold)
 }
 
+function hitTestControllerEvent(definition, x, y) {
+  const events = activeMidiClip.value?.clip.events || []
+  for (const event of [...events].reverse()) {
+    if (!eventMatchesController(event, definition)) continue
+    const px = pianoKeyW + Number(event.start || 0) * pianoPxPerBeat.value
+    const py = controllerValueToY(valueFromControllerEvent(event, definition), definition)
+    if (Math.hypot(x - px, y - py) <= controllerPointHitRadius) {
+      return event
+    }
+  }
+  return null
+}
+
 function updateControllerEvent(definition, eventId, patch) {
   if (!activeMidiClip.value) return
   activeMidiClip.value.clip.events = (activeMidiClip.value.clip.events || [])
     .map((event) => {
       if (event.id !== eventId) return event
       const value = patch.value ?? valueFromControllerEvent(event, definition)
-      return normalizeControllerEvent(definition, { ...event, ...patch, value }, activePianoSnapStep.value)
+      const start = patch.beat ?? patch.start ?? event.start
+      return normalizeControllerEvent(definition, { ...event, ...patch, start, value }, activePianoSnapStep.value)
     })
     .sort(sortControllerEvents)
 }
@@ -3740,8 +4288,12 @@ function onStudioKeydown(event) {
   } else if (event.key === 'Escape') {
     selectedNoteIds.value = new Set()
     selectedClipIds.value = new Set()
+    selectedAutomationPoint.value = { trackId: null, index: -1 }
+    selectedControllerEventId.value = null
     selectionBox.value = null
     draftNote.value = null
+    clearPianoLongPressTimer()
+    closePianoMeterEditor()
     controllerMenuLaneId.value = null
     pianoQuantizeMenuOpen.value = false
     automationDrag = null
@@ -3787,12 +4339,16 @@ function openPiano() {
 function closePiano() {
   if (lowerEditorMode.value === 'piano') lowerEditorMode.value = null
   selectedNoteIds.value = new Set()
+  selectedControllerEventId.value = null
   draftNote.value = null
   selectionBox.value = null
   pianoResizeDrag = null
   controllerDrag = null
   automationDrag = null
   controllerMenuLaneId.value = null
+  clearPianoLongPressTimer()
+  closePianoMeterEditor()
+  unbindPianoDrag()
   unbindPianoResize()
   unbindControllerDrag()
   unbindAutomationDrag()
@@ -3802,10 +4358,13 @@ function closePiano() {
 function openMixer() {
   lowerEditorMode.value = 'mixer'
   selectedNoteIds.value = new Set()
+  selectedControllerEventId.value = null
   draftNote.value = null
   selectionBox.value = null
   pianoQuantizeMenuOpen.value = false
   controllerMenuLaneId.value = null
+  clearPianoLongPressTimer()
+  closePianoMeterEditor()
   unbindPianoDrag()
   unbindPianoResize()
   unbindControllerDrag()
@@ -4016,7 +4575,6 @@ function automationTargetLabel(target) {
   if (!target) return 'Unassigned'
   if (target.kind === 'unassigned') return target.label || 'Unassigned'
   if (target.kind === 'tempo_bpm') return target.label || 'Tempo BPM'
-  if (target.kind === 'time_signature_numerator') return target.label || 'Time Signature Numerator'
   if (target.kind === 'track_volume') return target.label || `Track ${target.track_id} Volume`
   if (target.kind === 'track_pan') return target.label || `Track ${target.track_id} Pan`
   return target.label || `Param ${target.param_index ?? 0}`
@@ -4052,13 +4610,6 @@ function automationTargetForTempoBpm() {
   return {
     kind: 'tempo_bpm',
     label: 'Tempo BPM',
-  }
-}
-
-function automationTargetForTimeSignatureNumerator() {
-  return {
-    kind: 'time_signature_numerator',
-    label: 'Time Signature Numerator',
   }
 }
 
@@ -4106,8 +4657,9 @@ async function createAutomationTrackForTarget(target, options = {}) {
 
 function automationInitialValue(target) {
   const track = tracks.value.find(item => Number(item.id) === Number(target?.track_id))
-  if (target?.kind === 'tempo_bpm') return Number(tempo.value || 120)
-  if (target?.kind === 'time_signature_numerator') return Number(timeSignatureNumerator.value || 4)
+  if (target?.kind === 'tempo_bpm') {
+    return Number(effectiveTempoAtBeat(project.value, visualPositionBeats.value) || 120)
+  }
   if (target?.kind === 'track_volume') return Number(track?.volume ?? 0.8)
   if (target?.kind === 'track_pan') return Number(track?.pan ?? 0)
   if (target?.kind === 'plugin_parameter') {
@@ -4254,10 +4806,11 @@ function animationLoop(now) {
   const delta = (now - lastFrame) / 1000
   lastFrame = now
   if (playing.value) {
-    visualPositionBeats.value += delta * (tempo.value / 60)
+    visualPositionBeats.value += delta * (effectiveTempoAtBeat(project.value, visualPositionBeats.value) / 60)
   } else {
     visualPositionBeats.value = positionBeats.value
   }
+  syncTransportDisplayFields(project.value)
   drawAll()
   raf = requestAnimationFrame(animationLoop)
 }
@@ -4349,11 +4902,16 @@ function arrangementLengthBeats() {
 
 function pianoLengthBeats(clip) {
   const emptyTailBeats = pianoEmptyBars * Math.max(1, meterBeats.value)
+  const clipStart = Number(clip.start || 0)
   const noteEnd = Math.max(
     0,
     ...(clip.notes || []).map((note) => Number(note.start || 0) + Number(note.duration || 0))
   )
-  return Math.max(Number(clip.duration || 4), emptyTailBeats, noteEnd + 2)
+  const meterEventEnd = Math.max(
+    0,
+    ...(project.value?.meter_events || []).map(event => Number(event.beat || 0) - clipStart)
+  )
+  return Math.max(Number(clip.duration || 4), emptyTailBeats, noteEnd + 2, meterEventEnd + 2)
 }
 
 function drawArrangementClip(ctx, track, clip, trackIndex) {
@@ -4395,7 +4953,9 @@ function drawArrangementClip(ctx, track, clip, trackIndex) {
 }
 
 function drawAutomationTrack(ctx, track, trackIndex) {
-  const points = Array.isArray(track?.automation?.points) ? track.automation.points : []
+  const points = Array.isArray(track?.automation?.points)
+    ? [...track.automation.points].sort(sortAutomationPoints)
+    : []
   const y = arrangementRulerH + trackIndex * arrangementTrackH
   const midY = y + arrangementTrackH * 0.5
   const left = 0
@@ -4403,29 +4963,46 @@ function drawAutomationTrack(ctx, track, trackIndex) {
   ctx.strokeStyle = hexToRgba(track.color, track.mute ? 0.22 : 0.74)
   ctx.lineWidth = 2
   ctx.beginPath()
-  ctx.moveTo(left, midY)
   if (!points.length) {
+    ctx.moveTo(left, midY)
     ctx.lineTo(right, midY)
   } else {
-    points.forEach((point, index) => {
-      const x = Number(point.beat || 0) * arrangementPxPerBeat.value
-      const py = automationPointY(track, point, trackIndex)
-      if (index === 0) ctx.lineTo(x, py)
-      else ctx.lineTo(x, py)
-    })
+    drawAutomationHoldLine(ctx, track, points, trackIndex, right)
   }
   ctx.stroke()
-  ctx.fillStyle = hexToRgba(track.color, track.mute ? 0.28 : 0.95)
-  for (const point of points) {
+  for (const [index, point] of points.entries()) {
     const x = Number(point.beat || 0) * arrangementPxPerBeat.value
     const py = automationPointY(track, point, trackIndex)
+    const selected = Number(selectedAutomationPoint.value.trackId) === Number(track.id)
+      && selectedAutomationPoint.value.index === index
+    ctx.fillStyle = selected ? '#f0d17a' : hexToRgba(track.color, track.mute ? 0.28 : 0.95)
     ctx.beginPath()
-    ctx.arc(x, py, 4, 0, Math.PI * 2)
+    ctx.arc(x, py, selected ? 5 : 4, 0, Math.PI * 2)
     ctx.fill()
+    if (selected) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.72)'
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+    }
   }
   ctx.fillStyle = 'rgba(244,246,248,0.72)'
   ctx.font = '10px Cascadia Mono, Consolas, monospace'
   ctx.fillText(automationTargetLabel(track.target), 8, y + 16)
+}
+
+function drawAutomationHoldLine(ctx, track, points, trackIndex, right) {
+  const first = points[0]
+  const last = points[points.length - 1]
+  const firstX = Number(first.beat || 0) * arrangementPxPerBeat.value
+  const firstY = automationPointY(track, first, trackIndex)
+  ctx.moveTo(0, firstY)
+  ctx.lineTo(firstX, firstY)
+  for (const point of points) {
+    const x = Number(point.beat || 0) * arrangementPxPerBeat.value
+    const py = automationPointY(track, point, trackIndex)
+    ctx.lineTo(x, py)
+  }
+  ctx.lineTo(right, automationPointY(track, last, trackIndex))
 }
 
 function drawZrythmAudioRegionFrame(ctx, clip, rect, track, selected, active) {
@@ -4628,15 +5205,16 @@ function drawPiano() {
     pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
   )
   pianoTimelineWidth.value = width
-  const height = pianoRulerH + (maxPitch - minPitch + 1) * pianoRowH
+  const height = pianoNoteTop.value + (maxPitch - minPitch + 1) * pianoRowH
   const ctx = setupCanvas(canvas, width, height)
   ctx.fillStyle = '#17191c'
   ctx.fillRect(0, 0, width, height)
   drawPianoRuler(ctx, width, clip)
+  drawPianoMeterLane(ctx, width, clip)
 
   for (let pitch = maxPitch; pitch >= minPitch; pitch -= 1) {
     const row = maxPitch - pitch
-    const y = pianoRulerH + row * pianoRowH
+    const y = pianoNoteTop.value + row * pianoRowH
     const black = [1, 3, 6, 8, 10].includes(pitch % 12)
     ctx.fillStyle = black ? '#111316' : '#202326'
     ctx.fillRect(0, y, pianoKeyW, pianoRowH)
@@ -4828,13 +5406,15 @@ function drawEventLane(ctx, clip, definition, colorStyles) {
   ctx.stroke()
 
   for (const point of points) {
-    if (point.start === tailBeat && point.synthetic) continue
+    if (point.synthetic) continue
     const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
     const y = controllerValueToY(point.value, definition)
+    const selected = point.event?.id && point.event.id === selectedControllerEventId.value
     ctx.beginPath()
-    ctx.arc(x, y, point.synthetic ? 3 : 4, 0, Math.PI * 2)
+    ctx.arc(x, y, selected ? 5 : 4, 0, Math.PI * 2)
+    ctx.fillStyle = selected ? '#f0d17a' : colorStyles.eventFill
     ctx.fill()
-    ctx.strokeStyle = colorStyles.eventPointStroke
+    ctx.strokeStyle = selected ? 'rgba(255,255,255,0.72)' : colorStyles.eventPointStroke
     ctx.stroke()
   }
   ctx.lineWidth = 1
@@ -4871,20 +5451,14 @@ function drawRuler(ctx, width) {
 }
 
 function isRulerBarBeat(absoluteBeat) {
-  const barLen = meterBeats.value
-  if (!Number.isFinite(barLen) || barLen <= 0) return false
-  const bar = Number(absoluteBeat || 0) / barLen
-  return Math.abs(bar - Math.round(bar)) < 0.0001
+  const beat = Number(absoluteBeat || 0)
+  return meterBarLinesBetween(project.value, Math.max(0, beat - 0.0001), beat + 0.0001)
+    .some(line => Math.abs(line.beat - beat) < 0.0001)
 }
 
 function rulerBeatLabel(absoluteBeat) {
-  const barLen = meterBeats.value
-  const unit = beatUnit.value
-  const safeBeat = Math.max(0, Number(absoluteBeat || 0))
-  const bar = Math.floor(safeBeat / barLen) + 1
-  const posInBar = safeBeat - Math.floor(safeBeat / barLen) * barLen
-  const beatInBar = Math.floor((posInBar + 0.0001) / unit) + 1
-  return beatInBar === 1 ? String(bar) : `${bar}.${beatInBar}`
+  const position = meterPositionAtBeat(project.value, absoluteBeat)
+  return position.beat === 1 ? String(position.bar) : `${position.bar}.${position.beat}`
 }
 
 function rulerTickStep() {
@@ -4892,7 +5466,8 @@ function rulerTickStep() {
 }
 
 function isRulerBeatUnitTick(absoluteBeat) {
-  const unit = beatUnit.value
+  const meter = effectiveMeterAtBeat(project.value, absoluteBeat)
+  const unit = 4 / meter.denominator
   if (!Number.isFinite(unit) || unit <= 0) return false
   const beat = Number(absoluteBeat || 0) / unit
   return Math.abs(beat - Math.round(beat)) < 0.0001
@@ -4984,8 +5559,6 @@ function drawBeatRulerLabels(ctx, {
 function drawPianoRuler(ctx, width, clip) {
   const scale = pianoPxPerBeat.value
   const clipStart = Number(clip.start || 0)
-  const barLen = meterBeats.value
-  const unit = beatUnit.value
   const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
   const endBeat = clipStart + visibleBeats
   ctx.fillStyle = '#202326'
@@ -5012,9 +5585,14 @@ function drawPianoRuler(ctx, width, clip) {
   }
 
   // Beat-unit tick marks (only when they fall at non-integer positions and there's room)
-  if (unit !== 1 && unit * scale >= 12) {
-    for (let b = Math.ceil(clipStart / unit); b * unit <= endBeat + 0.001; b++) {
-      const absoluteBeat = b * unit
+  for (const segment of meterSegments(project.value, clipStart, endBeat)) {
+    const unit = segment.beatUnit
+    if (!Number.isFinite(unit) || unit <= 0 || Math.abs(unit - 1) < 0.0001 || unit * scale < 12) continue
+    for (
+      let absoluteBeat = firstMultipleAtOrAfter(segment.start, unit, segment.anchor);
+      absoluteBeat <= segment.end + 0.001;
+      absoluteBeat += unit
+    ) {
       if (Math.abs(absoluteBeat - Math.round(absoluteBeat)) < 0.0001) continue // already drawn as quarter-note line
       const x = pianoKeyW + (absoluteBeat - clipStart) * scale
       ctx.strokeStyle = 'rgba(229,236,245,0.06)'
@@ -5025,9 +5603,8 @@ function drawPianoRuler(ctx, width, clip) {
     }
   }
 
-  // Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)
-  for (let bar = Math.ceil((clipStart - 0.000001) / barLen); bar * barLen <= endBeat + 0.001; bar++) {
-    const barBeat = bar * barLen
+  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
+    const barBeat = line.beat
     const x = pianoKeyW + (barBeat - clipStart) * scale
     ctx.strokeStyle = 'rgba(240, 209, 122, 0.28)'
     ctx.beginPath()
@@ -5046,6 +5623,52 @@ function drawPianoRuler(ctx, width, clip) {
   })
 }
 
+function drawPianoMeterLane(ctx, width, clip) {
+  if (!pianoMeterLaneVisible.value) return
+  const scale = pianoPxPerBeat.value
+  const clipStart = Number(clip.start || 0)
+  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
+  const endBeat = clipStart + visibleBeats
+  const top = pianoMeterLaneTop.value
+  const bottom = top + pianoMeterLaneH
+
+  ctx.fillStyle = '#191d21'
+  ctx.fillRect(0, top, width, pianoMeterLaneH)
+  ctx.fillStyle = '#252b30'
+  ctx.fillRect(0, top, pianoKeyW, pianoMeterLaneH)
+  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
+  ctx.beginPath()
+  ctx.moveTo(0, top + 0.5)
+  ctx.lineTo(width, top + 0.5)
+  ctx.moveTo(0, bottom - 0.5)
+  ctx.lineTo(width, bottom - 0.5)
+  ctx.stroke()
+
+  ctx.fillStyle = '#aeb8c5'
+  ctx.font = '10px Cascadia Mono, Consolas, monospace'
+  ctx.fillText('Meter', 10, top + 17)
+
+  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
+    const x = pianoKeyW + (line.beat - clipStart) * scale
+    ctx.strokeStyle = 'rgba(240, 209, 122, 0.16)'
+    ctx.beginPath()
+    ctx.moveTo(x, top)
+    ctx.lineTo(x, bottom)
+    ctx.stroke()
+  }
+
+  for (const event of normalizeMeterEvents(project.value)) {
+    if (event.beat < clipStart - 0.001 || event.beat > endBeat + 0.001) continue
+    const x = pianoKeyW + (event.beat - clipStart) * scale
+    ctx.fillStyle = 'rgba(240, 209, 122, 0.18)'
+    roundRect(ctx, x - 3, top + 4, 6, pianoMeterLaneH - 8, 3)
+    ctx.fill()
+    ctx.fillStyle = '#f0d17a'
+    ctx.font = '11px Cascadia Mono, Consolas, monospace'
+    ctx.fillText(`${event.numerator}/${event.denominator}`, x + 5, top + 18)
+  }
+}
+
 function paintPianoGrid(ctx, width, height, clip) {
   const scale = pianoPxPerBeat.value
   const clipStart = Number(clip.start || 0)
@@ -5057,7 +5680,7 @@ function paintPianoGrid(ctx, width, height, clip) {
     ctx.strokeStyle = 'rgba(229,236,245,0.075)'
     ctx.lineWidth = 0.5
     ctx.beginPath()
-    ctx.moveTo(x, pianoRulerH)
+    ctx.moveTo(x, pianoNoteTop.value)
     ctx.lineTo(x, height)
     ctx.stroke()
 
@@ -5066,25 +5689,21 @@ function paintPianoGrid(ctx, width, height, clip) {
       for (let subBeat = activePianoSnapStep.value; subBeat < 1; subBeat += activePianoSnapStep.value) {
         const subX = x + subBeat * scale
         ctx.beginPath()
-        ctx.moveTo(subX, pianoRulerH)
+        ctx.moveTo(subX, pianoNoteTop.value)
         ctx.lineTo(subX, height)
         ctx.stroke()
       }
     }
   }
 
-  const meter = meterBeats.value
   const endBeat = clipStart + visibleBeats
-  for (
-    let barBeat = firstMultipleAtOrAfter(clipStart, meter);
-    barBeat <= endBeat + 0.001;
-    barBeat += meter
-  ) {
+  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
+    const barBeat = line.beat
     const x = pianoKeyW + (barBeat - clipStart) * scale
     ctx.strokeStyle = 'rgba(240, 209, 122, 0.24)'
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.moveTo(x, pianoRulerH)
+    ctx.moveTo(x, pianoNoteTop.value)
     ctx.lineTo(x, height)
     ctx.stroke()
   }
@@ -5126,8 +5745,8 @@ function paintGrid(ctx, width, height, offsetX, offsetY) {
   }
 }
 
-function firstMultipleAtOrAfter(value, step) {
-  return Math.ceil((Number(value || 0) - 0.000001) / step) * step
+function firstMultipleAtOrAfter(value, step, origin = 0) {
+  return origin + Math.ceil(((Number(value || 0) - origin) - 0.000001) / step) * step
 }
 
 function drawPlayhead(ctx, height, offsetX = 0) {
@@ -5149,7 +5768,8 @@ function drawPlayhead(ctx, height, offsetX = 0) {
 
 function drawPianoPlayhead(ctx, height, clip) {
   const localBeat = visualPositionBeats.value - Number(clip.start || 0)
-  if (localBeat < 0 || localBeat > Number(clip.duration || 0)) return
+  const visibleLength = pianoLengthBeats(clip)
+  if (localBeat < 0 || localBeat > visibleLength) return
   const x = pianoKeyW + localBeat * pianoPxPerBeat.value
   ctx.strokeStyle = '#f0d17a'
   ctx.lineWidth = 1.6
@@ -5250,6 +5870,7 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   clearTimeout(tempoUpdateTimer)
+  clearPianoLongPressTimer()
   clearInterval(learnedParameterPollTimer)
   if (resizeObserver) resizeObserver.disconnect()
   unbindPianoDrag()
@@ -5263,8 +5884,7 @@ onUnmounted(() => {
 })
 
 watch(project, (nextProject) => {
-  syncTempoField(nextProject)
-  syncTimeSignatureFields(nextProject)
+  syncTransportDisplayFields(nextProject)
   if (activeClipId.value && !findClipRecord(activeClipId.value)) {
     activeClipId.value = null
     if (lowerEditorMode.value === 'piano') lowerEditorMode.value = null
@@ -5278,6 +5898,7 @@ watch(activeTrack, () => {
 })
 watch(positionBeats, (value) => {
   visualPositionBeats.value = value
+  syncTransportDisplayFields(project.value)
   drawAll()
 })
 </script>
@@ -6472,11 +7093,67 @@ watch(positionBeats, (value) => {
 }
 
 .piano-workspace {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+.piano-meter-popover {
+  position: absolute;
+  z-index: 24;
+  width: 166px;
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(229, 236, 245, 0.18);
+  border-radius: 7px;
+  background: #24282c;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
+}
+
+.piano-meter-popover label {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.piano-meter-popover span {
+  color: var(--t4);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.piano-meter-popover input,
+.piano-meter-popover select {
+  height: 26px;
+  min-width: 0;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 4px;
+  background: #101215;
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.piano-meter-popover input {
+  width: 100%;
+  padding: 0 7px;
+}
+
+.piano-meter-popover select {
+  width: 100%;
+  padding: 0 6px;
+}
+
+.piano-meter-popover input:focus,
+.piano-meter-popover select:focus {
+  outline: none;
+  border-color: rgba(240, 209, 122, 0.5);
+  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
 }
 
 .controller-lanes-wrap {
@@ -6722,6 +7399,23 @@ watch(positionBeats, (value) => {
   color: var(--t3);
   text-transform: none;
   font-size: 10px;
+}
+
+.piano-subtrack-select {
+  height: 28px;
+  min-width: 92px;
+  border: 1px solid rgba(229, 236, 245, 0.14);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #2b3035;
+  color: #d9e0e8;
+  font: 650 11px var(--mono);
+  cursor: pointer;
+}
+
+.piano-subtrack-select:focus {
+  outline: 1px solid rgba(240, 209, 122, 0.42);
+  outline-offset: 1px;
 }
 
 .piano-quantize {

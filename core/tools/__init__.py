@@ -20,7 +20,14 @@ from .grep import GrepTool
 from .lint import LintTool
 from .list_dir import ListDirTool
 from .mcp import create_mcp_tools
-from .midi import MidiBatchEditTool, MidiDiffTool, MidiInspectTool, MidiQueryTool, MidiWriteTool
+from .midi import (
+    MidiBatchEditTool,
+    MidiDiffTool,
+    MidiInspectTool,
+    MidiQueryTool,
+    MidiWriteTool,
+    PianoPlayabilityCheckTool,
+)
 from .mode import AgentModeTool
 from .music import MusicTool
 from .novelai_image import NovelAIImageTool
@@ -96,6 +103,7 @@ def create_tools(
         MidiBatchEditTool(workspace),
         MidiQueryTool(workspace),
         MidiInspectTool(workspace),
+        PianoPlayabilityCheckTool(workspace),
         VstParamQueryTool(workspace),
         VstParamSetTool(workspace),
         AutomationQueryTool(workspace),

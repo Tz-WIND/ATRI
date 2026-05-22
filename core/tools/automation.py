@@ -56,12 +56,11 @@ def _automation_retarget_schema() -> dict[str, Any]:
         "track_volume",
         "track_pan",
         "tempo_bpm",
-        "time_signature_numerator",
     ]
     schema["anyOf"] = [
         *schema["anyOf"],
         {
-            "properties": {"kind": {"enum": ["tempo_bpm", "time_signature_numerator"]}},
+            "properties": {"kind": {"enum": ["tempo_bpm"]}},
             "required": ["kind"],
         },
     ]
@@ -133,7 +132,8 @@ class VstParamSetTool(Tool):
     name = "vst_param_set"
     description = (
         "Set one live VST or plugin parameter immediately. This changes the current sound "
-        "but does not create or edit project automation."
+        "and autosaves the captured plugin state to the Music Studio project, but does not "
+        "create or edit project automation."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
@@ -150,7 +150,11 @@ class VstParamSetTool(Tool):
         },
         "required": ["track_id", "param_index", "value"],
     }
-    capabilities = ToolCapabilities(capability="music.vst.write")
+    capabilities = ToolCapabilities(
+        capability="music.vst.write",
+        writes_files=True,
+        network=True,
+    )
 
     def execute(
         self,
@@ -212,7 +216,7 @@ class AutomationWriteTool(Tool):
     name = "automation_write"
     description = (
         "Create or replace a track-scoped automation track in the ATRI music project. "
-        "Use automation_global_write for tempo BPM or time signature numerator automation. "
+        "Use automation_global_write for tempo BPM automation. "
         "This writes timeline automation and requests dashboard/host sync."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
@@ -234,8 +238,13 @@ class AutomationWriteTool(Tool):
         normalized_kind = str((target or {}).get("kind") or "").strip().lower()
         if not normalized_kind:
             return "Error: target.kind is required"
-        if normalized_kind in {"tempo_bpm", "time_signature_numerator"}:
-            return "Error: use automation_global_write for tempo or time signature automation"
+        if normalized_kind == "tempo_bpm":
+            return "Error: use automation_global_write for tempo automation"
+        if normalized_kind == "time_signature_numerator":
+            return (
+                "Error: time_signature_numerator is not an automation target; "
+                "use the piano roll meter track"
+            )
         if normalized_kind in {"track_volume", "track_pan", "plugin_parameter"} and (
             target or {}
         ).get("track_id") in (None, ""):
@@ -259,16 +268,15 @@ class AutomationWriteTool(Tool):
 class AutomationGlobalWriteTool(Tool):
     name = "automation_global_write"
     description = (
-        "Create or replace global Music Studio automation for tempo BPM or time signature "
-        "numerator. Use this instead of automation_write when automating tempo or meter so "
-        "no track_id is required."
+        "Create or replace global Music Studio automation for tempo BPM. Use this instead "
+        "of automation_write when automating tempo so no track_id is required."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
         "properties": {
             "kind": {
                 "type": "string",
-                "enum": ["tempo_bpm", "time_signature_numerator"],
+                "enum": ["tempo_bpm"],
                 "description": "Global automation target to write.",
             },
             "points": _automation_write_properties()["points"],
@@ -293,8 +301,8 @@ class AutomationGlobalWriteTool(Tool):
         **kwargs: Any,
     ) -> str:
         normalized_kind = str(kind or "").strip().lower()
-        if normalized_kind not in {"tempo_bpm", "time_signature_numerator"}:
-            return "Error: kind must be tempo_bpm or time_signature_numerator"
+        if normalized_kind != "tempo_bpm":
+            return "Error: kind must be tempo_bpm"
         payload = {
             "kind": normalized_kind,
             "points": points,

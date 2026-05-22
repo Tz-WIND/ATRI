@@ -14,6 +14,7 @@ from core.music_project import (
     midi_write,
     project_summary,
 )
+from core.piano_playability import piano_playability_check
 
 from .base import Tool, ToolCapabilities
 
@@ -536,6 +537,65 @@ class MidiInspectTool(Tool):
                 include=include,
                 limit=limit,
                 offset=offset,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+class PianoPlayabilityCheckTool(Tool):
+    name = "piano_playability_check"
+    description = (
+        "Analyze a piano MIDI track or selected beat range for playability without editing "
+        "the project. Reports single-hand span problems, difficulty-only rapid leaps, and "
+        "accepted left-hand-over-right crossing cases when the right hand is blocked."
+    )
+    parameters: dict[str, Any] = {  # noqa: RUF012
+        "type": "object",
+        "properties": {
+            "track_id": {
+                "type": "integer",
+                "description": "Project piano track id to inspect.",
+            },
+            "selection": {
+                "type": "object",
+                "description": "Optional selection filter. Common key: range [start,end].",
+                "properties": {
+                    "range": {
+                        "type": "array",
+                        "items": {"type": "number", "minimum": 0},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                },
+            },
+            "strictness": {
+                "type": "string",
+                "enum": ["relaxed", "standard", "strict"],
+                "default": "standard",
+                "description": "Reserved for future threshold tuning; standard is used now.",
+            },
+        },
+        "required": ["track_id"],
+    }
+    capabilities = ToolCapabilities(
+        capability="music.piano.playability",
+        read_only=True,
+        supports_parallel=True,
+    )
+
+    def execute(
+        self,
+        track_id: int,
+        selection: dict[str, Any] | None = None,
+        strictness: str = "standard",
+        **kwargs: Any,
+    ) -> str:
+        return json.dumps(
+            piano_playability_check(
+                track_id=track_id,
+                selection=selection,
+                strictness=strictness,
             ),
             ensure_ascii=False,
             indent=2,

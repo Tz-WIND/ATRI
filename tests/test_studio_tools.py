@@ -501,7 +501,7 @@ def test_automation_global_write_posts_ai_friendly_payload(monkeypatch, tmp_path
             "ok": True,
             "summary": {
                 "track_id": 9,
-                "target": {"kind": "time_signature_numerator"},
+                "target": {"kind": "tempo_bpm"},
                 "points": 2,
             },
             "sync": {"host_running": False},
@@ -511,9 +511,9 @@ def test_automation_global_write_posts_ai_friendly_payload(monkeypatch, tmp_path
 
     result = json.loads(
         AutomationGlobalWriteTool(str(tmp_path)).execute(
-            kind="time_signature_numerator",
-            points=[{"beat": 0, "value": 3.2}, {"beat": 8, "value": 7.6}],
-            name="Meter Map",
+            kind="tempo_bpm",
+            points=[{"beat": 0, "value": 90}, {"beat": 8, "value": 132}],
+            name="Tempo Map",
             color="#58a7b8",
         )
     )
@@ -523,9 +523,9 @@ def test_automation_global_write_posts_ai_friendly_payload(monkeypatch, tmp_path
             "POST",
             "/api/music/studio/automation/global",
             {
-                "kind": "time_signature_numerator",
-                "points": [{"beat": 0, "value": 3.2}, {"beat": 8, "value": 7.6}],
-                "name": "Meter Map",
+                "kind": "tempo_bpm",
+                "points": [{"beat": 0, "value": 90}, {"beat": 8, "value": 132}],
+                "name": "Tempo Map",
                 "color": "#58a7b8",
             },
             3,
@@ -565,12 +565,20 @@ def test_automation_write_rejects_track_target_without_track_id(tmp_path):
 
 
 def test_automation_write_rejects_global_targets(tmp_path):
-    result = AutomationWriteTool(str(tmp_path)).execute(
+    tempo_result = AutomationWriteTool(str(tmp_path)).execute(
         target={"kind": "tempo_bpm"},
         points=[{"beat": 0, "value": 120}],
     )
+    meter_result = AutomationWriteTool(str(tmp_path)).execute(
+        target={"kind": "time_signature_numerator"},
+        points=[{"beat": 0, "value": 4}],
+    )
 
-    assert result == "Error: use automation_global_write for tempo or time signature automation"
+    assert tempo_result == "Error: use automation_global_write for tempo automation"
+    assert (
+        meter_result == "Error: time_signature_numerator is not an automation target; "
+        "use the piano roll meter track"
+    )
 
 
 def test_automation_retarget_schema_accepts_global_targets(tmp_path):
@@ -581,10 +589,9 @@ def test_automation_retarget_schema_accepts_global_targets(tmp_path):
         "track_volume",
         "track_pan",
         "tempo_bpm",
-        "time_signature_numerator",
     ]
     assert {
-        "properties": {"kind": {"enum": ["tempo_bpm", "time_signature_numerator"]}},
+        "properties": {"kind": {"enum": ["tempo_bpm"]}},
         "required": ["kind"],
     } in target_schema["anyOf"]
 

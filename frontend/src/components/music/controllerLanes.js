@@ -168,17 +168,14 @@ export function controllerRenderPoints(events, definition, tailBeat) {
 
   if (!actualPoints.length) return []
 
-  const zeroValue = controller.defaultValue
   const first = actualPoints[0]
   const last = actualPoints[actualPoints.length - 1]
   const end = Math.max(Number(tailBeat || 0), last.start)
 
   return [
-    { start: 0, value: zeroValue, synthetic: true },
-    { start: first.start, value: zeroValue, synthetic: true },
+    { start: 0, value: first.value, synthetic: true },
     ...actualPoints,
-    { start: last.start, value: zeroValue, synthetic: true },
-    { start: end, value: zeroValue, synthetic: true },
+    { start: end, value: last.value, synthetic: true },
   ]
 }
 

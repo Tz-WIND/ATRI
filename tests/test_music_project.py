@@ -252,7 +252,7 @@ def test_automation_targets_can_address_bus_tracks(tmp_path, monkeypatch):
     assert automation_track["target"]["track_id"] == bus_track["id"]
 
 
-def test_automation_write_accepts_global_tempo_and_meter_targets(tmp_path, monkeypatch):
+def test_automation_write_accepts_global_tempo_target(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     load_project()
 
@@ -270,25 +270,6 @@ def test_automation_write_accepts_global_tempo_and_meter_targets(tmp_path, monke
     assert [(point["beat"], point["value"]) for point in tempo_track["automation"]["points"]] == [
         (0.0, 90.0),
         (4.0, 132.0),
-    ]
-
-    project, meter_summary = automation_write(
-        {"kind": "time_signature_numerator"},
-        points=[{"beat": 0, "value": 3.2}, {"beat": 8, "value": 7.6}],
-        name="Time Signature Numerator",
-    )
-    meter_track = project["tracks"][-1]
-
-    assert meter_summary["target_status"] == "valid"
-    assert meter_track["target"] == {
-        "kind": "time_signature_numerator",
-        "label": "Time Signature Numerator",
-    }
-    assert meter_track["automation"]["value_min"] == 1.0
-    assert meter_track["automation"]["value_max"] == 255.0
-    assert [(point["beat"], point["value"]) for point in meter_track["automation"]["points"]] == [
-        (0.0, 3.0),
-        (8.0, 8.0),
     ]
 
 
@@ -453,6 +434,29 @@ def test_project_accepts_free_time_signature_numerator_and_limited_denominator(
     project = save_project({"time_signature": [9, 3]}, tmp_path / "limited.json")
 
     assert project["time_signature"] == [9, 4]
+
+
+def test_project_preserves_dedicated_meter_events(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    project = save_project(
+        {
+            "time_signature": [4, 4],
+            "meter_events": [
+                {"beat": 8, "numerator": 3, "denominator": 4},
+                {"beat": 14, "numerator": 5, "denominator": 8},
+                {"beat": 20, "numerator": 9, "denominator": 3},
+            ],
+        },
+        tmp_path / "meter_events.json",
+    )
+
+    assert project["meter_events"] == [
+        {"beat": 8.0, "numerator": 3, "denominator": 4},
+        {"beat": 14.0, "numerator": 5, "denominator": 8},
+        {"beat": 20.0, "numerator": 9, "denominator": 4},
+    ]
+    assert project["length_beats"] >= 20
 
 
 def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):

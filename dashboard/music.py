@@ -731,7 +731,7 @@ def _automation_lanes_for_host(
         target: dict[str, Any] = target_payload if isinstance(target_payload, dict) else {}
         kind = str(target.get("kind") or "")
         host_target: dict[str, Any]
-        if kind in {"tempo_bpm", "time_signature_numerator"}:
+        if kind == "tempo_bpm":
             host_target = {"kind": kind}
         else:
             host_track_id = _host_track_id_for_project_target(project, target.get("track_id"))
@@ -1010,9 +1010,15 @@ async def _sync_project_to_host(
 ) -> dict[str, Any]:
     host = _host_manager()
     if not host.is_running:
+        project = save_project(project)
         if broadcast:
             await _broadcast_project(project)
-        return {"host_running": False, "commands": []}
+        return {
+            "host_running": False,
+            "commands": [],
+            "project": project,
+            "summary": project_summary(project),
+        }
 
     commands: list[dict[str, Any]] = []
     status = await host.send_command("get_status")
@@ -1247,7 +1253,7 @@ async def _sync_project_to_host(
         )
     )
 
-    if project_changed:
+    if project_changed or broadcast:
         project = save_project(project)
     if broadcast:
         await _broadcast_project(project)
@@ -1460,12 +1466,18 @@ async def studio_set_plugin_parameter():
         },
     )
     ok = response.get("type") != "error"
+    state_capture: list[dict[str, Any]] = []
+    if ok:
+        project, state_capture = await _capture_and_save_plugin_states(project)
+        await _broadcast_project(project)
     return (
         jsonify(
             {
                 "ok": ok,
                 "error": response.get("message") if not ok else None,
                 "response": response,
+                "project": project if ok else None,
+                "state": state_capture,
                 "host": _host_snapshot(),
             }
         ),
@@ -1724,8 +1736,8 @@ async def studio_automation_write():
 async def studio_global_automation_write():
     data = await _json_payload()
     kind = str(data.get("kind") or "").strip().lower()
-    if kind not in {"tempo_bpm", "time_signature_numerator"}:
-        return jsonify({"error": "kind must be tempo_bpm or time_signature_numerator"}), 400
+    if kind != "tempo_bpm":
+        return jsonify({"error": "kind must be tempo_bpm"}), 400
     raw_track_id = data.get("track_id")
     try:
         track_id = None if raw_track_id in (None, "") else int(str(raw_track_id))

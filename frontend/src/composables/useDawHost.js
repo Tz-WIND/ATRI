@@ -1,4 +1,5 @@
 import { computed, ref, shallowRef } from 'vue'
+import { secondsToBeats } from '@/components/music/tempoAutomation.js'
 import { useApi } from './useApi.js'
 import pcmPlayerWorkletUrl from '../worklets/pcm-player-worklet.js?url'
 
@@ -35,8 +36,7 @@ const tracks = computed(() => project.value?.tracks || [])
 const activeTrack = computed(() => (
   tracks.value.find(track => track.id === activeTrackId.value) || tracks.value[0] || null
 ))
-const tempo = computed(() => Number(project.value?.tempo || 120))
-const positionBeats = computed(() => (positionSeconds.value * tempo.value) / 60)
+const positionBeats = computed(() => secondsToBeats(project.value, positionSeconds.value))
 const totalNotes = computed(() => tracks.value.reduce((sum, track) => sum + track.notes.length, 0))
 const learnedAutomationParameters = computed(() => (
   Array.isArray(project.value?.automation_learned_parameters)

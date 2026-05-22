@@ -55,6 +55,23 @@ class ParameterStudioHost(FakeStudioHost):
         return {"type": "ack", "cmd": cmd}
 
 
+class StatefulParameterStudioHost(ParameterStudioHost):
+    async def send_command(self, cmd, params=None):
+        params = params or {}
+        self.commands.append((cmd, params))
+        if cmd == "get_status":
+            return {"tracks": [{"id": 4}]}
+        if cmd == "set_plugin_parameter":
+            return {"type": "ack", "cmd": cmd}
+        if cmd == "get_plugin_state":
+            return {
+                "type": "ack",
+                "cmd": cmd,
+                "data": {"state_b64": "AAECAw=="},
+            }
+        return {"type": "ack", "cmd": cmd}
+
+
 class CapturedParameterStudioHost(ParameterStudioHost):
     async def send_command(self, cmd, params=None):
         params = params or {}
@@ -125,6 +142,10 @@ class FreshRoutingHost:
         return {"type": "ack", "cmd": cmd}
 
 
+class StoppedStudioHost:
+    is_running = False
+
+
 async def test_load_track_slots_does_not_load_builtin_for_empty_bus():
     host = FakeStudioHost()
 
@@ -136,6 +157,28 @@ async def test_load_track_slots_does_not_load_builtin_for_empty_bus():
 
     assert responses == []
     assert host.commands == []
+
+
+async def test_sync_project_to_host_persists_unsaved_project_when_host_is_stopped(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    project = music.load_project()
+    project["title"] = "Unsaved Agent Edit"
+    project["tracks"][0]["name"] = "Agent Lead"
+    project["tracks"][0]["notes"] = [
+        {"id": "agent_note", "pitch": 64, "start": 0, "duration": 1, "velocity": 100}
+    ]
+    monkeypatch.setattr(music, "_host_manager", lambda: StoppedStudioHost())
+
+    sync = await music._sync_project_to_host(project, broadcast=True)
+
+    saved = music.load_project()
+    assert sync["host_running"] is False
+    assert saved["title"] == "Unsaved Agent Edit"
+    assert saved["tracks"][0]["name"] == "Agent Lead"
+    assert saved["tracks"][0]["notes"][0]["id"] == "agent_note"
 
 
 async def test_load_track_slots_loads_bus_insert_slots():
@@ -372,14 +415,6 @@ async def test_sync_project_to_host_skips_automation_routes_and_sends_lanes(monk
             "points": [
                 {"beat": 0.0, "value": 120.0, "curve": "linear"},
                 {"beat": 4.0, "value": 132.0, "curve": "linear"},
-            ],
-            "muted": False,
-        },
-        {
-            "target": {"kind": "time_signature_numerator"},
-            "points": [
-                {"beat": 0.0, "value": 4.0, "curve": "linear"},
-                {"beat": 8.0, "value": 7.0, "curve": "linear"},
             ],
             "muted": False,
         },
@@ -735,6 +770,52 @@ async def test_plugin_parameter_metadata_route_translates_project_track(monkeypa
     assert ("list_plugin_parameters", {"track_id": 4, "slot_index": 0}) in host.commands
 
 
+async def test_studio_set_plugin_parameter_autosaves_captured_state(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    host = StatefulParameterStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+    music.save_project(
+        {
+            "title": "Param Save",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "tracks": [
+                {
+                    "id": 10,
+                    "host_track_id": 4,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "plugin_slots": [{"id": "instrument", "type": "vst3", "name": "Synth"}],
+                }
+            ],
+        }
+    )
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/plugin/parameter",
+        json={"track_id": 10, "slot_id": "instrument", "param_index": 2, "value": 0.64},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    saved_slot = music.load_project()["tracks"][0]["plugin_slots"][0]
+    assert saved_slot["state_b64"] == "AAECAw=="
+    assert (
+        "get_plugin_state",
+        {"track_id": 4, "slot_index": 0},
+    ) in host.commands
+    assert body["state"][0]["slot_id"] == "instrument"
+
+
 async def test_captured_plugin_parameters_are_learned_without_creating_tracks(
     tmp_path,
     monkeypatch,
@@ -833,7 +914,22 @@ async def test_studio_global_automation_write_rejects_track_targets():
     body = await response.get_json()
 
     assert response.status_code == 400
-    assert body["error"] == "kind must be tempo_bpm or time_signature_numerator"
+    assert body["error"] == "kind must be tempo_bpm"
+
+
+async def test_studio_global_automation_write_rejects_time_signature_numerator():
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/automation/global",
+        json={"kind": "time_signature_numerator", "points": [{"beat": 0, "value": 4}]},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == "kind must be tempo_bpm"
 
 
 async def test_studio_global_automation_write_rejects_invalid_track_id():

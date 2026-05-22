@@ -89,6 +89,8 @@ def test_registered_tools_expose_capability_metadata(tmp_path):
     assert tools["vst_param_query"].metadata()["capability"] == "music.vst.read"
     assert tools["vst_param_query"].metadata()["read_only"] is True
     assert tools["vst_param_set"].metadata()["capability"] == "music.vst.write"
+    assert tools["vst_param_set"].metadata()["writes_files"] is True
+    assert tools["vst_param_set"].metadata()["network"] is True
     assert tools["automation_query"].metadata()["capability"] == "music.automation.read"
     assert tools["automation_write"].metadata()["capability"] == "music.automation.write"
     assert tools["automation_global_write"].metadata()["capability"] == "music.automation.write"

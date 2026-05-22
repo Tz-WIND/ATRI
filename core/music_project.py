@@ -56,7 +56,7 @@ MIDI_CURVE_EVENT_TYPES = {
 }
 
 TRACK_AUTOMATION_TARGET_KINDS = {"plugin_parameter", "track_volume", "track_pan"}
-GLOBAL_AUTOMATION_TARGET_KINDS = {"tempo_bpm", "time_signature_numerator"}
+GLOBAL_AUTOMATION_TARGET_KINDS = {"tempo_bpm"}
 
 MIDI_CURVE_MAX_POINTS = 4096
 METER_DENOMINATORS = {2, 4, 8, 16, 32}
@@ -74,6 +74,7 @@ def default_project() -> dict[str, Any]:
         "title": "ATRI Session",
         "tempo": 120.0,
         "time_signature": [4, 4],
+        "meter_events": [],
         "length_beats": 16.0,
         "updated_at": _now_iso(),
         "automation_learned_parameters": [],
@@ -166,6 +167,7 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         "title": str(project.get("title") or base["title"]),
         "tempo": _positive_float(project.get("tempo"), base["tempo"]),
         "time_signature": _normalize_meter(project.get("time_signature")),
+        "meter_events": _normalize_meter_events(project.get("meter_events")),
         "length_beats": _positive_float(project.get("length_beats"), base["length_beats"]),
         "updated_at": str(project.get("updated_at") or _now_iso()),
         "automation_learned_parameters": _normalize_learned_parameters(
@@ -277,7 +279,11 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         ),
         default=0.0,
     )
-    max_end = max(max_clip_end, max_automation_end)
+    max_meter_event_end = max(
+        (event["beat"] for event in normalized["meter_events"]),
+        default=0.0,
+    )
+    max_end = max(max_clip_end, max_automation_end, max_meter_event_end)
     normalized["length_beats"] = max(normalized["length_beats"], _ceil_to_bar(max_end))
     return normalized
 
@@ -1297,7 +1303,9 @@ def _new_automation_track(
 def _normalize_automation_target(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     kind = str(raw.get("kind") or raw.get("type") or "track_volume").strip().lower()
-    if kind not in {
+    if kind == "time_signature_numerator":
+        kind = "unassigned"
+    elif kind not in {
         *TRACK_AUTOMATION_TARGET_KINDS,
         *GLOBAL_AUTOMATION_TARGET_KINDS,
         "unassigned",
@@ -3325,6 +3333,23 @@ def _normalize_meter_denominator(value: Any) -> int:
     except (TypeError, ValueError):
         return 4
     return parsed if parsed in METER_DENOMINATORS else 4
+
+
+def _normalize_meter_events(value: Any) -> list[dict[str, Any]]:
+    raw_events = value if isinstance(value, list) else []
+    by_beat: dict[float, dict[str, Any]] = {}
+    for raw_event in raw_events:
+        if not isinstance(raw_event, dict):
+            continue
+        beat = round(_non_negative_float(_first_present(raw_event, ("beat", "start"), 0.0), 0.0), 6)
+        numerator = _bounded_int(raw_event.get("numerator"), 4, 1, MAX_METER_NUMERATOR)
+        denominator = _normalize_meter_denominator(raw_event.get("denominator"))
+        by_beat[beat] = {
+            "beat": beat,
+            "numerator": numerator,
+            "denominator": denominator,
+        }
+    return [by_beat[beat] for beat in sorted(by_beat)]
 
 
 def _track_color(value: Any, index: int) -> str:

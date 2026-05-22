@@ -173,21 +173,14 @@ def test_music_studio_meter_beats_respects_time_signature_denominator():
     assert "normalizeTimeSignatureDenominator(project.value?.time_signature?.[1])" in studio_text
 
 
-def test_music_studio_beat_unit_respects_time_signature_for_beat_numbering():
-    """beatUnit = meterBeats / numerator controls beat-within-bar numbering.
-    positionLabel and pianoRulerBeatLabel must use beatUnit so that 6/8 shows
-    beat 2 at position 0.5, not beat 1."""
+def test_music_studio_beat_numbering_uses_meter_event_positions():
+    """Position and ruler labels use the same meter event helper so 6/8 and
+    later meter changes count beat-within-bar from the active meter segment."""
     studio_text = _read(STUDIO_COMPONENT)
 
-    # beatUnit computed exists
-    assert "const beatUnit = computed(() => {" in studio_text
-    assert "meterBeats.value / numerator" in studio_text
-    # positionLabel uses beatUnit for beat-in-bar and ticks
-    assert "const unit = beatUnit.value" in studio_text
-    assert "posInBar % unit" in studio_text
-    # pianoRulerBeatLabel uses beatUnit
-    assert "const barLen = meterBeats.value" in studio_text
-    assert "const unit = beatUnit.value" in studio_text
+    assert "meterPositionAtBeat(project.value, visualPositionBeats.value)" in studio_text
+    assert "meterPositionAtBeat(project.value, absoluteBeat)" in studio_text
+    assert "effectiveMeterAtBeat(project.value, absoluteBeat)" in studio_text
 
 
 def test_music_studio_grid_overlays_bar_lines_at_fractional_positions():
@@ -214,7 +207,9 @@ def test_music_studio_piano_and_arrangement_rulers_share_decimal_beat_labels():
 
     assert "function rulerBeatLabel(absoluteBeat)" in studio_text
     assert "function drawBeatRulerLabels(ctx, {" in studio_text
-    assert "return beatInBar === 1 ? String(bar) : `${bar}.${beatInBar}`" in studio_text
+    assert (
+        "return position.beat === 1 ? String(position.bar) : `${position.bar}.${position.beat}`"
+    ) in studio_text
     assert "drawBeatRulerLabels(ctx, {\n    startBeat: 0," in studio_text
     assert "originX: 0," in studio_text
     assert "drawBeatRulerLabels(ctx, {\n    startBeat: clipStart," in studio_text
@@ -556,6 +551,99 @@ def test_music_studio_automation_tracks_can_be_drawn_like_controller_lanes():
     assert "function automationPointY(track, point, trackIndex)" in studio_text
 
 
+def test_music_studio_automation_points_can_be_selected_and_dragged_without_redrawing():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const selectedAutomationPoint = ref({ trackId: null, index: -1 })" in studio_text
+    assert (
+        "const hit = hitTestAutomationPoint(track, point.x, point.y, point.trackIndex)"
+        in studio_text
+    )
+    assert "startAutomationPointDrag(track, hit.index, event.pointerId)" in studio_text
+    assert "type: 'automation-point'" in studio_text
+    assert "moveAutomationPoint(track, automationDrag.pointIndex, beat, value)" in studio_text
+    assert "function drawAutomationHoldLine(ctx, track, points, trackIndex, right)" in studio_text
+
+
+def test_music_studio_controller_events_can_be_selected_and_dragged_without_redrawing():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const selectedControllerEventId = ref(null)" in studio_text
+    assert "const hit = hitTestControllerEvent(definition, point.x, point.y)" in studio_text
+    assert "type: 'event-point'" in studio_text
+    assert (
+        "updateControllerEvent(controllerDrag.definition, controllerDrag.eventId, { beat, value })"
+        in studio_text
+    )
+    assert "if (point.synthetic) continue" in studio_text
+
+
+def test_music_studio_piano_roll_has_dedicated_meter_lane():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'class="piano-subtrack-select"' in studio_text
+    assert "pianoSubtrackCreateValue" in studio_text
+    assert "createPianoSubtrack()" in studio_text
+    assert "const pianoMeterLaneVisible = computed(" in studio_text
+    assert "const pianoMeterLaneH = 28" in studio_text
+    assert "const pianoMeterLaneTop = computed(" in studio_text
+    assert "if (point.meterLane) {" in studio_text
+    assert "function drawPianoMeterLane(ctx, width, clip)" in studio_text
+    assert "meterBarLinesBetween(project.value, clipStart, endBeat)" in studio_text
+    assert "await upsertMeterEventAtBeat(point.beat)" in studio_text
+    assert "upsertMeterEventInProject(nextProject, nextBeat, numerator, denominator)" in studio_text
+
+
+def test_music_studio_piano_meter_label_opens_editor_and_playhead_uses_visible_piano_length():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'ref="pianoMeterEditorRoot"' in studio_text
+    assert 'class="piano-meter-popover"' in studio_text
+    assert "openPianoMeterEditor(event, meterHit)" in studio_text
+    assert "isMeterEventLabelHit(point, meterHit)" in studio_text
+    assert "applyPianoMeterEditor()" in studio_text
+    assert "const visibleLength = pianoLengthBeats(clip)" in studio_text
+    assert "localBeat > visibleLength" in studio_text
+
+
+def test_music_studio_top_right_meter_change_writes_event_at_cursor_or_global_at_zero():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "function isAtTimelineStart(beat)" in studio_text
+    assert "async function applyTransportTimeSignatureChange()" in studio_text
+    assert "if (isAtTimelineStart(changeBeat))" in studio_text
+    assert "nextProject.time_signature = [numerator, denominator]" in studio_text
+    assert "ensureBaseMeterEventIfNeeded(nextProject, changeBeat)" in studio_text
+    assert (
+        "upsertMeterEventInProject(nextProject, changeBeat, numerator, denominator)" in studio_text
+    )
+    assert "baseMeterEvent(nextProject)" in studio_text
+
+
+def test_music_studio_piano_ruler_uses_meter_segments_for_fractional_beat_ticks():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "meterSegments(project.value, clipStart, endBeat)" in studio_text
+    assert "firstMultipleAtOrAfter(segment.start, unit, segment.anchor)" in studio_text
+    assert "if (unit !== 1" not in studio_text
+
+
+def test_music_studio_draw_mode_existing_notes_and_meter_events_use_click_delete_long_press_drag():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const pianoDrawLongPressMs = 260" in studio_text
+    assert "startDrawNotePress(event, point, hit)" in studio_text
+    assert "startDrawMeterEventPress(event, point, meterHit)" in studio_text
+    assert "type: 'draw-note-press'" in studio_text
+    assert "type: 'draw-meter-event-press'" in studio_text
+    assert "schedulePianoLongPress(() => activateDrawNotePressDrag())" in studio_text
+    assert "schedulePianoLongPress(() => activateDrawMeterEventPressDrag())" in studio_text
+    assert "await deletePianoNoteById(drag.noteId)" in studio_text
+    assert "await deleteMeterEventAtIndex(drag.eventIndex)" in studio_text
+    assert "type: 'meter-event-move'" in studio_text
+    assert "await persistMeterEvents(project.value.meter_events || [])" in studio_text
+
+
 def test_music_studio_exposes_automation_parameter_picker_and_learned_list():
     studio_text = _read(STUDIO_COMPONENT)
     host_text = _read(DAW_HOST)
@@ -569,16 +657,10 @@ def test_music_studio_exposes_automation_parameter_picker_and_learned_list():
     assert "defaultAutomationTargets" in studio_text
     assert "learnedAutomationTargets" in studio_text
     assert "automationTargetForTempoBpm()" in studio_text
-    assert "automationTargetForTimeSignatureNumerator()" in studio_text
     assert 'key: "global-tempo-bpm"' in studio_text
-    assert 'key: "global-time-signature-numerator"' in studio_text
     assert (
         '@contextmenu.prevent="openAutomationMenu($event, automationTargetForTempoBpm(), '
         "'Tempo BPM')"
-    ) in studio_text
-    assert (
-        '@contextmenu.prevent.stop="openAutomationMenu($event, '
-        "automationTargetForTimeSignatureNumerator(), 'Time Signature Numerator')"
     ) in studio_text
     assert 'class="automation-learned-row"' in studio_text
     assert '@click="bindAutomationPickerTarget(item.target)"' in studio_text
@@ -589,13 +671,23 @@ def test_music_studio_exposes_automation_parameter_picker_and_learned_list():
     assert "bindAutomationPickerTarget(target)" in studio_text
     assert "Bind" not in studio_text
     assert "target?.kind === 'tempo_bpm'" in studio_text
-    assert "target?.kind === 'time_signature_numerator'" in studio_text
-    assert "if (track?.target?.kind === 'time_signature_numerator')" in studio_text
+    assert "time_signature_numerator" not in studio_text
     assert "pollCapturedPluginParameters" in studio_text
     assert "async function pollCapturedPluginParameters()" in host_text
     assert "async function renameLearnedAutomationParameter(id, name)" in host_text
     assert "studioCapturedPluginParameters: ()" in api_text
     assert "studioRenameLearnedPluginParameter: (id, name)" in api_text
+
+
+def test_music_studio_frontend_transport_uses_tempo_automation_and_meter_events():
+    studio_text = _read(STUDIO_COMPONENT)
+    host_text = _read(DAW_HOST)
+
+    assert "secondsToBeats(project.value, positionSeconds.value)" in host_text
+    assert "beatsToSeconds(project.value, nextBeat)" in studio_text
+    assert "effectiveTempoAtBeat(project.value, visualPositionBeats.value) / 60" in studio_text
+    assert "effectiveMeterAtBeat(nextProject, visualPositionBeats.value)" in studio_text
+    assert "syncTransportDisplayFields(project.value)" in studio_text
 
 
 def test_music_studio_audio_waveform_uses_zrythm_region_style():

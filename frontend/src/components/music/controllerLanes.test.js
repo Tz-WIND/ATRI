@@ -116,7 +116,7 @@ test('normalizeControllerEvent_withQuantizeOffPreservesEventBeat', () => {
   assert.equal(event.start, 1.31)
 })
 
-test('controllerRenderPoints_defaultEmptyAreasToZero', () => {
+test('controllerRenderPoints_extendsFirstAndLastEventValuesAcrossEmptyAreas', () => {
   const definition = controllerDefinitionFromId('cc:1')
   const points = controllerRenderPoints([
     { id: 'a', type: 'control_change', controller: 1, start: 1, value: 64 },
@@ -128,12 +128,10 @@ test('controllerRenderPoints_defaultEmptyAreasToZero', () => {
     value: point.value,
     synthetic: point.synthetic,
   })), [
-    { start: 0, value: 0, synthetic: true },
-    { start: 1, value: 0, synthetic: true },
+    { start: 0, value: 64, synthetic: true },
     { start: 1, value: 64, synthetic: false },
     { start: 2, value: 32, synthetic: false },
-    { start: 2, value: 0, synthetic: true },
-    { start: 4, value: 0, synthetic: true },
+    { start: 4, value: 32, synthetic: true },
   ])
 })
 
