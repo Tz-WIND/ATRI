@@ -231,7 +231,19 @@ class StudioTrackTool(_StudioDashboardTool):
             "color": {"type": "string"},
             "channel_type": {"type": "string", "enum": ["mono", "multichannel"]},
             "output_bus_id": {"type": "integer"},
-            "sends": {"type": "array"},
+            "sends": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "target_bus_id": {"type": "integer", "minimum": 0},
+                        "target_track_id": {"type": "integer", "minimum": 0},
+                        "level": {"type": "number", "minimum": 0, "maximum": 2},
+                        "enabled": {"type": "boolean"},
+                    },
+                },
+            },
             "updates": {
                 "type": "object",
                 "description": "Patch payload for update, such as volume, pan, mute, solo.",
@@ -457,11 +469,26 @@ class StudioAudioImportTool(_StudioDashboardTool):
             "start": {"type": "number", "minimum": 0, "default": 0},
             "start_beat": {"type": "number", "minimum": 0, "description": "Alias for start."},
             "duration_seconds": {"type": "number", "minimum": 0},
-            "waveform": {"type": "array"},
+            "waveform": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "number"},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "min": {"type": "number"},
+                                "max": {"type": "number"},
+                                "rms": {"type": "number"},
+                                "peak": {"type": "number"},
+                            },
+                        },
+                    ],
+                },
+            },
             "original_name": {"type": "string"},
             "name": {"type": "string", "description": "Alias for original_name."},
         },
-        "anyOf": [{"required": ["file_path"]}, {"required": ["path"]}],
     }
     capabilities = ToolCapabilities(
         capability="music.studio.audio",

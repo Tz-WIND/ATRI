@@ -13,6 +13,7 @@ export function useChat() {
   const messages = ref([])
   const sending = ref(false)
   const tokenInfo = ref(null)
+  const todoSnapshot = ref(emptyTodoSnapshot())
 
   // Thinking state
   const thinkingText = ref('')
@@ -52,9 +53,16 @@ export function useChat() {
       finishThinkingBlock()
       finishAssistantStream(msg.content || '')
     }
+    if (msg.type === 'todo_snapshot') {
+      todoSnapshot.value = normalizeTodoSnapshot(msg.todo || msg.todo_snapshot || msg)
+      finishThinkingBlock()
+      finishAssistantStream()
+      addTodoMessage(todoSnapshot.value)
+    }
     if (msg.type === 'tool_start') {
       finishThinkingBlock()
       finishAssistantStream()
+      if (msg.data.tool === 'todo') return
       addToolMessage(msg.data.id, {
         tool: msg.data.tool,
         args: msg.data.args,
@@ -73,6 +81,7 @@ export function useChat() {
     }
     if (msg.type === 'tool_end') {
       finishThinkingBlock()
+      if (msg.data.tool === 'todo') return
       updateToolMessage(msg.data.id, {
         tool: msg.data.tool,
         args: msg.data.args,
@@ -252,6 +261,7 @@ export function useChat() {
 
   function resetMessages() {
     messages.value = []
+    todoSnapshot.value = emptyTodoSnapshot()
     toolMessageIndex.clear()
     streamingAssistantId = null
     streamingMessage = null
@@ -273,6 +283,7 @@ export function useChat() {
     const rawMessages = Array.isArray(transcript) ? transcript : transcript?.messages || []
     const runtimeTurns = Array.isArray(transcript?.runtimeTurns) ? transcript.runtimeTurns : []
     const runtimeItems = Array.isArray(transcript?.runtimeItems) ? transcript.runtimeItems : []
+    todoSnapshot.value = normalizeTodoSnapshot(transcript?.todoSnapshot)
     const reasoningByTurn = new Map()
 
     runtimeItems
@@ -330,6 +341,9 @@ export function useChat() {
         })
       } else if (m.role === 'tool') {
         const call = callsById.get(m.tool_call_id) || {}
+        if (call.tool === 'todo') {
+          return
+        }
         const result = m.content || ''
         addToolMessage(m.tool_call_id, {
           tool: call.tool || 'tool',
@@ -346,6 +360,7 @@ export function useChat() {
       addRuntimeThinkingForNextTurn()
     }
     fallbackReasoning.forEach(addRuntimeThinkingMessage)
+    addTodoMessage(todoSnapshot.value)
   }
 
   function addRuntimeThinkingMessage(item) {
@@ -499,6 +514,57 @@ export function useChat() {
     })
   }
 
+  function emptyTodoSnapshot() {
+    return {
+      items: [],
+      total: 0,
+      completed: 0,
+      all_completed: false,
+      updated_at: '',
+      session_id: '',
+    }
+  }
+
+  function normalizeTodoSnapshot(raw) {
+    if (!raw || typeof raw !== 'object') return emptyTodoSnapshot()
+    const items = Array.isArray(raw.items)
+      ? raw.items
+        .map((item, index) => ({
+          id: String(item?.id || `todo-${index + 1}`),
+          content: String(item?.content || item?.title || item?.text || '').trim(),
+          status: item?.status === 'completed' ? 'completed' : 'pending',
+        }))
+        .filter((item) => item.content)
+      : []
+    const completed = items.filter((item) => item.status === 'completed').length
+    return {
+      items,
+      total: Number(raw.total ?? items.length),
+      completed: Number(raw.completed ?? completed),
+      all_completed: Boolean(raw.all_completed ?? (items.length > 0 && completed === items.length)),
+      updated_at: String(raw.updated_at || ''),
+      session_id: String(raw.session_id || ''),
+    }
+  }
+
+  function addTodoMessage(snapshot) {
+    if (!snapshot?.items?.length) return
+    const last = messages.value[messages.value.length - 1]
+    if (last?.role === 'todo') {
+      patchMessage(last.id, {
+        todoSnapshot: snapshot,
+        time: new Date(),
+      })
+      return
+    }
+    messages.value.push({
+      id: makeId(),
+      role: 'todo',
+      todoSnapshot: snapshot,
+      time: new Date(),
+    })
+  }
+
   async function cancelMessage() {
     if (!sending.value) return
     try {
@@ -560,6 +626,7 @@ export function useChat() {
     messages,
     sending,
     tokenInfo,
+    todoSnapshot,
     thinkingBlock,
     toolCards,
     handleWsEvent,

@@ -338,7 +338,7 @@ class AutomationDiffTool(Tool):
                         "curve": {"type": "string", "enum": ["linear", "hold"]},
                         "start": {"type": "number", "minimum": 0},
                         "end": {"type": "number", "minimum": 0},
-                        "points": {"type": "array"},
+                        "points": _automation_write_properties()["points"],
                     },
                     "required": ["op"],
                 },

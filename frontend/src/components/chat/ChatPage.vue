@@ -67,6 +67,10 @@
             v-for="item in displayItems"
             :key="item.id"
           >
+            <AgentTodoPanel
+              v-if="item.type === 'todo'"
+              :todo-snapshot="item.message.todoSnapshot"
+            />
             <ToolCard
               v-if="item.type === 'tool'"
               :tool-data="item.message.toolData"
@@ -172,6 +176,7 @@ import PageHeader from '@/components/layout/PageHeader.vue'
 import ChatMessage from './ChatMessage.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 import ToolCard from './ToolCard.vue'
+import AgentTodoPanel from './AgentTodoPanel.vue'
 import ChatInput from './ChatInput.vue'
 import SessionPanel from './SessionPanel.vue'
 import FilePanel from './FilePanel.vue'
@@ -353,7 +358,7 @@ async function loadChatSession(id) {
   resetMessages()
   handledEventCount = events.value.length
   const transcript = await loadSessionMessages(id)
-  if (transcript.messages.length || transcript.runtimeItems.length) {
+  if (transcript.messages.length || transcript.runtimeItems.length || transcript.todoSnapshot?.items?.length) {
     loadTranscript(transcript)
   }
   scrollToBottom()

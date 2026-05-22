@@ -388,6 +388,9 @@ class AgentTool(Tool):
                 skill_manager=parent.skill_manager,
                 tool_result_store=parent.context.tool_result_store,
                 task_store=parent.task_store,
+                todo_store=getattr(parent, "todo_store", None),
+                todo_session_id=getattr(parent, "todo_session_id", ""),
+                todo_on_change=getattr(parent, "todo_on_change", None),
                 mcp_servers=parent.mcp_servers,
                 mode_controller=parent.mode_controller,
             )
@@ -407,6 +410,9 @@ class AgentTool(Tool):
             skills_prompt=parent.skills_prompt,
             skill_manager=parent.skill_manager,
             task_store=parent.task_store,
+            todo_store=getattr(parent, "todo_store", None),
+            todo_session_id=getattr(parent, "todo_session_id", ""),
+            todo_on_change=getattr(parent, "todo_on_change", None),
             mode_controller=parent.mode_controller,
             mcp_servers=parent.mcp_servers,
         )

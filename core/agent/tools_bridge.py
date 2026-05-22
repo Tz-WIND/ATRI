@@ -18,6 +18,9 @@ def get_all_tools(
     skill_manager=None,
     tool_result_store=None,
     task_store=None,
+    todo_store=None,
+    todo_session_id: str = "",
+    todo_on_change=None,
     mcp_servers: dict | None = None,
     mode_controller=None,
 ) -> list[Tool]:
@@ -28,6 +31,9 @@ def get_all_tools(
         skill_manager=skill_manager,
         tool_result_store=tool_result_store,
         task_store=task_store,
+        todo_store=todo_store,
+        todo_session_id=todo_session_id,
+        todo_on_change=todo_on_change,
         mcp_servers=mcp_servers,
         mode_controller=mode_controller,
     )

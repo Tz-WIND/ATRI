@@ -59,9 +59,10 @@ export function useSession() {
         messages: data.messages || [],
         runtimeTurns: data.runtime_turns || [],
         runtimeItems: data.runtime_items || [],
+        todoSnapshot: data.todo_snapshot || null,
       }
     } catch {
-      return { messages: [], runtimeTurns: [], runtimeItems: [] }
+      return { messages: [], runtimeTurns: [], runtimeItems: [], todoSnapshot: null }
     }
   }
 

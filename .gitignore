@@ -27,6 +27,7 @@ workspace/
 skills/
 
 # Project data (runtime generated)
+data/knowledge/
 data/sessions/
 data/runtime/
 data/tool_outputs/

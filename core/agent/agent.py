@@ -58,6 +58,9 @@ class Agent:
         skills_prompt: str = "",
         skill_manager=None,
         task_store=None,
+        todo_store=None,
+        todo_session_id: str = "",
+        todo_on_change: Callable[[dict], None] | None = None,
         mcp_servers: dict | None = None,
         mode_controller: AgentModeController | None = None,
         llm_factory: Callable[[str | None, str | None], LLM] | None = None,
@@ -67,6 +70,9 @@ class Agent:
         self.workspace = workspace
         self.skill_manager = skill_manager
         self.task_store = task_store
+        self.todo_store = todo_store
+        self.todo_session_id = todo_session_id
+        self.todo_on_change = todo_on_change
         self.mcp_servers = dict(mcp_servers or {})
         self.mode_controller = mode_controller or AgentModeController()
         self.messages: list[dict] = []
@@ -79,6 +85,9 @@ class Agent:
                 skill_manager=skill_manager,
                 tool_result_store=self.context.tool_result_store,
                 task_store=self.task_store,
+                todo_store=self.todo_store,
+                todo_session_id=self.todo_session_id,
+                todo_on_change=self.todo_on_change,
                 mcp_servers=self.mcp_servers,
                 mode_controller=self.mode_controller,
             )
@@ -112,6 +121,9 @@ class Agent:
             skill_manager=self.skill_manager,
             tool_result_store=self.context.tool_result_store,
             task_store=self.task_store,
+            todo_store=self.todo_store,
+            todo_session_id=self.todo_session_id,
+            todo_on_change=self.todo_on_change,
             mcp_servers=self.mcp_servers,
             mode_controller=self.mode_controller,
         )

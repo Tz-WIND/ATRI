@@ -39,6 +39,7 @@ from .studio import (
 )
 from .task_result import TaskResultTool
 from .terminal import TerminalTool
+from .todo import AgentTodoTool
 from .tree import TreeTool
 from .web_search import WebFetchTool, WebSearchTool
 from .write import WriteFileTool
@@ -49,6 +50,9 @@ def create_tools(
     skill_manager=None,
     tool_result_store=None,
     task_store=None,
+    todo_store=None,
+    todo_session_id: str = "",
+    todo_on_change=None,
     mcp_servers: dict | None = None,
     mode_controller=None,
 ) -> list[Tool]:
@@ -71,6 +75,18 @@ def create_tools(
         AgentTool(workspace, task_store=task_store),
         AgentResultTool(workspace, task_store=task_store),
         TaskResultTool(workspace, task_store=task_store),
+        *(
+            [
+                AgentTodoTool(
+                    workspace,
+                    todo_store=todo_store,
+                    session_id=todo_session_id,
+                    on_change=todo_on_change,
+                )
+            ]
+            if todo_store is not None and todo_session_id
+            else []
+        ),
         AgentModeTool(workspace, mode_controller=mode_controller),
         LintTool(workspace),
         MusicTool(workspace),

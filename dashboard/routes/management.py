@@ -151,12 +151,17 @@ def register(dashboard: Dashboard) -> None:
                         for item in (runtime_detail.get("items", []) if runtime_detail else [])
                         if item.get("kind") == "agent_reasoning" and item.get("detail")
                     ]
+                    todo_snapshot = None
+                    todo_store = getattr(dashboard.lifecycle.process_stage, "todo_store", None)
+                    if todo_store is not None:
+                        todo_snapshot = todo_store.snapshot(candidate)
                     return jsonify(
                         {
                             "messages": messages,
                             "model": model,
                             "runtime_turns": runtime_turns,
                             "runtime_items": runtime_items,
+                            "todo_snapshot": todo_snapshot,
                         }
                     )
         return jsonify({"messages": [], "model": ""})

@@ -23,7 +23,7 @@ from core.agent.session import SessionStore
 from core.config_schema import CHAT_MODEL_CONFIG_DEFAULT
 from core.pipeline.stage import Stage, register_stage
 from core.platform.message import Image, MessageEvent, MessageType, Plain, normalize_session_id
-from core.runtime import RuntimeTimelineStore, TaskStore, summarize_text
+from core.runtime import RuntimeTimelineStore, TaskStore, TodoStore, summarize_text
 from core.skills import SkillManager, build_skills_prompt
 from core.tools.bash import CONFIRM_MARKER
 from core.utils import clean_optional_str
@@ -192,6 +192,7 @@ class ProcessStage(Stage):
         self.session_store = SessionStore(ctx.get("sessions_dir"))
         self.runtime_store = RuntimeTimelineStore(ctx.get("runtime_dir"))
         self.task_store = TaskStore(ctx.get("runtime_dir"))
+        self.todo_store = TodoStore(ctx.get("runtime_dir"))
         self.task_store.mark_incomplete_as_interrupted(
             reason="ATRI restarted before the background task finished"
         )
@@ -290,6 +291,9 @@ class ProcessStage(Stage):
                     skills_prompt=self._skills_prompt,
                     skill_manager=self.skill_manager,
                     task_store=self.task_store,
+                    todo_store=self.todo_store,
+                    todo_session_id=session_id,
+                    todo_on_change=self._todo_change_callback(session_id),
                     mcp_servers=self.mcp_servers,
                     mode_controller=self.mode_controller,
                     llm_factory=self._create_llm_for_model,
@@ -407,6 +411,18 @@ class ProcessStage(Stage):
                 lock = asyncio.Lock()
                 self._session_locks[session_id] = lock
             return lock
+
+    def _todo_change_callback(self, session_id: str) -> Callable[[dict], None]:
+        def _callback(snapshot: dict) -> None:
+            self._fire(
+                {
+                    "type": "todo_snapshot",
+                    "session_id": session_id,
+                    "todo": snapshot,
+                }
+            )
+
+        return _callback
 
     def _fire(self, data: dict):
         """Thread-safe broadcast: schedule the async broadcast on the event loop."""
@@ -774,13 +790,18 @@ class ProcessStage(Stage):
         except Exception:
             logger.exception(f"Failed to delete runtime thread for session {session_id}")
             runtime_deleted = False
+        try:
+            todo_deleted = self.todo_store.delete_session(session_id)
+        except Exception:
+            logger.exception(f"Failed to delete todo state for session {session_id}")
+            todo_deleted = False
         with self._agents_lock:
             agent = self._agents.pop(session_id, None)
             if agent:
                 agent.reset()
             self._agents_last_active.pop(session_id, None)
             self._session_locks.pop(session_id, None)
-        return deleted or runtime_deleted
+        return deleted or runtime_deleted or todo_deleted
 
 
 class _RuntimeTurnRecorder:

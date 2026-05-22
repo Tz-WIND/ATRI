@@ -293,10 +293,17 @@ def test_studio_audio_import_rejects_unsupported_format_before_dashboard(monkeyp
     assert calls == []
 
 
-def test_studio_audio_import_schema_requires_file_path_or_path(tmp_path):
+def test_studio_audio_import_schema_exposes_file_path_aliases_without_top_level_anyof(tmp_path):
     schema = StudioAudioImportTool(str(tmp_path)).parameters
 
-    assert schema["anyOf"] == [{"required": ["file_path"]}, {"required": ["path"]}]
+    assert "anyOf" not in schema
+    assert set(schema["properties"]) >= {"file_path", "path"}
+
+
+def test_studio_audio_import_rejects_missing_file_path_or_path(tmp_path):
+    result = StudioAudioImportTool(str(tmp_path)).execute()
+
+    assert result == "Error: file_path or path is required"
 
 
 def test_studio_sync_description_marks_tool_as_manual_repair_path():

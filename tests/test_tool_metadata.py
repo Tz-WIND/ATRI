@@ -111,6 +111,41 @@ def test_registered_tools_expose_capability_metadata(tmp_path):
     assert all(tool.metadata()["capability"] != "general" for tool in tools.values())
 
 
+def test_registered_tool_array_schemas_declare_items(tmp_path):
+    tools = create_tools(str(tmp_path))
+    missing_items: list[str] = []
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "array" and "items" not in value:
+                missing_items.append(path)
+            for key, child in value.items():
+                visit(child, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    for tool in tools:
+        visit(tool.schema()["function"]["parameters"], tool.name)
+
+    assert missing_items == []
+
+
+def test_registered_tool_schemas_use_openai_compatible_top_level_parameters(tmp_path):
+    forbidden_top_level_keywords = {"oneOf", "anyOf", "allOf", "enum", "not"}
+    invalid_schemas: list[str] = []
+
+    for tool in create_tools(str(tmp_path)):
+        parameters = tool.schema()["function"]["parameters"]
+        if parameters.get("type") != "object":
+            invalid_schemas.append(f"{tool.name}.type")
+        for keyword in sorted(forbidden_top_level_keywords):
+            if keyword in parameters:
+                invalid_schemas.append(f"{tool.name}.{keyword}")
+
+    assert invalid_schemas == []
+
+
 def test_agent_parallel_gate_uses_tool_capabilities(tmp_path):
     agent = Agent.__new__(Agent)
     agent.tools = [_ParallelTool(str(tmp_path)), _SerialTool(str(tmp_path))]
