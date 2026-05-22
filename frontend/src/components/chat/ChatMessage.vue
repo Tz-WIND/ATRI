@@ -89,6 +89,7 @@
 import { computed } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
+import { renderMarkdownWithMath } from './mathRenderer.js'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -162,7 +163,7 @@ marked.use({ renderer })
 
 const renderedContent = computed(() => {
   try {
-    return marked.parse(props.message.content || '')
+    return renderMarkdownWithMath(props.message.content || '', (markdown) => marked.parse(markdown))
   } catch {
     return `<pre class="msg-text">${esc(props.message.content || '')}</pre>`
   }
@@ -502,6 +503,30 @@ async function handleMarkdownClick(event) {
 .markdown-body :deep(.btn-copy:hover) {
   color: var(--t1);
   background: var(--bg-100);
+}
+
+.markdown-body :deep(.math) {
+  font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+  color: var(--t1);
+}
+
+.markdown-body :deep(.math-display) {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 10px 0;
+  padding: 8px 0;
+}
+
+.markdown-body :deep(.math-inline) {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
+  vertical-align: -0.12em;
+}
+
+.markdown-body :deep(.math math) {
+  max-width: 100%;
 }
 
 .assistant-attachments {
