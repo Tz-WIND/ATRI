@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from quart import jsonify, request
 
+from core.config_schema import ConfigValidationError, normalize_config
 from core.platform.message import display_session_id, normalize_session_id
 from dashboard.routes._helpers import parse_int, resolve_workspace_path
 
@@ -42,7 +44,7 @@ def _whitelist_payload(ob: dict) -> dict:
 def _adapter_payload(ob: dict, *, status: str) -> dict:
     return {
         "enabled": ob.get("enabled", True),
-        "ws_reverse_host": ob.get("ws_reverse_host", "0.0.0.0"),  # noqa: S104
+        "ws_reverse_host": ob.get("ws_reverse_host", "127.0.0.1"),
         "ws_reverse_port": ob.get("ws_reverse_port", 6199),
         "ws_reverse_token": "***" if ob.get("ws_reverse_token") else "",
         "admin_user_ids": _id_list_payload(ob.get("admin_user_ids", [])),
@@ -59,7 +61,10 @@ def _apply_adapter_config(ob: dict, data: dict) -> None:
         ob["ws_reverse_host"] = data["ws_reverse_host"]
     if "ws_reverse_port" in data:
         ob["ws_reverse_port"] = int(data["ws_reverse_port"])
-    if "ws_reverse_token" in data and data["ws_reverse_token"] != "***":  # noqa: S105
+    if data.get("clear_ws_reverse_token"):
+        ob.pop("ws_reverse_token", None)
+    elif "ws_reverse_token" in data and data["ws_reverse_token"] not in ("", "***"):
+        # Empty values can come from unchanged masked forms; clearing must be explicit.
         ob["ws_reverse_token"] = data["ws_reverse_token"]
     if "admin_user_ids" in data:
         ob["admin_user_ids"] = _id_list_payload(data["admin_user_ids"])
@@ -114,8 +119,18 @@ def register(dashboard: Dashboard) -> None:
     @app.route("/api/adapter", methods=["POST"])
     async def update_adapter():
         data = await request.get_json()
-        ob = dashboard.lifecycle.config.setdefault("onebot11", {})
-        _apply_adapter_config(ob, data)
+        next_config = deepcopy(dashboard.lifecycle.config)
+        ob = next_config.setdefault("onebot11", {})
+        try:
+            _apply_adapter_config(ob, data)
+            normalized, _changed = normalize_config(
+                next_config,
+                migrate_legacy_onebot11_public_bind=False,
+            )
+        except (ConfigValidationError, ValueError) as e:
+            return jsonify({"error": str(e)}), 400
+        dashboard.lifecycle.config.clear()
+        dashboard.lifecycle.config.update(normalized)
         dashboard.lifecycle.save_config()
         return jsonify({"ok": True, "note": "Restart required for adapter changes to take effect."})
 

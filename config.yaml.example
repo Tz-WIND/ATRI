@@ -117,7 +117,9 @@ dashboard:
 # OneBot11 反向 WebSocket（QQ / Napcat）
 onebot11:
   enabled: true
-  ws_reverse_host: 0.0.0.0
+  # Use 127.0.0.1 for local Napcat/go-cqhttp. If you bind to 0.0.0.0 or a LAN/public
+  # address, configure ws_reverse_token or whitelist below before restarting.
+  ws_reverse_host: 127.0.0.1
   ws_reverse_port: 6199
   ws_reverse_token: ''
   admin_user_ids: []

@@ -33,7 +33,7 @@ class OneBot11Adapter(Platform):
 
     def __init__(self, config: dict, event_queue: asyncio.Queue):
         super().__init__(config, event_queue)
-        self.host = config.get("ws_reverse_host", "0.0.0.0")  # noqa: S104
+        self.host = config.get("ws_reverse_host", "127.0.0.1")
         self.port = config.get("ws_reverse_port", 6199)
         recent_config = config.get("group_recent_messages", {}) or {}
         self.group_recent_messages_enabled = bool(recent_config.get("enabled", True))

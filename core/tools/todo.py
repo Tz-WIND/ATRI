@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .base import Tool, ToolCapabilities
 
@@ -145,7 +145,7 @@ def _coerce_index(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
-        parsed = int(value)
+        parsed = int(cast(Any, value))
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None

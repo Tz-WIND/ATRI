@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -5,8 +6,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_node_script(script: str) -> str:
-    result = subprocess.run(
-        ["node", "--input-type=module", "-e", script],
+    node_path = shutil.which("node")
+    assert node_path is not None, "node executable is required for chat math renderer tests"
+
+    result = subprocess.run(  # noqa: S603 - node path is resolved and argv is test-owned.
+        [str(Path(node_path).resolve()), "--input-type=module", "-e", script],
         cwd=ROOT,
         text=True,
         capture_output=True,

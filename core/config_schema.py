@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from ipaddress import ip_address
 from typing import Any
 
 DEFAULT_IMAGE_TRANSCRIPTION_PROMPT = (
@@ -95,7 +96,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
             "type": "object",
             "properties": {
                 "enabled": {"type": "boolean", "default": True},
-                "ws_reverse_host": {"type": "string", "default": "0.0.0.0"},  # noqa: S104
+                "ws_reverse_host": {"type": "string", "default": "127.0.0.1"},
                 "ws_reverse_port": {"type": "integer", "default": 6199, "minimum": 1},
                 "ws_reverse_token": {"type": "string", "default": ""},
                 "blocked_users": {"type": "array", "default": []},
@@ -490,7 +491,65 @@ def _normalize_model_pool_config(config: dict[str, Any]) -> bool:
     return changed
 
 
-def normalize_config(user_config: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
+def _is_local_bind_host(host: Any) -> bool:
+    text = str(host or "").strip().lower()
+    if text == "localhost":
+        return True
+    try:
+        return ip_address(text).is_loopback
+    except ValueError:
+        return False
+
+
+def _has_nonempty_id_list(values: object) -> bool:
+    return isinstance(values, list) and any(str(value).strip() for value in values)
+
+
+def _has_complete_onebot11_whitelist(onebot11: dict[str, Any]) -> bool:
+    whitelist = onebot11.get("whitelist", {})
+    if not isinstance(whitelist, dict):
+        return False
+    return _has_nonempty_id_list(whitelist.get("private_user_ids", [])) and _has_nonempty_id_list(
+        whitelist.get("group_ids", [])
+    )
+
+
+def _migrate_legacy_onebot11_public_bind(config: dict[str, Any]) -> bool:
+    onebot11 = config.get("onebot11", {})
+    if not isinstance(onebot11, dict) or not onebot11.get("enabled", True):
+        return False
+    if _is_local_bind_host(onebot11.get("ws_reverse_host")):
+        return False
+    if str(onebot11.get("ws_reverse_token") or "").strip():
+        return False
+    if _has_complete_onebot11_whitelist(onebot11):
+        return False
+
+    onebot11["ws_reverse_host"] = "127.0.0.1"
+    return True
+
+
+def _validate_onebot11_security(config: dict[str, Any]) -> None:
+    onebot11 = config.get("onebot11", {})
+    if not isinstance(onebot11, dict) or not onebot11.get("enabled", True):
+        return
+    if _is_local_bind_host(onebot11.get("ws_reverse_host")):
+        return
+    if str(onebot11.get("ws_reverse_token") or "").strip():
+        return
+    if _has_complete_onebot11_whitelist(onebot11):
+        return
+
+    raise ConfigValidationError(
+        "onebot11 remote reverse WebSocket requires ws_reverse_token or whitelist"
+    )
+
+
+def normalize_config(
+    user_config: dict[str, Any] | None,
+    *,
+    migrate_legacy_onebot11_public_bind: bool = True,
+) -> tuple[dict[str, Any], bool]:
     """Return a validated config and whether it should be written back to disk."""
     if user_config is None:
         user_config = {}
@@ -503,4 +562,7 @@ def normalize_config(user_config: dict[str, Any] | None) -> tuple[dict[str, Any]
     changed = changed or validate_changed
     changed = _migrate_dashboard_auth(config) or changed
     changed = _normalize_model_pool_config(config) or changed
+    if migrate_legacy_onebot11_public_bind:
+        changed = _migrate_legacy_onebot11_public_bind(config) or changed
+    _validate_onebot11_security(config)
     return config, changed

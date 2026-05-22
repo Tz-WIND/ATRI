@@ -7,7 +7,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def utc_timestamp() -> float:
@@ -150,7 +150,7 @@ class KnowledgeStore:
     def update_kb(self, kb_id: str, values: dict[str, Any]) -> dict | None:
         if not values:
             return self.get_kb(kb_id)
-        mapped = {}
+        mapped: dict[str, Any] = {}
         for key, value in values.items():
             if key in {"embedding_config", "rerank_config"}:
                 mapped[key] = json.dumps(value or {}, ensure_ascii=False)
@@ -479,7 +479,7 @@ def _fts_query(query: str) -> str:
 
 
 def _int_or_default(value: object, default: int) -> int:
-    return default if value is None else int(value)
+    return default if value is None else int(cast(Any, value))
 
 
 def _friendly_integrity_error(error: sqlite3.IntegrityError) -> ValueError:

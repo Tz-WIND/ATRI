@@ -95,6 +95,13 @@ def _onebot_private_event(user_id: str, nickname: str, message: list[dict]):
     )
 
 
+def test_onebot11_adapter_defaults_reverse_ws_to_localhost():
+    queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
+    adapter = OneBot11Adapter({}, queue)
+
+    assert adapter.host == "127.0.0.1"
+
+
 @pytest.mark.asyncio
 async def test_onebot11_adapter_attaches_recent_group_messages_before_current_request():
     queue: asyncio.Queue[MessageEvent] = asyncio.Queue()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from quart import jsonify, request
 
@@ -173,7 +173,7 @@ def _knowledge_manager(dashboard: Dashboard) -> KnowledgeBaseManager:
     manager = getattr(dashboard.lifecycle, "knowledge_manager", None)
     if manager is None:
         raise RuntimeError("knowledge manager is not available")
-    return manager
+    return cast("KnowledgeBaseManager", manager)
 
 
 def _optional_str(value: object) -> str | None:
@@ -192,7 +192,7 @@ def _int_at_least(
         parsed = default
     else:
         try:
-            parsed = int(value)
+            parsed = int(cast(Any, value))
         except (TypeError, ValueError) as e:
             raise ValueError(f"{field} must be an integer") from e
     if parsed < minimum:

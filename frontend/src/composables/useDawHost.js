@@ -1,7 +1,6 @@
 import { computed, ref, shallowRef } from 'vue'
 import { secondsToBeats } from '@/components/music/tempoAutomation.js'
 import { useApi } from './useApi.js'
-import pcmPlayerWorkletUrl from '../worklets/pcm-player-worklet.js?url'
 
 const api = useApi()
 
@@ -21,7 +20,6 @@ const pluginsLoading = ref(false)
 const editorWindows = ref({})
 const pluginParameters = ref({})
 
-let audioContext = null
 let playerNode = null
 let audioWs = null
 let commandWs = null
@@ -224,18 +222,6 @@ async function transport(action, payload = {}) {
   if (action === 'pause' || action === 'stop') playing.value = false
   if (action === 'stop') positionSeconds.value = 0
   if (action === 'seek') positionSeconds.value = Number(payload.position || 0)
-  if (action === 'play') {
-    try {
-      // Browser audio streaming is off while the Rust host drives speakers directly.
-      // await ensureAudio()
-      // if (audioContext?.state === 'suspended') {
-      //   await audioContext.resume()
-      // }
-      // connectAudioStream()
-    } catch (err) {
-      hostError.value = `Playback started, but browser audio output failed: ${err.message || err}`
-    }
-  }
   window.setTimeout(refreshHostStatus, 150)
   return res
 }
@@ -442,31 +428,6 @@ async function renameLearnedAutomationParameter(id, name) {
 
 function selectTrack(trackId) {
   activeTrackId.value = trackId
-}
-
-async function ensureAudio() {
-  if (audioReady.value && audioContext && playerNode) return
-  const AudioContextCtor = window.AudioContext || window.webkitAudioContext
-  if (!AudioContextCtor || !window.AudioWorkletNode) {
-    throw new Error('AudioWorklet is not supported by this browser')
-  }
-  // Use the host's actual sample rate so streamed PCM plays at the correct pitch.
-  // The Rust host reports the real device rate (e.g. 96000 on WASAPI).
-  audioContext = new AudioContextCtor({ latencyHint: 'interactive', sampleRate: host.value.sample_rate })
-  await audioContext.audioWorklet.addModule(pcmPlayerWorkletUrl)
-  playerNode = new AudioWorkletNode(audioContext, 'atri-pcm-player', {
-    numberOfInputs: 0,
-    numberOfOutputs: 1,
-    outputChannelCount: [2],
-  })
-  // The Rust host already drives the speakers via WASAPI/ASIO locally.
-  // Route the stream through a muted gain node so the worklet still runs
-  // (for future waveform visualisation) but doesn't produce an echo.
-  const monitorGain = audioContext.createGain()
-  monitorGain.gain.value = 0
-  playerNode.connect(monitorGain)
-  monitorGain.connect(audioContext.destination)
-  audioReady.value = true
 }
 
 function connectAudioStream() {

@@ -223,6 +223,98 @@ def test_normalize_config_coerces_onebot11_recent_group_message_settings():
     }
 
 
+def test_normalize_config_defaults_onebot11_reverse_ws_to_localhost():
+    config, _changed = normalize_config({})
+
+    assert config["onebot11"]["ws_reverse_host"] == "127.0.0.1"
+
+
+def test_normalize_config_rejects_public_onebot11_without_token_or_whitelist():
+    with pytest.raises(
+        ConfigValidationError,
+        match="onebot11 remote reverse WebSocket requires ws_reverse_token or whitelist",
+    ):
+        normalize_config(
+            {
+                "onebot11": {
+                    "enabled": True,
+                    "ws_reverse_host": "0.0.0.0",  # noqa: S104
+                    "ws_reverse_token": "",
+                    "whitelist": {
+                        "private_user_ids": [],
+                        "group_ids": [],
+                    },
+                }
+            },
+            migrate_legacy_onebot11_public_bind=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "whitelist",
+    [
+        {"private_user_ids": ["1001"], "group_ids": []},
+        {"private_user_ids": [], "group_ids": ["42"]},
+    ],
+)
+def test_normalize_config_rejects_public_onebot11_without_token_and_complete_whitelist(
+    whitelist,
+):
+    with pytest.raises(
+        ConfigValidationError,
+        match="onebot11 remote reverse WebSocket requires ws_reverse_token or whitelist",
+    ):
+        normalize_config(
+            {
+                "onebot11": {
+                    "enabled": True,
+                    "ws_reverse_host": "0.0.0.0",  # noqa: S104
+                    "ws_reverse_token": "",
+                    "whitelist": whitelist,
+                }
+            },
+            migrate_legacy_onebot11_public_bind=False,
+        )
+
+
+def test_normalize_config_migrates_legacy_public_onebot11_default_to_localhost():
+    config, changed = normalize_config(
+        {
+            "onebot11": {
+                "enabled": True,
+                "ws_reverse_host": "0.0.0.0",  # noqa: S104
+                "ws_reverse_token": "",
+                "whitelist": {
+                    "private_user_ids": [],
+                    "group_ids": [],
+                },
+            }
+        }
+    )
+
+    assert changed is True
+    assert config["onebot11"]["ws_reverse_host"] == "127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "onebot11",
+    [
+        {"ws_reverse_host": "0.0.0.0", "ws_reverse_token": "secret-token"},  # noqa: S104
+        {
+            "ws_reverse_host": "0.0.0.0",  # noqa: S104
+            "whitelist": {"private_user_ids": ["1001"], "group_ids": ["42"]},
+        },
+        {"ws_reverse_host": "127.0.0.1"},
+        {"ws_reverse_host": "localhost"},
+        {"ws_reverse_host": "::1"},
+    ],
+)
+def test_normalize_config_allows_protected_or_local_onebot11(onebot11):
+    config, _changed = normalize_config({"onebot11": onebot11})
+
+    assert config["onebot11"]["ws_reverse_host"] == onebot11["ws_reverse_host"]
+
+
 def test_normalize_config_keeps_onebot11_whitelist_settings():
     config, changed = normalize_config(
         {

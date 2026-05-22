@@ -551,6 +551,12 @@ def test_adapter_payload_includes_recent_group_message_settings():
     }
 
 
+def test_adapter_payload_defaults_onebot_host_to_localhost():
+    payload = management._adapter_payload({}, status="disabled")
+
+    assert payload["ws_reverse_host"] == "127.0.0.1"
+
+
 def test_apply_adapter_config_updates_onebot_access_lists_without_touching_token():
     existing_value = "secret"
     existing = {
@@ -593,6 +599,89 @@ def test_apply_adapter_config_updates_onebot_access_lists_without_touching_token
         "private_user_ids": ["1001", "1002"],
         "group_ids": ["42", "43"],
     }
+
+
+def test_apply_adapter_config_preserves_existing_token_when_empty_without_explicit_clear():
+    existing_value = "saved-token"
+    existing = {"ws_reverse_token": existing_value}
+
+    management._apply_adapter_config(existing, {"ws_reverse_token": ""})
+
+    assert existing["ws_reverse_token"] == existing_value
+
+
+def test_apply_adapter_config_clears_token_when_explicitly_requested():
+    existing_value = "saved-token"
+    existing = {"ws_reverse_token": existing_value}
+
+    management._apply_adapter_config(existing, {"clear_ws_reverse_token": True})
+
+    assert "ws_reverse_token" not in existing
+
+
+@pytest.mark.asyncio
+async def test_dashboard_rejects_public_onebot11_without_token_or_whitelist(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+
+    response = await dashboard.app.test_client().post(
+        "/api/adapter",
+        json={
+            "enabled": True,
+            "ws_reverse_host": "0.0.0.0",  # noqa: S104
+            "ws_reverse_token": "",
+            "whitelist": {
+                "private_user_ids": [],
+                "group_ids": [],
+            },
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert "requires ws_reverse_token or whitelist" in payload["error"]
+    assert "onebot11" not in dashboard.lifecycle.config
+    assert dashboard.lifecycle.saved == 0
+
+
+@pytest.mark.asyncio
+async def test_dashboard_preserves_existing_token_when_adapter_save_sends_empty_token(
+    monkeypatch,
+    tmp_path,
+):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    existing_value = "saved-token"
+    dashboard.lifecycle.config["onebot11"] = {
+        "enabled": True,
+        "ws_reverse_host": "0.0.0.0",  # noqa: S104
+        "ws_reverse_port": 6199,
+        "ws_reverse_token": existing_value,
+        "whitelist": {
+            "private_user_ids": [],
+            "group_ids": [],
+        },
+    }
+    token = dashboard._create_auth_session()
+
+    response = await dashboard.app.test_client().post(
+        "/api/adapter",
+        json={
+            "enabled": True,
+            "ws_reverse_host": "0.0.0.0",  # noqa: S104
+            "ws_reverse_port": 6199,
+            "ws_reverse_token": "",
+            "whitelist": {
+                "private_user_ids": [],
+                "group_ids": [],
+            },
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert dashboard.lifecycle.config["onebot11"]["ws_reverse_token"] == existing_value
+    assert dashboard.lifecycle.saved == 1
 
 
 def test_dashboard_builds_novelai_generation_payload():

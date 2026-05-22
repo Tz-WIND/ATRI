@@ -23,7 +23,7 @@
             <label>WS Reverse Host</label>
             <input
               v-model="form.ws_reverse_host"
-              placeholder="0.0.0.0"
+              placeholder="127.0.0.1"
             >
           </div>
           <div class="field">
@@ -40,8 +40,28 @@
           <input
             v-model="form.ws_reverse_token"
             type="password"
-            placeholder="(optional)"
+            :placeholder="hasMaskedWsReverseToken ? 'Configured - leave blank to keep' : '(optional)'"
+            @input="handleTokenInput"
           >
+          <div
+            v-if="hasMaskedWsReverseToken"
+            class="token-actions"
+          >
+            <button
+              type="button"
+              class="btn btn-secondary"
+              :disabled="shouldClearWsReverseToken"
+              @click="clearToken"
+            >
+              Clear token
+            </button>
+            <span
+              v-if="shouldClearWsReverseToken"
+              class="token-note"
+            >
+              Token will be cleared on save.
+            </span>
+          </div>
         </div>
         <div class="field">
           <label>Admin QQ IDs</label>
@@ -128,7 +148,7 @@ const api = useApi()
 
 const form = ref({
   enabled: true,
-  ws_reverse_host: '0.0.0.0',
+  ws_reverse_host: '127.0.0.1',
   ws_reverse_port: 6199,
   ws_reverse_token: '',
   admin_user_ids: [],
@@ -146,14 +166,18 @@ const obStatus = ref('')
 const adminUserIdsText = ref('')
 const privateUserIdsText = ref('')
 const groupIdsText = ref('')
+const hasMaskedWsReverseToken = ref(false)
+const shouldClearWsReverseToken = ref(false)
 
 onMounted(async () => {
   try {
     const d = await api.getAdapter()
     form.value.enabled = d.enabled
-    form.value.ws_reverse_host = d.ws_reverse_host || '0.0.0.0'
+    form.value.ws_reverse_host = d.ws_reverse_host || '127.0.0.1'
     form.value.ws_reverse_port = d.ws_reverse_port || 6199
     form.value.ws_reverse_token = ''
+    hasMaskedWsReverseToken.value = d.ws_reverse_token === '***'
+    shouldClearWsReverseToken.value = false
     form.value.admin_user_ids = normalizeIdList(d.admin_user_ids)
     form.value.group_recent_messages = normalizeRecentGroupMessages(d.group_recent_messages)
     form.value.whitelist = normalizeWhitelist(d.whitelist)
@@ -192,19 +216,43 @@ function normalizeWhitelist(value) {
   }
 }
 
+function handleTokenInput() {
+  shouldClearWsReverseToken.value = false
+}
+
+function clearToken() {
+  form.value.ws_reverse_token = ''
+  shouldClearWsReverseToken.value = true
+}
+
 async function save() {
-  await api.saveAdapter({
+  const payload = {
     enabled: form.value.enabled,
     ws_reverse_host: form.value.ws_reverse_host,
     ws_reverse_port: form.value.ws_reverse_port,
-    ws_reverse_token: form.value.ws_reverse_token,
     admin_user_ids: normalizeIdList(adminUserIdsText.value),
     group_recent_messages: normalizeRecentGroupMessages(form.value.group_recent_messages),
     whitelist: {
       private_user_ids: normalizeIdList(privateUserIdsText.value),
       group_ids: normalizeIdList(groupIdsText.value),
     },
-  })
+  }
+
+  if (shouldClearWsReverseToken.value) {
+    payload.clear_ws_reverse_token = true
+  } else if (form.value.ws_reverse_token) {
+    payload.ws_reverse_token = form.value.ws_reverse_token
+  }
+
+  await api.saveAdapter(payload)
+
+  if (shouldClearWsReverseToken.value) {
+    hasMaskedWsReverseToken.value = false
+  } else if (form.value.ws_reverse_token) {
+    hasMaskedWsReverseToken.value = true
+  }
+  form.value.ws_reverse_token = ''
+  shouldClearWsReverseToken.value = false
 }
 </script>
 
@@ -264,4 +312,12 @@ async function save() {
 }
 .btn-primary { background: var(--acc-bg); color: var(--acc2); border-color: rgba(125,168,232,0.3); }
 .btn-primary:hover { background: var(--acc-bg-strong); }
+.btn-secondary { background: rgba(255, 255, 255, 0.04); color: var(--t2); }
+.btn-secondary:hover:not(:disabled) { color: var(--t1); background: rgba(255, 255, 255, 0.07); }
+.btn-secondary:disabled { opacity: 0.55; cursor: default; }
+
+.token-actions {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px;
+}
+.token-note { color: var(--warn, #d7b56d); font-size: 12px; font-family: var(--mono); }
 </style>

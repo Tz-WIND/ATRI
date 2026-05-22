@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.utils import atomic_write_text
 
@@ -47,7 +47,7 @@ def _safe_id(value: object) -> str:
 
 
 def _deepcopy_payload(value: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(json.dumps(value, ensure_ascii=False))
+    return cast(dict[str, Any], json.loads(json.dumps(value, ensure_ascii=False)))
 
 
 class TodoStore:

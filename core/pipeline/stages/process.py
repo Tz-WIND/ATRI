@@ -734,7 +734,8 @@ class ProcessStage(Stage):
             self.knowledge = dict(kwargs["knowledge"] or {})
         if "knowledge_manager" in kwargs:
             self.knowledge_manager = kwargs["knowledge_manager"]
-        if getattr(self, "knowledge_manager", None) is not None and any(
+        knowledge_manager = getattr(self, "knowledge_manager", None)
+        if knowledge_manager is not None and any(
             key in kwargs
             for key in (
                 "providers",
@@ -746,7 +747,7 @@ class ProcessStage(Stage):
                 "rerank_provider",
             )
         ):
-            self.knowledge_manager.update_config(
+            knowledge_manager.update_config(
                 {
                     "providers": self.providers,
                     "active_embedding_models": self.active_embedding_models,

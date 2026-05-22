@@ -64,7 +64,11 @@ def _parse_rerank_response(data: object) -> list[dict]:
         index = item.get("index")
         if index is None and isinstance(item.get("document"), dict):
             index = item["document"].get("index")
+        if index is None:
+            continue
         score = item.get("relevance_score", item.get("score", 0.0))
+        if score is None:
+            score = 0.0
         try:
             parsed.append({"index": int(index), "score": float(score)})
         except (TypeError, ValueError):

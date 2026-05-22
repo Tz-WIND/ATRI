@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.embedding import (
@@ -359,7 +359,7 @@ def _file_type(file_name: str) -> str:
 
 def _int_at_least(value: object, field: str, minimum: int) -> int:
     try:
-        parsed = int(value)
+        parsed = int(cast(Any, value))
     except (TypeError, ValueError) as e:
         raise ValueError(f"{field} must be an integer") from e
     if parsed < minimum:

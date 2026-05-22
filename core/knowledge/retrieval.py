@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 from core import logger
 from core.knowledge.embedding import ModelSelection
@@ -193,12 +194,12 @@ def _cosine(query_vector: list[float], doc_vector: list[float], doc_norm: float)
     query_norm = sum(item * item for item in query_vector) ** 0.5
     if query_norm <= 0:
         return 0.0
-    return dot / (query_norm * doc_norm)
+    return float(dot / (query_norm * doc_norm))
 
 
 def _positive_limit(value: object, default: int) -> int:
     try:
-        parsed = int(value)
+        parsed = int(cast(Any, value))
     except (TypeError, ValueError):
         parsed = default
     return max(1, parsed)

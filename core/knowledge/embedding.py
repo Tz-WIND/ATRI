@@ -96,10 +96,13 @@ def resolve_model_selection(
         provider_config = (
             providers.get(requested_provider, {}) if isinstance(providers, dict) else {}
         )
+        entry_config = entry.get("config")
+        if not isinstance(entry_config, dict):
+            entry_config = {}
         return ModelSelection(
             provider=requested_provider,
             model=requested_model,
-            config=dict(entry.get("config") if isinstance(entry.get("config"), dict) else {}),
+            config=dict(entry_config),
             provider_config=dict(provider_config if isinstance(provider_config, dict) else {}),
         )
 
