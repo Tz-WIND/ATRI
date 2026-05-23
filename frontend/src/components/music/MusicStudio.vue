@@ -712,6 +712,26 @@
                 @contextmenu.prevent
               />
             </div>
+            <button
+              v-if="pianoMeterLaneVisible"
+              class="piano-meter-toggle"
+              type="button"
+              title="收起拍号轨"
+              aria-label="收起拍号轨"
+              :style="{ top: `${pianoMeterLaneTop + 4}px` }"
+              @pointerdown.stop
+              @click.stop="togglePianoMeterLane"
+            />
+            <button
+              v-if="pianoHarmonyLaneVisible"
+              class="piano-harmony-toggle"
+              type="button"
+              title="收起和声轨"
+              aria-label="收起和声轨"
+              :style="{ top: `${pianoHarmonyLaneTop + 4}px` }"
+              @pointerdown.stop
+              @click.stop="togglePianoHarmonyLane"
+            />
             <div
               v-if="controllerLanes.length"
               ref="controllerWrap"
@@ -867,6 +887,27 @@
                     {{ denominatorLabel(denominator) }}
                   </option>
                 </select>
+              </label>
+            </div>
+            <div
+              v-if="pianoHarmonyEditor.open"
+              ref="pianoHarmonyEditorRoot"
+              class="piano-harmony-popover"
+              :style="{ left: `${pianoHarmonyEditor.x}px`, top: `${pianoHarmonyEditor.y}px` }"
+              @pointerdown.stop
+              @click.stop
+            >
+              <label>
+                <span>和声</span>
+                <input
+                  v-model="pianoHarmonyEditor.text"
+                  type="text"
+                  maxlength="64"
+                  placeholder="Cmaj7"
+                  @blur="applyPianoHarmonyEditor()"
+                  @change="applyPianoHarmonyEditor()"
+                  @keydown.enter.stop.prevent="applyPianoHarmonyEditor()"
+                >
               </label>
             </div>
           </div>
@@ -1592,6 +1633,7 @@ const pianoCanvas = ref(null)
 const controllerWrap = ref(null)
 const timeSignatureRoot = ref(null)
 const pianoMeterEditorRoot = ref(null)
+const pianoHarmonyEditorRoot = ref(null)
 const controllerLaneCanvases = new Map()
 const automationMenu = ref({ open: false, x: 0, y: 0, target: null, label: '' })
 const trackContextMenu = ref({ open: false, x: 0, y: 0, trackId: null, name: '' })
@@ -1639,6 +1681,7 @@ const arrangementTrackH = 72
 const pianoKeyW = 76
 const pianoRulerH = 24
 const pianoMeterLaneH = 28
+const pianoSubtrackH = pianoMeterLaneH
 const pianoRowH = 12
 const controllerLaneTabH = 24
 const controllerLaneBodyH = 72
@@ -1649,15 +1692,21 @@ const controllerPointHitRadius = 7
 const pianoDrawLongPressMs = 260
 const pianoDrawMoveTolerancePx = 5
 const pianoMeterEventHitRadius = 9
+const pianoHarmonyEventHitRadius = 9
 const minPitch = 36
 const maxPitch = 84
 const trackCreatePalette = ['#4e79ff', '#d95b55', '#5f916b', '#d7b66f', '#b489d6', '#58a7b8']
+const pianoSubtrackIds = ['meter', 'harmony']
 const timeSignatureDenominatorOptions = [2, 4, 8, 16, 32]
 const visualPositionBeats = ref(0)
 const pianoTool = ref('select')
 const pianoQuantizeId = ref('1/16')
 const pianoSnapEnabled = ref(true)
 const pianoQuantizeMenuOpen = ref(false)
+const pianoMeterLaneOpen = ref(false)
+const pianoHarmonyLaneOpen = ref(false)
+const pianoSubtrackSyncKey = ref('')
+const pianoSubtrackOrder = ref([])
 const pianoSubtrackCreateValue = ref('')
 const tempoInput = ref(120)
 const tempoInputFocused = ref(false)
@@ -1674,6 +1723,14 @@ const pianoMeterEditor = ref({
   beat: 0,
   numerator: 4,
   denominator: 4,
+})
+const pianoHarmonyEditor = ref({
+  open: false,
+  x: 0,
+  y: 0,
+  eventIndex: -1,
+  beat: 0,
+  text: '',
 })
 const selectedNoteIds = ref(new Set())
 const selectedClipIds = ref(new Set())
@@ -1756,15 +1813,25 @@ const activePianoSnapStep = computed(() => (
   isPianoSnapActive.value ? pianoQuantizeStep.value : null
 ))
 const activeNoteStep = computed(() => activePianoSnapStep.value || minFreehandStep)
-const pianoMeterLaneVisible = computed(() => (
+const hasProjectMeterEvents = computed(() => (
   Array.isArray(project.value?.meter_events) && project.value.meter_events.length > 0
 ))
-const pianoMeterLaneTop = computed(() => pianoRulerH)
+const pianoMeterLaneVisible = computed(() => pianoMeterLaneOpen.value)
+const pianoHarmonyLaneVisible = computed(() => pianoHarmonyLaneOpen.value)
+const pianoVisibleSubtracks = computed(() => (
+  pianoSubtrackOrder.value.filter((id) => (
+    (id === 'meter' && pianoMeterLaneVisible.value)
+    || (id === 'harmony' && pianoHarmonyLaneVisible.value)
+  ))
+))
+const pianoMeterLaneTop = computed(() => pianoSubtrackTop('meter'))
+const pianoHarmonyLaneTop = computed(() => pianoSubtrackTop('harmony'))
 const pianoNoteTop = computed(() => (
-  pianoRulerH + (pianoMeterLaneVisible.value ? pianoMeterLaneH : 0)
+  pianoRulerH + pianoVisibleSubtracks.value.length * pianoSubtrackH
 ))
 const pianoSubtrackOptions = computed(() => [
   { id: 'meter', label: '拍号轨', disabled: pianoMeterLaneVisible.value },
+  { id: 'harmony', label: '和声轨', disabled: pianoHarmonyLaneVisible.value },
 ])
 const activeMidiClip = computed(() => {
   for (const track of tracks.value) {
@@ -1950,6 +2017,51 @@ function syncTransportDisplayFields(nextProject = project.value) {
   syncTimeSignatureFields(nextProject)
 }
 
+// Syncs lane visibility only when persisted subtrack data changes, preserving manual collapse across unrelated saves.
+function syncPianoSubtrackLanes(nextProject) {
+  if (!nextProject) return
+  const syncKey = pianoSubtrackProjectSyncKey(nextProject)
+  if (pianoSubtrackSyncKey.value === syncKey) return
+  const order = normalizePianoSubtrackOrder(nextProject.piano_subtrack_order)
+  if (Array.isArray(nextProject.meter_events) && nextProject.meter_events.length > 0 && !order.includes('meter')) {
+    order.push('meter')
+  }
+  if (Array.isArray(nextProject.harmony_events) && nextProject.harmony_events.length > 0 && !order.includes('harmony')) {
+    order.push('harmony')
+  }
+  pianoSubtrackOrder.value = order
+  pianoMeterLaneOpen.value = order.includes('meter')
+  pianoHarmonyLaneOpen.value = order.includes('harmony')
+  pianoSubtrackSyncKey.value = syncKey
+}
+
+function pianoSubtrackProjectSyncKey(nextProject) {
+  return JSON.stringify({
+    order: normalizePianoSubtrackOrder(nextProject?.piano_subtrack_order),
+    meterEvents: normalizeEditableMeterEvents(nextProject?.meter_events || []),
+    harmonyEvents: normalizeEditableHarmonyEvents(nextProject?.harmony_events || []),
+  })
+}
+
+function normalizePianoSubtrackOrder(order) {
+  const nextOrder = []
+  for (const id of Array.isArray(order) ? order : []) {
+    const subtrackId = String(id || '').trim().toLowerCase()
+    if (!pianoSubtrackIds.includes(subtrackId) || nextOrder.includes(subtrackId)) continue
+    nextOrder.push(subtrackId)
+  }
+  return nextOrder
+}
+
+function pianoSubtrackOrderWith(subtrackId) {
+  return normalizePianoSubtrackOrder([...pianoSubtrackOrder.value, subtrackId])
+}
+
+function pianoSubtrackTop(subtrackId) {
+  const index = pianoVisibleSubtracks.value.indexOf(subtrackId)
+  return pianoRulerH + Math.max(0, index) * pianoSubtrackH
+}
+
 function toggleTimeSignaturePopover() {
   timeSignaturePopoverOpen.value = !timeSignaturePopoverOpen.value
   if (!timeSignaturePopoverOpen.value) {
@@ -2087,6 +2199,10 @@ function onDocumentPointerDown(event) {
   if (pianoMeterEditor.value.open && (!meterRoot || !meterRoot.contains(event.target))) {
     closePianoMeterEditor()
   }
+  const harmonyRoot = pianoHarmonyEditorRoot.value
+  if (pianoHarmonyEditor.value.open && (!harmonyRoot || !harmonyRoot.contains(event.target))) {
+    applyPianoHarmonyEditor().finally(() => closePianoHarmonyEditor()).catch(() => null)
+  }
   const root = timeSignatureRoot.value
   if (!root || root.contains(event.target)) return
   closeTimeSignaturePopover()
@@ -2135,15 +2251,63 @@ async function createPianoSubtrack() {
   const value = pianoSubtrackCreateValue.value
   pianoSubtrackCreateValue.value = ''
   if (value === 'meter') {
-    await createPianoMeterLane()
+    await togglePianoMeterLane()
+  } else if (value === 'harmony') {
+    await togglePianoHarmonyLane()
   }
 }
 
+// Toggles the piano meter lane without deleting existing meter events.
+async function togglePianoMeterLane() {
+  if (!project.value) return
+  if (pianoMeterLaneVisible.value) {
+    pianoMeterLaneOpen.value = false
+    closePianoMeterEditor()
+    drawAll()
+    return
+  }
+  await createPianoMeterLane()
+  pianoMeterLaneOpen.value = true
+  drawAll()
+}
+
+// Toggles the harmony marker lane without deleting saved harmony labels.
+async function togglePianoHarmonyLane() {
+  if (!project.value) return
+  if (pianoHarmonyLaneVisible.value) {
+    pianoHarmonyLaneOpen.value = false
+    closePianoHarmonyEditor()
+    drawAll()
+    return
+  }
+  await createPianoHarmonyLane()
+  pianoHarmonyLaneOpen.value = true
+  drawAll()
+}
+
+// Creates the backing meter event list only when the project does not have one yet.
 async function createPianoMeterLane() {
-  if (!project.value || pianoMeterLaneVisible.value) return
+  if (!project.value) return
+  const nextOrder = pianoSubtrackOrderWith('meter')
+  if (hasProjectMeterEvents.value && pianoSubtrackOrder.value.includes('meter')) return
   await persistProjectUpdate((nextProject) => {
-    nextProject.meter_events = normalizeMeterEvents(nextProject)
+    if (!hasProjectMeterEvents.value) {
+      nextProject.meter_events = normalizeMeterEvents(nextProject)
+    }
+    nextProject.piano_subtrack_order = normalizePianoSubtrackOrder(nextOrder)
   })
+  pianoSubtrackOrder.value = nextOrder
+}
+
+async function createPianoHarmonyLane() {
+  if (!project.value) return
+  const nextOrder = pianoSubtrackOrderWith('harmony')
+  if (pianoSubtrackOrder.value.includes('harmony')) return
+  await persistProjectUpdate((nextProject) => {
+    nextProject.harmony_events = normalizeEditableHarmonyEvents(nextProject.harmony_events || [])
+    nextProject.piano_subtrack_order = normalizePianoSubtrackOrder(nextOrder)
+  })
+  pianoSubtrackOrder.value = nextOrder
 }
 
 async function upsertMeterEventAtBeat(beat) {
@@ -3152,6 +3316,7 @@ async function onPianoPointerDown(event) {
   const point = pianoPoint(event)
   if (!point || point.x < pianoKeyW) return
   closePianoMeterEditor()
+  closePianoHarmonyEditor()
   if (point.ruler) {
     pianoDrag = {
       type: 'pan',
@@ -3181,6 +3346,14 @@ async function onPianoPointerDown(event) {
     if (pianoTool.value === 'draw') {
       await upsertMeterEventAtBeat(point.beat)
     }
+    return
+  }
+  if (point.harmonyLane) {
+    const harmonyHit = hitTestHarmonyEvent(point)
+    openPianoHarmonyEditor(event, harmonyHit || {
+      event: { beat: point.beat, text: '' },
+      index: -1,
+    })
     return
   }
   const hit = hitTestPianoNote(point.x, point.y)
@@ -3597,12 +3770,15 @@ function pianoPoint(event) {
   const ruler = y < pianoRulerH
   const meterLane = pianoMeterLaneVisible.value
     && y >= pianoMeterLaneTop.value
-    && y < pianoMeterLaneTop.value + pianoMeterLaneH
+    && y < pianoMeterLaneTop.value + pianoSubtrackH
+  const harmonyLane = pianoHarmonyLaneVisible.value
+    && y >= pianoHarmonyLaneTop.value
+    && y < pianoHarmonyLaneTop.value + pianoSubtrackH
   const clipStart = Number(activeMidiClip.value?.clip?.start || 0)
-  const beat = meterLane ? clipStart + localBeat : localBeat
+  const beat = meterLane || harmonyLane ? clipStart + localBeat : localBeat
   const row = Math.floor((y - pianoNoteTop.value) / pianoRowH)
   const pitch = clamp(maxPitch - row, minPitch, maxPitch)
-  return { x, y, beat, localBeat, pitch, ruler, meterLane }
+  return { x, y, beat, localBeat, pitch, ruler, meterLane, harmonyLane }
 }
 
 function hitTestPianoNote(x, y) {
@@ -3652,6 +3828,25 @@ function isMeterEventLabelHit(point, meterHit) {
     && point.y <= pianoMeterLaneTop.value + pianoMeterLaneH
 }
 
+function hitTestHarmonyEvent(point) {
+  if (!point?.harmonyLane) return null
+  const clipStart = Number(activeMidiClip.value?.clip?.start || 0)
+  const events = editableHarmonyEvents()
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    const x = pianoKeyW + (Number(event.beat || 0) - clipStart) * pianoPxPerBeat.value
+    const label = String(event.text || '')
+    const labelLeft = x + 5
+    const labelRight = labelLeft + 10 + label.length * 7
+    const markerHit = Math.abs(point.x - x) <= pianoHarmonyEventHitRadius
+    const labelHit = point.x >= labelLeft - 2 && point.x <= labelRight
+    if (markerHit || labelHit) {
+      return { event, index }
+    }
+  }
+  return null
+}
+
 function openPianoMeterEditor(event, meterHit) {
   event.preventDefault()
   event.stopPropagation()
@@ -3673,10 +3868,38 @@ function openPianoMeterEditor(event, meterHit) {
   }
 }
 
+function openPianoHarmonyEditor(event, harmonyHit) {
+  event.preventDefault()
+  event.stopPropagation()
+  const workspaceRect = pianoWorkspace.value?.getBoundingClientRect?.()
+  const x = workspaceRect
+    ? clamp(event.clientX - workspaceRect.left + 8, 8, Math.max(8, workspaceRect.width - 218))
+    : 8
+  const y = workspaceRect
+    ? clamp(event.clientY - workspaceRect.top + 8, 8, Math.max(8, workspaceRect.height - 54))
+    : pianoHarmonyLaneTop.value + 8
+  pianoHarmonyEditor.value = {
+    open: true,
+    x,
+    y,
+    eventIndex: harmonyHit?.index ?? -1,
+    beat: Number(harmonyHit?.event?.beat ?? 0),
+    text: String(harmonyHit?.event?.text || ''),
+  }
+}
+
 function closePianoMeterEditor() {
   if (!pianoMeterEditor.value.open) return
   pianoMeterEditor.value = {
     ...pianoMeterEditor.value,
+    open: false,
+  }
+}
+
+function closePianoHarmonyEditor() {
+  if (!pianoHarmonyEditor.value.open) return
+  pianoHarmonyEditor.value = {
+    ...pianoHarmonyEditor.value,
     open: false,
   }
 }
@@ -3709,6 +3932,40 @@ async function applyPianoMeterEditor() {
   })
 }
 
+async function applyPianoHarmonyEditor() {
+  const editor = pianoHarmonyEditor.value
+  if (!editor.open || !project.value) return
+  const text = normalizeHarmonyText(editor.text)
+  pianoHarmonyEditor.value = {
+    ...editor,
+    text,
+  }
+  if (!text && editor.eventIndex < 0) {
+    closePianoHarmonyEditor()
+    return
+  }
+  await persistProjectUpdate((nextProject) => {
+    const events = normalizeEditableHarmonyEvents(nextProject.harmony_events || [])
+    if (events[editor.eventIndex]) {
+      if (text) {
+        events[editor.eventIndex] = {
+          ...events[editor.eventIndex],
+          text,
+        }
+      } else {
+        events.splice(editor.eventIndex, 1)
+      }
+    } else if (text) {
+      events.push({
+        beat: editor.beat,
+        text,
+      })
+    }
+    nextProject.harmony_events = normalizeEditableHarmonyEvents(events)
+  })
+  if (!text) closePianoHarmonyEditor()
+}
+
 function noteRect(note) {
   const scale = pianoPxPerBeat.value
   return {
@@ -3723,6 +3980,10 @@ function editableMeterEvents() {
   return normalizeEditableMeterEvents(project.value?.meter_events || [])
 }
 
+function editableHarmonyEvents() {
+  return normalizeEditableHarmonyEvents(project.value?.harmony_events || [])
+}
+
 function normalizeEditableMeterEvents(events) {
   const byBeat = new Map()
   for (const rawEvent of Array.isArray(events) ? events : []) {
@@ -3734,6 +3995,21 @@ function normalizeEditableMeterEvents(events) {
     })
   }
   return [...byBeat.values()].sort((a, b) => a.beat - b.beat)
+}
+
+function normalizeEditableHarmonyEvents(events) {
+  const byBeat = new Map()
+  for (const rawEvent of Array.isArray(events) ? events : []) {
+    const text = normalizeHarmonyText(rawEvent?.text ?? rawEvent?.label ?? rawEvent?.chord)
+    if (!text) continue
+    const beat = Math.max(0, roundPianoBeat(rawEvent?.beat ?? rawEvent?.start ?? 0))
+    byBeat.set(beat, { beat, text })
+  }
+  return [...byBeat.values()].sort((a, b) => a.beat - b.beat)
+}
+
+function normalizeHarmonyText(value) {
+  return String(value || '').trim().slice(0, 64)
 }
 
 function roundPianoBeat(value) {
@@ -4294,6 +4570,7 @@ function onStudioKeydown(event) {
     draftNote.value = null
     clearPianoLongPressTimer()
     closePianoMeterEditor()
+    closePianoHarmonyEditor()
     controllerMenuLaneId.value = null
     pianoQuantizeMenuOpen.value = false
     automationDrag = null
@@ -4348,6 +4625,7 @@ function closePiano() {
   controllerMenuLaneId.value = null
   clearPianoLongPressTimer()
   closePianoMeterEditor()
+  closePianoHarmonyEditor()
   unbindPianoDrag()
   unbindPianoResize()
   unbindControllerDrag()
@@ -4365,6 +4643,7 @@ function openMixer() {
   controllerMenuLaneId.value = null
   clearPianoLongPressTimer()
   closePianoMeterEditor()
+  closePianoHarmonyEditor()
   unbindPianoDrag()
   unbindPianoResize()
   unbindControllerDrag()
@@ -4897,7 +5176,17 @@ function arrangementLengthBeats() {
     0,
     ...tracks.value.flatMap(track => (track.automation?.points || []).map(point => Number(point.beat || 0)))
   )
-  return Math.max(Number(project.value?.length_beats || 16), emptyTailBeats, clipEnd + 2, automationEnd + 2)
+  const harmonyEnd = Math.max(
+    0,
+    ...(project.value?.harmony_events || []).map(event => Number(event.beat || 0))
+  )
+  return Math.max(
+    Number(project.value?.length_beats || 16),
+    emptyTailBeats,
+    clipEnd + 2,
+    automationEnd + 2,
+    harmonyEnd + 2
+  )
 }
 
 function pianoLengthBeats(clip) {
@@ -4911,7 +5200,17 @@ function pianoLengthBeats(clip) {
     0,
     ...(project.value?.meter_events || []).map(event => Number(event.beat || 0) - clipStart)
   )
-  return Math.max(Number(clip.duration || 4), emptyTailBeats, noteEnd + 2, meterEventEnd + 2)
+  const harmonyEventEnd = Math.max(
+    0,
+    ...(project.value?.harmony_events || []).map(event => Number(event.beat || 0) - clipStart)
+  )
+  return Math.max(
+    Number(clip.duration || 4),
+    emptyTailBeats,
+    noteEnd + 2,
+    meterEventEnd + 2,
+    harmonyEventEnd + 2
+  )
 }
 
 function drawArrangementClip(ctx, track, clip, trackIndex) {
@@ -5210,7 +5509,13 @@ function drawPiano() {
   ctx.fillStyle = '#17191c'
   ctx.fillRect(0, 0, width, height)
   drawPianoRuler(ctx, width, clip)
-  drawPianoMeterLane(ctx, width, clip)
+  for (const subtrackId of pianoVisibleSubtracks.value) {
+    if (subtrackId === 'meter') {
+      drawPianoMeterLane(ctx, width, clip)
+    } else if (subtrackId === 'harmony') {
+      drawPianoHarmonyLane(ctx, width, clip, pianoHarmonyLaneTop.value)
+    }
+  }
 
   for (let pitch = maxPitch; pitch >= minPitch; pitch -= 1) {
     const row = maxPitch - pitch
@@ -5669,6 +5974,51 @@ function drawPianoMeterLane(ctx, width, clip) {
   }
 }
 
+function drawPianoHarmonyLane(ctx, width, clip, top) {
+  if (!pianoHarmonyLaneVisible.value) return
+  const scale = pianoPxPerBeat.value
+  const clipStart = Number(clip.start || 0)
+  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
+  const endBeat = clipStart + visibleBeats
+  const bottom = top + pianoSubtrackH
+
+  ctx.fillStyle = '#181c22'
+  ctx.fillRect(0, top, width, pianoSubtrackH)
+  ctx.fillStyle = '#252b30'
+  ctx.fillRect(0, top, pianoKeyW, pianoSubtrackH)
+  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
+  ctx.beginPath()
+  ctx.moveTo(0, top + 0.5)
+  ctx.lineTo(width, top + 0.5)
+  ctx.moveTo(0, bottom - 0.5)
+  ctx.lineTo(width, bottom - 0.5)
+  ctx.stroke()
+
+  ctx.fillStyle = '#aeb8c5'
+  ctx.font = '10px Cascadia Mono, Consolas, monospace'
+  ctx.fillText('Harmony', 10, top + 17)
+
+  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
+    const x = pianoKeyW + (line.beat - clipStart) * scale
+    ctx.strokeStyle = 'rgba(125, 168, 232, 0.12)'
+    ctx.beginPath()
+    ctx.moveTo(x, top)
+    ctx.lineTo(x, bottom)
+    ctx.stroke()
+  }
+
+  for (const event of editableHarmonyEvents()) {
+    if (event.beat < clipStart - 0.001 || event.beat > endBeat + 0.001) continue
+    const x = pianoKeyW + (event.beat - clipStart) * scale
+    ctx.fillStyle = 'rgba(125, 168, 232, 0.18)'
+    roundRect(ctx, x - 3, top + 4, 6, pianoSubtrackH - 8, 3)
+    ctx.fill()
+    ctx.fillStyle = '#b8d0ff'
+    ctx.font = '11px Cascadia Mono, Consolas, monospace'
+    ctx.fillText(event.text, x + 5, top + 18)
+  }
+}
+
 function paintPianoGrid(ctx, width, height, clip) {
   const scale = pianoPxPerBeat.value
   const clipStart = Number(clip.start || 0)
@@ -5712,7 +6062,6 @@ function paintPianoGrid(ctx, width, height, clip) {
 function paintGrid(ctx, width, height, offsetX, offsetY) {
   const scale = arrangementPxPerBeat.value
   const beats = Math.ceil((width - offsetX) / scale)
-  const barLen = meterBeats.value
 
   for (let beat = 0; beat <= beats; beat += 1) {
     const x = offsetX + beat * scale
@@ -5733,9 +6082,9 @@ function paintGrid(ctx, width, height, offsetX, offsetY) {
     }
   }
 
-  // Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)
-  for (let bar = 0; bar * barLen <= beats; bar++) {
-    const barX = offsetX + bar * barLen * scale
+  // Bar lines follow the project meter map so piano-roll meter changes affect the arrangement grid.
+  for (const line of meterBarLinesBetween(project.value, 0, beats)) {
+    const barX = offsetX + line.beat * scale
     ctx.strokeStyle = 'rgba(229,236,245,0.18)'
     ctx.lineWidth = 1
     ctx.beginPath()
@@ -5884,6 +6233,7 @@ onUnmounted(() => {
 })
 
 watch(project, (nextProject) => {
+  syncPianoSubtrackLanes(nextProject)
   syncTransportDisplayFields(nextProject)
   if (activeClipId.value && !findClipRecord(activeClipId.value)) {
     activeClipId.value = null
@@ -7154,6 +7504,117 @@ watch(positionBeats, (value) => {
   outline: none;
   border-color: rgba(240, 209, 122, 0.5);
   box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
+}
+
+.piano-harmony-popover {
+  position: absolute;
+  z-index: 24;
+  width: 210px;
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(229, 236, 245, 0.18);
+  border-radius: 7px;
+  background: #24282c;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
+}
+
+.piano-harmony-popover label {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.piano-harmony-popover span {
+  color: var(--t4);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.piano-harmony-popover input {
+  width: 100%;
+  height: 26px;
+  min-width: 0;
+  padding: 0 7px;
+  border: 1px solid rgba(229, 236, 245, 0.12);
+  border-radius: 4px;
+  background: #101215;
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.piano-harmony-popover input:focus {
+  outline: none;
+  border-color: rgba(125, 168, 232, 0.5);
+  box-shadow: 0 0 0 2px rgba(125, 168, 232, 0.12);
+}
+
+.piano-meter-toggle {
+  position: absolute;
+  right: 10px;
+  z-index: 22;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(240, 209, 122, 0.28);
+  border-radius: 4px;
+  background: rgba(25, 29, 33, 0.82);
+  color: #f0d17a;
+  cursor: pointer;
+}
+
+.piano-meter-toggle::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 5px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid currentColor;
+}
+
+.piano-meter-toggle:hover,
+.piano-meter-toggle:focus-visible {
+  border-color: rgba(240, 209, 122, 0.62);
+  background: rgba(40, 45, 50, 0.96);
+  outline: none;
+}
+
+.piano-harmony-toggle {
+  position: absolute;
+  right: 10px;
+  z-index: 22;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(125, 168, 232, 0.28);
+  border-radius: 4px;
+  background: rgba(25, 29, 33, 0.82);
+  color: #b8d0ff;
+  cursor: pointer;
+}
+
+.piano-harmony-toggle::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 5px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid currentColor;
+}
+
+.piano-harmony-toggle:hover,
+.piano-harmony-toggle:focus-visible {
+  border-color: rgba(125, 168, 232, 0.62);
+  background: rgba(40, 45, 50, 0.96);
+  outline: none;
 }
 
 .controller-lanes-wrap {

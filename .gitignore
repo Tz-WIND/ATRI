@@ -5,6 +5,7 @@ config.yaml
 __pycache__/
 *.py[cod]
 *.egg-info/
+.pytest-tmp/
 dist/
 build/
 

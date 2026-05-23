@@ -183,22 +183,19 @@ def test_music_studio_beat_numbering_uses_meter_event_positions():
     assert "effectiveMeterAtBeat(project.value, absoluteBeat)" in studio_text
 
 
-def test_music_studio_grid_overlays_bar_lines_at_fractional_positions():
-    """Grids must overlay bar lines at n * meterBeats positions so that
-    fractional bar lengths (3/8 => 1.5, 5/8 => 2.5) don't miss bar boundaries
-    that fall between integer quarter-note beats."""
+def test_music_studio_arrangement_grid_follows_meter_events():
+    """The main arrangement grid must use the same meter event map as the
+    piano meter lane, so bar lines move after a 3/4 or 5/8 marker."""
     studio_text = _read(STUDIO_COMPONENT)
 
-    # paintGrid (arrangement) overlays bar lines
     assert "function paintGrid(ctx, width, height, offsetX, offsetY)" in studio_text
-    assert "const barLen = meterBeats.value" in studio_text
-    # Bar line overlay loop at fractional positions
-    assert "bar * barLen <= beats" in studio_text
-    # paintControllerGrid does the same
+    assert "for (const line of meterBarLinesBetween(project.value, 0, beats))" in studio_text
+    assert "const barX = offsetX + line.beat * scale" in studio_text
+    assert "for (let bar = 0; bar * barLen <= beats; bar++)" not in studio_text
+    # paintControllerGrid still overlays clip-local bar lines.
     assert "barLen * pianoPxPerBeat.value" in studio_text
-    # drawPianoRuler bar line overlay
     assert (
-        "// Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)"
+        "for (const line of meterBarLinesBetween(project.value, clipStart, endBeat))"
     ) in studio_text
 
 
@@ -592,6 +589,59 @@ def test_music_studio_piano_roll_has_dedicated_meter_lane():
     assert "meterBarLinesBetween(project.value, clipStart, endBeat)" in studio_text
     assert "await upsertMeterEventAtBeat(point.beat)" in studio_text
     assert "upsertMeterEventInProject(nextProject, nextBeat, numerator, denominator)" in studio_text
+
+
+def test_music_studio_piano_meter_lane_can_collapse_without_deleting_events():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'class="piano-meter-toggle"' in studio_text
+    assert 'title="收起拍号轨"' in studio_text
+    assert '@click.stop="togglePianoMeterLane"' in studio_text
+    assert ".piano-meter-toggle {" in studio_text
+    assert "right: 10px;" in studio_text
+    assert ".piano-meter-toggle::before {" in studio_text
+    assert "const pianoMeterLaneOpen = ref(false)" in studio_text
+    assert "const hasProjectMeterEvents = computed(" in studio_text
+    assert "const pianoMeterLaneVisible = computed(() => pianoMeterLaneOpen.value)" in studio_text
+    assert "{ id: 'meter', label: '拍号轨', disabled: pianoMeterLaneVisible.value }" in studio_text
+    assert "label: '收起拍号轨'" not in studio_text
+    assert "await togglePianoMeterLane()" in studio_text
+    assert "function togglePianoMeterLane()" in studio_text
+    assert "pianoMeterLaneOpen.value = false" in studio_text
+    assert "pianoMeterLaneOpen.value = true" in studio_text
+    assert "if (!hasProjectMeterEvents.value)" in studio_text
+
+
+def test_music_studio_piano_harmony_lane_persists_agent_visible_markers():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert (
+        "{ id: 'harmony', label: '和声轨', disabled: pianoHarmonyLaneVisible.value }" in studio_text
+    )
+    assert "const pianoSubtrackOrder = ref([])" in studio_text
+    assert "const pianoVisibleSubtracks = computed(" in studio_text
+    assert "normalizePianoSubtrackOrder(nextProject?.piano_subtrack_order)" in studio_text
+    assert "nextProject.piano_subtrack_order = normalizePianoSubtrackOrder(" in studio_text
+    assert 'class="piano-harmony-popover"' in studio_text
+    assert 'v-model="pianoHarmonyEditor.text"' in studio_text
+    assert "function drawPianoHarmonyLane(ctx, width, clip, top)" in studio_text
+    assert "function hitTestHarmonyEvent(point)" in studio_text
+    assert "function openPianoHarmonyEditor(event, harmonyHit)" in studio_text
+    assert "async function applyPianoHarmonyEditor()" in studio_text
+    assert "function normalizeEditableHarmonyEvents(events)" in studio_text
+    assert "nextProject.harmony_events = normalizeEditableHarmonyEvents(events)" in studio_text
+
+
+def test_music_studio_piano_subtracks_resync_when_project_subtrack_data_changes():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const pianoSubtrackSyncKey = ref('')" in studio_text
+    assert "function pianoSubtrackProjectSyncKey(nextProject)" in studio_text
+    assert "function syncPianoSubtrackLanes(nextProject)" in studio_text
+    assert "if (pianoSubtrackSyncKey.value === syncKey) return" in studio_text
+    assert "pianoSubtrackSyncKey.value = syncKey" in studio_text
+    assert "syncPianoSubtrackLanes(nextProject)" in studio_text
+    assert "pianoMeterLaneOpenSynced" not in studio_text
 
 
 def test_music_studio_piano_meter_label_opens_editor_and_playhead_uses_visible_piano_length():

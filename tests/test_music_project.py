@@ -459,6 +459,35 @@ def test_project_preserves_dedicated_meter_events(tmp_path, monkeypatch):
     assert project["length_beats"] >= 20
 
 
+def test_project_preserves_harmony_events_for_agent_context(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    project = save_project(
+        {
+            "time_signature": [4, 4],
+            "piano_subtrack_order": ["harmony", "meter", "harmony", "bad"],
+            "meter_events": [
+                {"beat": 4, "numerator": 3, "denominator": 4},
+            ],
+            "harmony_events": [
+                {"beat": 8, "text": "  Cmaj7  "},
+                {"start": 12.5, "label": "Dm7/G"},
+                {"beat": 16, "text": ""},
+                {"beat": 8, "text": "Fmaj7"},
+            ],
+        },
+        tmp_path / "harmony_events.json",
+    )
+
+    assert project["piano_subtrack_order"] == ["harmony", "meter"]
+    assert project["harmony_events"] == [
+        {"beat": 8.0, "text": "Fmaj7"},
+        {"beat": 12.5, "text": "Dm7/G"},
+    ]
+    assert project["length_beats"] >= 16
+    assert project_summary(project)["harmony_events"] == project["harmony_events"]
+
+
 def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 

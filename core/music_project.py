@@ -61,6 +61,7 @@ GLOBAL_AUTOMATION_TARGET_KINDS = {"tempo_bpm"}
 MIDI_CURVE_MAX_POINTS = 4096
 METER_DENOMINATORS = {2, 4, 8, 16, 32}
 MAX_METER_NUMERATOR = 255
+PIANO_SUBTRACK_IDS = ("meter", "harmony")
 
 
 def _now_iso() -> str:
@@ -75,6 +76,8 @@ def default_project() -> dict[str, Any]:
         "tempo": 120.0,
         "time_signature": [4, 4],
         "meter_events": [],
+        "harmony_events": [],
+        "piano_subtrack_order": [],
         "length_beats": 16.0,
         "updated_at": _now_iso(),
         "automation_learned_parameters": [],
@@ -168,6 +171,10 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         "tempo": _positive_float(project.get("tempo"), base["tempo"]),
         "time_signature": _normalize_meter(project.get("time_signature")),
         "meter_events": _normalize_meter_events(project.get("meter_events")),
+        "harmony_events": _normalize_harmony_events(project.get("harmony_events")),
+        "piano_subtrack_order": _normalize_piano_subtrack_order(
+            project.get("piano_subtrack_order")
+        ),
         "length_beats": _positive_float(project.get("length_beats"), base["length_beats"]),
         "updated_at": str(project.get("updated_at") or _now_iso()),
         "automation_learned_parameters": _normalize_learned_parameters(
@@ -283,7 +290,11 @@ def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
         (event["beat"] for event in normalized["meter_events"]),
         default=0.0,
     )
-    max_end = max(max_clip_end, max_automation_end, max_meter_event_end)
+    max_harmony_event_end = max(
+        (event["beat"] for event in normalized["harmony_events"]),
+        default=0.0,
+    )
+    max_end = max(max_clip_end, max_automation_end, max_meter_event_end, max_harmony_event_end)
     normalized["length_beats"] = max(normalized["length_beats"], _ceil_to_bar(max_end))
     return normalized
 
@@ -1097,6 +1108,9 @@ def project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "title": project["title"],
         "tempo": project["tempo"],
         "time_signature": project["time_signature"],
+        "meter_events": project["meter_events"],
+        "harmony_events": project["harmony_events"],
+        "piano_subtrack_order": project["piano_subtrack_order"],
         "length_beats": project["length_beats"],
         "track_count": len(project["tracks"]),
         "note_count": note_count,
@@ -3350,6 +3364,34 @@ def _normalize_meter_events(value: Any) -> list[dict[str, Any]]:
             "denominator": denominator,
         }
     return [by_beat[beat] for beat in sorted(by_beat)]
+
+
+def _normalize_harmony_events(value: Any) -> list[dict[str, Any]]:
+    raw_events = value if isinstance(value, list) else []
+    by_beat: dict[float, dict[str, Any]] = {}
+    for raw_event in raw_events:
+        if not isinstance(raw_event, dict):
+            continue
+        text = str(_first_present(raw_event, ("text", "label", "name", "chord"), "") or "").strip()
+        if not text:
+            continue
+        beat = round(_non_negative_float(_first_present(raw_event, ("beat", "start"), 0.0), 0.0), 6)
+        by_beat[beat] = {
+            "beat": beat,
+            "text": text,
+        }
+    return [by_beat[beat] for beat in sorted(by_beat)]
+
+
+def _normalize_piano_subtrack_order(value: Any) -> list[str]:
+    raw_items = value if isinstance(value, list) else []
+    order: list[str] = []
+    for raw_item in raw_items:
+        item = str(raw_item or "").strip().lower()
+        if item not in PIANO_SUBTRACK_IDS or item in order:
+            continue
+        order.append(item)
+    return order
 
 
 def _track_color(value: Any, index: int) -> str:
