@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from core.music_project import (
+    TIME_SIGNATURE_AUTOMATION_ERROR,
     automation_diff,
     automation_query,
     automation_retarget,
@@ -241,10 +242,7 @@ class AutomationWriteTool(Tool):
         if normalized_kind == "tempo_bpm":
             return "Error: use automation_global_write for tempo automation"
         if normalized_kind == "time_signature_numerator":
-            return (
-                "Error: time_signature_numerator is not an automation target; "
-                "use the piano roll meter track"
-            )
+            return f"Error: {TIME_SIGNATURE_AUTOMATION_ERROR}"
         if normalized_kind in {"track_volume", "track_pan", "plugin_parameter"} and (
             target or {}
         ).get("track_id") in (None, ""):

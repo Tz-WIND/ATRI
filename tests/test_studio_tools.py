@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from quart import Quart
 
+from core.music_project import load_project, save_project
 from core.pipeline.stages.process import _extract_confirmation_command
 from core.tools import studio
 from core.tools.automation import (
@@ -16,6 +17,7 @@ from core.tools.automation import (
     VstParamQueryTool,
 )
 from core.tools.bash import CONFIRM_MARKER
+from core.tools.piano_lane import StudioPianoLaneDiffTool, StudioPianoLaneWriteTool
 from core.tools.studio import (
     StudioAudioImportTool,
     StudioHostControlTool,
@@ -306,6 +308,74 @@ def test_studio_audio_import_rejects_missing_file_path_or_path(tmp_path):
     assert result == "Error: file_path or path is required"
 
 
+def test_studio_piano_lane_write_writes_meter_events_and_syncs(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "core.tools.piano_lane._request_dashboard_sync",
+        lambda: "Dashboard sync requested.",
+    )
+
+    result = StudioPianoLaneWriteTool(str(tmp_path)).execute(
+        lane="meter",
+        mode="replace",
+        events=[
+            {"beat": 0, "numerator": 4, "denominator": 4},
+            {"beat": 8, "numerator": 5, "denominator": 8},
+        ],
+    )
+
+    project = load_project()
+    assert project["meter_events"] == [
+        {"beat": 0.0, "numerator": 4, "denominator": 4},
+        {"beat": 8.0, "numerator": 5, "denominator": 8},
+    ]
+    assert project["piano_subtrack_order"] == ["meter"]
+    assert "Piano lane written." in result
+    assert "Operation: {'lane': 'meter'" in result
+    assert "Dashboard sync requested." in result
+
+
+def test_studio_piano_lane_diff_edits_harmony_events_and_syncs(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "harmony_events": [
+                {"beat": 0, "text": "Cmaj7"},
+                {"beat": 4, "text": "Dm7"},
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        "core.tools.piano_lane._request_dashboard_sync",
+        lambda: "Dashboard sync requested.",
+    )
+
+    result = StudioPianoLaneDiffTool(str(tmp_path)).execute(
+        lane="harmony",
+        operations=[
+            {"op": "update_event", "beat": 4, "text": "G7"},
+            {"op": "add_event", "event": {"beat": 8, "text": "Cmaj7/E"}},
+            {"op": "delete_event", "beat": 0},
+        ],
+    )
+
+    project = load_project()
+    assert project["harmony_events"] == [
+        {"beat": 4.0, "text": "G7"},
+        {"beat": 8.0, "text": "Cmaj7/E"},
+    ]
+    assert project["piano_subtrack_order"] == ["harmony"]
+    assert "Piano lane diff applied." in result
+    assert "Operation: {'lane': 'harmony'" in result
+    assert "Dashboard sync requested." in result
+
+
 def test_studio_sync_description_marks_tool_as_manual_repair_path():
     assert "force or repair project-to-host sync" in StudioSyncTool.description
     assert "Most studio write tools already return a sync result" in StudioSyncTool.description
@@ -577,7 +647,7 @@ def test_automation_write_rejects_global_targets(tmp_path):
     assert tempo_result == "Error: use automation_global_write for tempo automation"
     assert (
         meter_result == "Error: time_signature_numerator is not an automation target; "
-        "use the piano roll meter track"
+        "use studio_piano_lane_write or studio_piano_lane_diff"
     )
 
 

@@ -966,6 +966,27 @@ async def test_studio_automation_write_rejects_invalid_track_id():
     assert body["error"] == "invalid track_id"
 
 
+async def test_studio_automation_write_rejects_time_signature_numerator():
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/automation",
+        json={
+            "target": {"kind": "time_signature_numerator"},
+            "points": [{"beat": 0, "value": 4}],
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == (
+        "time_signature_numerator is not an automation target; "
+        "use studio_piano_lane_write or studio_piano_lane_diff"
+    )
+
+
 async def test_studio_create_track_passes_requested_color(monkeypatch):
     captured = {}
 

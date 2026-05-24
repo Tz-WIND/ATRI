@@ -57,6 +57,10 @@ MIDI_CURVE_EVENT_TYPES = {
 
 TRACK_AUTOMATION_TARGET_KINDS = {"plugin_parameter", "track_volume", "track_pan"}
 GLOBAL_AUTOMATION_TARGET_KINDS = {"tempo_bpm"}
+TIME_SIGNATURE_AUTOMATION_ERROR = (
+    "time_signature_numerator is not an automation target; "
+    "use studio_piano_lane_write or studio_piano_lane_diff"
+)
 
 MIDI_CURVE_MAX_POINTS = 4096
 METER_DENOMINATORS = {2, 4, 8, 16, 32}
@@ -504,6 +508,13 @@ def set_track_plugin(
     return project, find_track(project, track_id)
 
 
+def _reject_legacy_time_signature_automation_target(target: Any) -> None:
+    raw = target if isinstance(target, dict) else {}
+    kind = str(raw.get("kind") or raw.get("type") or "").strip().lower()
+    if kind == "time_signature_numerator":
+        raise ValueError(TIME_SIGNATURE_AUTOMATION_ERROR)
+
+
 def automation_write(
     target: dict[str, Any],
     *,
@@ -513,6 +524,7 @@ def automation_write(
     color: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Create or replace a first-class project automation track."""
+    _reject_legacy_time_signature_automation_target(target)
     project = load_project()
     normalized_target = _normalize_automation_target(target)
     automation = _normalize_automation_payload({"points": points or []}, target=normalized_target)
@@ -615,6 +627,7 @@ def automation_retarget(
     track_id: int,
     target: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    _reject_legacy_time_signature_automation_target(target)
     project = load_project()
     track = find_track(project, track_id)
     if track.get("type") != "automation":
@@ -720,6 +733,84 @@ def automation_learned_parameter_rename(
             )
             return project, deepcopy(saved)
     raise ValueError(f"learned parameter {parameter_id} not found")
+
+
+def piano_lane_write(
+    lane: str,
+    events: list[dict[str, Any]],
+    *,
+    mode: str = "replace",
+    start: float | None = None,
+    end: float | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replace or append project-level piano meter and harmony lane events."""
+    lane_id = _normalize_piano_lane_id(lane)
+    if mode not in {"replace", "append"}:
+        raise ValueError("mode must be 'replace' or 'append'")
+
+    project = load_project()
+    field = _piano_lane_event_field(lane_id)
+    current_events = _normalize_piano_lane_events(lane_id, project.get(field))
+    incoming_events = _normalize_piano_lane_events(lane_id, events)
+    removed = 0
+
+    if mode == "replace":
+        event_range = _normalize_piano_lane_range(start, end)
+        if event_range is None:
+            removed = len(current_events)
+            next_events = incoming_events
+        else:
+            range_start, range_end = event_range
+            kept_events = []
+            for event in current_events:
+                if _piano_lane_beat_in_range(float(event["beat"]), range_start, range_end):
+                    removed += 1
+                else:
+                    kept_events.append(event)
+            next_events = [*kept_events, *incoming_events]
+    else:
+        next_events = [*current_events, *incoming_events]
+
+    project[field] = _normalize_piano_lane_events(lane_id, next_events)
+    _ensure_piano_subtrack_order(project, lane_id)
+    project = save_project(project)
+    return project, _piano_lane_write_summary(project, lane_id, mode, len(incoming_events), removed)
+
+
+def piano_lane_diff(
+    lane: str,
+    operations: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply atomic edits to project-level piano meter and harmony lane events."""
+    lane_id = _normalize_piano_lane_id(lane)
+    project = load_project()
+    field = _piano_lane_event_field(lane_id)
+    events = _normalize_piano_lane_events(lane_id, project.get(field))
+    changed = {"added": 0, "updated": 0, "deleted": 0}
+
+    for op in operations:
+        op_type = str(op.get("op") or op.get("type") or "").strip().lower()
+        if op_type in {"add_event", "add"}:
+            added = _event_from_piano_lane_op(lane_id, op)
+            events, did_add = _upsert_piano_lane_event(events, added)
+            changed["added" if did_add else "updated"] += 1
+        elif op_type in {"update_event", "update"}:
+            events, did_update = _update_piano_lane_event(lane_id, events, op)
+            changed["updated" if did_update else "added"] += 1
+        elif op_type in {"delete_event", "delete"}:
+            events, deleted = _delete_piano_lane_event(events, op)
+            changed["deleted"] += deleted
+        elif op_type == "replace_range":
+            events, replaced = _replace_piano_lane_event_range(lane_id, events, op)
+            changed["deleted"] += replaced["deleted"]
+            changed["added"] += replaced["added"]
+        else:
+            raise ValueError(f"unsupported piano lane diff operation: {op_type}")
+
+    project[field] = _normalize_piano_lane_events(lane_id, events)
+    _ensure_piano_subtrack_order(project, lane_id)
+    project = save_project(project)
+    return project, _piano_lane_diff_summary(project, lane_id, len(operations), changed)
 
 
 def midi_write(
@@ -1135,6 +1226,155 @@ def project_summary(project: dict[str, Any]) -> dict[str, Any]:
             }
             for track in project["tracks"]
         ],
+    }
+
+
+def _normalize_piano_lane_id(lane: str) -> str:
+    lane_id = str(lane or "").strip().lower()
+    if lane_id in PIANO_SUBTRACK_IDS:
+        return lane_id
+    raise ValueError("lane must be 'meter' or 'harmony'")
+
+
+def _piano_lane_event_field(lane: str) -> str:
+    return "meter_events" if lane == "meter" else "harmony_events"
+
+
+def _normalize_piano_lane_events(lane: str, value: Any) -> list[dict[str, Any]]:
+    if lane == "meter":
+        return _normalize_meter_events(value)
+    return _normalize_harmony_events(value)
+
+
+def _normalize_piano_lane_range(
+    start: Any,
+    end: Any,
+) -> tuple[float, float | None] | None:
+    if start is None and end is None:
+        return None
+    start_beat = _non_negative_float(start, 0.0) if start is not None else 0.0
+    end_beat = _non_negative_float(end, start_beat) if end is not None else None
+    if end_beat is not None and end_beat < start_beat:
+        raise ValueError("end must be greater than or equal to start")
+    return start_beat, end_beat
+
+
+def _piano_lane_beat_in_range(beat: float, start: float, end: float | None) -> bool:
+    return beat >= start and (end is None or beat < end)
+
+
+def _ensure_piano_subtrack_order(project: dict[str, Any], lane: str) -> None:
+    order = _normalize_piano_subtrack_order(project.get("piano_subtrack_order"))
+    if project.get(_piano_lane_event_field(lane)) and lane not in order:
+        order.append(lane)
+    project["piano_subtrack_order"] = order
+
+
+def _event_from_piano_lane_op(lane: str, op: dict[str, Any]) -> dict[str, Any]:
+    raw_event = op.get("event")
+    event_payload = cast(dict[str, Any], raw_event) if isinstance(raw_event, dict) else op
+    normalized = _normalize_piano_lane_events(lane, [event_payload])
+    if not normalized:
+        raise ValueError(f"{lane} event is required")
+    return normalized[0]
+
+
+def _piano_lane_event_beat(op: dict[str, Any]) -> float:
+    raw_event = op.get("event")
+    payload = cast(dict[str, Any], raw_event) if isinstance(raw_event, dict) else op
+    return round(_non_negative_float(_first_present(payload, ("beat", "start"), 0.0), 0.0), 6)
+
+
+def _upsert_piano_lane_event(
+    events: list[dict[str, Any]],
+    event: dict[str, Any],
+) -> tuple[list[dict[str, Any]], bool]:
+    event_beat = float(event["beat"])
+    did_add = not any(abs(float(item["beat"]) - event_beat) <= 1e-6 for item in events)
+    kept = [item for item in events if abs(float(item["beat"]) - event_beat) > 1e-6]
+    return sorted([*kept, event], key=lambda item: float(item["beat"])), did_add
+
+
+def _update_piano_lane_event(
+    lane: str,
+    events: list[dict[str, Any]],
+    op: dict[str, Any],
+) -> tuple[list[dict[str, Any]], bool]:
+    beat = _piano_lane_event_beat(op)
+    existing = next(
+        (event for event in events if abs(float(event["beat"]) - beat) <= 1e-6),
+        None,
+    )
+    raw_event = op.get("event")
+    updates = dict(raw_event) if isinstance(raw_event, dict) else dict(op)
+    updates.pop("op", None)
+    updates.pop("type", None)
+    payload = {**(existing or {}), **updates, "beat": beat}
+    next_events, did_add = _upsert_piano_lane_event(
+        events,
+        _event_from_piano_lane_op(lane, payload),
+    )
+    return next_events, not did_add
+
+
+def _delete_piano_lane_event(
+    events: list[dict[str, Any]],
+    op: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int]:
+    beat = _piano_lane_event_beat(op)
+    kept = [event for event in events if abs(float(event["beat"]) - beat) > 1e-6]
+    return kept, len(events) - len(kept)
+
+
+def _replace_piano_lane_event_range(
+    lane: str,
+    events: list[dict[str, Any]],
+    op: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    event_range = _normalize_piano_lane_range(op.get("start"), op.get("end")) or (0.0, None)
+    range_start, range_end = event_range
+    kept = []
+    deleted = 0
+    for event in events:
+        if _piano_lane_beat_in_range(float(event["beat"]), range_start, range_end):
+            deleted += 1
+        else:
+            kept.append(event)
+    incoming = _normalize_piano_lane_events(lane, op.get("events") or [])
+    return [*kept, *incoming], {"deleted": deleted, "added": len(incoming)}
+
+
+def _piano_lane_write_summary(
+    project: dict[str, Any],
+    lane: str,
+    mode: str,
+    events_written: int,
+    events_removed: int,
+) -> dict[str, Any]:
+    event_count = len(project[_piano_lane_event_field(lane)])
+    return {
+        "lane": lane,
+        "mode": mode,
+        "events_written": events_written,
+        "events_removed": events_removed,
+        "event_count": event_count,
+        "project": project_summary(project),
+    }
+
+
+def _piano_lane_diff_summary(
+    project: dict[str, Any],
+    lane: str,
+    operation_count: int,
+    changed: dict[str, int],
+) -> dict[str, Any]:
+    event_count = len(project[_piano_lane_event_field(lane)])
+    return {
+        "lane": lane,
+        "operations": operation_count,
+        **changed,
+        "event_count": event_count,
+        "project": project_summary(project),
     }
 
 

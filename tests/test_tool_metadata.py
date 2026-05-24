@@ -108,6 +108,10 @@ def test_registered_tools_expose_capability_metadata(tmp_path):
     assert tools["studio_plugin"].metadata()["requires_approval"] is True
     assert tools["studio_audio_import"].metadata()["capability"] == "music.studio.audio"
     assert tools["studio_audio_import"].metadata()["writes_files"] is True
+    assert tools["studio_piano_lane_write"].metadata()["capability"] == "music.studio.piano_lane"
+    assert tools["studio_piano_lane_write"].metadata()["writes_files"] is True
+    assert tools["studio_piano_lane_diff"].metadata()["capability"] == "music.studio.piano_lane"
+    assert tools["studio_piano_lane_diff"].metadata()["writes_files"] is True
     assert tools["studio_sync"].metadata()["capability"] == "music.studio.sync"
 
     assert all(tool.metadata()["capability"] != "general" for tool in tools.values())
@@ -216,6 +220,8 @@ def test_agent_blocks_music_state_tools_without_file_or_approval_flags(tmp_path)
         "automation_global_write",
         "automation_diff",
         "automation_retarget",
+        "studio_piano_lane_write",
+        "studio_piano_lane_diff",
     }
     read_only_tool_names = {
         "midi_query",

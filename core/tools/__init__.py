@@ -31,6 +31,7 @@ from .midi import (
 from .mode import AgentModeTool
 from .music import MusicTool
 from .novelai_image import NovelAIImageTool
+from .piano_lane import StudioPianoLaneDiffTool, StudioPianoLaneWriteTool
 from .read import ReadFileTool
 from .retrieve_tool_result import RetrieveToolResultTool
 from .search import SearchTool
@@ -117,6 +118,8 @@ def create_tools(
         StudioTrackTool(workspace),
         StudioPluginTool(workspace),
         StudioAudioImportTool(workspace),
+        StudioPianoLaneWriteTool(workspace),
+        StudioPianoLaneDiffTool(workspace),
         StudioSyncTool(workspace),
         WebSearchTool(workspace),
         WebFetchTool(workspace),

@@ -17,6 +17,8 @@ from core.music_project import (
     midi_inspect,
     midi_query,
     midi_write,
+    piano_lane_diff,
+    piano_lane_write,
     project_summary,
     save_project,
     set_track_plugin,
@@ -273,6 +275,43 @@ def test_automation_write_accepts_global_tempo_target(tmp_path, monkeypatch):
     ]
 
 
+def test_automation_write_rejects_legacy_time_signature_numerator_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    with pytest.raises(
+        ValueError,
+        match="time_signature_numerator is not an automation target; use studio_piano_lane_",
+    ):
+        automation_write(
+            {"kind": "time_signature_numerator"},
+            points=[{"beat": 0, "value": 4}],
+        )
+
+
+def test_automation_retarget_rejects_legacy_time_signature_numerator_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    _project, summary = automation_write(
+        {"kind": "tempo_bpm"},
+        points=[{"beat": 0, "value": 120}],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="time_signature_numerator is not an automation target; use studio_piano_lane_",
+    ):
+        automation_retarget(
+            summary["track_id"],
+            {"kind": "time_signature_numerator"},
+        )
+
+
 def test_automation_learned_parameters_upsert_and_rename(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     load_project()
@@ -486,6 +525,118 @@ def test_project_preserves_harmony_events_for_agent_context(tmp_path, monkeypatc
     ]
     assert project["length_beats"] >= 16
     assert project_summary(project)["harmony_events"] == project["harmony_events"]
+
+
+def test_piano_lane_write_replaces_meter_events_in_range_and_shows_lane(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "time_signature": [4, 4],
+            "piano_subtrack_order": ["harmony"],
+            "meter_events": [
+                {"beat": 0, "numerator": 4, "denominator": 4},
+                {"beat": 8, "numerator": 3, "denominator": 4},
+                {"beat": 16, "numerator": 7, "denominator": 8},
+            ],
+        }
+    )
+
+    project, summary = piano_lane_write(
+        "meter",
+        [
+            {"beat": 4, "numerator": 5, "denominator": 8},
+            {"beat": 12, "numerator": 9, "denominator": 3},
+            {"beat": 12, "numerator": 11, "denominator": 16},
+        ],
+        mode="replace",
+        start=4,
+        end=16,
+    )
+
+    assert project["meter_events"] == [
+        {"beat": 0.0, "numerator": 4, "denominator": 4},
+        {"beat": 4.0, "numerator": 5, "denominator": 8},
+        {"beat": 12.0, "numerator": 11, "denominator": 16},
+        {"beat": 16.0, "numerator": 7, "denominator": 8},
+    ]
+    assert project["piano_subtrack_order"] == ["harmony", "meter"]
+    assert summary["lane"] == "meter"
+    assert summary["events_written"] == 2
+    assert summary["events_removed"] == 1
+    assert summary["event_count"] == 4
+
+
+def test_piano_lane_write_appends_harmony_events_and_shows_lane(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "harmony_events": [
+                {"beat": 0, "text": "Cmaj7"},
+            ],
+        }
+    )
+
+    project, summary = piano_lane_write(
+        "harmony",
+        [
+            {"beat": 4, "text": "  Dm7  "},
+            {"beat": 8, "text": ""},
+            {"beat": 4, "text": "G7"},
+        ],
+        mode="append",
+    )
+
+    assert project["harmony_events"] == [
+        {"beat": 0.0, "text": "Cmaj7"},
+        {"beat": 4.0, "text": "G7"},
+    ]
+    assert project["piano_subtrack_order"] == ["harmony"]
+    assert summary["lane"] == "harmony"
+    assert summary["events_written"] == 1
+    assert summary["events_removed"] == 0
+    assert summary["event_count"] == 2
+
+
+def test_piano_lane_diff_edits_meter_events_by_beat(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "meter_events": [
+                {"beat": 0, "numerator": 4, "denominator": 4},
+                {"beat": 8, "numerator": 3, "denominator": 4},
+                {"beat": 16, "numerator": 5, "denominator": 8},
+                {"beat": 24, "numerator": 7, "denominator": 8},
+            ],
+        }
+    )
+
+    project, summary = piano_lane_diff(
+        "meter",
+        [
+            {"op": "update_event", "beat": 8, "numerator": 6, "denominator": 8},
+            {"op": "delete_event", "beat": 16},
+            {"op": "add_event", "event": {"beat": 12, "numerator": 2, "denominator": 4}},
+            {
+                "op": "replace_range",
+                "start": 20,
+                "end": 28,
+                "events": [{"beat": 20, "numerator": 9, "denominator": 8}],
+            },
+        ],
+    )
+
+    assert project["meter_events"] == [
+        {"beat": 0.0, "numerator": 4, "denominator": 4},
+        {"beat": 8.0, "numerator": 6, "denominator": 8},
+        {"beat": 12.0, "numerator": 2, "denominator": 4},
+        {"beat": 20.0, "numerator": 9, "denominator": 8},
+    ]
+    assert summary["lane"] == "meter"
+    assert summary["operations"] == 4
+    assert summary["added"] == 2
+    assert summary["updated"] == 1
+    assert summary["deleted"] == 2
+    assert summary["event_count"] == 4
 
 
 def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):
