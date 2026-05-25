@@ -1571,6 +1571,7 @@ import {
   quantizedBeatsBetween,
   snapBeatToGrid,
 } from './pianoQuantize.js'
+import { pianoScrollTopForNotes } from './pianoViewport.js'
 import {
   beatsToSeconds,
   effectiveTempoAtBeat,
@@ -1701,8 +1702,8 @@ const pianoDrawLongPressMs = 260
 const pianoDrawMoveTolerancePx = 5
 const pianoMeterEventHitRadius = 9
 const pianoHarmonyEventHitRadius = 9
-const minPitch = 36
-const maxPitch = 84
+const minPitch = 0
+const maxPitch = 120
 const trackCreatePalette = ['#4e79ff', '#d95b55', '#5f916b', '#d7b66f', '#b489d6', '#58a7b8']
 const pianoSubtrackIds = ['meter', 'harmony']
 const timeSignatureDenominatorOptions = [2, 4, 8, 16, 32]
@@ -4760,6 +4761,31 @@ function makeClipId() {
 
 function openPiano() {
   lowerEditorMode.value = 'piano'
+  schedulePianoViewportFocus()
+}
+
+function schedulePianoViewportFocus() {
+  nextTick(() => {
+    drawAll()
+    requestAnimationFrame(() => focusPianoViewport())
+  })
+}
+
+function focusPianoViewport() {
+  const wrap = pianoWrap.value
+  const clip = activeMidiClip.value?.clip
+  if (!wrap || !clip || !pianoVisible.value) return
+  const scrollHeight = wrap.scrollHeight || pianoNoteTop.value + (maxPitch - minPitch + 1) * pianoRowH
+  wrap.scrollTop = pianoScrollTopForNotes({
+    notes: clip.notes || [],
+    selectedNoteIds: selectedNoteIds.value,
+    minPitch,
+    maxPitch,
+    rowHeight: pianoRowH,
+    noteTop: pianoNoteTop.value,
+    clientHeight: wrap.clientHeight,
+    scrollHeight,
+  })
 }
 
 function closePiano() {
@@ -6521,6 +6547,9 @@ watch(project, (nextProject) => {
 watch(activeTrack, () => {
   selectedNoteIds.value = new Set()
   drawAll()
+})
+watch(activeClipId, () => {
+  if (pianoVisible.value && activeMidiClip.value) schedulePianoViewportFocus()
 })
 watch(positionBeats, (value) => {
   visualPositionBeats.value = value

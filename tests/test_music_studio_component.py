@@ -430,6 +430,38 @@ def test_music_studio_has_mutually_exclusive_piano_and_mixer_lower_windows():
     assert 'v-if="pianoVisible && activeMidiClip"' in studio_text
 
 
+def test_music_studio_piano_roll_extends_from_low_c_to_c9():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const minPitch = 0" in studio_text
+    assert "const maxPitch = 120" in studio_text
+    assert (
+        "const height = pianoNoteTop.value + (maxPitch - minPitch + 1) * pianoRowH" in studio_text
+    )
+    assert "const pitch = clamp(maxPitch - row, minPitch, maxPitch)" in studio_text
+    assert "pitch: clamp(note.pitch + deltaPitch, minPitch, maxPitch)" in studio_text
+
+
+def test_music_studio_recenters_piano_viewport_when_opening_or_switching_clips():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "pianoScrollTopForNotes" in studio_text
+    assert "function focusPianoViewport()" in studio_text
+    assert "function schedulePianoViewportFocus()" in studio_text
+    assert "requestAnimationFrame(() => focusPianoViewport())" in studio_text
+    assert (
+        "function openPiano() {\n"
+        "  lowerEditorMode.value = 'piano'\n"
+        "  schedulePianoViewportFocus()\n"
+        "}" in studio_text
+    )
+    assert "watch(activeClipId, () => {" in studio_text
+    assert (
+        "if (pianoVisible.value && activeMidiClip.value) schedulePianoViewportFocus()"
+        in studio_text
+    )
+
+
 def test_music_studio_mixer_window_replaces_inspector_rack():
     studio_text = _read(STUDIO_COMPONENT)
 
