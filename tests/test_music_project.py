@@ -662,6 +662,7 @@ def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):
                                     "channel": 2,
                                     "controller": 74,
                                     "value": 96,
+                                    "curve_amount": 0.25,
                                 },
                                 {
                                     "id": "bend1",
@@ -688,9 +689,28 @@ def test_project_flattens_clip_midi_events(tmp_path, monkeypatch):
     assert events[0]["type"] == "control_change"
     assert events[0]["channel"] == 2
     assert events[0]["controller"] == 74
+    assert events[0]["curve_amount"] == 0.25
     assert events[1]["type"] == "pitch_bend"
     assert events[1]["value"] == -200
     assert events[2]["data_b64"] == "8H73"
+
+
+def test_automation_points_preserve_curve_amount(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    load_project()
+
+    project, summary = automation_write(
+        {"kind": "track_volume", "track_id": 1, "label": "Volume"},
+        points=[
+            {"beat": 0, "value": 0.25, "curve_amount": 0.5},
+            {"beat": 1, "value": 0.75},
+        ],
+    )
+
+    track = next(track for track in project["tracks"] if track["id"] == summary["track_id"])
+    points = track["automation"]["points"]
+    assert points[0]["curve_amount"] == 0.5
+    assert "curve_amount" not in points[1]
 
 
 def test_midi_write_replaces_overlapping_notes(tmp_path, monkeypatch):

@@ -421,6 +421,138 @@ async def test_sync_project_to_host_skips_automation_routes_and_sends_lanes(monk
     ]
 
 
+async def test_sync_project_to_host_samples_midi_controller_curve_segments(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "MIDI Curve Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [
+                    {
+                        "type": "control_change",
+                        "start": 0.0,
+                        "channel": 0,
+                        "controller": 11,
+                        "value": 0,
+                        "curve_amount": 0.25,
+                    },
+                    {
+                        "type": "control_change",
+                        "start": 0.125,
+                        "channel": 0,
+                        "controller": 11,
+                        "value": 127,
+                    },
+                ],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            }
+        ],
+    }
+
+    await music._sync_project_to_host(project)
+
+    set_midi = next(params for cmd, params in host.commands if cmd == "set_midi")
+    cc_events = [
+        event
+        for event in set_midi["events"]
+        if event["type"] == "control_change" and event["controller"] == 11
+    ]
+    assert [event["start"] for event in cc_events] == [
+        0.0,
+        0.015625,
+        0.03125,
+        0.046875,
+        0.0625,
+        0.078125,
+        0.09375,
+        0.109375,
+        0.125,
+    ]
+    assert [event["value"] for event in cc_events] == [0, 30, 56, 77, 95, 109, 119, 125, 127]
+    assert all("curve_amount" not in event for event in cc_events)
+
+
+async def test_sync_project_to_host_samples_automation_curve_segments(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Automation Curve Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+            {
+                "id": 2,
+                "host_track_id": None,
+                "type": "automation",
+                "name": "Lead Volume",
+                "target": {"kind": "track_volume", "track_id": 1},
+                "automation": {
+                    "value_min": 0.0,
+                    "value_max": 1.0,
+                    "points": [
+                        {"beat": 0.0, "value": 0.0, "curve": "linear", "curve_amount": 0.25},
+                        {"beat": 0.125, "value": 1.0, "curve": "linear"},
+                    ],
+                },
+                "mute": False,
+                "notes": [],
+                "midi_events": [],
+            },
+        ],
+    }
+
+    await music._sync_project_to_host(project)
+
+    set_automation = next(params for cmd, params in host.commands if cmd == "set_automation")
+    points = set_automation["lanes"][0]["points"]
+    assert points == [
+        {"beat": 0.0, "value": 0.0, "curve": "linear"},
+        {"beat": 0.015625, "value": 0.234375, "curve": "linear"},
+        {"beat": 0.03125, "value": 0.4375, "curve": "linear"},
+        {"beat": 0.046875, "value": 0.609375, "curve": "linear"},
+        {"beat": 0.0625, "value": 0.75, "curve": "linear"},
+        {"beat": 0.078125, "value": 0.859375, "curve": "linear"},
+        {"beat": 0.09375, "value": 0.9375, "curve": "linear"},
+        {"beat": 0.109375, "value": 0.984375, "curve": "linear"},
+        {"beat": 0.125, "value": 1.0, "curve": "linear"},
+    ]
+
+
 async def test_sync_project_to_host_sends_route_kind_and_output_bus(monkeypatch):
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)

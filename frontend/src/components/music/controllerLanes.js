@@ -6,6 +6,8 @@ export const DEFAULT_CONTROLLER_IDS = [
 ]
 
 export const DEFAULT_NOTE_VELOCITY = 80
+export const MIN_CURVE_AMOUNT = -1
+export const MAX_CURVE_AMOUNT = 1
 
 export const CONTROLLER_PRESETS = [
   { id: 'velocity', label: '力度' },
@@ -116,6 +118,10 @@ export function normalizeControllerEvent(definition, event, snapStep = 0.25) {
     start: Math.max(0, snapBeat(Number(event?.start || 0), snapStep)),
     channel: clamp(Math.round(Number(event?.channel ?? 0)), 0, 15),
   }
+  const curveAmount = normalizeCurveAmount(event?.curve_amount ?? event?.curveAmount)
+  if (Math.abs(curveAmount) > 0.000001) {
+    normalized.curve_amount = curveAmount
+  }
 
   if (controller.type === 'control_change') {
     return {
@@ -152,6 +158,47 @@ export function valueFromControllerEvent(event, definition) {
     return Number(event.pressure ?? event.value ?? definition.defaultValue)
   }
   return Number(event.value ?? definition.defaultValue)
+}
+
+export function normalizeCurveAmount(value) {
+  const parsed = Number(value ?? 0)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.round(clamp(parsed, MIN_CURVE_AMOUNT, MAX_CURVE_AMOUNT) * 1000000) / 1000000
+}
+
+export function applyCurveAmount(value, curveAmount) {
+  const normalizedCurveAmount = normalizeCurveAmount(curveAmount)
+  const next = { ...(value || {}) }
+  delete next.curveAmount
+  if (Math.abs(normalizedCurveAmount) > 0.000001) {
+    next.curve_amount = normalizedCurveAmount
+  } else {
+    delete next.curve_amount
+  }
+  return next
+}
+
+export function curveUnitAtPosition(startUnit, endUnit, position, curveAmount = 0) {
+  const safePosition = clamp(Number(position || 0), 0, 1)
+  const linearUnit = Number(startUnit || 0) + (Number(endUnit || 0) - Number(startUnit || 0)) * safePosition
+  const bend = 4 * safePosition * (1 - safePosition) * normalizeCurveAmount(curveAmount)
+  return clamp(linearUnit + bend, 0, 1)
+}
+
+export function controllerCurveValueAtBeat(leftEvent, rightEvent, beat, definition) {
+  const controller = controllerDefinitionFromId(definition?.id)
+  const startBeat = Number(leftEvent?.start || 0)
+  const endBeat = Number(rightEvent?.start || 0)
+  const span = endBeat - startBeat
+  const position = Math.abs(span) < 0.000001
+    ? 1
+    : (Number(beat || 0) - startBeat) / span
+  const startUnit = controllerValueToUnit(controller, valueFromControllerEvent(leftEvent, controller))
+  const endUnit = controllerValueToUnit(controller, valueFromControllerEvent(rightEvent, controller))
+  return controllerUnitToValue(
+    controller,
+    curveUnitAtPosition(startUnit, endUnit, position, leftEvent?.curve_amount)
+  )
 }
 
 export function controllerRenderPoints(events, definition, tailBeat) {

@@ -1646,12 +1646,16 @@ def _normalize_automation_point(value: dict[str, Any], *, target: dict[str, Any]
     point_value = _bounded_float(value.get("value"), default, minimum, maximum)
     if target.get("kind") == "time_signature_numerator":
         point_value = float(round(point_value))
-    return {
+    point = {
         "id": point_id,
         "beat": round(beat, 6),
         "value": point_value,
         "curve": curve,
     }
+    curve_amount = _normalized_curve_amount(value)
+    if abs(curve_amount) > 1e-6:
+        point["curve_amount"] = curve_amount
+    return point
 
 
 def _upsert_automation_point(
@@ -3426,7 +3430,20 @@ def _normalize_midi_event(event: dict[str, Any]) -> dict[str, Any]:
         normalized["pressure"] = _bounded_int(event.get("pressure", event.get("value")), 0, 0, 127)
     elif event_type == "sysex":
         normalized["data_b64"] = _normalize_sysex_b64(event)
+    curve_amount = _normalized_curve_amount(event)
+    if abs(curve_amount) > 1e-6:
+        normalized["curve_amount"] = curve_amount
     return normalized
+
+
+def _normalized_curve_amount(value: dict[str, Any]) -> float:
+    curve_amount = _bounded_float(
+        _first_present(value, ("curve_amount", "curveAmount"), default=0.0),
+        0.0,
+        -1.0,
+        1.0,
+    )
+    return round(curve_amount, 6)
 
 
 def _normalize_sysex_b64(event: dict[str, Any]) -> str:

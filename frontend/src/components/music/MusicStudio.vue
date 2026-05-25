@@ -1546,6 +1546,8 @@ import {
   CONTROLLER_PRESETS,
   DEFAULT_CONTROLLER_IDS,
   DEFAULT_NOTE_VELOCITY,
+  applyCurveAmount,
+  controllerCurveValueAtBeat,
   controllerDefinitionFromId,
   controllerDisplayRange,
   controllerLaneColorStyles,
@@ -1553,10 +1555,12 @@ import {
   controllerRenderPoints,
   controllerUnitToValue,
   controllerValueToUnit,
+  curveUnitAtPosition,
   createDefaultControllerLanes,
   eventMatchesController,
   makeControllerEventId,
   makeControllerLaneId,
+  normalizeCurveAmount,
   normalizeControllerEvent,
   valueFromControllerEvent,
 } from './controllerLanes.js'
@@ -1689,6 +1693,10 @@ const controllerLaneH = controllerLaneTabH + controllerLaneBodyH
 const controllerLaneFooterH = 28
 const automationPointHitRadius = 7
 const controllerPointHitRadius = 7
+const automationCurveHandleHitRadius = 7
+const controllerCurveHandleHitRadius = 7
+const curveHandleMinSegmentPx = Math.max(automationPointHitRadius, controllerPointHitRadius) * 2 + 4
+const curveHandleDragScale = 2
 const pianoDrawLongPressMs = 260
 const pianoDrawMoveTolerancePx = 5
 const pianoMeterEventHitRadius = 9
@@ -2790,6 +2798,11 @@ async function onArrangementPointerDown(event) {
         startAutomationPointDrag(track, hit.index, event.pointerId)
         return
       }
+      const curveHit = hitTestAutomationCurveHandle(track, point.x, point.y, point.trackIndex)
+      if (curveHit) {
+        startAutomationCurveDrag(track, curveHit, point.y, event.pointerId)
+        return
+      }
       selectedAutomationPoint.value = { trackId: null, index: -1 }
       startAutomationDrag(track, point, event.pointerId)
       return
@@ -2920,6 +2933,21 @@ function startAutomationPointDrag(track, pointIndex, pointerId) {
   drawAll()
 }
 
+function startAutomationCurveDrag(track, hit, pointerY, pointerId) {
+  if (!hit?.point) return
+  selectedAutomationPoint.value = { trackId: track.id, index: hit.index }
+  automationDrag = {
+    type: 'automation-curve',
+    pointerId,
+    trackId: track.id,
+    pointIndex: hit.index,
+    startY: pointerY,
+    startCurveAmount: Number(hit.point.curve_amount || 0),
+  }
+  bindAutomationDrag()
+  drawAll()
+}
+
 function bindAutomationDrag() {
   window.addEventListener('pointermove', onAutomationPointerMove)
   window.addEventListener('pointerup', onAutomationPointerUp)
@@ -2936,6 +2964,15 @@ function onAutomationPointerMove(event) {
   const point = arrangementPoint(event)
   if (!track || !point) return
   event.preventDefault()
+  if (automationDrag.type === 'automation-curve') {
+    const nextCurveAmount = normalizeCurveAmount(
+      automationDrag.startCurveAmount
+        + ((automationDrag.startY - point.y) / Math.max(1, arrangementTrackH - 24)) * curveHandleDragScale
+    )
+    updateAutomationPointCurve(track, automationDrag.pointIndex, nextCurveAmount)
+    drawAll()
+    return
+  }
   const beat = snapAutomationBeat(point.beat)
   const value = automationValueFromY(track, point.y)
   if (automationDrag.type === 'automation-point') {
@@ -2959,7 +2996,9 @@ async function onAutomationPointerUp() {
   const drag = automationDrag
   automationDrag = null
   unbindAutomationDrag()
-  await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId))
+  await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId), {
+    snapBeats: drag.type !== 'automation-curve',
+  })
   drawAll()
 }
 
@@ -3009,14 +3048,21 @@ function roundAutomationValue(value) {
   return Math.round(Number(value || 0) * 1000000) / 1000000
 }
 
-function normalizeAutomationPoint(track, point) {
+function normalizeAutomationPoint(track, point, options = {}) {
   const { min, max } = automationValueRange(track)
   const value = clamp(roundAutomationValue(point?.value), min, max)
-  return {
-    beat: snapAutomationBeat(point?.beat),
+  const normalized = {
+    beat: options.snapBeats === false
+      ? Math.max(0, roundAutomationValue(point?.beat))
+      : snapAutomationBeat(point?.beat),
     value,
     curve: String(point?.curve || 'linear'),
   }
+  const curveAmount = normalizeCurveAmount(point?.curve_amount ?? point?.curveAmount)
+  if (Math.abs(curveAmount) > 0.000001) {
+    normalized.curve_amount = curveAmount
+  }
+  return normalized
 }
 
 function sortAutomationPoints(a, b) {
@@ -3052,6 +3098,13 @@ function moveAutomationPoint(track, pointIndex, beat, value) {
   return selectedAutomationPoint.value.index
 }
 
+function updateAutomationPointCurve(track, pointIndex, curveAmount) {
+  const points = ensureAutomationTrackPoints(track)
+  if (!points[pointIndex]) return
+  points[pointIndex] = applyCurveAmount(points[pointIndex], curveAmount)
+  selectedAutomationPoint.value = { trackId: track.id, index: pointIndex }
+}
+
 function hitTestAutomationPoint(track, x, y, trackIndex) {
   const points = ensureAutomationTrackPoints(track)
   for (let index = points.length - 1; index >= 0; index -= 1) {
@@ -3060,6 +3113,26 @@ function hitTestAutomationPoint(track, x, y, trackIndex) {
     const py = automationPointY(track, point, trackIndex)
     if (Math.hypot(x - px, y - py) <= automationPointHitRadius) {
       return { point, index }
+    }
+  }
+  return null
+}
+
+function hitTestAutomationCurveHandle(track, x, y, trackIndex) {
+  const indexedPoints = ensureAutomationTrackPoints(track)
+    .map((point, index) => ({ point, index }))
+    .sort((a, b) => sortAutomationPoints(a.point, b.point))
+  for (let index = indexedPoints.length - 2; index >= 0; index -= 1) {
+    const left = indexedPoints[index]
+    const right = indexedPoints[index + 1]
+    const handle = automationCurveHandlePoint(track, left.point, right.point, trackIndex)
+    if (handle && Math.hypot(x - handle.x, y - handle.y) <= automationCurveHandleHitRadius) {
+      return {
+        point: left.point,
+        index: left.index,
+        startBeat: Number(left.point.beat || 0),
+        endBeat: Number(right.point.beat || 0),
+      }
     }
   }
   return null
@@ -3080,10 +3153,30 @@ function interpolateAutomationValue(startBeat, startValue, endBeat, endValue, be
   return roundAutomationValue(Number(startValue || 0) + (Number(endValue || 0) - Number(startValue || 0)) * unit)
 }
 
-async function persistAutomationTrackPoints(trackId, points) {
+function automationCurveValueAtBeat(track, left, right, beat) {
+  if (!left || !right) return 0
+  if (String(left.curve || 'linear') === 'hold') return roundAutomationValue(left.value)
+  const startBeat = Number(left.beat || 0)
+  const endBeat = Number(right.beat || 0)
+  const span = endBeat - startBeat
+  if (span <= 0.000001) return roundAutomationValue(right.value)
+  const position = clamp((Number(beat || 0) - startBeat) / span, 0, 1)
+  const { min, max } = automationValueRange(track)
+  const range = Math.max(0.000001, max - min)
+  const startUnit = clamp((Number(left.value ?? min) - min) / range, 0, 1)
+  const endUnit = clamp((Number(right.value ?? min) - min) / range, 0, 1)
+  return roundAutomationValue(min + curveUnitAtPosition(
+    startUnit,
+    endUnit,
+    position,
+    left.curve_amount
+  ) * range)
+}
+
+async function persistAutomationTrackPoints(trackId, points, options = {}) {
   const track = tracks.value.find(item => Number(item.id) === Number(trackId))
   const normalized = (points || [])
-    .map(point => normalizeAutomationPoint(track, point))
+    .map(point => normalizeAutomationPoint(track, point, options))
     .sort(sortAutomationPoints)
   await persistProjectUpdate((nextProject) => {
     const nextTrack = findProjectTrack(nextProject, trackId)
@@ -4325,6 +4418,21 @@ function onControllerLanePointerDown(event, lane) {
       drawAll()
       return
     }
+    const curveHit = hitTestControllerCurveHandle(definition, point.x, point.y)
+    if (curveHit) {
+      selectedControllerEventId.value = curveHit.eventId
+      controllerDrag = {
+        type: 'event-curve',
+        laneId: lane.id,
+        eventId: curveHit.eventId,
+        definition,
+        startY: point.y,
+        startCurveAmount: Number(curveHit.event.curve_amount || 0),
+      }
+      bindControllerDrag()
+      drawAll()
+      return
+    }
     const beat = snapControllerBeat(point.beat)
     const eventId = upsertControllerEventAtPoint(definition, beat, value)
     selectedControllerEventId.value = eventId
@@ -4360,6 +4468,12 @@ function onControllerPointerMove(event) {
   const value = controllerValueFromY(point.y, controllerDrag.definition)
   if (controllerDrag.type === 'velocity') {
     updateNoteVelocity(controllerDrag.noteId, value)
+  } else if (controllerDrag.type === 'event-curve') {
+    const nextCurveAmount = normalizeCurveAmount(
+      controllerDrag.startCurveAmount
+        + ((controllerDrag.startY - point.y) / controllerLaneBodyH) * curveHandleDragScale
+    )
+    updateControllerEventCurve(controllerDrag.eventId, nextCurveAmount)
   } else if (controllerDrag.type === 'event-point') {
     const beat = snapControllerBeat(point.beat)
     updateControllerEvent(controllerDrag.definition, controllerDrag.eventId, { beat, value })
@@ -4491,6 +4605,31 @@ function hitTestControllerEvent(definition, x, y) {
   return null
 }
 
+function hitTestControllerCurveHandle(definition, x, y) {
+  const points = controllerEditablePoints(definition)
+  for (let index = points.length - 2; index >= 0; index -= 1) {
+    const left = points[index]
+    const right = points[index + 1]
+    const handle = controllerCurveHandlePoint(left, right, definition)
+    if (handle && Math.hypot(x - handle.x, y - handle.y) <= controllerCurveHandleHitRadius) {
+      return {
+        event: left.event,
+        eventId: left.event.id,
+        startBeat: left.start,
+        endBeat: right.start,
+      }
+    }
+  }
+  return null
+}
+
+function controllerEditablePoints(definition) {
+  const clip = activeMidiClip.value?.clip
+  if (!clip) return []
+  return controllerRenderPoints(clip.events || [], definition, 0)
+    .filter(point => !point.synthetic)
+}
+
 function updateControllerEvent(definition, eventId, patch) {
   if (!activeMidiClip.value) return
   activeMidiClip.value.clip.events = (activeMidiClip.value.clip.events || [])
@@ -4499,6 +4638,16 @@ function updateControllerEvent(definition, eventId, patch) {
       const value = patch.value ?? valueFromControllerEvent(event, definition)
       const start = patch.beat ?? patch.start ?? event.start
       return normalizeControllerEvent(definition, { ...event, ...patch, start, value }, activePianoSnapStep.value)
+    })
+    .sort(sortControllerEvents)
+}
+
+function updateControllerEventCurve(eventId, curveAmount) {
+  if (!activeMidiClip.value) return
+  activeMidiClip.value.clip.events = (activeMidiClip.value.clip.events || [])
+    .map((event) => {
+      if (event.id !== eventId) return event
+      return applyCurveAmount(event, curveAmount)
     })
     .sort(sortControllerEvents)
 }
@@ -5269,6 +5418,7 @@ function drawAutomationTrack(ctx, track, trackIndex) {
     drawAutomationHoldLine(ctx, track, points, trackIndex, right)
   }
   ctx.stroke()
+  drawAutomationCurveHandles(ctx, track, points, trackIndex)
   for (const [index, point] of points.entries()) {
     const x = Number(point.beat || 0) * arrangementPxPerBeat.value
     const py = automationPointY(track, point, trackIndex)
@@ -5289,19 +5439,81 @@ function drawAutomationTrack(ctx, track, trackIndex) {
   ctx.fillText(automationTargetLabel(track.target), 8, y + 16)
 }
 
-function drawAutomationHoldLine(ctx, track, points, trackIndex, right) {
+function drawAutomationSegmentPath(ctx, track, points, trackIndex, right) {
   const first = points[0]
   const last = points[points.length - 1]
   const firstX = Number(first.beat || 0) * arrangementPxPerBeat.value
   const firstY = automationPointY(track, first, trackIndex)
   ctx.moveTo(0, firstY)
   ctx.lineTo(firstX, firstY)
-  for (const point of points) {
-    const x = Number(point.beat || 0) * arrangementPxPerBeat.value
-    const py = automationPointY(track, point, trackIndex)
-    ctx.lineTo(x, py)
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const left = points[index]
+    const rightPoint = points[index + 1]
+    drawAutomationSegment(ctx, track, left, rightPoint, trackIndex)
   }
   ctx.lineTo(right, automationPointY(track, last, trackIndex))
+}
+
+function drawAutomationSegment(ctx, track, left, right, trackIndex) {
+  const startBeat = Number(left.beat || 0)
+  const endBeat = Number(right.beat || 0)
+  const rightX = endBeat * arrangementPxPerBeat.value
+  const rightY = automationPointY(track, right, trackIndex)
+  if (endBeat <= startBeat) {
+    ctx.lineTo(rightX, rightY)
+    return
+  }
+  if (String(left.curve || 'linear') === 'hold') {
+    ctx.lineTo(rightX, automationPointY(track, left, trackIndex))
+    ctx.lineTo(rightX, rightY)
+    return
+  }
+  const sampleCount = curveRenderSampleCount(startBeat, endBeat, arrangementPxPerBeat.value)
+  for (let sample = 1; sample <= sampleCount; sample += 1) {
+    const position = sample / sampleCount
+    const sampleBeat = startBeat + (endBeat - startBeat) * position
+    const value = automationCurveValueAtBeat(track, left, right, sampleBeat)
+    ctx.lineTo(
+      sampleBeat * arrangementPxPerBeat.value,
+      automationPointY(track, { beat: sampleBeat, value }, trackIndex)
+    )
+  }
+}
+
+function drawAutomationCurveHandles(ctx, track, points, trackIndex) {
+  ctx.save()
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const handle = automationCurveHandlePoint(track, points[index], points[index + 1], trackIndex)
+    if (!handle) continue
+    const selected = Number(selectedAutomationPoint.value.trackId) === Number(track.id)
+      && selectedAutomationPoint.value.index === index
+    ctx.beginPath()
+    ctx.arc(handle.x, handle.y, selected ? 4 : 3.5, 0, Math.PI * 2)
+    ctx.fillStyle = '#181b1f'
+    ctx.strokeStyle = selected ? '#f0d17a' : hexToRgba(track.color, track.mute ? 0.3 : 0.84)
+    ctx.lineWidth = selected ? 1.5 : 1.2
+    ctx.fill()
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function automationCurveHandlePoint(track, left, right, trackIndex) {
+  if (!left || !right || String(left.curve || 'linear') === 'hold') return null
+  const startBeat = Number(left.beat || 0)
+  const endBeat = Number(right.beat || 0)
+  if (endBeat <= startBeat) return null
+  if ((endBeat - startBeat) * arrangementPxPerBeat.value < curveHandleMinSegmentPx) return null
+  const beat = startBeat + (endBeat - startBeat) * 0.5
+  const value = automationCurveValueAtBeat(track, left, right, beat)
+  return {
+    x: beat * arrangementPxPerBeat.value,
+    y: automationPointY(track, { beat, value }, trackIndex),
+  }
+}
+
+function drawAutomationHoldLine(ctx, track, points, trackIndex, right) {
+  drawAutomationSegmentPath(ctx, track, points, trackIndex, right)
 }
 
 function drawZrythmAudioRegionFrame(ctx, clip, rect, track, selected, active) {
@@ -5702,13 +5914,9 @@ function drawEventLane(ctx, clip, definition, colorStyles) {
   ctx.fillStyle = colorStyles.eventFill
   ctx.lineWidth = 1.4
   ctx.beginPath()
-  points.forEach((point, index) => {
-    const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
-    const y = controllerValueToY(point.value, definition)
-    if (index === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  })
+  drawControllerCurvePath(ctx, points, definition)
   ctx.stroke()
+  drawControllerCurveHandles(ctx, points, definition, colorStyles)
 
   for (const point of points) {
     if (point.synthetic) continue
@@ -5723,6 +5931,74 @@ function drawEventLane(ctx, clip, definition, colorStyles) {
     ctx.stroke()
   }
   ctx.lineWidth = 1
+}
+
+function drawControllerCurvePath(ctx, points, definition) {
+  points.forEach((point, index) => {
+    const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
+    const y = controllerValueToY(point.value, definition)
+    if (index === 0) {
+      ctx.moveTo(x, y)
+      return
+    }
+    const left = points[index - 1]
+    if (left.event && point.event && Number(point.start || 0) > Number(left.start || 0)) {
+      drawControllerCurveSegment(ctx, left, point, definition)
+    } else {
+      ctx.lineTo(x, y)
+    }
+  })
+}
+
+function drawControllerCurveSegment(ctx, left, right, definition) {
+  const startBeat = Number(left.start || 0)
+  const endBeat = Number(right.start || 0)
+  const sampleCount = curveRenderSampleCount(startBeat, endBeat, pianoPxPerBeat.value)
+  for (let sample = 1; sample <= sampleCount; sample += 1) {
+    const position = sample / sampleCount
+    const sampleBeat = startBeat + (endBeat - startBeat) * position
+    const value = controllerCurveValueAtBeat(left.event, right.event, sampleBeat, definition)
+    ctx.lineTo(
+      pianoKeyW + sampleBeat * pianoPxPerBeat.value,
+      controllerValueToY(value, definition)
+    )
+  }
+}
+
+function drawControllerCurveHandles(ctx, points, definition, colorStyles) {
+  ctx.save()
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const handle = controllerCurveHandlePoint(points[index], points[index + 1], definition)
+    if (!handle) continue
+    const selected = points[index].event?.id && points[index].event.id === selectedControllerEventId.value
+    ctx.beginPath()
+    ctx.arc(handle.x, handle.y, selected ? 4 : 3.5, 0, Math.PI * 2)
+    ctx.fillStyle = '#181b1f'
+    ctx.strokeStyle = selected ? '#f0d17a' : colorStyles.eventStroke
+    ctx.lineWidth = selected ? 1.5 : 1.2
+    ctx.fill()
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+function controllerCurveHandlePoint(left, right, definition) {
+  if (!left?.event || !right?.event) return null
+  const startBeat = Number(left.start || 0)
+  const endBeat = Number(right.start || 0)
+  if (endBeat <= startBeat) return null
+  if ((endBeat - startBeat) * pianoPxPerBeat.value < curveHandleMinSegmentPx) return null
+  const beat = startBeat + (endBeat - startBeat) * 0.5
+  const value = controllerCurveValueAtBeat(left.event, right.event, beat, definition)
+  return {
+    x: pianoKeyW + beat * pianoPxPerBeat.value,
+    y: controllerValueToY(value, definition),
+  }
+}
+
+function curveRenderSampleCount(startBeat, endBeat, pxPerBeat) {
+  const width = Math.abs(Number(endBeat || 0) - Number(startBeat || 0)) * Math.max(1, pxPerBeat)
+  return Math.round(clamp(Math.ceil(width / 10), 4, 64))
 }
 
 function controllerValueToY(value, definition) {

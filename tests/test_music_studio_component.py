@@ -540,10 +540,7 @@ def test_music_studio_automation_tracks_can_be_drawn_like_controller_lanes():
     assert "function onAutomationPointerUp()" in studio_text
     assert "writeAutomationDragPoints(" in studio_text
     assert "quantizedBeatsBetween(startBeat, endBeat, activePianoSnapStep.value)" in studio_text
-    assert (
-        "await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId))"
-        in studio_text
-    )
+    assert "snapBeats: drag.type !== 'automation-curve'" in studio_text
     assert "function automationValueFromY(track, y)" in studio_text
     assert "function automationPointY(track, point, trackIndex)" in studio_text
 
@@ -573,6 +570,77 @@ def test_music_studio_controller_events_can_be_selected_and_dragged_without_redr
         in studio_text
     )
     assert "if (point.synthetic) continue" in studio_text
+
+
+def test_music_studio_controller_events_have_draggable_curve_handles():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "controllerCurveHandleHitRadius" in studio_text
+    assert "curveHandleMinSegmentPx" in studio_text
+    assert "function drawControllerCurvePath(ctx, points, definition)" in studio_text
+    assert (
+        "function drawControllerCurveHandles(ctx, points, definition, colorStyles)" in studio_text
+    )
+    assert "function hitTestControllerCurveHandle(definition, x, y)" in studio_text
+    controller_start = studio_text.index("function onControllerLanePointerDown")
+    controller_point_hit = studio_text.index(
+        "const hit = hitTestControllerEvent(definition, point.x, point.y)",
+        controller_start,
+    )
+    controller_curve_hit = studio_text.index(
+        "const curveHit = hitTestControllerCurveHandle(definition, point.x, point.y)",
+        controller_start,
+    )
+    assert controller_point_hit < controller_curve_hit
+    assert (
+        "const curveHit = hitTestControllerCurveHandle(definition, point.x, point.y)" in studio_text
+    )
+    assert "type: 'event-curve'" in studio_text
+    assert "function updateControllerEventCurve(eventId, curveAmount)" in studio_text
+    assert "updateControllerEventCurve(controllerDrag.eventId, nextCurveAmount)" in studio_text
+    assert "return applyCurveAmount(event, curveAmount)" in studio_text
+    assert (
+        "if ((endBeat - startBeat) * pianoPxPerBeat.value < curveHandleMinSegmentPx) return null"
+        in studio_text
+    )
+
+
+def test_music_studio_automation_points_have_draggable_curve_handles():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "automationCurveHandleHitRadius" in studio_text
+    assert "curveHandleMinSegmentPx" in studio_text
+    assert "function automationCurveValueAtBeat(track, left, right, beat)" in studio_text
+    assert (
+        "function drawAutomationSegmentPath(ctx, track, points, trackIndex, right)" in studio_text
+    )
+    assert "function drawAutomationCurveHandles(ctx, track, points, trackIndex)" in studio_text
+    assert "function hitTestAutomationCurveHandle(track, x, y, trackIndex)" in studio_text
+    automation_start = studio_text.index("if (isAutomationTrack(track) && point) {")
+    automation_point_hit = studio_text.index(
+        "const hit = hitTestAutomationPoint(track, point.x, point.y, point.trackIndex)",
+        automation_start,
+    )
+    automation_curve_hit = studio_text.index(
+        "const curveHit = hitTestAutomationCurveHandle(track, point.x, point.y, point.trackIndex)",
+        automation_start,
+    )
+    assert automation_point_hit < automation_curve_hit
+    assert (
+        "const curveHit = hitTestAutomationCurveHandle(track, point.x, point.y, point.trackIndex)"
+        in studio_text
+    )
+    assert "type: 'automation-curve'" in studio_text
+    assert (
+        "updateAutomationPointCurve(track, automationDrag.pointIndex, nextCurveAmount)"
+        in studio_text
+    )
+    assert "points[pointIndex] = applyCurveAmount(points[pointIndex], curveAmount)" in studio_text
+    assert ".map(point => normalizeAutomationPoint(track, point, options))" in studio_text
+    assert (
+        "if ((endBeat - startBeat) * arrangementPxPerBeat.value "
+        "< curveHandleMinSegmentPx) return null" in studio_text
+    )
 
 
 def test_music_studio_piano_roll_has_dedicated_meter_lane():

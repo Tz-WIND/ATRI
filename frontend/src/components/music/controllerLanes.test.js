@@ -10,10 +10,12 @@ import {
   controllerDisplayValue,
   controllerLaneStackHeight,
   controllerLaneColorStyles,
+  controllerCurveValueAtBeat,
   controllerRenderPoints,
   controllerUnitToValue,
   controllerValueToUnit,
   eventMatchesController,
+  applyCurveAmount,
   normalizeControllerEvent,
 } from './controllerLanes.js'
 
@@ -92,6 +94,7 @@ test('normalizeControllerEvent_forCcClampsAndSnapsValue', () => {
     id: 'drawn',
     start: 1.31,
     value: 200,
+    curve_amount: 2,
   }, 0.25)
 
   assert.deepEqual(event, {
@@ -101,6 +104,7 @@ test('normalizeControllerEvent_forCcClampsAndSnapsValue', () => {
     channel: 0,
     controller: 74,
     value: 127,
+    curve_amount: 1,
   })
   assert.equal(eventMatchesController(event, definition), true)
 })
@@ -133,6 +137,55 @@ test('controllerRenderPoints_extendsFirstAndLastEventValuesAcrossEmptyAreas', ()
     { start: 2, value: 32, synthetic: false },
     { start: 4, value: 32, synthetic: true },
   ])
+})
+
+test('controllerCurveValueAtBeat_usesCurveAmountAsMidpointOffset', () => {
+  const definition = controllerDefinitionFromId('cc:1')
+  const left = {
+    id: 'a',
+    type: 'control_change',
+    controller: 1,
+    start: 0,
+    value: 0,
+    curve_amount: 0.25,
+  }
+  const right = {
+    id: 'b',
+    type: 'control_change',
+    controller: 1,
+    start: 1,
+    value: 127,
+  }
+
+  assert.equal(controllerCurveValueAtBeat(left, right, 0.5, definition), 95)
+  assert.equal(
+    controllerCurveValueAtBeat({ ...left, curve_amount: -0.25 }, right, 0.5, definition),
+    32
+  )
+  assert.equal(controllerCurveValueAtBeat({ ...left, curve_amount: 0 }, right, 0.5, definition), 64)
+})
+
+test('applyCurveAmount_preservesUnsnappedTimeAndOnlyChangesCurveAmount', () => {
+  const event = {
+    id: 'drawn',
+    type: 'control_change',
+    start: 1.31,
+    channel: 0,
+    controller: 74,
+    value: 64,
+  }
+  const point = {
+    id: 'auto',
+    beat: 2.37,
+    value: 0.45,
+    curve: 'linear',
+  }
+
+  assert.deepEqual(applyCurveAmount(event, 2), {
+    ...event,
+    curve_amount: 1,
+  })
+  assert.deepEqual(applyCurveAmount({ ...point, curve_amount: 0.5 }, 0), point)
 })
 
 test('normalizeControllerEvent_forPitchBendAndAfterTouchUseHostFields', () => {

@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import shutil
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -68,6 +69,9 @@ bp = Blueprint("music", __name__, url_prefix="/api/music")
 _lifecycle: Lifecycle | None = None
 
 logger = logging.getLogger(__name__)
+
+CURVE_SAMPLE_STEP_BEATS = 1.0 / 64.0
+CURVE_MAX_SAMPLES_PER_SEGMENT = 4096
 
 
 def init_music(lifecycle: Lifecycle):
@@ -719,6 +723,209 @@ def _master_bus_for_host(project: dict[str, Any]) -> dict[str, Any] | None:
     return master_bus
 
 
+def _curve_amount(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not parsed or parsed != parsed:
+        return 0.0
+    return round(max(-1.0, min(1.0, parsed)), 6)
+
+
+def _curve_sample_beats(start: float, end: float) -> list[float]:
+    if end <= start:
+        return []
+    step = CURVE_SAMPLE_STEP_BEATS
+    estimated = int((end - start) / step)
+    if estimated > CURVE_MAX_SAMPLES_PER_SEGMENT:
+        step = (end - start) / CURVE_MAX_SAMPLES_PER_SEGMENT
+    beats: list[float] = []
+    beat = start + step
+    while beat < end - 1e-9:
+        beats.append(round(beat, 6))
+        beat += step
+    return beats
+
+
+def _curve_value(
+    start_value: float,
+    end_value: float,
+    beat: float,
+    start_beat: float,
+    end_beat: float,
+    curve_amount: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value_range = max(1e-9, maximum - minimum)
+    position = max(0.0, min(1.0, (beat - start_beat) / max(1e-9, end_beat - start_beat)))
+    start_unit = max(0.0, min(1.0, (start_value - minimum) / value_range))
+    end_unit = max(0.0, min(1.0, (end_value - minimum) / value_range))
+    linear_unit = start_unit + (end_unit - start_unit) * position
+    bend = 4.0 * position * (1.0 - position) * _curve_amount(curve_amount)
+    return minimum + max(0.0, min(1.0, linear_unit + bend)) * value_range
+
+
+def _midi_curve_lane_key(event: dict[str, Any]) -> tuple[Any, ...] | None:
+    event_type = str(event.get("type") or event.get("kind") or "").strip().lower()
+    event_type = event_type.replace("-", "_").replace(" ", "_")
+    if event_type in {"cc", "controller"}:
+        event_type = "control_change"
+    elif event_type in {"pitchbend"}:
+        event_type = "pitch_bend"
+    elif event_type in {"aftertouch", "after_touch"}:
+        event_type = "channel_pressure"
+    if event_type == "control_change":
+        return (event_type, int(event.get("channel", 0) or 0), int(event.get("controller", 0) or 0))
+    if event_type in {"pitch_bend", "channel_pressure"}:
+        return (event_type, int(event.get("channel", 0) or 0))
+    if event_type == "polyphonic_key_pressure":
+        return (
+            event_type,
+            int(event.get("channel", 0) or 0),
+            int(event.get("pitch", 60) or 60),
+        )
+    return None
+
+
+def _midi_curve_value_field(event: dict[str, Any]) -> str:
+    event_type = str(event.get("type") or "").strip().lower()
+    return "pressure" if event_type in {"channel_pressure", "polyphonic_key_pressure"} else "value"
+
+
+def _midi_curve_bounds(event: dict[str, Any]) -> tuple[float, float]:
+    return (-8192.0, 8191.0) if str(event.get("type") or "") == "pitch_bend" else (0.0, 127.0)
+
+
+def _midi_curve_value(event: dict[str, Any]) -> float:
+    field = _midi_curve_value_field(event)
+    return float(event.get(field, event.get("value", 0)) or 0)
+
+
+HOST_MIDI_EVENT_KEYS = (
+    "type",
+    "start",
+    "channel",
+    "pitch",
+    "velocity",
+    "controller",
+    "value",
+    "program",
+    "pressure",
+    "data_b64",
+)
+
+
+def _host_midi_event(event: dict[str, Any]) -> dict[str, Any]:
+    return {key: event[key] for key in HOST_MIDI_EVENT_KEYS if key in event}
+
+
+def _midi_events_for_host(track: dict[str, Any]) -> list[dict[str, Any]]:
+    events = [
+        {**_host_midi_event(event), "curve_amount": event.get("curve_amount")}
+        for event in track.get("midi_events", [])
+        if isinstance(event, dict)
+    ]
+    expanded = [_host_midi_event(event) for event in events]
+    lane_events: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for event in events:
+        lane_key = _midi_curve_lane_key(event)
+        if lane_key is not None:
+            lane_events.setdefault(lane_key, []).append(event)
+
+    for lane in lane_events.values():
+        lane.sort(key=lambda event: float(event.get("start", 0.0) or 0.0))
+        occupied = {round(float(event.get("start", 0.0) or 0.0), 6) for event in lane}
+        for left, right in pairwise(lane):
+            start = float(left.get("start", 0.0) or 0.0)
+            end = float(right.get("start", 0.0) or 0.0)
+            curve_amount = _curve_amount(left.get("curve_amount"))
+            if end <= start or (
+                abs(_midi_curve_value(left) - _midi_curve_value(right)) < 1e-9
+                and abs(curve_amount) < 1e-9
+            ):
+                continue
+            minimum, maximum = _midi_curve_bounds(left)
+            value_field = _midi_curve_value_field(left)
+            for beat in _curve_sample_beats(start, end):
+                if beat in occupied:
+                    continue
+                value = round(
+                    _curve_value(
+                        _midi_curve_value(left),
+                        _midi_curve_value(right),
+                        beat,
+                        start,
+                        end,
+                        curve_amount,
+                        minimum,
+                        maximum,
+                    )
+                )
+                sampled = _host_midi_event(left)
+                sampled["start"] = beat
+                sampled[value_field] = int(max(minimum, min(maximum, value)))
+                expanded.append(sampled)
+
+    return sorted(
+        expanded,
+        key=lambda event: (
+            float(event.get("start", 0.0) or 0.0),
+            str(event.get("type") or ""),
+            int(event.get("controller", event.get("pitch", -1)) or -1),
+        ),
+    )
+
+
+def _automation_points_for_host(track: dict[str, Any]) -> list[dict[str, Any]]:
+    automation = track.get("automation", {})
+    value_min = float(automation.get("value_min", 0.0) or 0.0)
+    value_max = float(automation.get("value_max", 1.0) or 1.0)
+    if value_max < value_min:
+        value_min, value_max = value_max, value_min
+    raw_points = [
+        {
+            "beat": float(point.get("beat", 0.0) or 0.0),
+            "value": float(point.get("value", 0.0) or 0.0),
+            "curve": str(point.get("curve") or "linear"),
+            "curve_amount": point.get("curve_amount"),
+        }
+        for point in automation.get("points", [])
+        if isinstance(point, dict)
+    ]
+    raw_points.sort(key=lambda point: point["beat"])
+    points: list[dict[str, Any]] = [
+        {"beat": point["beat"], "value": point["value"], "curve": point["curve"]}
+        for point in raw_points
+    ]
+    for left, right in pairwise(raw_points):
+        curve_amount = _curve_amount(left.get("curve_amount"))
+        if abs(curve_amount) < 1e-9 or left["curve"] == "hold" or right["beat"] <= left["beat"]:
+            continue
+        for beat in _curve_sample_beats(left["beat"], right["beat"]):
+            points.append(
+                {
+                    "beat": beat,
+                    "value": round(
+                        _curve_value(
+                            left["value"],
+                            right["value"],
+                            beat,
+                            left["beat"],
+                            right["beat"],
+                            curve_amount,
+                            value_min,
+                            value_max,
+                        ),
+                        6,
+                    ),
+                    "curve": "linear",
+                }
+            )
+    return sorted(points, key=lambda point: point["beat"])
+
+
 def _automation_lanes_for_host(
     project: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -754,21 +961,10 @@ def _automation_lanes_for_host(
                     {"track_id": track.get("id"), "reason": "unsupported automation target"}
                 )
                 continue
-        points = []
-        for point in track.get("automation", {}).get("points", []):
-            if not isinstance(point, dict):
-                continue
-            points.append(
-                {
-                    "beat": float(point.get("beat", 0.0) or 0.0),
-                    "value": float(point.get("value", 0.0) or 0.0),
-                    "curve": str(point.get("curve") or "linear"),
-                }
-            )
         lanes.append(
             {
                 "target": host_target,
-                "points": points,
+                "points": _automation_points_for_host(track),
                 "muted": bool(track.get("mute", False)),
             }
         )
@@ -1174,26 +1370,7 @@ async def _sync_project_to_host(
             }
             for note in track.get("notes", [])
         ]
-        midi_events = [
-            {
-                key: event[key]
-                for key in (
-                    "type",
-                    "start",
-                    "channel",
-                    "pitch",
-                    "velocity",
-                    "controller",
-                    "value",
-                    "program",
-                    "pressure",
-                    "data_b64",
-                )
-                if key in event
-            }
-            for event in track.get("midi_events", [])
-            if isinstance(event, dict)
-        ]
+        midi_events = _midi_events_for_host(track)
         audio_clips = [
             {
                 "path": str(clip.get("path") or clip.get("source") or ""),
