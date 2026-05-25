@@ -26,7 +26,8 @@ class MidiWriteTool(Tool):
     description = (
         "Overwrite or append MIDI notes in the ATRI music workstation project. "
         "Use this for generating melodies, chords, basslines, drum patterns, or "
-        "replacing a selected time range. Time values are in beats."
+        "replacing a selected time range. Use harmony lane context before note "
+        "generation for full composition tasks. Time values are in beats."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
@@ -263,6 +264,8 @@ class MidiBatchEditTool(Tool):
         "Apply high-level batch MIDI edits from musical intent. Use this instead "
         "of low-level midi_diff when editing many note velocities or drawing CC, "
         "expression, modulation, pitch bend, or aftertouch curves. Supports "
+        "post-composition expression passes; use after notes exist to shape "
+        "velocity, CC, and other MIDI controller data. Supports "
         "selection by track, clip, beat range, pitch range, controller, note ids, "
         "and event ids. A write scope is required: pass track_id, selection.track_ids, "
         "or all_tracks=true."

@@ -7,6 +7,14 @@ and user configuration.
 import platform
 from datetime import UTC, datetime
 
+MUSIC_GENERATION_WORKFLOW_TOOLS = {
+    "studio_piano_lane_write",
+    "studio_piano_lane_diff",
+    "midi_write",
+    "midi_batch_edit",
+    "midi_diff",
+}
+
 
 def build_system_prompt(
     tools,
@@ -19,6 +27,7 @@ def build_system_prompt(
 ) -> str:
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
+    music_generation_block = _music_generation_workflow_block(tools)
 
     persona_block = ""
     if persona:
@@ -70,6 +79,7 @@ writing code, fixing bugs, refactoring, explaining code, running commands, etc.
 {mode_rules}
 # Available Tools
 {tool_list}
+{music_generation_block}
 
 # Rules
 1. **Read before edit.** Always read a file before modifying it.
@@ -90,3 +100,22 @@ writing code, fixing bugs, refactoring, explaining code, running commands, etc.
 9. **Path awareness.** All file paths are relative to the workspace root: {workspace}
 10. **Safety first.** Never run destructive commands without explicit user confirmation.
 {extra_block}{skills_block}"""
+
+
+def _music_generation_workflow_block(tools) -> str:
+    tool_names = {str(getattr(tool, "name", "")) for tool in tools}
+    if not MUSIC_GENERATION_WORKFLOW_TOOLS.issubset(tool_names):
+        return ""
+
+    return """\
+
+# Music Studio Generation Workflow
+When creating or substantially rewriting MIDI music in Music Studio:
+1. Sketch the harmony lane first with `studio_piano_lane_write` or
+   `studio_piano_lane_diff`, placing chord/harmony labels across the target range.
+2. Write notes second with `midi_write`, using the harmony lane as the harmonic
+   plan for melodies, chord voicings, basslines, drums, and other parts.
+3. Shape expression last with `midi_batch_edit` or `midi_diff`: adjust velocity,
+   humanization, MIDI CC curves, expression, modulation, pitch bend, aftertouch,
+   and other MIDI controller data after the notes exist.
+"""

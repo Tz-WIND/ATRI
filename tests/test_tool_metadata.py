@@ -152,6 +152,15 @@ def test_registered_tool_schemas_use_openai_compatible_top_level_parameters(tmp_
     assert invalid_schemas == []
 
 
+def test_music_generation_tool_descriptions_explain_harmony_notes_expression_order(tmp_path):
+    tools = {tool.name: tool for tool in create_tools(str(tmp_path))}
+
+    assert "Use harmony lane context before note generation" in tools["midi_write"].description
+    assert "use after notes exist" in tools["midi_batch_edit"].description
+    assert "velocity" in tools["midi_batch_edit"].description
+    assert "CC" in tools["midi_batch_edit"].description
+
+
 def test_agent_parallel_gate_uses_tool_capabilities(tmp_path):
     agent = Agent.__new__(Agent)
     agent.tools = [_ParallelTool(str(tmp_path)), _SerialTool(str(tmp_path))]
