@@ -69,6 +69,24 @@ function extractMathPlaceholders(source, segments) {
       continue
     }
 
+    if (source.startsWith('\\[', i) && !isEscaped(source, i)) {
+      const end = findClosingCommandDelimiter(source, i + 2, '\\]')
+      if (end !== -1) {
+        result += addMathSegment(segments, 'display', source.slice(i + 2, end))
+        i = end + 2
+        continue
+      }
+    }
+
+    if (source.startsWith('\\(', i) && !isEscaped(source, i)) {
+      const end = findClosingCommandDelimiter(source, i + 2, '\\)')
+      if (end !== -1) {
+        result += addMathSegment(segments, 'inline', source.slice(i + 2, end))
+        i = end + 2
+        continue
+      }
+    }
+
     if (source.startsWith('$$', i) && !isEscaped(source, i)) {
       const end = findClosingDisplayDelimiter(source, i + 2)
       if (end !== -1) {
@@ -177,6 +195,13 @@ class LatexParser {
     if (name === 'sqrt') {
       return `<msqrt>${this.parseRequiredGroup()}</msqrt>`
     }
+    if (name === 'text') {
+      return `<mtext>${escapeHtml(this.readRequiredTextGroup())}</mtext>`
+    }
+    if (name === 'xrightarrow') {
+      const label = this.parseRequiredGroup()
+      return `<mover><mo stretchy="true">&#x2192;</mo>${label}</mover>`
+    }
     if (name === 'quad') return '<mspace width="1em"></mspace>'
     if (name === ',') return '<mspace width="0.167em"></mspace>'
 
@@ -188,6 +213,43 @@ class LatexParser {
     if (this.peek() !== '{') return this.parseAtom()
     this.index += 1
     return this.parseExpression('}')
+  }
+
+  readRequiredTextGroup() {
+    this.skipSpaces()
+    if (this.peek() !== '{') {
+      const start = this.index
+      while (this.peek() && !/\s/.test(this.peek())) this.index += 1
+      return this.source.slice(start, this.index)
+    }
+
+    this.index += 1
+    let text = ''
+    let depth = 1
+    while (this.index < this.source.length && depth > 0) {
+      const current = this.peek()
+      const next = this.source[this.index + 1] || ''
+      if (current === '\\' && (next === '{' || next === '}')) {
+        text += next
+        this.index += 2
+        continue
+      }
+      if (current === '{') {
+        depth += 1
+        text += current
+        this.index += 1
+        continue
+      }
+      if (current === '}') {
+        depth -= 1
+        if (depth > 0) text += current
+        this.index += 1
+        continue
+      }
+      text += current
+      this.index += 1
+    }
+    return text
   }
 
   parseScripts(base) {
@@ -275,6 +337,13 @@ function findClosingInlineDelimiter(source, index) {
   for (let i = index; i < source.length; i += 1) {
     if (source[i] === '\n') return -1
     if (source[i] === '$' && source[i + 1] !== '$' && !isEscaped(source, i)) return i
+  }
+  return -1
+}
+
+function findClosingCommandDelimiter(source, index, delimiter) {
+  for (let i = index; i < source.length - 1; i += 1) {
+    if (source.startsWith(delimiter, i) && !isEscaped(source, i)) return i
   }
   return -1
 }
