@@ -11,7 +11,7 @@ import re
 import shutil
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import uuid4
 
 from quart import Blueprint, Response, jsonify, request
@@ -72,6 +72,13 @@ logger = logging.getLogger(__name__)
 
 CURVE_SAMPLE_STEP_BEATS = 1.0 / 64.0
 CURVE_MAX_SAMPLES_PER_SEGMENT = 4096
+
+
+class _HostAutomationPoint(TypedDict):
+    beat: float
+    value: float
+    curve: str
+    curve_amount: Any
 
 
 def init_music(lifecycle: Lifecycle):
@@ -884,7 +891,7 @@ def _automation_points_for_host(track: dict[str, Any]) -> list[dict[str, Any]]:
     value_max = float(automation.get("value_max", 1.0) or 1.0)
     if value_max < value_min:
         value_min, value_max = value_max, value_min
-    raw_points = [
+    raw_points: list[_HostAutomationPoint] = [
         {
             "beat": float(point.get("beat", 0.0) or 0.0),
             "value": float(point.get("value", 0.0) or 0.0),
