@@ -6,6 +6,7 @@ use atri_core::audio::buffer_set::BufferSet;
 use atri_core::midi::event::{MidiEvent, ScheduledMidiEvent};
 use atri_core::midi::message::MidiMessage;
 use atri_core::midi::note::MidiNote;
+use atri_core::plugin::{CapturedPluginParameterEdit, PluginParameterInfo};
 use atri_core::time::beats::Beats;
 use atri_core::time::tempo::{Meter, Tempo};
 use atri_core::time::tempo_map::{SwapLock, TempoMap};
@@ -15,6 +16,52 @@ use super::mixer::Mixer;
 use super::processor::Processor;
 use super::route::{Route, RouteKind, RouteSend};
 use super::transport::Transport;
+
+#[cfg(test)]
+use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+struct CountingAllocator;
+
+#[cfg(test)]
+thread_local! {
+    static TRACK_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+    static ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if TRACK_ALLOCATIONS.with(Cell::get) {
+            ALLOCATION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
+
+#[cfg(test)]
+fn reset_allocation_count() {
+    TRACK_ALLOCATIONS.with(|track| track.set(false));
+    ALLOCATION_COUNT.with(|count| count.set(0));
+    TRACK_ALLOCATIONS.with(|track| track.set(true));
+}
+
+#[cfg(test)]
+fn stop_allocation_count() -> usize {
+    TRACK_ALLOCATIONS.with(|track| track.set(false));
+    ALLOCATION_COUNT.with(Cell::get)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutomationCurve {
@@ -29,7 +76,7 @@ pub struct AutomationPoint {
     pub curve: AutomationCurve,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AutomationTarget {
     PluginParameter {
         track_id: u32,
@@ -53,8 +100,36 @@ pub struct AutomationLane {
     pub muted: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteSnapshot {
+    pub id: u32,
+    pub name: String,
+    pub kind: RouteKind,
+    pub output_track_id: Option<u32>,
+    pub sends: Vec<RouteSend>,
+    pub volume: f32,
+    pub volume_target: f32,
+    pub pan: f32,
+    pub mute: bool,
+    pub solo: bool,
+    pub note_count: usize,
+    pub midi_event_count: usize,
+    pub audio_clip_count: usize,
+    pub processors: Vec<String>,
+    pub processor_slots: Vec<Option<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapturedRouteParameterEdit {
+    pub track_id: u32,
+    pub slot_index: usize,
+    pub plugin_name: String,
+    pub parameter: Option<PluginParameterInfo>,
+    pub edit: CapturedPluginParameterEdit,
+}
+
 pub struct Session {
-    pub routes: Vec<Arc<Mutex<Route>>>,
+    routes: Vec<Arc<Mutex<Route>>>,
     pub tempo_map: SwapLock<TempoMap>,
     pub transport: Transport,
     pub sample_rate: u32,
@@ -66,7 +141,41 @@ pub struct Session {
     route_delay_lines: Vec<RouteDelayLine>,
     midi_events: Vec<Vec<ScheduledMidiEvent>>,
     automation_lanes: Vec<AutomationLane>,
+    automation_event_scratch: Vec<AutomationEvent>,
+    route_topology: RouteTopology,
+    route_latencies_scratch: Vec<usize>,
+    solo_indices_scratch: Vec<usize>,
     master_buf: AudioBuffer,
+}
+
+#[derive(Default)]
+struct RouteTopology {
+    render_order: Vec<usize>,
+    output_indices: Vec<Option<usize>>,
+    sends: Vec<Vec<CachedRouteSend>>,
+    reaches: Vec<bool>,
+    route_count: usize,
+}
+
+impl RouteTopology {
+    fn route_reaches(&self, from: usize, to: usize) -> bool {
+        from < self.route_count
+            && to < self.route_count
+            && self.reaches[from * self.route_count + to]
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CachedRouteSend {
+    target_index: usize,
+    level: f32,
+}
+
+#[derive(Clone, Copy)]
+struct AutomationEvent {
+    sample_offset: usize,
+    value: f32,
+    beat: f64,
 }
 
 #[derive(Default)]
@@ -148,6 +257,10 @@ impl Session {
             route_delay_lines: Vec::new(),
             midi_events: Vec::new(),
             automation_lanes: Vec::new(),
+            automation_event_scratch: Vec::new(),
+            route_topology: RouteTopology::default(),
+            route_latencies_scratch: Vec::new(),
+            solo_indices_scratch: Vec::new(),
             master_buf: AudioBuffer::new(2, buffer_size),
         }
     }
@@ -170,6 +283,9 @@ impl Session {
         self.route_bufs.push(BufferSet::new(1, 2, self.buffer_size));
         self.route_delay_lines.push(RouteDelayLine::default());
         self.midi_events.push(Vec::new());
+        self.route_latencies_scratch.push(0);
+        ensure_vec_capacity(&mut self.solo_indices_scratch, self.routes.len());
+        self.rebuild_route_topology();
         id
     }
 
@@ -213,12 +329,12 @@ impl Session {
         }
         for route in &self.routes {
             if let Ok(mut route) = route.lock() {
-                if route.output_track_id == Some(track_id) {
-                    route.output_track_id = None;
-                }
-                route.sends.retain(|send| send.target_track_id != track_id);
+                route.clear_output_if_target(track_id);
+                route.retain_sends_not_targeting(track_id);
             }
         }
+        self.route_latencies_scratch.truncate(self.routes.len());
+        self.rebuild_route_topology();
         true
     }
 
@@ -315,7 +431,11 @@ impl Session {
         if !self.route_output_is_valid(track_id, output_track_id) {
             return false;
         }
-        self.with_route(track_id, |route| route.output_track_id = output_track_id)
+        let updated = self.with_route(track_id, |route| route.set_output_track_id(output_track_id));
+        if updated {
+            self.rebuild_route_topology();
+        }
+        updated
     }
 
     pub fn set_route_config(
@@ -330,15 +450,19 @@ impl Session {
         let Some(index) = self.route_index(track_id) else {
             return false;
         };
-        self.routes[index]
+        let updated = self.routes[index]
             .lock()
             .map(|mut route| {
                 if let Some(kind) = kind {
                     route.kind = kind;
                 }
-                route.output_track_id = output_track_id;
+                route.set_output_track_id(output_track_id);
             })
-            .is_ok()
+            .is_ok();
+        if updated {
+            self.rebuild_route_topology();
+        }
+        updated
     }
 
     fn route_output_is_valid(&self, track_id: u32, output_track_id: Option<u32>) -> bool {
@@ -369,7 +493,7 @@ impl Session {
 
     pub fn route_output(&self, track_id: u32) -> Option<Option<u32>> {
         let route = self.route(track_id)?;
-        route.lock().ok().map(|route| route.output_track_id)
+        route.lock().ok().map(|route| route.output_track_id())
     }
 
     pub fn route_kind(&self, track_id: u32) -> Option<RouteKind> {
@@ -408,12 +532,16 @@ impl Session {
             return false;
         }
 
-        self.with_route(track_id, |route| route.sends = normalized)
+        let updated = self.with_route(track_id, |route| route.set_sends(normalized));
+        if updated {
+            self.rebuild_route_topology();
+        }
+        updated
     }
 
     pub fn route_sends(&self, track_id: u32) -> Option<Vec<RouteSend>> {
         let route = self.route(track_id)?;
-        route.lock().ok().map(|route| route.sends.clone())
+        route.lock().ok().map(|route| route.sends().to_vec())
     }
 
     pub fn set_automation_lanes(&mut self, mut lanes: Vec<AutomationLane>) {
@@ -424,11 +552,92 @@ impl Session {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
+        let max_events = lanes
+            .iter()
+            .map(|lane| lane.points.len())
+            .max()
+            .unwrap_or(0);
+        ensure_vec_capacity(&mut self.automation_event_scratch, max_events);
         self.automation_lanes = lanes;
     }
 
     pub fn automation_lane_count(&self) -> usize {
         self.automation_lanes.len()
+    }
+
+    pub fn route_snapshots(&self) -> Vec<RouteSnapshot> {
+        self.routes
+            .iter()
+            .filter_map(|route| {
+                let route = route.lock().ok()?;
+                let mut processors = Vec::new();
+                let mut processor_slots = Vec::with_capacity(route.processors.len());
+                for processor in &route.processors {
+                    let processor_name = processor.as_ref().and_then(|processor| {
+                        processor
+                            .lock()
+                            .ok()
+                            .map(|processor| processor.name().to_string())
+                    });
+                    if let Some(processor_name) = &processor_name {
+                        processors.push(processor_name.clone());
+                    }
+                    processor_slots.push(processor_name);
+                }
+
+                Some(RouteSnapshot {
+                    id: route.id,
+                    name: route.name.clone(),
+                    kind: route.kind,
+                    output_track_id: route.output_track_id(),
+                    sends: route.sends().to_vec(),
+                    volume: route.gain.value,
+                    volume_target: route.gain.target,
+                    pan: route.pan.value,
+                    mute: route.mute,
+                    solo: route.solo,
+                    note_count: route.sequencer.note_count(),
+                    midi_event_count: route.sequencer.midi_event_count(),
+                    audio_clip_count: route.audio_clip_count(),
+                    processors,
+                    processor_slots,
+                })
+            })
+            .collect()
+    }
+
+    pub fn drain_captured_plugin_parameter_edits(&mut self) -> Vec<CapturedRouteParameterEdit> {
+        let mut captured = Vec::new();
+        for route_arc in &self.routes {
+            let Ok(route) = route_arc.lock() else {
+                continue;
+            };
+            let track_id = route.id;
+            for (slot_index, processor) in route.processors.iter().enumerate() {
+                let Some(processor) = processor else {
+                    continue;
+                };
+                let Ok(mut processor) = processor.lock() else {
+                    continue;
+                };
+                let plugin_name = processor.name().to_string();
+                let parameter_info = processor.parameter_info();
+                for edit in processor.drain_captured_parameter_edits() {
+                    let parameter = parameter_info
+                        .iter()
+                        .find(|info| info.param_id == Some(edit.param_id))
+                        .cloned();
+                    captured.push(CapturedRouteParameterEdit {
+                        track_id,
+                        slot_index,
+                        plugin_name: plugin_name.clone(),
+                        parameter,
+                        edit,
+                    });
+                }
+            }
+        }
+        captured
     }
 
     /// Main processing callback. `output` must be interleaved stereo.
@@ -454,10 +663,15 @@ impl Session {
         }
         let end_sample = start_sample + nframes as i64;
         let tempo_map = self.tempo_map.read().clone();
-        let solo_indices = self.solo_route_indices();
-        let any_solo = !solo_indices.is_empty();
-        let route_latencies = self.route_mix_latencies(&solo_indices);
-        let max_route_latency = route_latencies.iter().copied().max().unwrap_or(0);
+        self.collect_solo_route_indices();
+        let any_solo = !self.solo_indices_scratch.is_empty();
+        self.update_route_mix_latencies();
+        let max_route_latency = self
+            .route_latencies_scratch
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0);
 
         self.master_buf.silence(nframes);
         if self.transport.is_rolling() {
@@ -472,13 +686,13 @@ impl Session {
             self.midi_events[idx].clear();
         }
 
-        for idx in self.route_render_order() {
+        for order_idx in 0..self.route_topology.render_order.len() {
+            let idx = self.route_topology.render_order[order_idx];
             let muted = self.routes[idx]
                 .lock()
                 .map(|route| route.mute)
                 .unwrap_or(true);
-            let muted_or_unsoloed =
-                muted || (any_solo && !self.route_feeds_solo_path(idx, &solo_indices));
+            let muted_or_unsoloed = muted || (any_solo && !self.route_feeds_solo_path(idx));
             if muted_or_unsoloed {
                 if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
                     delay_line.clear();
@@ -487,8 +701,8 @@ impl Session {
             }
 
             self.prepare_route_source(idx, start_sample, end_sample, &render_tempo_map, nframes);
-            let compensation =
-                max_route_latency.saturating_sub(route_latencies.get(idx).copied().unwrap_or(0));
+            let compensation = max_route_latency
+                .saturating_sub(self.route_latencies_scratch.get(idx).copied().unwrap_or(0));
             self.process_route_buffer(
                 idx,
                 start_sample,
@@ -546,50 +760,103 @@ impl Session {
         self.route_index(track_id).is_some()
     }
 
+    pub fn route_count(&self) -> usize {
+        self.routes.len()
+    }
+
     fn route_index(&self, track_id: u32) -> Option<usize> {
         self.route_indices.get(&track_id).copied()
     }
 
     fn route_output_index(&self, route_index: usize) -> Option<usize> {
-        let route = self.routes.get(route_index)?.lock().ok()?;
-        route
-            .output_track_id
-            .and_then(|track_id| self.route_index(track_id))
+        self.route_topology
+            .output_indices
+            .get(route_index)
+            .copied()
+            .flatten()
     }
 
-    fn route_depth_to_master(&self, route_index: usize) -> usize {
-        let mut seen = HashSet::new();
-        self.route_depth_to_master_inner(route_index, &mut seen)
+    #[cfg(test)]
+    fn route_render_order(&self) -> &[usize] {
+        &self.route_topology.render_order
     }
 
-    fn route_depth_to_master_inner(&self, route_index: usize, seen: &mut HashSet<usize>) -> usize {
-        if !seen.insert(route_index) {
-            return 0;
+    fn rebuild_route_topology(&mut self) {
+        let route_count = self.routes.len();
+        let mut targets = Vec::with_capacity(route_count);
+        targets.resize_with(route_count, Vec::new);
+
+        self.route_topology.route_count = route_count;
+        self.route_topology.render_order.clear();
+        self.route_topology.render_order.extend(0..route_count);
+        self.route_topology.output_indices.clear();
+        self.route_topology.output_indices.resize(route_count, None);
+        self.route_topology.sends.resize_with(route_count, Vec::new);
+        self.route_topology.sends.truncate(route_count);
+
+        for sends in &mut self.route_topology.sends {
+            sends.clear();
         }
-        let depth = self
-            .route_target_indices(route_index)
-            .into_iter()
-            .map(|target_index| {
-                1usize.saturating_add(self.route_depth_to_master_inner(target_index, seen))
-            })
-            .max()
-            .unwrap_or(0);
-        seen.remove(&route_index);
-        depth
-    }
 
-    fn route_render_order(&self) -> Vec<usize> {
-        let mut indices = (0..self.routes.len()).collect::<Vec<_>>();
-        indices.sort_by(|left, right| {
-            self.route_depth_to_master(*right)
-                .cmp(&self.route_depth_to_master(*left))
+        for (idx, route_arc) in self.routes.iter().enumerate() {
+            let Ok(route) = route_arc.lock() else {
+                continue;
+            };
+
+            if let Some(output_idx) = route
+                .output_track_id()
+                .and_then(|track_id| self.route_index(track_id))
+            {
+                self.route_topology.output_indices[idx] = Some(output_idx);
+                targets[idx].push(output_idx);
+            }
+
+            for send in route
+                .sends()
+                .iter()
+                .filter(|send| send.enabled && send.level > 0.0)
+            {
+                let Some(target_index) = self.route_index(send.target_track_id) else {
+                    continue;
+                };
+                self.route_topology.sends[idx].push(CachedRouteSend {
+                    target_index,
+                    level: send.level,
+                });
+                targets[idx].push(target_index);
+            }
+        }
+
+        let mut depths = vec![0; route_count];
+        let mut visiting = vec![false; route_count];
+        let mut computed = vec![false; route_count];
+        for idx in 0..route_count {
+            route_depth_from_targets(&targets, idx, &mut visiting, &mut computed, &mut depths);
+        }
+        self.route_topology.render_order.sort_by(|left, right| {
+            depths[*right]
+                .cmp(&depths[*left])
                 .then_with(|| left.cmp(right))
         });
-        indices
-    }
 
-    fn route_target_indices(&self, route_index: usize) -> Vec<usize> {
-        self.route_target_indices_with_override(route_index, None, None)
+        self.route_topology
+            .reaches
+            .resize(route_count * route_count, false);
+        self.route_topology.reaches.fill(false);
+        for idx in 0..route_count {
+            mark_reachable_routes(
+                idx,
+                idx,
+                &targets,
+                &mut self.route_topology.reaches,
+                route_count,
+            );
+        }
+
+        if self.route_latencies_scratch.len() != route_count {
+            self.route_latencies_scratch.resize(route_count, 0);
+        }
+        ensure_vec_capacity(&mut self.solo_indices_scratch, route_count);
     }
 
     fn route_target_indices_with_override(
@@ -609,10 +876,10 @@ impl Session {
             if override_track_id == route_id {
                 output_track_id
             } else {
-                route.output_track_id
+                route.output_track_id()
             }
         } else {
-            route.output_track_id
+            route.output_track_id()
         };
         let send_target_ids = if let Some((override_track_id, sends)) = override_sends {
             if override_track_id == route_id {
@@ -623,7 +890,7 @@ impl Session {
                     .collect::<Vec<_>>()
             } else {
                 route
-                    .sends
+                    .sends()
                     .iter()
                     .filter(|send| send.enabled && send.level > 0.0)
                     .map(|send| send.target_track_id)
@@ -631,7 +898,7 @@ impl Session {
             }
         } else {
             route
-                .sends
+                .sends()
                 .iter()
                 .filter(|send| send.enabled && send.level > 0.0)
                 .map(|send| send.target_track_id)
@@ -652,28 +919,11 @@ impl Session {
         target_indices
     }
 
-    fn route_reaches(&self, route_index: usize, wanted_index: usize) -> bool {
-        let mut stack = self.route_target_indices(route_index);
-        let mut seen = HashSet::new();
-        while let Some(index) = stack.pop() {
-            if index == wanted_index {
-                return true;
-            }
-            if !seen.insert(index) {
-                continue;
-            }
-            stack.extend(self.route_target_indices(index));
-        }
-        false
-    }
-
-    fn route_feeds_solo_path(&self, route_index: usize, solo_indices: &HashSet<usize>) -> bool {
-        if solo_indices.contains(&route_index) {
-            return true;
-        }
-        solo_indices.iter().any(|solo_index| {
-            self.route_reaches(route_index, *solo_index)
-                || self.route_reaches(*solo_index, route_index)
+    fn route_feeds_solo_path(&self, route_index: usize) -> bool {
+        self.solo_indices_scratch.iter().copied().any(|solo_index| {
+            solo_index == route_index
+                || self.route_topology.route_reaches(route_index, solo_index)
+                || self.route_topology.route_reaches(solo_index, route_index)
         })
     }
 
@@ -730,17 +980,14 @@ impl Session {
         false
     }
 
-    fn solo_route_indices(&self) -> HashSet<usize> {
-        self.routes
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, route)| {
-                route
-                    .lock()
-                    .ok()
-                    .and_then(|route| if route.solo { Some(idx) } else { None })
-            })
-            .collect()
+    fn collect_solo_route_indices(&mut self) {
+        self.solo_indices_scratch.clear();
+        for (idx, route) in self.routes.iter().enumerate() {
+            let is_solo = route.lock().map(|route| route.solo).unwrap_or(false);
+            if is_solo {
+                self.solo_indices_scratch.push(idx);
+            }
+        }
     }
 
     fn prepare_route_source(
@@ -811,55 +1058,90 @@ impl Session {
     }
 
     fn accumulate_route_output(&mut self, idx: usize, nframes: usize) {
-        let Some(source) = self.route_bufs[idx].get(0).cloned() else {
-            return;
-        };
         if let Some(output_idx) = self.route_output_index(idx) {
-            if let Some(dest) = self.route_bufs[output_idx].get_mut(0) {
-                self.mixer.add(&source, dest, nframes);
-            }
+            self.add_route_buffer_to_route(idx, output_idx, nframes, 1.0);
         } else {
-            self.mixer.add(&source, &mut self.master_buf, nframes);
+            let Some(source) = self.route_bufs[idx].get(0) else {
+                return;
+            };
+            self.mixer.add(source, &mut self.master_buf, nframes);
         }
     }
 
     fn accumulate_route_sends(&mut self, idx: usize, nframes: usize) {
-        let Some(source) = self.route_bufs[idx].get(0).cloned() else {
-            return;
-        };
-        let sends = self.routes[idx]
-            .lock()
-            .map(|route| route.sends.clone())
-            .unwrap_or_default();
-        for send in sends {
-            if !send.enabled || send.level <= 0.0 {
-                continue;
-            }
-            let Some(target_idx) = self.route_index(send.target_track_id) else {
-                continue;
+        let send_count = self
+            .route_topology
+            .sends
+            .get(idx)
+            .map(|sends| sends.len())
+            .unwrap_or(0);
+        for send_idx in 0..send_count {
+            let Some(send) = self
+                .route_topology
+                .sends
+                .get(idx)
+                .and_then(|sends| sends.get(send_idx))
+                .copied()
+            else {
+                break;
             };
-            if let Some(dest) = self.route_bufs[target_idx].get_mut(0) {
-                add_scaled_buffer(&source, dest, nframes, send.level);
-            }
+            self.add_route_buffer_to_route(idx, send.target_index, nframes, send.level);
         }
     }
 
-    fn route_mix_latencies(&self, solo_indices: &HashSet<usize>) -> Vec<usize> {
-        let any_solo = !solo_indices.is_empty();
-        self.routes
-            .iter()
-            .enumerate()
-            .map(|(idx, route)| {
-                let muted = route.lock().map(|route| route.mute).unwrap_or(true);
-                if muted || (any_solo && !self.route_feeds_solo_path(idx, solo_indices)) {
-                    return 0;
-                }
-                route
-                    .lock()
-                    .map(|route| route.signal_latency())
-                    .unwrap_or(0)
-            })
-            .collect()
+    fn add_route_buffer_to_route(
+        &mut self,
+        source_idx: usize,
+        dest_idx: usize,
+        nframes: usize,
+        level: f32,
+    ) {
+        if source_idx == dest_idx {
+            return;
+        }
+
+        if source_idx < dest_idx {
+            let (left, right) = self.route_bufs.split_at_mut(dest_idx);
+            let Some(source) = left.get(source_idx).and_then(|bufs| bufs.get(0)) else {
+                return;
+            };
+            let Some(dest) = right.get_mut(0).and_then(|bufs| bufs.get_mut(0)) else {
+                return;
+            };
+            add_scaled_buffer(source, dest, nframes, level);
+        } else {
+            let (left, right) = self.route_bufs.split_at_mut(source_idx);
+            let Some(dest) = left.get_mut(dest_idx).and_then(|bufs| bufs.get_mut(0)) else {
+                return;
+            };
+            let Some(source) = right.first().and_then(|bufs| bufs.get(0)) else {
+                return;
+            };
+            add_scaled_buffer(source, dest, nframes, level);
+        }
+    }
+
+    fn update_route_mix_latencies(&mut self) {
+        let route_count = self.routes.len();
+        if self.route_latencies_scratch.len() != route_count {
+            self.route_latencies_scratch.resize(route_count, 0);
+        }
+        self.route_latencies_scratch.fill(0);
+
+        let any_solo = !self.solo_indices_scratch.is_empty();
+        for idx in 0..route_count {
+            let muted = self.routes[idx]
+                .lock()
+                .map(|route| route.mute)
+                .unwrap_or(true);
+            if muted || (any_solo && !self.route_feeds_solo_path(idx)) {
+                continue;
+            }
+            self.route_latencies_scratch[idx] = self.routes[idx]
+                .lock()
+                .map(|route| route.signal_latency())
+                .unwrap_or(0);
+        }
     }
 
     fn apply_automation_lanes(
@@ -869,16 +1151,30 @@ impl Session {
         tempo_map: &TempoMap,
         nframes: usize,
     ) {
-        let lanes = self.automation_lanes.clone();
-        for lane in lanes {
+        for lane_idx in 0..self.automation_lanes.len() {
+            let lane = &self.automation_lanes[lane_idx];
             if lane.muted {
                 continue;
             }
-            let events = automation_events_in_block(&lane, start_sample, end_sample, tempo_map);
-            if events.is_empty() {
+            let target = lane.target;
+            let emit_segment_value = matches!(
+                target,
+                AutomationTarget::PluginParameter { .. }
+                    | AutomationTarget::TrackVolume { .. }
+                    | AutomationTarget::TrackPan { .. }
+            );
+            automation_events_in_block(
+                lane,
+                start_sample,
+                end_sample,
+                tempo_map,
+                emit_segment_value,
+                &mut self.automation_event_scratch,
+            );
+            if self.automation_event_scratch.is_empty() {
                 continue;
             }
-            match lane.target {
+            match target {
                 AutomationTarget::PluginParameter {
                     track_id,
                     slot_index,
@@ -890,25 +1186,29 @@ impl Session {
                     let Ok(mut processor) = processor.try_lock() else {
                         continue;
                     };
-                    for (sample_offset, value, _beat) in events {
-                        let offset = sample_offset.min(nframes.saturating_sub(1));
-                        let _ = processor.set_parameter_at_sample(param_index, offset, value);
+                    for event_idx in 0..self.automation_event_scratch.len() {
+                        let event = self.automation_event_scratch[event_idx];
+                        let offset = event.sample_offset.min(nframes.saturating_sub(1));
+                        let _ = processor.set_parameter_at_sample(param_index, offset, event.value);
                     }
                 }
                 AutomationTarget::TrackVolume { track_id } => {
-                    for (_sample_offset, value, _beat) in events {
+                    for event_idx in 0..self.automation_event_scratch.len() {
+                        let value = self.automation_event_scratch[event_idx].value;
                         let _ = self.set_track_volume(track_id, value);
                     }
                 }
                 AutomationTarget::TrackPan { track_id } => {
-                    for (_sample_offset, value, _beat) in events {
+                    for event_idx in 0..self.automation_event_scratch.len() {
+                        let value = self.automation_event_scratch[event_idx].value;
                         let _ = self.set_track_pan(track_id, value);
                     }
                 }
                 AutomationTarget::TempoBpm => {
-                    for (_sample_offset, value, beat) in events {
-                        let bpm = f64::from(value).clamp(1.0, 999.0);
-                        let at = Beats::from_beats(beat.max(0.0));
+                    for event_idx in 0..self.automation_event_scratch.len() {
+                        let event = self.automation_event_scratch[event_idx];
+                        let bpm = f64::from(event.value).clamp(1.0, 999.0);
+                        let at = Beats::from_beats(event.beat.max(0.0));
                         self.tempo_map.update(|tempo_map| {
                             let metric = tempo_map.metric_at_beats(at);
                             tempo_map.with_tempo(Tempo::new(bpm, metric.tempo.note_type), at)
@@ -916,9 +1216,10 @@ impl Session {
                     }
                 }
                 AutomationTarget::TimeSignatureNumerator => {
-                    for (_sample_offset, value, beat) in events {
-                        let numerator = value.round().clamp(1.0, 255.0) as u8;
-                        let at = Beats::from_beats(beat.max(0.0));
+                    for event_idx in 0..self.automation_event_scratch.len() {
+                        let event = self.automation_event_scratch[event_idx];
+                        let numerator = event.value.round().clamp(1.0, 255.0) as u8;
+                        let at = Beats::from_beats(event.beat.max(0.0));
                         self.tempo_map.update(|tempo_map| {
                             let metric = tempo_map.metric_at_beats(at);
                             tempo_map.with_meter(Meter::new(numerator, metric.meter.denom), at)
@@ -979,27 +1280,150 @@ impl Session {
     }
 }
 
+fn ensure_vec_capacity<T>(vec: &mut Vec<T>, needed: usize) {
+    if vec.capacity() < needed {
+        vec.reserve(needed.saturating_sub(vec.len()));
+    }
+}
+
+fn route_depth_from_targets(
+    targets: &[Vec<usize>],
+    route_index: usize,
+    visiting: &mut [bool],
+    computed: &mut [bool],
+    depths: &mut [usize],
+) -> usize {
+    if computed[route_index] {
+        return depths[route_index];
+    }
+    if visiting[route_index] {
+        return 0;
+    }
+
+    visiting[route_index] = true;
+    let depth = targets[route_index]
+        .iter()
+        .copied()
+        .map(|target_index| {
+            1usize.saturating_add(route_depth_from_targets(
+                targets,
+                target_index,
+                visiting,
+                computed,
+                depths,
+            ))
+        })
+        .max()
+        .unwrap_or(0);
+    visiting[route_index] = false;
+    computed[route_index] = true;
+    depths[route_index] = depth;
+    depth
+}
+
+fn mark_reachable_routes(
+    source_index: usize,
+    route_index: usize,
+    targets: &[Vec<usize>],
+    reaches: &mut [bool],
+    route_count: usize,
+) {
+    for target_index in targets[route_index].iter().copied() {
+        let reach_index = source_index * route_count + target_index;
+        if reaches[reach_index] {
+            continue;
+        }
+        reaches[reach_index] = true;
+        mark_reachable_routes(source_index, target_index, targets, reaches, route_count);
+    }
+}
+
 fn automation_events_in_block(
     lane: &AutomationLane,
     start_sample: i64,
     end_sample: i64,
     tempo_map: &TempoMap,
-) -> Vec<(usize, f32, f64)> {
-    let mut events = Vec::new();
+    emit_segment_value: bool,
+    events: &mut Vec<AutomationEvent>,
+) {
+    events.clear();
+    if lane.points.is_empty() || end_sample <= start_sample {
+        return;
+    }
+
+    let mut previous_point = None;
+    let mut next_point = None;
+    let mut has_point_at_start = false;
     for point in &lane.points {
-        let point_sample = tempo_map.sample_at_beats(atri_core::time::beats::Beats::from_beats(
-            point.beat.max(0.0),
-        ));
-        if point_sample < start_sample || point_sample >= end_sample {
+        let point_sample = automation_point_sample(point, tempo_map);
+        if point_sample < start_sample {
+            previous_point = Some((point, point_sample));
+        } else {
+            if point_sample == start_sample {
+                has_point_at_start = true;
+            } else if next_point.is_none() {
+                next_point = Some((point, point_sample));
+            }
+            break;
+        }
+    }
+
+    if emit_segment_value && !has_point_at_start {
+        if let Some((point, _point_sample)) = previous_point {
+            events.push(AutomationEvent {
+                sample_offset: 0,
+                value: automation_value_at_sample(point, next_point, start_sample, tempo_map),
+                beat: tempo_map
+                    .beats_at_sample(start_sample.max(0))
+                    .to_beats_f64()
+                    .max(0.0),
+            });
+        }
+    }
+
+    for point in &lane.points {
+        let point_sample = automation_point_sample(point, tempo_map);
+        if point_sample < start_sample {
             continue;
         }
-        events.push((
-            (point_sample - start_sample) as usize,
-            point.value,
-            point.beat,
-        ));
+        if point_sample >= end_sample {
+            break;
+        }
+        events.push(AutomationEvent {
+            sample_offset: (point_sample - start_sample) as usize,
+            value: point.value,
+            beat: point.beat,
+        });
     }
-    events
+}
+
+fn automation_point_sample(point: &AutomationPoint, tempo_map: &TempoMap) -> i64 {
+    tempo_map.sample_at_beats(atri_core::time::beats::Beats::from_beats(
+        point.beat.max(0.0),
+    ))
+}
+
+fn automation_value_at_sample(
+    point: &AutomationPoint,
+    next_point: Option<(&AutomationPoint, i64)>,
+    sample: i64,
+    tempo_map: &TempoMap,
+) -> f32 {
+    let Some((next, _next_sample)) = next_point else {
+        return point.value;
+    };
+    let point_beat = point.beat.max(0.0);
+    let next_beat = next.beat.max(0.0);
+    if point.curve == AutomationCurve::Hold || next_beat <= point_beat {
+        return point.value;
+    }
+
+    let beat = tempo_map
+        .beats_at_sample(sample.max(0))
+        .to_beats_f64()
+        .max(0.0);
+    let progress = ((beat - point_beat) / (next_beat - point_beat)) as f32;
+    point.value + (next.value - point.value) * progress.clamp(0.0, 1.0)
 }
 
 fn add_scaled_buffer(source: &AudioBuffer, dest: &mut AudioBuffer, nframes: usize, level: f32) {
@@ -1134,7 +1558,8 @@ mod tests {
 
         let names: Vec<String> = session
             .route_render_order()
-            .into_iter()
+            .iter()
+            .copied()
             .map(|idx| session.routes[idx].lock().unwrap().name.clone())
             .collect();
 
@@ -1157,7 +1582,8 @@ mod tests {
 
         let names: Vec<String> = session
             .route_render_order()
-            .into_iter()
+            .iter()
+            .copied()
             .map(|idx| session.routes[idx].lock().unwrap().name.clone())
             .collect();
 
@@ -1190,6 +1616,41 @@ mod tests {
         let sent = direct * 0.5 * std::f32::consts::FRAC_PI_4.cos();
         assert!((output[0] - (direct + sent)).abs() < 0.0001);
         assert!((output[1] - (direct + sent)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn route_snapshots_expose_read_only_route_state() {
+        let mut session = Session::new(48_000, 16);
+        let track = session.add_track("Tone".to_string());
+        let bus = session.add_bus("Bus".to_string());
+        assert!(session.set_route_output(track, Some(bus)));
+        assert!(session.set_route_sends(
+            track,
+            vec![RouteSend {
+                target_track_id: bus,
+                level: 0.5,
+                enabled: true,
+            }],
+        ));
+
+        let snapshots = session.route_snapshots();
+
+        assert_eq!(snapshots.len(), 2);
+        let track_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == track)
+            .expect("track snapshot");
+        assert_eq!(track_snapshot.name, "Tone");
+        assert_eq!(track_snapshot.kind, RouteKind::Track);
+        assert_eq!(track_snapshot.output_track_id, Some(bus));
+        assert_eq!(
+            track_snapshot.sends,
+            vec![RouteSend {
+                target_track_id: bus,
+                level: 0.5,
+                enabled: true,
+            }]
+        );
     }
 
     #[test]
@@ -1405,6 +1866,80 @@ mod tests {
     }
 
     #[test]
+    fn automation_lanes_emit_linear_plugin_parameter_values_between_points() {
+        let mut session = Session::new(48_000, 100);
+        let track_id = session.add_track("Automated".to_string());
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let processor = RecordingParamProcessor {
+            changes: Arc::clone(&changes),
+        };
+        assert!(session.set_processor_slot(track_id, 0, Some(Arc::new(Mutex::new(processor)))));
+
+        session.set_automation_lanes(vec![AutomationLane {
+            target: AutomationTarget::PluginParameter {
+                track_id,
+                slot_index: 0,
+                param_index: 3,
+            },
+            points: vec![
+                AutomationPoint {
+                    beat: 0.0,
+                    value: 0.0,
+                    curve: AutomationCurve::Linear,
+                },
+                AutomationPoint {
+                    beat: 16.0 / atri_core::time::beats::PPQN as f64,
+                    value: 1.0,
+                    curve: AutomationCurve::Linear,
+                },
+            ],
+            muted: false,
+        }]);
+
+        session.transport.play();
+        let mut output = vec![0.0; 100 * 2];
+        session.process(&mut output);
+        changes.lock().unwrap().clear();
+
+        session.process(&mut output);
+
+        assert_eq!(*changes.lock().unwrap(), vec![(3, 0, 0.5)]);
+    }
+
+    #[test]
+    fn automation_events_in_block_emit_curve_values_between_points() {
+        let tempo_map = TempoMap::new(Tempo::new(120.0, 4), Meter::new(4, 4), 48_000);
+        let mut events = Vec::new();
+        let mut lane = AutomationLane {
+            target: AutomationTarget::TrackVolume { track_id: 0 },
+            points: vec![
+                AutomationPoint {
+                    beat: 0.0,
+                    value: 0.25,
+                    curve: AutomationCurve::Linear,
+                },
+                AutomationPoint {
+                    beat: 16.0 / atri_core::time::beats::PPQN as f64,
+                    value: 0.75,
+                    curve: AutomationCurve::Linear,
+                },
+            ],
+            muted: false,
+        };
+
+        automation_events_in_block(&lane, 100, 200, &tempo_map, true, &mut events);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].sample_offset, 0);
+        assert!((events[0].value - 0.5).abs() < 0.0001);
+
+        lane.points[0].curve = AutomationCurve::Hold;
+        automation_events_in_block(&lane, 100, 200, &tempo_map, true, &mut events);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].sample_offset, 0);
+        assert!((events[0].value - 0.25).abs() < 0.0001);
+    }
+
+    #[test]
     fn automation_lanes_update_tempo_and_meter_targets() {
         let mut session = Session::new(48_000, 128);
         session.set_automation_lanes(vec![
@@ -1511,6 +2046,114 @@ mod tests {
         assert!(output[0].abs() < 0.0001);
         assert!((output[4] - expected).abs() < 0.0001);
         assert!((output[5] - expected).abs() < 0.0001);
+    }
+
+    #[test]
+    fn process_reuses_realtime_scratch_after_warmup() {
+        let mut session = Session::new(48_000, 16);
+        let dry_track = session.add_track("Dry".into());
+        let latent_track = session.add_track("Latent".into());
+        let bus = session.add_bus("Bus".into());
+        assert!(session.set_route_output(dry_track, Some(bus)));
+        assert!(session.set_route_output(latent_track, Some(bus)));
+        assert!(session.set_track_solo(bus, true));
+        assert!(session.set_processor_slot(
+            dry_track,
+            0,
+            Some(Arc::new(Mutex::new(PdcImpulseProcessor::new(0, 0.4)))),
+        ));
+        assert!(session.set_processor_slot(
+            latent_track,
+            0,
+            Some(Arc::new(Mutex::new(PdcImpulseProcessor::new(2, 0.4)))),
+        ));
+        session.set_automation_lanes(vec![AutomationLane {
+            target: AutomationTarget::TrackVolume {
+                track_id: dry_track,
+            },
+            points: vec![AutomationPoint {
+                beat: Beats::from_ticks(2).to_beats_f64(),
+                value: 0.75,
+                curve: AutomationCurve::Linear,
+            }],
+            muted: false,
+        }]);
+
+        session.transport.play();
+        let mut output = vec![0.0; 16 * 2];
+        session.process(&mut output);
+
+        reset_allocation_count();
+        session.process(&mut output);
+        let allocations = stop_allocation_count();
+
+        assert_eq!(
+            allocations, 0,
+            "Session::process allocated {allocations} times after warmup"
+        );
+        let dry_index = session.route_index(dry_track).unwrap();
+        assert_eq!(session.route_delay_lines[dry_index].delay_samples, 2);
+        assert_eq!(session.route_snapshots()[dry_index].volume_target, 0.75);
+    }
+
+    #[test]
+    fn adding_routes_reserves_solo_scratch_for_full_route_count() {
+        let mut session = Session::new(48_000, 16);
+        let mut route_ids = Vec::new();
+        for index in 0..8 {
+            route_ids.push(session.add_track(format!("Track {index}")));
+        }
+        for track_id in route_ids.iter().copied() {
+            assert!(session.set_track_solo(track_id, true));
+        }
+
+        session.solo_indices_scratch = Vec::with_capacity(8);
+        session.solo_indices_scratch.push(0);
+        route_ids.push(session.add_track("Ninth".into()));
+        for track_id in route_ids.iter().copied() {
+            assert!(session.set_track_solo(track_id, true));
+        }
+
+        assert!(
+            session.solo_indices_scratch.capacity() >= session.routes.len(),
+            "solo scratch capacity {} did not cover {} routes",
+            session.solo_indices_scratch.capacity(),
+            session.routes.len()
+        );
+    }
+
+    #[test]
+    fn setting_automation_lanes_reserves_event_scratch_for_largest_lane() {
+        let mut session = Session::new(48_000, 1024);
+        let track_id = session.add_track("Automated".into());
+        session.automation_event_scratch = Vec::with_capacity(8);
+        session.automation_event_scratch.push(AutomationEvent {
+            sample_offset: 0,
+            value: 0.0,
+            beat: 0.0,
+        });
+        session.set_automation_lanes(vec![AutomationLane {
+            target: AutomationTarget::TrackVolume { track_id },
+            points: (0..9)
+                .map(|index| AutomationPoint {
+                    beat: (index * 8) as f64 / atri_core::time::beats::PPQN as f64,
+                    value: index as f32 / 10.0,
+                    curve: AutomationCurve::Linear,
+                })
+                .collect(),
+            muted: false,
+        }]);
+
+        session.transport.play();
+        let mut output = vec![0.0; 1024 * 2];
+        reset_allocation_count();
+        session.process(&mut output);
+        let allocations = stop_allocation_count();
+
+        assert_eq!(
+            allocations, 0,
+            "automation event scratch allocated {allocations} times"
+        );
     }
 
     struct TestProcessor {

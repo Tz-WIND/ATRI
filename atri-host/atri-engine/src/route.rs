@@ -27,8 +27,8 @@ pub struct Route {
     pub id: u32,
     pub name: String,
     pub kind: RouteKind,
-    pub output_track_id: Option<u32>,
-    pub sends: Vec<RouteSend>,
+    output_track_id: Option<u32>,
+    sends: Vec<RouteSend>,
     pub processors: Vec<Option<Arc<Mutex<dyn Processor>>>>,
     pub gain: Gain,
     pub pan: Pan,
@@ -62,6 +62,32 @@ impl Route {
 
     pub fn add_processor(&mut self, proc: Arc<Mutex<dyn Processor>>) {
         self.processors.push(Some(proc));
+    }
+
+    pub fn output_track_id(&self) -> Option<u32> {
+        self.output_track_id
+    }
+
+    pub fn sends(&self) -> &[RouteSend] {
+        &self.sends
+    }
+
+    pub(crate) fn set_output_track_id(&mut self, output_track_id: Option<u32>) {
+        self.output_track_id = output_track_id;
+    }
+
+    pub(crate) fn clear_output_if_target(&mut self, track_id: u32) {
+        if self.output_track_id == Some(track_id) {
+            self.output_track_id = None;
+        }
+    }
+
+    pub(crate) fn set_sends(&mut self, sends: Vec<RouteSend>) {
+        self.sends = sends;
+    }
+
+    pub(crate) fn retain_sends_not_targeting(&mut self, track_id: u32) {
+        self.sends.retain(|send| send.target_track_id != track_id);
     }
 
     pub fn set_processor_slot(

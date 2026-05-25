@@ -89,12 +89,12 @@ mod tests {
         assert_eq!(session.sample_rate, 44_100);
         assert_eq!(session.buffer_size, 256);
         assert_eq!(session.tempo_map.read().sample_rate(), 44_100);
-        assert_eq!(session.routes.len(), 1);
+        assert_eq!(session.route_count(), 1);
 
-        let route = session.routes[0].lock().unwrap();
+        let route = session.route_snapshots().pop().unwrap();
         assert_eq!(route.name, "Keys");
-        assert_eq!(route.gain.target, 0.5);
-        assert_eq!(route.pan.value, -0.25);
+        assert_eq!(route.volume_target, 0.5);
+        assert_eq!(route.pan, -0.25);
         assert!(route.mute);
     }
 

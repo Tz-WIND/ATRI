@@ -188,7 +188,19 @@ impl Plugin for Vst3Plugin {
 
     fn prepare_for_processing(&mut self) -> Result<(), String> {
         self.ensure_instance()?;
+        let pending_state = if self.state_chunk.is_empty() {
+            None
+        } else {
+            Some(decode_state_chunk(&self.state_chunk)?)
+        };
+        let factory = self.factory.as_ref();
         if let Some(instance) = &mut self.instance {
+            let created_controller = instance.ensure_controller(factory)?;
+            if created_controller {
+                if let Some(parts) = pending_state.as_ref() {
+                    instance.apply_controller_state(parts);
+                }
+            }
             let max_samples = processing_max_samples_for_block_size(self.block_size);
             instance.ensure_processing(self.sample_rate, max_samples)?;
         }
@@ -267,9 +279,7 @@ impl Plugin for Vst3Plugin {
             );
             return;
         };
-        let Some(factory) = &self.factory else {
-            return;
-        };
+        let factory = self.factory.as_ref();
         let Some(instance) = &mut self.instance else {
             return;
         };
@@ -293,9 +303,7 @@ impl Plugin for Vst3Plugin {
             );
             return;
         };
-        let Some(factory) = &self.factory else {
-            return;
-        };
+        let factory = self.factory.as_ref();
         let Some(instance) = &mut self.instance else {
             return;
         };
@@ -702,12 +710,12 @@ impl Vst3Instance {
         edits
     }
 
-    fn ensure_controller(&mut self, factory: &PluginFactory) -> Result<bool, String> {
+    fn ensure_controller(&mut self, factory: Option<&PluginFactory>) -> Result<bool, String> {
         if self.controller.is_some() {
             return Ok(false);
         }
 
-        log::info!("creating VST3 edit controller on plugin editor thread");
+        log::info!("creating VST3 edit controller");
         let host_context = self
             ._host_app
             .to_com_ptr::<FUnknown>()
@@ -735,7 +743,7 @@ impl Vst3Instance {
         self.controller_is_component = controller_is_component;
         self.component_handler = Some(component_handler);
         self.sync_component_state_to_controller();
-        log::info!("created VST3 edit controller on plugin editor thread");
+        log::info!("created VST3 edit controller");
         Ok(true)
     }
 
@@ -746,7 +754,7 @@ impl Vst3Instance {
         context: PluginEditorContext,
         pending_state: Option<&StateParts>,
     ) -> Result<Vst3EditorHandle, String> {
-        let created_controller = self.ensure_controller(factory)?;
+        let created_controller = self.ensure_controller(Some(factory))?;
         if created_controller {
             if let Some(parts) = pending_state {
                 self.apply_controller_state(parts);
@@ -1227,7 +1235,7 @@ impl Drop for Vst3Instance {
 }
 
 fn create_edit_controller(
-    factory: &PluginFactory,
+    factory: Option<&PluginFactory>,
     component: &ComPtr<IComponent>,
     host_context: *mut FUnknown,
 ) -> Result<(ComPtr<IEditController>, bool), String> {
@@ -1235,6 +1243,7 @@ fn create_edit_controller(
         return Ok((controller, true));
     }
 
+    let factory = factory.ok_or_else(|| "VST3 plugin factory is not loaded".to_string())?;
     let controller_cid = controller_class_id(factory, component)?;
     let controller = factory.create_instance::<IEditController>(
         &controller_cid,
@@ -1464,6 +1473,7 @@ fn read_u64_le(bytes: &[u8], offset: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vst3::{Class, Steinberg::Vst::*, Steinberg::*};
 
     #[test]
     fn new_plugin_defaults() {
@@ -1596,6 +1606,35 @@ mod tests {
     }
 
     #[test]
+    fn prepare_for_processing_creates_controller_for_parameter_metadata() {
+        let mut plugin = Vst3Plugin {
+            name: "Fake VST3".to_string(),
+            input_channels: 2,
+            output_channels: 2,
+            active: false,
+            block_size: 128,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            tempo_metric: default_tempo_metric(),
+            instance: Some(fake_component_controller_instance()),
+            factory: None,
+            state_chunk: Vec::new(),
+        };
+
+        assert!(plugin.parameter_info().is_empty());
+
+        plugin.prepare_for_processing().unwrap();
+
+        let parameters = plugin.parameter_info();
+        assert_eq!(parameters.len(), 1);
+        assert_eq!(parameters[0].index, 0);
+        assert_eq!(parameters[0].param_id, Some(42));
+        assert_eq!(parameters[0].name, "Cutoff");
+        assert_eq!(parameters[0].units, "Hz");
+        assert!((parameters[0].value - 0.5).abs() < 0.0001);
+        assert!(parameters[0].automatable);
+    }
+
+    #[test]
     fn process_context_uses_host_tempo_metric() {
         let metric = atri_core::time::tempo::TempoMetric::new(
             atri_core::time::tempo::Tempo::new(93.5, 4),
@@ -1615,5 +1654,268 @@ mod tests {
     fn plugin_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Vst3Plugin>();
+    }
+
+    fn fake_component_controller_instance() -> Vst3Instance {
+        let wrapper = ComWrapper::new(FakeComponentController);
+        let component = wrapper
+            .to_com_ptr::<IComponent>()
+            .expect("fake component exposes IComponent");
+        let audio_processor = wrapper.to_com_ptr::<IAudioProcessor>();
+        std::mem::forget(wrapper);
+
+        Vst3Instance {
+            component,
+            audio_processor,
+            input_channels: 2,
+            output_channels: 2,
+            audio_input_bus_count: 1,
+            audio_output_bus_count: 1,
+            controller: None,
+            component_connection: None,
+            controller_connection: None,
+            controller_is_component: false,
+            _host_app: ComWrapper::new(AtriHostApplication::new("ATRI Test Host")),
+            component_handler: None,
+            processing_active: false,
+            processing_sample_rate: 0.0,
+            processing_max_samples: 0,
+            queued_parameter_changes: Vec::new(),
+            captured_parameter_edits: Arc::new(Mutex::new(Vec::new())),
+            process_scratch: ProcessScratch::default(),
+        }
+    }
+
+    struct FakeComponentController;
+
+    impl Class for FakeComponentController {
+        type Interfaces = (IComponent, IAudioProcessor, IEditController);
+    }
+
+    impl IPluginBaseTrait for FakeComponentController {
+        unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn terminate(&self) -> tresult {
+            kResultOk
+        }
+    }
+
+    impl IComponentTrait for FakeComponentController {
+        unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
+            if !class_id.is_null() {
+                unsafe {
+                    *class_id = [0; 16];
+                }
+            }
+            kResultOk
+        }
+
+        unsafe fn setIoMode(&self, _mode: IoMode) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn getBusCount(&self, r#type: MediaType, _dir: BusDirection) -> int32 {
+            if r#type == MediaTypes_::kAudio { 1 } else { 0 }
+        }
+
+        unsafe fn getBusInfo(
+            &self,
+            r#type: MediaType,
+            _dir: BusDirection,
+            index: int32,
+            bus: *mut BusInfo,
+        ) -> tresult {
+            if r#type != MediaTypes_::kAudio || index != 0 || bus.is_null() {
+                return kInvalidArgument;
+            }
+            unsafe {
+                (*bus).channelCount = 2;
+            }
+            kResultOk
+        }
+
+        unsafe fn getRoutingInfo(
+            &self,
+            _in_info: *mut RoutingInfo,
+            _out_info: *mut RoutingInfo,
+        ) -> tresult {
+            kResultFalse
+        }
+
+        unsafe fn activateBus(
+            &self,
+            _type: MediaType,
+            _dir: BusDirection,
+            _index: int32,
+            _state: TBool,
+        ) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn setActive(&self, _state: TBool) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+            kResultOk
+        }
+    }
+
+    impl IAudioProcessorTrait for FakeComponentController {
+        unsafe fn setBusArrangements(
+            &self,
+            _inputs: *mut SpeakerArrangement,
+            _num_ins: int32,
+            _outputs: *mut SpeakerArrangement,
+            _num_outs: int32,
+        ) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn getBusArrangement(
+            &self,
+            _dir: BusDirection,
+            _index: int32,
+            arr: *mut SpeakerArrangement,
+        ) -> tresult {
+            if !arr.is_null() {
+                unsafe {
+                    *arr = SpeakerArr::kStereo;
+                }
+            }
+            kResultOk
+        }
+
+        unsafe fn canProcessSampleSize(&self, symbolic_sample_size: int32) -> tresult {
+            if symbolic_sample_size == SymbolicSampleSizes_::kSample32 {
+                kResultOk
+            } else {
+                kResultFalse
+            }
+        }
+
+        unsafe fn getLatencySamples(&self) -> uint32 {
+            0
+        }
+
+        unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn process(&self, _data: *mut ProcessData) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn getTailSamples(&self) -> uint32 {
+            0
+        }
+    }
+
+    impl IEditControllerTrait for FakeComponentController {
+        unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn getParameterCount(&self) -> int32 {
+            1
+        }
+
+        unsafe fn getParameterInfo(&self, param_index: int32, info: *mut ParameterInfo) -> tresult {
+            if param_index != 0 || info.is_null() {
+                return kInvalidArgument;
+            }
+            unsafe {
+                (*info).id = 42;
+                (*info).flags = ParameterInfo_::ParameterFlags_::kCanAutomate;
+                write_test_string128(&mut (*info).title, "Cutoff");
+                write_test_string128(&mut (*info).units, "Hz");
+            }
+            kResultOk
+        }
+
+        unsafe fn getParamStringByValue(
+            &self,
+            _id: ParamID,
+            _value_normalized: ParamValue,
+            string: *mut String128,
+        ) -> tresult {
+            if !string.is_null() {
+                unsafe {
+                    write_test_string128(&mut *string, "0.50");
+                }
+            }
+            kResultOk
+        }
+
+        unsafe fn getParamValueByString(
+            &self,
+            _id: ParamID,
+            _string: *mut TChar,
+            value_normalized: *mut ParamValue,
+        ) -> tresult {
+            if !value_normalized.is_null() {
+                unsafe {
+                    *value_normalized = 0.5;
+                }
+            }
+            kResultOk
+        }
+
+        unsafe fn normalizedParamToPlain(
+            &self,
+            _id: ParamID,
+            value_normalized: ParamValue,
+        ) -> ParamValue {
+            value_normalized
+        }
+
+        unsafe fn plainParamToNormalized(
+            &self,
+            _id: ParamID,
+            plain_value: ParamValue,
+        ) -> ParamValue {
+            plain_value
+        }
+
+        unsafe fn getParamNormalized(&self, id: ParamID) -> ParamValue {
+            if id == 42 { 0.5 } else { 0.0 }
+        }
+
+        unsafe fn setParamNormalized(&self, _id: ParamID, _value: ParamValue) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+            kResultOk
+        }
+
+        unsafe fn createView(&self, _name: FIDString) -> *mut IPlugView {
+            ptr::null_mut()
+        }
+    }
+
+    fn write_test_string128(dst: &mut String128, value: &str) {
+        dst.fill(0);
+        for (slot, unit) in dst.iter_mut().zip(value.encode_utf16()) {
+            *slot = unit as TChar;
+        }
     }
 }

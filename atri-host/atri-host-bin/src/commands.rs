@@ -1237,43 +1237,27 @@ fn list_plugin_parameters(
 
 fn poll_captured_plugin_parameters(engine: &Arc<Mutex<AudioEngine>>) -> CommandResponse {
     let parameters = with_session(engine, |session| {
-        let mut captured = Vec::new();
-        for route_arc in &session.routes {
-            let Ok(route) = route_arc.lock() else {
-                continue;
-            };
-            let track_id = route.id;
-            for (slot_index, processor) in route.processors.iter().enumerate() {
-                let Some(processor) = processor else {
-                    continue;
-                };
-                let Ok(mut processor) = processor.lock() else {
-                    continue;
-                };
-                let plugin_name = processor.name().to_string();
-                let parameter_info = processor.parameter_info();
-                for edit in processor.drain_captured_parameter_edits() {
-                    let info = parameter_info
-                        .iter()
-                        .find(|info| info.param_id == Some(edit.param_id));
-                    captured.push(json!({
-                        "track_id": track_id,
-                        "slot_index": slot_index,
-                        "param_index": info.map(|info| info.index).unwrap_or(0),
-                        "param_id": edit.param_id,
-                        "name": info
-                            .map(|info| info.name.clone())
-                            .unwrap_or_else(|| format!("Parameter {}", edit.param_id)),
-                        "units": info.map(|info| info.units.clone()).unwrap_or_default(),
-                        "value": edit.value,
-                        "automatable": info.map(|info| info.automatable).unwrap_or(true),
-                        "plugin_name": plugin_name,
-                        "captured_at_millis": edit.captured_at_millis,
-                    }));
-                }
-            }
-        }
-        captured
+        session
+            .drain_captured_plugin_parameter_edits()
+            .into_iter()
+            .map(|captured| {
+                let info = captured.parameter.as_ref();
+                json!({
+                    "track_id": captured.track_id,
+                    "slot_index": captured.slot_index,
+                    "param_index": info.map(|info| info.index).unwrap_or(0),
+                    "param_id": captured.edit.param_id,
+                    "name": info
+                        .map(|info| info.name.clone())
+                        .unwrap_or_else(|| format!("Parameter {}", captured.edit.param_id)),
+                    "units": info.map(|info| info.units.clone()).unwrap_or_default(),
+                    "value": captured.edit.value,
+                    "automatable": info.map(|info| info.automatable).unwrap_or(true),
+                    "plugin_name": captured.plugin_name,
+                    "captured_at_millis": captured.edit.captured_at_millis,
+                })
+            })
+            .collect::<Vec<_>>()
     });
     CommandResponse::ack_with(
         "poll_captured_plugin_parameters",
@@ -1832,7 +1816,7 @@ mod tests {
 
         assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "set_automation"));
         let (route_count, lane_count) = with_session(&engine, |session| {
-            (session.routes.len(), session.automation_lane_count())
+            (session.route_count(), session.automation_lane_count())
         });
         assert_eq!(route_count, 1);
         assert_eq!(lane_count, 1);
@@ -2179,60 +2163,34 @@ fn status(
     with_session(engine, |session| {
         let tempo_map = session.tempo_map.read();
         let tracks = session
-            .routes
-            .iter()
-            .filter_map(|route| {
-                let route = route.lock().ok()?;
-                let processor_slots = route
-                    .processors
-                    .iter()
-                    .map(|processor| {
-                        processor.as_ref().and_then(|processor| {
-                            processor
-                                .lock()
-                                .ok()
-                                .map(|processor| processor.name().to_string())
-                        })
+            .route_snapshots()
+            .into_iter()
+            .map(|route| TrackStatus {
+                id: route.id,
+                name: route.name,
+                kind: match route.kind {
+                    RouteKind::Track => "track".to_string(),
+                    RouteKind::Bus => "bus".to_string(),
+                },
+                output_track_id: route.output_track_id,
+                sends: route
+                    .sends
+                    .into_iter()
+                    .map(|send| RouteSendStatus {
+                        target_track_id: send.target_track_id,
+                        level: send.level,
+                        enabled: send.enabled,
                     })
-                    .collect::<Vec<_>>();
-                Some(TrackStatus {
-                    id: route.id,
-                    name: route.name.clone(),
-                    kind: match route.kind {
-                        RouteKind::Track => "track".to_string(),
-                        RouteKind::Bus => "bus".to_string(),
-                    },
-                    output_track_id: route.output_track_id,
-                    sends: route
-                        .sends
-                        .iter()
-                        .map(|send| RouteSendStatus {
-                            target_track_id: send.target_track_id,
-                            level: send.level,
-                            enabled: send.enabled,
-                        })
-                        .collect(),
-                    volume: route.gain.value,
-                    pan: route.pan.value,
-                    mute: route.mute,
-                    solo: route.solo,
-                    note_count: route.sequencer.note_count(),
-                    midi_event_count: route.sequencer.midi_event_count(),
-                    audio_clip_count: route.audio_clip_count(),
-                    processors: route
-                        .processors
-                        .iter()
-                        .filter_map(|processor| {
-                            processor.as_ref().and_then(|processor| {
-                                processor
-                                    .lock()
-                                    .ok()
-                                    .map(|processor| processor.name().to_string())
-                            })
-                        })
-                        .collect(),
-                    processor_slots,
-                })
+                    .collect(),
+                volume: route.volume,
+                pan: route.pan,
+                mute: route.mute,
+                solo: route.solo,
+                note_count: route.note_count,
+                midi_event_count: route.midi_event_count,
+                audio_clip_count: route.audio_clip_count,
+                processors: route.processors,
+                processor_slots: route.processor_slots,
             })
             .collect();
 
