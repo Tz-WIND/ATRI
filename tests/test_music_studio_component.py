@@ -158,6 +158,64 @@ def test_music_studio_exposes_editable_tempo_control():
     assert "nextProject.tempo = nextTempo" in studio_text
 
 
+def test_music_studio_topbar_removes_manual_sync_and_demo_controls():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert '@click="syncProject({ broadcast: true })"' not in studio_text
+    assert '@click="resetDemo()"' not in studio_text
+    assert "  syncProject,\n" not in studio_text
+    assert "  resetDemo,\n" not in studio_text
+
+
+def test_music_studio_timeline_toolbar_matches_piano_editor_tools():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'class="timeline-actions arrangement-actions"' in studio_text
+    assert 'class="timeline-control piano-quantize"' in studio_text
+    assert 'title="选择时间线量化网格"' in studio_text
+    assert 'title="MIDI 写入是否吸附到当前量化"' in studio_text
+    assert 'title="创建全局小轨道"' in studio_text
+    assert ":class=\"['mini-btn text', { active: timelineTool === 'select' }]\"" in studio_text
+    assert ":class=\"['mini-btn text', { active: timelineTool === 'draw' }]\"" in studio_text
+    assert "function setTimelineTool(tool)" in studio_text
+    assert "async function drawTimelineMidiAtPoint(point)" in studio_text
+    assert "await createMidiClipAtBeat(track.id, point.beat)" in studio_text
+    assert 'title="Create MIDI clip at playhead"' not in studio_text
+    assert 'title="Create audio clip placeholder at playhead"' not in studio_text
+    assert 'title="Copy selected clips"' not in studio_text
+    assert 'title="Paste clips at playhead"' not in studio_text
+    assert 'title="Delete selected clips"' in studio_text
+
+
+def test_music_studio_piano_toolbar_removes_visible_copy_paste_and_clear_buttons():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'title="Copy selected notes"' not in studio_text
+    assert 'title="Paste copied notes at the playhead"' not in studio_text
+    assert 'title="Clear selected MIDI clip"' not in studio_text
+    assert 'title="Write C minor figure"' not in studio_text
+    assert "function copySelectedNotes()" in studio_text
+    assert "async function pasteNotes()" in studio_text
+    assert "copySelectedNotes()" in studio_text
+    assert "pasteNotes()" in studio_text
+
+
+def test_music_studio_arrangement_displays_project_level_piano_subtracks():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert "const arrangementVisibleSubtracks = computed(" in studio_text
+    assert "function arrangementSubtrackTop(subtrackId)" in studio_text
+    assert "function arrangementTrackTop(trackIndex)" in studio_text
+    assert "function drawArrangementMeterLane(ctx, width, top)" in studio_text
+    assert "function drawArrangementHarmonyLane(ctx, width, top)" in studio_text
+    assert "drawArrangementMeterLane(ctx, width, arrangementSubtrackTop('meter'))" in studio_text
+    assert (
+        "drawArrangementHarmonyLane(ctx, width, arrangementSubtrackTop('harmony'))" in studio_text
+    )
+    assert "arrangementTrackTop(index)" in studio_text
+    assert "arrangementTrackTop(trackIndex)" in studio_text
+
+
 def test_music_studio_meter_beats_respects_time_signature_denominator():
     """meterBeats must use both numerator and denominator, computing bar length
     in quarter-note beats.  e.g. 6/8 => 6 * (4/8) = 3 beats/bar;
@@ -259,6 +317,27 @@ def test_music_studio_keeps_arrangement_track_list_fixed_while_scrolling():
     assert "'--arrangement-scroll-left': `${arrangementScrollLeft.value}px`" in studio_text
     assert "function syncArrangementScroll(event)" in studio_text
     assert "translateX(var(--arrangement-scroll-left, 0px))" in studio_text
+
+
+def test_music_studio_arrangement_ruler_and_subtracks_stay_sticky_while_tracks_scroll():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'ref="arrangementHeaderCanvas"' in studio_text
+    assert 'class="editor-canvas arrangement-header-canvas"' in studio_text
+    assert 'class="arrangement-timeline-stack"' in studio_text
+    assert 'class="track-list-sticky-header"' in studio_text
+    assert "const arrangementHeaderCanvas = ref(null)" in studio_text
+    assert "function drawArrangementHeader(ctx, width)" in studio_text
+    assert "function drawArrangementBody(ctx, width, height)" in studio_text
+    assert "drawArrangementHeader(headerCtx, width)" in studio_text
+    assert "drawArrangementBody(bodyCtx, width, bodyHeight)" in studio_text
+    assert "function arrangementCanvasForEvent(event)" in studio_text
+    assert "if (canvas === arrangementCanvas.value) y += arrangementTrackTop(0)" in studio_text
+    assert ".arrangement-header-canvas {" in studio_text
+    assert ".track-list-sticky-header {" in studio_text
+    assert "position: sticky;" in studio_text
+    assert "top: 0;" in studio_text
+    assert "z-index: 5;" in studio_text
 
 
 def test_music_studio_track_list_sidebar_can_be_resized():
@@ -435,11 +514,28 @@ def test_music_studio_piano_roll_extends_from_low_c_to_c9():
 
     assert "const minPitch = 0" in studio_text
     assert "const maxPitch = 120" in studio_text
-    assert (
-        "const height = pianoNoteTop.value + (maxPitch - minPitch + 1) * pianoRowH" in studio_text
-    )
+    assert "const bodyHeight = (maxPitch - minPitch + 1) * pianoRowH" in studio_text
     assert "const pitch = clamp(maxPitch - row, minPitch, maxPitch)" in studio_text
     assert "pitch: clamp(note.pitch + deltaPitch, minPitch, maxPitch)" in studio_text
+
+
+def test_music_studio_piano_ruler_and_subtracks_stay_sticky_while_notes_scroll():
+    studio_text = _read(STUDIO_COMPONENT)
+
+    assert 'ref="pianoHeaderCanvas"' in studio_text
+    assert 'class="editor-canvas piano-header-canvas"' in studio_text
+    assert 'class="piano-scroll-content"' in studio_text
+    assert "const pianoHeaderCanvas = ref(null)" in studio_text
+    assert "function drawPianoHeader(ctx, width, clip)" in studio_text
+    assert "function drawPianoBody(ctx, width, height, clip)" in studio_text
+    assert "drawPianoHeader(headerCtx, width, clip)" in studio_text
+    assert "drawPianoBody(bodyCtx, width, bodyHeight, clip)" in studio_text
+    assert "function pianoCanvasForEvent(event)" in studio_text
+    assert "if (canvas === pianoCanvas.value) y += pianoNoteTop.value" in studio_text
+    assert ".piano-header-canvas {" in studio_text
+    assert "position: sticky;" in studio_text
+    assert "top: 0;" in studio_text
+    assert "z-index: 3;" in studio_text
 
 
 def test_music_studio_recenters_piano_viewport_when_opening_or_switching_clips():

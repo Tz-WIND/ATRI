@@ -148,19 +148,6 @@
         <span :class="['host-dot', { online: host.running, audio: audioConnected }]" />
         <span class="host-label">{{ host.running ? 'Host Online' : 'Host Offline' }}</span>
         <button
-          class="tool-btn text"
-          :disabled="syncing"
-          @click="syncProject({ broadcast: true })"
-        >
-          Sync
-        </button>
-        <button
-          class="tool-btn text"
-          @click="resetDemo()"
-        >
-          Demo
-        </button>
-        <button
           :class="['tool-btn text', { active: mixerVisible }]"
           title="Show mixer rack"
           @click="openMixer"
@@ -218,36 +205,78 @@
                 <span>Timeline</span>
                 <strong>{{ selectedClipIds.size }} selected</strong>
               </div>
-              <div class="arrangement-actions">
-                <button
-                  class="mini-btn text"
-                  title="Create MIDI clip at playhead"
-                  @click="createClip('midi')"
+              <div class="timeline-actions arrangement-actions">
+                <div
+                  class="timeline-control piano-quantize"
+                  title="选择时间线量化网格"
                 >
-                  MIDI
+                  <span>量化</span>
+                  <button
+                    class="piano-quantize-button"
+                    type="button"
+                    @click.stop="timelineQuantizeMenuOpen = !timelineQuantizeMenuOpen"
+                  >
+                    <strong>{{ pianoQuantizeLabel }}</strong>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    ><path d="m6 9 6 6 6-6" /></svg>
+                  </button>
+                  <div
+                    v-if="timelineQuantizeMenuOpen"
+                    class="piano-quantize-menu"
+                  >
+                    <button
+                      v-for="option in pianoQuantizeOptions"
+                      :key="`timeline-${option.id}`"
+                      type="button"
+                      :class="{ active: pianoQuantizeId === option.id }"
+                      @click.stop="setPianoQuantizeOption(option.id)"
+                    >
+                      {{ option.label }}
+                    </button>
+                  </div>
+                </div>
+                <button
+                  :class="['mini-btn text', { active: isPianoSnapActive }]"
+                  title="MIDI 写入是否吸附到当前量化"
+                  @click="pianoSnapEnabled = !pianoSnapEnabled"
+                >
+                  吸附 {{ isPianoSnapActive ? '量化' : '关闭' }}
+                </button>
+                <select
+                  v-model="pianoSubtrackCreateValue"
+                  class="piano-subtrack-select"
+                  title="创建全局小轨道"
+                  @change="createPianoSubtrack()"
+                >
+                  <option value="">
+                    + 小轨道
+                  </option>
+                  <option
+                    v-for="option in pianoSubtrackOptions"
+                    :key="`timeline-${option.id}`"
+                    :value="option.id"
+                    :disabled="option.disabled"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+                <button
+                  :class="['mini-btn text', { active: timelineTool === 'select' }]"
+                  title="Select and move clips"
+                  @click="setTimelineTool('select')"
+                >
+                  Select
                 </button>
                 <button
-                  class="mini-btn text"
-                  title="Create audio clip placeholder at playhead"
-                  @click="createClip('audio')"
+                  :class="['mini-btn text', { active: timelineTool === 'draw' }]"
+                  title="Draw MIDI into the selected instrument track"
+                  @click="setTimelineTool('draw')"
                 >
-                  Audio
-                </button>
-                <button
-                  class="mini-btn text"
-                  title="Copy selected clips"
-                  :disabled="selectedClipIds.size === 0"
-                  @click="copySelectedClips"
-                >
-                  Copy
-                </button>
-                <button
-                  class="mini-btn text"
-                  title="Paste clips at playhead"
-                  :disabled="clipClipboard.length === 0"
-                  @click="pasteClips"
-                >
-                  Paste
+                  Draw
                 </button>
                 <button
                   class="mini-btn text danger"
@@ -287,10 +316,21 @@
           >
             <div class="arrangement-scroll-inner">
               <aside class="track-list">
-                <div
-                  class="track-lane-spacer"
-                  aria-hidden="true"
-                />
+                <div class="track-list-sticky-header">
+                  <div
+                    class="track-lane-spacer"
+                    aria-hidden="true"
+                  />
+
+                  <div
+                    v-for="subtrackId in arrangementVisibleSubtracks"
+                    :key="`arrangement-subtrack-${subtrackId}`"
+                    class="track-global-subtrack-row"
+                  >
+                    <span>{{ subtrackId === 'meter' ? '拍号轨' : '和声轨' }}</span>
+                    <small>{{ subtrackId === 'meter' ? 'Global Meter' : 'Global Harmony' }}</small>
+                  </div>
+                </div>
 
                 <template
                   v-for="track in tracks"
@@ -498,14 +538,25 @@
                 </template>
               </aside>
 
-              <canvas
-                ref="arrangementCanvas"
-                class="editor-canvas arrangement-canvas"
-                @dblclick="onArrangementDoubleClick"
-                @pointerdown="onArrangementPointerDown"
-                @wheel="onArrangementWheel"
-                @contextmenu.prevent
-              />
+              <div class="arrangement-timeline-stack">
+                <canvas
+                  ref="arrangementHeaderCanvas"
+                  class="editor-canvas arrangement-header-canvas"
+                  @pointerdown="onArrangementPointerDown"
+                  @wheel="onArrangementWheel"
+                  @contextmenu.prevent
+                />
+                <div class="arrangement-scroll-content">
+                  <canvas
+                    ref="arrangementCanvas"
+                    class="editor-canvas arrangement-canvas"
+                    @dblclick="onArrangementDoubleClick"
+                    @pointerdown="onArrangementPointerDown"
+                    @wheel="onArrangementWheel"
+                    @contextmenu.prevent
+                  />
+                </div>
+              </div>
             </div>
             <div
               v-if="audioDropActive || audioImporting"
@@ -644,42 +695,12 @@
                 Draw
               </button>
               <button
-                class="mini-btn text"
-                title="Copy selected notes"
-                :disabled="selectedNoteIds.size === 0"
-                @click="copySelectedNotes"
-              >
-                Copy
-              </button>
-              <button
-                class="mini-btn text"
-                title="Paste copied notes at the playhead"
-                :disabled="noteClipboard.length === 0"
-                @click="pasteNotes"
-              >
-                Paste
-              </button>
-              <button
                 class="mini-btn text danger"
                 title="Delete selected notes"
                 :disabled="selectedNoteIds.size === 0"
                 @click="deleteSelectedNotes"
               >
                 Del
-              </button>
-              <button
-                class="mini-btn text"
-                title="Write C minor figure"
-                @click="writeMinorFigure"
-              >
-                C minor
-              </button>
-              <button
-                class="mini-btn text"
-                title="Clear selected MIDI clip"
-                @click="clearActiveTrack"
-              >
-                Clear
               </button>
               <button
                 class="mini-btn"
@@ -705,12 +726,21 @@
               @scroll="syncPianoScroll('piano')"
             >
               <canvas
-                ref="pianoCanvas"
-                class="editor-canvas"
+                ref="pianoHeaderCanvas"
+                class="editor-canvas piano-header-canvas"
                 @pointerdown="onPianoPointerDown"
                 @wheel="onPianoWheel"
                 @contextmenu.prevent
               />
+              <div class="piano-scroll-content">
+                <canvas
+                  ref="pianoCanvas"
+                  class="editor-canvas"
+                  @pointerdown="onPianoPointerDown"
+                  @wheel="onPianoWheel"
+                  @contextmenu.prevent
+                />
+              </div>
             </div>
             <button
               v-if="pianoMeterLaneVisible"
@@ -1595,7 +1625,6 @@ const {
   tracks,
   activeTrack,
   loading,
-  syncing,
   hostError,
   audioConnected,
   playing,
@@ -1608,8 +1637,6 @@ const {
   learnedAutomationParameters,
   loadProject,
   saveProject,
-  syncProject,
-  resetDemo,
   transport,
   updateTrack,
   createTrack,
@@ -1629,11 +1656,13 @@ const {
 } = useDawHost()
 
 const arrangementWrap = ref(null)
+const arrangementHeaderCanvas = ref(null)
 const arrangementCanvas = ref(null)
 const editorStack = ref(null)
 const pianoPanel = ref(null)
 const pianoWorkspace = ref(null)
 const pianoWrap = ref(null)
+const pianoHeaderCanvas = ref(null)
 const pianoCanvas = ref(null)
 const controllerWrap = ref(null)
 const timeSignatureRoot = ref(null)
@@ -1708,9 +1737,11 @@ const trackCreatePalette = ['#4e79ff', '#d95b55', '#5f916b', '#d7b66f', '#b489d6
 const pianoSubtrackIds = ['meter', 'harmony']
 const timeSignatureDenominatorOptions = [2, 4, 8, 16, 32]
 const visualPositionBeats = ref(0)
+const timelineTool = ref('select')
 const pianoTool = ref('select')
 const pianoQuantizeId = ref('1/16')
 const pianoSnapEnabled = ref(true)
+const timelineQuantizeMenuOpen = ref(false)
 const pianoQuantizeMenuOpen = ref(false)
 const pianoMeterLaneOpen = ref(false)
 const pianoHarmonyLaneOpen = ref(false)
@@ -1833,6 +1864,7 @@ const pianoVisibleSubtracks = computed(() => (
     || (id === 'harmony' && pianoHarmonyLaneVisible.value)
   ))
 ))
+const arrangementVisibleSubtracks = computed(() => pianoVisibleSubtracks.value)
 const pianoMeterLaneTop = computed(() => pianoSubtrackTop('meter'))
 const pianoHarmonyLaneTop = computed(() => pianoSubtrackTop('harmony'))
 const pianoNoteTop = computed(() => (
@@ -2069,6 +2101,20 @@ function pianoSubtrackOrderWith(subtrackId) {
 function pianoSubtrackTop(subtrackId) {
   const index = pianoVisibleSubtracks.value.indexOf(subtrackId)
   return pianoRulerH + Math.max(0, index) * pianoSubtrackH
+}
+
+function arrangementSubtrackTop(subtrackId) {
+  const index = arrangementVisibleSubtracks.value.indexOf(subtrackId)
+  return arrangementRulerH + Math.max(0, index) * pianoSubtrackH
+}
+
+function arrangementTrackTop(trackIndex) {
+  return arrangementRulerH + arrangementVisibleSubtracks.value.length * pianoSubtrackH
+    + Math.max(0, trackIndex) * arrangementTrackH
+}
+
+function arrangementTrackIndexAtY(y) {
+  return Math.floor((Number(y || 0) - arrangementTrackTop(0)) / arrangementTrackH)
 }
 
 function toggleTimeSignaturePopover() {
@@ -2490,15 +2536,15 @@ function loadAutomationPickerPluginParameters() {
   }
 }
 
-function makeClip(type = 'midi', start = 0) {
+function makeClip(type = 'midi', start = 0, color = activeTrack.value?.color) {
   const duration = 4
   return {
     id: makeClipId(),
     type,
     name: type === 'midi' ? 'MIDI Clip' : 'Audio Clip',
-    start: snapBeat(start),
+    start: Math.max(0, roundPianoBeat(start)),
     duration,
-    color: activeTrack.value?.color || '#4e79ff',
+    color: color || '#4e79ff',
     source: '',
     path: '',
     notes: [],
@@ -2506,19 +2552,27 @@ function makeClip(type = 'midi', start = 0) {
   }
 }
 
-async function createClip(type = 'midi') {
-  if (!activeTrack.value) return null
-  const clip = makeClip(type, visualPositionBeats.value)
+async function createMidiClipAtBeat(trackId, beat) {
+  const sourceTrack = tracks.value.find(track => Number(track.id) === Number(trackId))
+  if (!sourceTrack || !isInstrumentTrack(sourceTrack)) return null
+  const clip = makeClip('midi', snapBeatToGrid(beat, activePianoSnapStep.value), sourceTrack.color)
   await persistProjectUpdate((nextProject) => {
-    const track = findProjectTrack(nextProject, activeTrack.value.id)
+    const track = findProjectTrack(nextProject, trackId)
     if (!track) return
     track.clips = [...(track.clips || []), clip]
   })
+  selectTrack(trackId)
   selectedClipIds.value = new Set([clip.id])
   activeClipId.value = clip.id
-  if (type === 'midi') openPiano()
+  openPiano()
   drawAll()
   return clip
+}
+
+async function drawTimelineMidiAtPoint(point) {
+  const track = tracks.value[point?.trackIndex]
+  if (!track || !isInstrumentTrack(track)) return null
+  return await createMidiClipAtBeat(track.id, point.beat)
 }
 
 function isAudioFile(file) {
@@ -2710,49 +2764,22 @@ async function seekToBeat(beat) {
   drawAll()
 }
 
-async function writeMinorFigure() {
-  if (!activeMidiClip.value) {
-    await createClip('midi')
-  }
-  if (!activeMidiClip.value) return
-  const notes = [60, 63, 67, 72, 70, 67, 63, 60].map((pitch, index) => ({
-    pitch,
-    start: index * 0.5,
-    duration: 0.45,
-    velocity: 82 + (index % 3) * 6,
-  }))
-  await persistActiveClipNotes(notes)
-}
-
-async function clearActiveTrack() {
-  if (!activeMidiClip.value) return
-  const clipId = activeMidiClip.value.clip.id
-  await persistProjectUpdate((nextProject) => {
-    for (const track of nextProject.tracks || []) {
-      const clip = (track.clips || []).find(item => item.id === clipId)
-      if (!clip) continue
-      clip.notes = []
-      clip.events = []
-      clip.duration = Math.max(Number(clip.duration || 0.25), snapStep)
-    }
-  })
-  selectedNoteIds.value = new Set()
-}
-
 async function onArrangementPointerDown(event) {
-  const canvas = arrangementCanvas.value
+  const canvas = arrangementCanvasForEvent(event)
   if (!canvas || !project.value) return
   automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
   closeTrackContextMenu()
   event.preventDefault()
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
-  const y = event.clientY - rect.top
+  let y = event.clientY - rect.top
+  if (canvas === arrangementCanvas.value) y += arrangementTrackTop(0)
   const beat = Math.max(0, x / arrangementPxPerBeat.value)
   const point = arrangementPoint(event)
   if (y <= arrangementRulerH) {
     arrangementDrag = {
       type: 'pan',
+      canvas: 'header',
       pointerId: event.pointerId,
       startX: event.clientX,
       startScrollLeft: arrangementWrap.value?.scrollLeft || 0,
@@ -2766,6 +2793,16 @@ async function onArrangementPointerDown(event) {
   const hit = hitTestArrangementClip(x, y)
   if (hit) {
     selectTrack(hit.track.id)
+    if (timelineTool.value === 'draw') {
+      selectedClipIds.value = new Set([hit.clip.id])
+      activeClipId.value = hit.clip.id
+      if (hit.clip.type === 'midi') {
+        openPiano()
+        selectedNoteIds.value = new Set()
+      }
+      drawAll()
+      return
+    }
     if (event.ctrlKey || event.metaKey || event.shiftKey) {
       toggleClipSelection(hit.clip.id)
     } else if (!selectedClipIds.value.has(hit.clip.id)) {
@@ -2777,6 +2814,7 @@ async function onArrangementPointerDown(event) {
       : [hit.clip.id]
     arrangementDrag = {
       type: hit.edge === 'right' ? 'resize' : 'move',
+      canvas: 'body',
       pointerId: event.pointerId,
       startBeat: beat,
       startTrackIndex: hit.trackIndex,
@@ -2788,10 +2826,16 @@ async function onArrangementPointerDown(event) {
     return
   }
 
-  const index = Math.floor((y - arrangementRulerH) / arrangementTrackH)
+  const index = arrangementTrackIndexAtY(y)
   const track = tracks.value[index]
   if (track) {
     selectTrack(track.id)
+    if (timelineTool.value === 'draw' && isInstrumentTrack(track) && point) {
+      selectedAutomationPoint.value = { trackId: null, index: -1 }
+      selectedClipIds.value = new Set()
+      await drawTimelineMidiAtPoint(point)
+      return
+    }
     if (isAutomationTrack(track) && point) {
       selectedClipIds.value = new Set()
       const hit = hitTestAutomationPoint(track, point.x, point.y, point.trackIndex)
@@ -2820,7 +2864,10 @@ function onArrangementDoubleClick(event) {
   const canvas = arrangementCanvas.value
   if (!canvas) return
   const rect = canvas.getBoundingClientRect()
-  const hit = hitTestArrangementClip(event.clientX - rect.left, event.clientY - rect.top)
+  const hit = hitTestArrangementClip(
+    event.clientX - rect.left,
+    event.clientY - rect.top + arrangementTrackTop(0)
+  )
   if (!hit) return
   selectTrack(hit.track.id)
   selectedClipIds.value = new Set([hit.clip.id])
@@ -3028,7 +3075,7 @@ function automationValueRange(track) {
 
 function automationValueFromY(track, y) {
   const trackIndex = tracks.value.findIndex(item => Number(item.id) === Number(track?.id))
-  const top = arrangementRulerH + Math.max(0, trackIndex) * arrangementTrackH + 12
+  const top = arrangementTrackTop(Math.max(0, trackIndex)) + 12
   const bodyHeight = Math.max(1, arrangementTrackH - 24)
   const unit = 1 - clamp((Number(y || 0) - top) / bodyHeight, 0, 1)
   const { min, max } = automationValueRange(track)
@@ -3038,7 +3085,7 @@ function automationValueFromY(track, y) {
 function automationPointY(track, point, trackIndex) {
   const { min, max } = automationValueRange(track)
   const unit = clamp((Number(point?.value ?? min) - min) / Math.max(0.0001, max - min), 0, 1)
-  return arrangementRulerH + trackIndex * arrangementTrackH + 12 + (1 - unit) * (arrangementTrackH - 24)
+  return arrangementTrackTop(trackIndex) + 12 + (1 - unit) * (arrangementTrackH - 24)
 }
 
 function snapAutomationBeat(value) {
@@ -3195,11 +3242,12 @@ function syncArrangementScroll(event) {
 }
 
 function onArrangementWheel(event) {
-  const canvas = arrangementCanvas.value
+  const canvas = arrangementCanvasForEvent(event)
   const wrap = arrangementWrap.value
   if (!canvas || !wrap) return
   const rect = canvas.getBoundingClientRect()
-  const y = event.clientY - rect.top
+  let y = event.clientY - rect.top
+  if (canvas === arrangementCanvas.value) y += arrangementTrackTop(0)
   if (y > arrangementRulerH) {
     if (event.shiftKey && !event.ctrlKey && !event.metaKey) {
       scrollArrangementHorizontallyFromWheel(event, wrap)
@@ -3244,15 +3292,26 @@ function arrangementCanvasOffsetX() {
   return arrangementCanvas.value?.offsetLeft ?? currentTrackListWidth()
 }
 
+function arrangementCanvasForEvent(event) {
+  if (event?.currentTarget === window && arrangementDrag?.canvas === 'header') return arrangementHeaderCanvas.value
+  if (event?.currentTarget === window && arrangementDrag?.canvas === 'body') return arrangementCanvas.value
+  const target = event?.currentTarget === window ? event?.target : event?.currentTarget
+  if (target === arrangementHeaderCanvas.value) return arrangementHeaderCanvas.value
+  if (target === arrangementCanvas.value) return arrangementCanvas.value
+  if (arrangementDrag?.canvas === 'header') return arrangementHeaderCanvas.value
+  return arrangementCanvas.value || arrangementHeaderCanvas.value
+}
+
 function arrangementPoint(event) {
-  const canvas = arrangementCanvas.value
+  const canvas = arrangementCanvasForEvent(event)
   if (!canvas) return null
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
-  const y = event.clientY - rect.top
+  let y = event.clientY - rect.top
+  if (canvas === arrangementCanvas.value) y += arrangementTrackTop(0)
   const beat = Math.max(0, (x) / arrangementPxPerBeat.value)
   const trackIndex = clamp(
-    Math.floor((y - arrangementRulerH) / arrangementTrackH),
+    arrangementTrackIndexAtY(y),
     0,
     Math.max(0, tracks.value.length - 1)
   )
@@ -3260,8 +3319,8 @@ function arrangementPoint(event) {
 }
 
 function hitTestArrangementClip(x, y) {
-  if (y <= arrangementRulerH) return null
-  const trackIndex = Math.floor((y - arrangementRulerH) / arrangementTrackH)
+  if (y < arrangementTrackTop(0)) return null
+  const trackIndex = arrangementTrackIndexAtY(y)
   const track = tracks.value[trackIndex]
   if (!track) return null
   const clips = [...(track.clips || [])].reverse()
@@ -3283,7 +3342,7 @@ function clipRect(clip, trackIndex) {
   const scale = arrangementPxPerBeat.value
   return {
     x: Number(clip.start || 0) * scale + 2,
-    y: arrangementRulerH + trackIndex * arrangementTrackH + 10,
+    y: arrangementTrackTop(trackIndex) + 10,
     w: Math.max(18, Number(clip.duration || 0.25) * scale - 4),
     h: arrangementTrackH - 20,
   }
@@ -3404,16 +3463,18 @@ async function deleteSelectedClips() {
 
 async function onPianoPointerDown(event) {
   if (!activeMidiClip.value) return
-  const canvas = pianoCanvas.value
+  const canvas = pianoCanvasForEvent(event)
   if (!canvas) return
   event.preventDefault()
   const point = pianoPoint(event)
   if (!point || point.x < pianoKeyW) return
+  const dragCanvas = pianoDragCanvas(point)
   closePianoMeterEditor()
   closePianoHarmonyEditor()
   if (point.ruler) {
     pianoDrag = {
       type: 'pan',
+      canvas: dragCanvas,
       pointerId: event.pointerId,
       startX: event.clientX,
       startScrollLeft: pianoWrap.value?.scrollLeft || 0,
@@ -3468,6 +3529,7 @@ async function onPianoPointerDown(event) {
       : [noteId]
     pianoDrag = {
       type: hit.edge === 'right' ? 'resize' : 'move',
+      canvas: dragCanvas,
       pointerId: event.pointerId,
       startBeat: point.beat,
       startPitch: point.pitch,
@@ -3492,6 +3554,7 @@ async function onPianoPointerDown(event) {
     draftNote.value = note
     pianoDrag = {
       type: 'draw',
+      canvas: dragCanvas,
       pointerId: event.pointerId,
       startBeat: note.start,
       pitch: note.pitch,
@@ -3509,6 +3572,7 @@ async function onPianoPointerDown(event) {
     }
     pianoDrag = {
       type: 'select',
+      canvas: dragCanvas,
       pointerId: event.pointerId,
     }
   }
@@ -3654,6 +3718,7 @@ function startDrawNotePress(event, point, hit) {
   const movingIds = selectedNoteIds.value.has(noteId) ? [...selectedNoteIds.value] : [noteId]
   pianoDrag = {
     type: 'draw-note-press',
+    canvas: pianoDragCanvas(point),
     pointerId: event.pointerId,
     startX: event.clientX,
     startY: event.clientY,
@@ -3678,6 +3743,7 @@ function activateDrawNotePressDrag() {
   selectedNoteIds.value = new Set(drag.movingIds)
   pianoDrag = {
     type: drag.editType,
+    canvas: drag.canvas,
     pointerId: drag.pointerId,
     startBeat: drag.startBeat,
     startPitch: drag.startPitch,
@@ -3693,6 +3759,7 @@ function startDrawMeterEventPress(event, point, meterHit) {
   const originalEvents = editableMeterEvents()
   pianoDrag = {
     type: 'draw-meter-event-press',
+    canvas: pianoDragCanvas(point),
     pointerId: event.pointerId,
     startX: event.clientX,
     startY: event.clientY,
@@ -3713,6 +3780,7 @@ function activateDrawMeterEventPressDrag() {
   const drag = pianoDrag
   pianoDrag = {
     type: 'meter-event-move',
+    canvas: drag.canvas,
     pointerId: drag.pointerId,
     startBeat: drag.startBeat,
     eventIndex: drag.eventIndex,
@@ -3829,12 +3897,13 @@ function onPianoPointerCancel() {
 }
 
 function onPianoWheel(event) {
-  const canvas = pianoCanvas.value
+  const canvas = pianoCanvasForEvent(event)
   const wrap = pianoWrap.value
   if (!canvas || !wrap) return
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
-  const y = event.clientY - rect.top
+  let y = event.clientY - rect.top
+  if (canvas === pianoCanvas.value) y += pianoNoteTop.value
   if (y > pianoRulerH || x < pianoKeyW) return
 
   event.preventDefault()
@@ -3854,12 +3923,27 @@ function onPianoWheel(event) {
   })
 }
 
+function pianoCanvasForEvent(event) {
+  if (event?.currentTarget === window && pianoDrag?.canvas === 'header') return pianoHeaderCanvas.value
+  if (event?.currentTarget === window && pianoDrag?.canvas === 'body') return pianoCanvas.value
+  const target = event?.currentTarget === window ? event?.target : event?.currentTarget
+  if (target === pianoHeaderCanvas.value) return pianoHeaderCanvas.value
+  if (target === pianoCanvas.value) return pianoCanvas.value
+  if (pianoDrag?.canvas === 'header') return pianoHeaderCanvas.value
+  return pianoCanvas.value || pianoHeaderCanvas.value
+}
+
+function pianoDragCanvas(point) {
+  return point?.canvas === pianoHeaderCanvas.value ? 'header' : 'body'
+}
+
 function pianoPoint(event) {
-  const canvas = pianoCanvas.value
+  const canvas = pianoCanvasForEvent(event)
   if (!canvas) return null
   const rect = canvas.getBoundingClientRect()
   const x = event.clientX - rect.left
-  const y = event.clientY - rect.top
+  let y = event.clientY - rect.top
+  if (canvas === pianoCanvas.value) y += pianoNoteTop.value
   const localBeat = Math.max(0, (x - pianoKeyW) / pianoPxPerBeat.value)
   const ruler = y < pianoRulerH
   const meterLane = pianoMeterLaneVisible.value
@@ -3872,7 +3956,7 @@ function pianoPoint(event) {
   const beat = meterLane || harmonyLane ? clipStart + localBeat : localBeat
   const row = Math.floor((y - pianoNoteTop.value) / pianoRowH)
   const pitch = clamp(maxPitch - row, minPitch, maxPitch)
-  return { x, y, beat, localBeat, pitch, ruler, meterLane, harmonyLane }
+  return { x, y, beat, localBeat, pitch, ruler, meterLane, harmonyLane, canvas }
 }
 
 function hitTestPianoNote(x, y) {
@@ -4655,8 +4739,13 @@ function updateControllerEventCurve(eventId, curveAmount) {
 
 function setPianoQuantizeOption(optionId) {
   pianoQuantizeId.value = optionId
+  timelineQuantizeMenuOpen.value = false
   pianoQuantizeMenuOpen.value = false
   drawAll()
+}
+
+function setTimelineTool(tool) {
+  timelineTool.value = tool === 'draw' ? 'draw' : 'select'
 }
 
 function isInteractiveTarget(event) {
@@ -4722,6 +4811,7 @@ function onStudioKeydown(event) {
     closePianoMeterEditor()
     closePianoHarmonyEditor()
     controllerMenuLaneId.value = null
+    timelineQuantizeMenuOpen.value = false
     pianoQuantizeMenuOpen.value = false
     automationDrag = null
     unbindAutomationDrag()
@@ -4814,6 +4904,7 @@ function openMixer() {
   selectedControllerEventId.value = null
   draftNote.value = null
   selectionBox.value = null
+  timelineQuantizeMenuOpen.value = false
   pianoQuantizeMenuOpen.value = false
   controllerMenuLaneId.value = null
   clearPianoLongPressTimer()
@@ -5287,9 +5378,10 @@ function setupCanvas(canvas, width, height) {
 }
 
 function drawArrangement() {
+  const headerCanvas = arrangementHeaderCanvas.value
   const canvas = arrangementCanvas.value
   const wrap = arrangementWrap.value
-  if (!canvas || !wrap) return
+  if (!headerCanvas || !canvas || !wrap) return
   const timelineViewportWidth = Math.max(
     0,
     arrangementWrap.value.clientWidth - currentTrackListWidth()
@@ -5298,34 +5390,52 @@ function drawArrangement() {
     timelineViewportWidth,
     arrangementLengthBeats() * arrangementPxPerBeat.value + 40
   )
-  const height = Math.max(
-    220,
-    arrangementRulerH + Math.max(1, tracks.value.length) * arrangementTrackH
+  const headerHeight = arrangementTrackTop(0)
+  const bodyHeight = Math.max(
+    220 - headerHeight,
+    Math.max(1, tracks.value.length) * arrangementTrackH
   )
-  const ctx = setupCanvas(canvas, width, height)
+  const headerCtx = setupCanvas(headerCanvas, width, headerHeight)
+  const bodyCtx = setupCanvas(canvas, width, bodyHeight)
+  drawArrangementHeader(headerCtx, width)
+  drawArrangementBody(bodyCtx, width, bodyHeight)
+}
+
+function drawArrangementHeader(ctx, width) {
+  const height = arrangementTrackTop(0)
   ctx.fillStyle = '#17191c'
   ctx.fillRect(0, 0, width, height)
+  ctx.fillStyle = '#202326'
+  ctx.fillRect(0, 0, width, arrangementRulerH)
+  drawRuler(ctx, width)
+  drawArrangementMeterLane(ctx, width, arrangementSubtrackTop('meter'))
+  drawArrangementHarmonyLane(ctx, width, arrangementSubtrackTop('harmony'))
+  drawPlayhead(ctx, height)
+}
+
+function drawArrangementBody(ctx, width, height) {
+  const logicalHeight = arrangementTrackTop(0) + height
+  ctx.save()
+  ctx.translate(0, -arrangementTrackTop(0))
+  ctx.fillStyle = '#17191c'
+  ctx.fillRect(0, arrangementTrackTop(0), width, height)
 
   tracks.value.forEach((track, index) => {
-    const y = arrangementRulerH + index * arrangementTrackH
+    const y = arrangementTrackTop(index)
     ctx.fillStyle = activeTrack.value?.id === track.id ? 'rgba(158, 191, 255, 0.08)' : '#1b1d20'
     ctx.fillRect(0, y, width, arrangementTrackH)
   })
 
-  paintGrid(ctx, width, height, 0, arrangementRulerH)
+  paintGrid(ctx, width, logicalHeight, 0, arrangementRulerH)
 
   tracks.value.forEach((track, index) => {
-    const y = arrangementRulerH + index * arrangementTrackH
+    const y = arrangementTrackTop(index)
     ctx.strokeStyle = 'rgba(229, 236, 245, 0.11)'
     ctx.beginPath()
     ctx.moveTo(0, y + arrangementTrackH)
     ctx.lineTo(width, y + arrangementTrackH)
     ctx.stroke()
   })
-
-  ctx.fillStyle = '#202326'
-  ctx.fillRect(0, 0, width, arrangementRulerH)
-  drawRuler(ctx, width)
 
   tracks.value.forEach((track, index) => {
     if (isAutomationTrack(track)) {
@@ -5336,7 +5446,8 @@ function drawArrangement() {
       drawArrangementClip(ctx, track, clip, index)
     }
   })
-  drawPlayhead(ctx, height)
+  drawPlayhead(ctx, logicalHeight)
+  ctx.restore()
 }
 
 function arrangementLengthBeats() {
@@ -5430,7 +5541,7 @@ function drawAutomationTrack(ctx, track, trackIndex) {
   const points = Array.isArray(track?.automation?.points)
     ? [...track.automation.points].sort(sortAutomationPoints)
     : []
-  const y = arrangementRulerH + trackIndex * arrangementTrackH
+  const y = arrangementTrackTop(trackIndex)
   const midY = y + arrangementTrackH * 0.5
   const left = 0
   const right = arrangementLengthBeats() * arrangementPxPerBeat.value
@@ -5733,17 +5844,26 @@ function waveformY(bounds, value) {
 }
 
 function drawPiano() {
+  const headerCanvas = pianoHeaderCanvas.value
   const canvas = pianoCanvas.value
   const wrap = pianoWrap.value
-  if (!canvas || !wrap || !activeMidiClip.value || !pianoVisible.value) return
+  if (!headerCanvas || !canvas || !wrap || !activeMidiClip.value || !pianoVisible.value) return
   const clip = activeMidiClip.value.clip
   const width = Math.max(
     wrap.clientWidth,
     pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
   )
   pianoTimelineWidth.value = width
-  const height = pianoNoteTop.value + (maxPitch - minPitch + 1) * pianoRowH
-  const ctx = setupCanvas(canvas, width, height)
+  const headerHeight = pianoNoteTop.value
+  const bodyHeight = (maxPitch - minPitch + 1) * pianoRowH
+  const headerCtx = setupCanvas(headerCanvas, width, headerHeight)
+  const bodyCtx = setupCanvas(canvas, width, bodyHeight)
+  drawPianoHeader(headerCtx, width, clip)
+  drawPianoBody(bodyCtx, width, bodyHeight, clip)
+}
+
+function drawPianoHeader(ctx, width, clip) {
+  const height = pianoNoteTop.value
   ctx.fillStyle = '#17191c'
   ctx.fillRect(0, 0, width, height)
   drawPianoRuler(ctx, width, clip)
@@ -5754,7 +5874,15 @@ function drawPiano() {
       drawPianoHarmonyLane(ctx, width, clip, pianoHarmonyLaneTop.value)
     }
   }
+  drawPianoPlayhead(ctx, height, clip)
+}
 
+function drawPianoBody(ctx, width, height, clip) {
+  const logicalHeight = pianoNoteTop.value + height
+  ctx.save()
+  ctx.translate(0, -pianoNoteTop.value)
+  ctx.fillStyle = '#17191c'
+  ctx.fillRect(0, pianoNoteTop.value, width, height)
   for (let pitch = maxPitch; pitch >= minPitch; pitch -= 1) {
     const row = maxPitch - pitch
     const y = pianoNoteTop.value + row * pianoRowH
@@ -5774,7 +5902,7 @@ function drawPiano() {
       ctx.fillText(pitchName(pitch), 10, y + 9)
     }
   }
-  paintPianoGrid(ctx, width, height, clip)
+  paintPianoGrid(ctx, width, logicalHeight, clip)
 
   const track = activeMidiClip.value.track
   if (track) {
@@ -5815,7 +5943,8 @@ function drawPiano() {
     ctx.fillRect(x, y, w, h)
     ctx.setLineDash([])
   }
-  drawPianoPlayhead(ctx, height, clip)
+  drawPianoPlayhead(ctx, logicalHeight, clip)
+  ctx.restore()
 }
 
 function drawControllerLanes() {
@@ -6055,6 +6184,80 @@ function drawRuler(ctx, width) {
     height: arrangementRulerH,
     labelY: 19,
   })
+}
+
+function drawArrangementMeterLane(ctx, width, top) {
+  if (!arrangementVisibleSubtracks.value.includes('meter')) return
+  const scale = arrangementPxPerBeat.value
+  const endBeat = Math.ceil(width / scale)
+  const bottom = top + pianoSubtrackH
+
+  ctx.fillStyle = '#191d21'
+  ctx.fillRect(0, top, width, pianoSubtrackH)
+  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
+  ctx.beginPath()
+  ctx.moveTo(0, top + 0.5)
+  ctx.lineTo(width, top + 0.5)
+  ctx.moveTo(0, bottom - 0.5)
+  ctx.lineTo(width, bottom - 0.5)
+  ctx.stroke()
+
+  for (const line of meterBarLinesBetween(project.value, 0, endBeat)) {
+    const x = line.beat * scale
+    ctx.strokeStyle = 'rgba(240, 209, 122, 0.16)'
+    ctx.beginPath()
+    ctx.moveTo(x, top)
+    ctx.lineTo(x, bottom)
+    ctx.stroke()
+  }
+
+  for (const event of normalizeMeterEvents(project.value)) {
+    if (event.beat > endBeat + 0.001) continue
+    const x = Number(event.beat || 0) * scale
+    ctx.fillStyle = 'rgba(240, 209, 122, 0.18)'
+    roundRect(ctx, x + 2, top + 4, 6, pianoSubtrackH - 8, 3)
+    ctx.fill()
+    ctx.fillStyle = '#f0d17a'
+    ctx.font = '11px Cascadia Mono, Consolas, monospace'
+    ctx.fillText(`${event.numerator}/${event.denominator}`, x + 11, top + 18)
+  }
+}
+
+function drawArrangementHarmonyLane(ctx, width, top) {
+  if (!arrangementVisibleSubtracks.value.includes('harmony')) return
+  const scale = arrangementPxPerBeat.value
+  const endBeat = Math.ceil(width / scale)
+  const bottom = top + pianoSubtrackH
+
+  ctx.fillStyle = '#181c22'
+  ctx.fillRect(0, top, width, pianoSubtrackH)
+  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
+  ctx.beginPath()
+  ctx.moveTo(0, top + 0.5)
+  ctx.lineTo(width, top + 0.5)
+  ctx.moveTo(0, bottom - 0.5)
+  ctx.lineTo(width, bottom - 0.5)
+  ctx.stroke()
+
+  for (const line of meterBarLinesBetween(project.value, 0, endBeat)) {
+    const x = line.beat * scale
+    ctx.strokeStyle = 'rgba(125, 168, 232, 0.12)'
+    ctx.beginPath()
+    ctx.moveTo(x, top)
+    ctx.lineTo(x, bottom)
+    ctx.stroke()
+  }
+
+  for (const event of editableHarmonyEvents()) {
+    if (event.beat > endBeat + 0.001) continue
+    const x = Number(event.beat || 0) * scale
+    ctx.fillStyle = 'rgba(125, 168, 232, 0.18)'
+    roundRect(ctx, x + 2, top + 4, 6, pianoSubtrackH - 8, 3)
+    ctx.fill()
+    ctx.fillStyle = '#b8d0ff'
+    ctx.font = '11px Cascadia Mono, Consolas, monospace'
+    ctx.fillText(event.text, x + 11, top + 18)
+  }
 }
 
 function isRulerBarBeat(absoluteBeat) {
@@ -7302,12 +7505,66 @@ watch(positionBeats, (value) => {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.timeline-control {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid rgba(229, 236, 245, 0.13);
+  border-radius: 6px;
+  background: #2b3035;
+  color: var(--t2);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.timeline-control span {
+  color: var(--t3);
+  text-transform: none;
+  font-size: 10px;
 }
 
 .track-lane-spacer {
   height: 30px;
   border-bottom: 1px solid rgba(229, 236, 245, 0.08);
   background: #1b1f23;
+}
+
+.track-list-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #202428;
+}
+
+.track-global-subtrack-row {
+  width: 100%;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid rgba(229, 236, 245, 0.1);
+  background: #171b1f;
+  color: var(--t2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.track-global-subtrack-row small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--t4);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .track-row {
@@ -7692,9 +7949,24 @@ watch(positionBeats, (value) => {
   align-items: start;
 }
 
-.arrangement-canvas {
+.arrangement-timeline-stack {
   grid-column: 2;
   grid-row: 1;
+  min-width: 100%;
+}
+
+.arrangement-header-canvas {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #17191c;
+}
+
+.arrangement-scroll-content {
+  min-width: 100%;
+}
+
+.arrangement-canvas {
   min-width: 0;
 }
 
@@ -7744,7 +8016,20 @@ watch(positionBeats, (value) => {
 
 .piano-canvas-wrap {
   flex: 1 1 auto;
+  position: relative;
   cursor: crosshair;
+  overscroll-behavior: contain;
+}
+
+.piano-header-canvas {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #17191c;
+}
+
+.piano-scroll-content {
+  min-width: 100%;
 }
 
 .piano-workspace {

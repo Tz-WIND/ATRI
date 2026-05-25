@@ -181,6 +181,70 @@ async def test_sync_project_to_host_persists_unsaved_project_when_host_is_stoppe
     assert saved["tracks"][0]["notes"][0]["id"] == "agent_note"
 
 
+async def test_sync_project_to_host_persists_any_unsaved_project_difference(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    music.save_project(
+        {
+            "title": "Saved Session",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "master_bus": {
+                "host_track_id": 99,
+                "name": "Master Bus",
+                "plugin_slots": [],
+            },
+            "tracks": [
+                {
+                    "id": 1,
+                    "host_track_id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [],
+                    "midi_events": [],
+                    "clips": [],
+                    "plugin_slots": [
+                        {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                    ],
+                }
+            ],
+        }
+    )
+    project = music.load_project()
+    project["tracks"].append(
+        {
+            "id": 2,
+            "host_track_id": 2,
+            "type": "instrument",
+            "name": "Empty Layer",
+            "notes": [],
+            "midi_events": [],
+            "clips": [],
+            "plugin_slots": [{"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}],
+        }
+    )
+
+    class HostWithExistingTracks(FakeStudioHost):
+        async def send_command(self, cmd, params=None):
+            params = params or {}
+            self.commands.append((cmd, params))
+            if cmd == "get_status":
+                return {"tracks": [{"id": 1}, {"id": 2}, {"id": 99}]}
+            return {"type": "ack", "cmd": cmd}
+
+    monkeypatch.setattr(music, "_host_manager", HostWithExistingTracks)
+
+    sync = await music._sync_project_to_host(project, broadcast=False)
+
+    saved = music.load_project()
+    assert sync["host_running"] is True
+    assert [track["name"] for track in saved["tracks"]] == ["Lead", "Empty Layer"]
+    assert saved["tracks"][1]["notes"] == []
+
+
 async def test_load_track_slots_loads_bus_insert_slots():
     host = FakeStudioHost()
 

@@ -30,6 +30,7 @@ from core.music_project import (
     midi_diff,
     midi_write,
     normalize_audio_waveform,
+    normalize_project,
     project_summary,
     save_project,
     set_track_plugin,
@@ -1206,6 +1207,16 @@ async def _broadcast_project(project: dict[str, Any]) -> None:
         )
 
 
+def _project_save_fingerprint(project: dict[str, Any]) -> str:
+    normalized = normalize_project(project)
+    normalized.pop("updated_at", None)
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _project_differs_from_saved_project(project: dict[str, Any]) -> bool:
+    return _project_save_fingerprint(project) != _project_save_fingerprint(load_project())
+
+
 async def _sync_project_to_host(
     project: dict[str, Any],
     *,
@@ -1224,6 +1235,7 @@ async def _sync_project_to_host(
         }
 
     commands: list[dict[str, Any]] = []
+    project_changed = _project_differs_from_saved_project(project)
     status = await host.send_command("get_status")
     host_track_ids = {
         int(track.get("id", -1)) for track in status.get("tracks", []) if isinstance(track, dict)
@@ -1255,7 +1267,6 @@ async def _sync_project_to_host(
         if response.get("type") != "error":
             host_track_ids.remove(stale_host_track_id)
 
-    project_changed = False
     routing_skipped: list[dict[str, Any]] = []
     routing_routes = 0
     route_tracks: list[dict[str, Any]] = []
