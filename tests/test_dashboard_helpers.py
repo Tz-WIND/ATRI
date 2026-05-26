@@ -176,9 +176,7 @@ async def test_dashboard_audio_client_registration_enables_host_streaming(monkey
 
 
 @pytest.mark.asyncio
-async def test_dashboard_audio_streaming_commands_follow_client_count_edges(
-    monkeypatch, tmp_path
-):
+async def test_dashboard_audio_streaming_commands_follow_client_count_edges(monkeypatch, tmp_path):
     _set_test_dashboard_password_cost(monkeypatch)
     host = _FakeStreamingDashboardHost()
     monkeypatch.setattr("core.host.configure_host_manager", lambda **kwargs: host)
