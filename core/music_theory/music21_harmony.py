@@ -31,6 +31,8 @@ def analyze_harmony(
     track_ids: list[int] | None = None,
     beat_range: list[float] | tuple[float, float] | None = None,
     window_beats: float | None = None,
+    key_window_beats: float | None = None,
+    detect_modulations: bool = True,
     min_confidence: float = DEFAULT_CONFIDENCE,
     apply: bool = False,
     mode: str = "replace",
@@ -41,17 +43,26 @@ def analyze_harmony(
     start, end = _analysis_range(notes, beat_range=beat_range, fallback_end=project["length_beats"])
     window = _window_beats(project, window_beats)
     key = _analyze_key(notes)
+    key_window = _key_window_beats(key_window_beats, window)
+    key_events = (
+        _analyze_key_events(notes, start=start, end=end, key_window_beats=key_window)
+        if detect_modulations
+        else []
+    )
     events, skipped = _analyze_windows(
         notes,
         start=start,
         end=end,
         window_beats=window,
         key=key,
+        key_events=key_events,
         min_confidence=min_confidence,
     )
     result: dict[str, Any] = {
         "applied": False,
         "key": key,
+        "key_events": key_events,
+        "modulations": _modulations_from_key_events(key_events),
         "events": events,
         "skipped_windows": skipped,
         "summary": {
@@ -61,6 +72,7 @@ def analyze_harmony(
             "note_count": len(notes),
             "event_count": len(events),
             "skipped_window_count": len(skipped),
+            "key_window_beats": key_window,
             "min_confidence": _round_float(min_confidence),
         },
     }
@@ -154,6 +166,14 @@ def _window_beats(project: dict[str, Any], requested: float | None) -> float:
     return 4.0
 
 
+def _key_window_beats(requested: float | None, harmony_window_beats: float) -> float:
+    if requested is not None:
+        parsed = _finite_float(requested, 0.0)
+        if parsed > 0:
+            return round(parsed, 6)
+    return round(harmony_window_beats * 2, 6)
+
+
 def _analyze_key(notes: list[dict[str, Any]]) -> dict[str, Any]:
     if not notes:
         return {"name": "", "tonic": "", "mode": "", "correlation": 0.0}
@@ -178,6 +198,53 @@ def _analyze_key(notes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _analyze_key_events(
+    notes: list[dict[str, Any]],
+    *,
+    start: float,
+    end: float,
+    key_window_beats: float,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    cursor = start
+    previous_name = ""
+    while cursor < end - 1e-9:
+        window_end = min(end, cursor + key_window_beats)
+        window_notes = [
+            note
+            for note in notes
+            if min(float(note["end"]), window_end) - max(float(note["start"]), cursor) > 1e-9
+        ]
+        key = _analyze_key(window_notes)
+        name = str(key.get("name") or "")
+        if name and name != previous_name:
+            events.append({"beat": _round_float(cursor), "key": key})
+            previous_name = name
+        cursor = round(cursor + key_window_beats, 6)
+    return events
+
+
+def _modulations_from_key_events(key_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    modulations: list[dict[str, Any]] = []
+    previous: dict[str, Any] | None = None
+    for event in key_events:
+        key = event.get("key") if isinstance(event, dict) else {}
+        if not isinstance(key, dict) or not key.get("name"):
+            continue
+        if previous is not None:
+            previous_key = previous.get("key") if isinstance(previous, dict) else {}
+            if isinstance(previous_key, dict) and previous_key.get("name") != key.get("name"):
+                modulations.append(
+                    {
+                        "beat": event["beat"],
+                        "from_key": previous_key.get("name", ""),
+                        "to_key": key.get("name", ""),
+                    }
+                )
+        previous = event
+    return modulations
+
+
 def _analyze_windows(
     notes: list[dict[str, Any]],
     *,
@@ -185,6 +252,7 @@ def _analyze_windows(
     end: float,
     window_beats: float,
     key: dict[str, Any],
+    key_events: list[dict[str, Any]],
     min_confidence: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
@@ -195,7 +263,8 @@ def _analyze_windows(
         window_end = min(end, cursor + window_beats)
         weights = _window_pitch_class_weights(notes, cursor, window_end)
         if weights:
-            event = _label_window(weights, beat=cursor, key=key)
+            local_key = _key_for_beat(cursor, key_events, fallback=key)
+            event = _label_window(weights, beat=cursor, key=local_key)
             if float(event["confidence"]) >= min_confidence:
                 if event["text"] != previous_text:
                     events.append(event)
@@ -204,6 +273,23 @@ def _analyze_windows(
                 skipped.append(event)
         cursor = round(cursor + window_beats, 6)
     return events, skipped
+
+
+def _key_for_beat(
+    beat: float,
+    key_events: list[dict[str, Any]],
+    *,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    active = fallback
+    for event in key_events:
+        if float(event.get("beat", 0.0) or 0.0) <= beat + 1e-9:
+            key = event.get("key")
+            if isinstance(key, dict) and key.get("name"):
+                active = key
+        else:
+            break
+    return active
 
 
 def _window_pitch_class_weights(
@@ -230,6 +316,7 @@ def _label_window(weights: dict[int, float], *, beat: float, key: dict[str, Any]
         "text": best["text"],
         "confidence": best["confidence"],
         "pitch_classes": [PITCH_CLASS_NAMES[pitch] for pitch in sorted(pitch_classes)],
+        "key": key,
         **({"roman": roman} if roman else {}),
     }
 

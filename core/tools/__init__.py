@@ -17,7 +17,7 @@ from .edit import EditFileTool
 from .find_replace import FindReplaceTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
-from .harmony import MusicHarmonyAnalyzeTool
+from .harmony import MusicHarmonyAnalyzeTool, MusicTransposeTool
 from .lint import LintTool
 from .list_dir import ListDirTool
 from .mcp import create_mcp_tools
@@ -108,6 +108,7 @@ def create_tools(
         MidiInspectTool(workspace),
         PianoPlayabilityCheckTool(workspace),
         MusicHarmonyAnalyzeTool(workspace),
+        MusicTransposeTool(workspace),
         VstParamQueryTool(workspace),
         VstParamSetTool(workspace),
         AutomationQueryTool(workspace),

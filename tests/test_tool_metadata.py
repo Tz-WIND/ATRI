@@ -114,6 +114,8 @@ def test_registered_tools_expose_capability_metadata(tmp_path):
     assert tools["studio_piano_lane_diff"].metadata()["writes_files"] is True
     assert tools["music_harmony_analyze"].metadata()["capability"] == "music.harmony.analyze"
     assert tools["music_harmony_analyze"].metadata()["writes_files"] is True
+    assert tools["music_transpose"].metadata()["capability"] == "music.transpose.write"
+    assert tools["music_transpose"].metadata()["writes_files"] is True
     assert tools["studio_sync"].metadata()["capability"] == "music.studio.sync"
 
     assert all(tool.metadata()["capability"] != "general" for tool in tools.values())
@@ -161,6 +163,8 @@ def test_music_generation_tool_descriptions_explain_harmony_notes_expression_ord
     assert "use after notes exist" in tools["midi_batch_edit"].description
     assert "velocity" in tools["midi_batch_edit"].description
     assert "CC" in tools["midi_batch_edit"].description
+    assert "root names only" in tools["music_transpose"].description
+    assert "not major/minor modes" in tools["music_transpose"].description
 
 
 def test_agent_parallel_gate_uses_tool_capabilities(tmp_path):
@@ -234,6 +238,7 @@ def test_agent_blocks_music_state_tools_without_file_or_approval_flags(tmp_path)
         "studio_piano_lane_write",
         "studio_piano_lane_diff",
         "music_harmony_analyze",
+        "music_transpose",
     }
     read_only_tool_names = {
         "midi_query",
