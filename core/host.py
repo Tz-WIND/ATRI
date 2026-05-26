@@ -36,7 +36,7 @@ class HostManager:
         self._process: subprocess.Popen | None = None
         self._audio_callback: Callable[[bytes, int, int, int], None] | None = None
         self._running = False
-        self._response_queue: asyncio.Queue = asyncio.Queue()
+        self._response_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._command_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
 
@@ -255,7 +255,7 @@ class HostManager:
                         )
                         if len(pcm) == expected_bytes and self._audio_callback:
                             self._audio_callback(pcm, nframes, channels, sample_rate)
-                else:
+                elif isinstance(msg, dict):
                     # Regular JSON response (ack, error, status)
                     self._response_queue.put_nowait(msg)
 

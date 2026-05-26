@@ -151,9 +151,7 @@ def test_music21_harmony_analyze_reports_modulations_and_local_roman_numerals(
         (0.0, "C major"),
         (8.0, "G major"),
     ]
-    assert result["modulations"] == [
-        {"beat": 8.0, "from_key": "C major", "to_key": "G major"}
-    ]
+    assert result["modulations"] == [{"beat": 8.0, "from_key": "C major", "to_key": "G major"}]
     assert [(event["text"], event["roman"]) for event in result["events"]] == [
         ("C", "I"),
         ("G7", "V7"),

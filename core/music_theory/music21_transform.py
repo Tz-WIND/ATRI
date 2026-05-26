@@ -220,8 +220,12 @@ def _normalize_pitch_name(value: str) -> str:
     match = CHORD_ROOT_RE.match(cleaned)
     if not match:
         return cleaned.lower().replace("♯", "#").replace("♭", "b").replace("-", "b")
-    return (match.group(1) + match.group(2)).lower().replace("♯", "#").replace("♭", "b").replace(
-        "-", "b"
+    return (
+        (match.group(1) + match.group(2))
+        .lower()
+        .replace("♯", "#")
+        .replace("♭", "b")
+        .replace("-", "b")
     )
 
 
