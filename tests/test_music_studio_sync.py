@@ -578,6 +578,208 @@ async def test_sync_project_to_host_skips_automation_routes_and_sends_lanes(monk
     ]
 
 
+async def test_sync_project_to_host_skips_unchanged_sections_after_first_sync(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Incremental Host Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [{"id": "lead_1", "pitch": 60, "start": 0, "duration": 1, "velocity": 96}],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+            {
+                "id": 2,
+                "host_track_id": 2,
+                "type": "instrument",
+                "name": "Pad",
+                "volume": 0.7,
+                "pan": 0.1,
+                "mute": False,
+                "solo": False,
+                "notes": [{"id": "pad_1", "pitch": 48, "start": 0, "duration": 4, "velocity": 80}],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+        ],
+    }
+
+    await music._sync_project_to_host(project)
+    host.commands.clear()
+
+    project["tracks"][0]["notes"][0]["start"] = 2
+    await music._sync_project_to_host(project)
+
+    command_names = [cmd for cmd, _ in host.commands]
+    set_midi_payloads = [params for cmd, params in host.commands if cmd == "set_midi"]
+    assert [payload["track_id"] for payload in set_midi_payloads] == [1]
+    assert set_midi_payloads[0]["notes"] == [
+        {"pitch": 60, "start": 2.0, "duration": 1.0, "velocity": 96}
+    ]
+    assert "set_tempo" not in command_names
+    assert "set_route_config" not in command_names
+    assert "set_route_sends" not in command_names
+    assert "set_audio_clips" not in command_names
+    assert "set_volume" not in command_names
+    assert "set_pan" not in command_names
+    assert "set_mute" not in command_names
+    assert "set_solo" not in command_names
+    assert "set_automation" not in command_names
+
+
+async def test_sync_project_to_host_forces_sections_after_host_track_recreated(monkeypatch):
+    class RecreatedTrackHost(FakeStudioHost):
+        def __init__(self):
+            super().__init__()
+            self.status_track_ids = [1]
+            self.next_track_id = 2
+
+        async def send_command(self, cmd, params=None, *, response_timeout=None):
+            params = params or {}
+            self.commands.append((cmd, params))
+            if cmd == "get_status":
+                return {"tracks": [{"id": track_id} for track_id in self.status_track_ids]}
+            if cmd == "add_track":
+                track_id = self.next_track_id
+                self.next_track_id += 1
+                self.status_track_ids.append(track_id)
+                return {"type": "ack", "cmd": "add_track", "data": {"track_id": track_id}}
+            return {"type": "ack", "cmd": cmd}
+
+    host = RecreatedTrackHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Recreated Track Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "volume": 0.5,
+                "pan": -0.25,
+                "mute": True,
+                "solo": False,
+                "notes": [{"id": "lead_1", "pitch": 60, "start": 0, "duration": 1, "velocity": 96}],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            }
+        ],
+    }
+
+    await music._sync_project_to_host(project)
+    host.commands.clear()
+    host.status_track_ids = []
+
+    await music._sync_project_to_host(project)
+
+    assert project["tracks"][0]["host_track_id"] == 2
+    assert ("add_track", {"name": "Lead"}) in host.commands
+    assert (
+        "set_route_config",
+        {"track_id": 2, "kind": "track", "output_track_id": None},
+    ) in host.commands
+    assert (
+        "set_route_config",
+        {"track_id": 2, "kind": None, "output_track_id": None},
+    ) in host.commands
+    assert ("set_route_sends", {"track_id": 2, "sends": []}) in host.commands
+    assert any(cmd == "set_midi" and params["track_id"] == 2 for cmd, params in host.commands)
+    assert ("set_audio_clips", {"track_id": 2, "clips": []}) in host.commands
+    assert ("set_volume", {"track_id": 2, "value": 0.5}) in host.commands
+    assert ("set_pan", {"track_id": 2, "value": -0.25}) in host.commands
+    assert ("set_mute", {"track_id": 2, "value": True}) in host.commands
+    assert ("set_solo", {"track_id": 2, "value": False}) in host.commands
+
+
+async def test_sync_project_to_host_resends_automation_only_when_lanes_change(monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    project = {
+        "title": "Incremental Automation Sync",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "length_beats": 16,
+        "tracks": [
+            {
+                "id": 1,
+                "host_track_id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "volume": 0.8,
+                "pan": 0,
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+                "plugin_slots": [
+                    {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                ],
+            },
+            {
+                "id": 2,
+                "host_track_id": None,
+                "type": "automation",
+                "name": "Lead Volume",
+                "target": {"kind": "track_volume", "track_id": 1},
+                "automation": {
+                    "points": [{"beat": 0, "value": 0.4}, {"beat": 4, "value": 1.0}],
+                },
+                "mute": False,
+                "solo": False,
+                "notes": [],
+                "midi_events": [],
+                "clips": [],
+            },
+        ],
+    }
+
+    await music._sync_project_to_host(project)
+    host.commands.clear()
+
+    await music._sync_project_to_host(project)
+    assert all(cmd != "set_automation" for cmd, _ in host.commands)
+
+    host.commands.clear()
+    project["tracks"][1]["automation"]["points"][1]["value"] = 0.6
+    await music._sync_project_to_host(project)
+
+    set_automation_payloads = [params for cmd, params in host.commands if cmd == "set_automation"]
+    assert len(set_automation_payloads) == 1
+    assert set_automation_payloads[0]["lanes"][0]["points"] == [
+        {"beat": 0.0, "value": 0.4, "curve": "linear"},
+        {"beat": 4.0, "value": 0.6, "curve": "linear"},
+    ]
+
+
 async def test_sync_project_to_host_samples_midi_controller_curve_segments(monkeypatch):
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
@@ -1332,6 +1534,77 @@ async def test_studio_create_track_passes_requested_color(monkeypatch):
         "channel_type": "mono",
     }
     assert body["track"]["color"] == "#ff4fa3"
+
+
+async def test_studio_clip_diff_route_applies_operations_and_syncs(monkeypatch):
+    captured = {}
+
+    def fake_clip_diff(operations):
+        captured["operations"] = operations
+        project = {
+            "tracks": [
+                {
+                    "id": 1,
+                    "clips": [
+                        {"id": "clip_a", "type": "midi", "start": 2, "duration": 1},
+                    ],
+                }
+            ]
+        }
+        return project, {"operations": len(operations), "added": 1, "updated": 0, "deleted": 0}
+
+    async def fake_sync(project, *, broadcast=True):
+        captured["sync_project"] = project
+        captured["broadcast"] = broadcast
+        return {"host_running": False, "project": project}
+
+    monkeypatch.setattr(music, "clip_diff", fake_clip_diff)
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/clips/diff",
+        json={
+            "operations": [
+                {
+                    "op": "add_clip",
+                    "track_id": 1,
+                    "clip": {"id": "clip_a", "type": "midi", "start": 2},
+                }
+            ]
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert captured["operations"][0]["op"] == "add_clip"
+    assert captured["broadcast"] is True
+    assert body["summary"]["added"] == 1
+    assert body["project"]["tracks"][0]["clips"][0]["id"] == "clip_a"
+
+
+async def test_studio_clip_diff_route_returns_bad_request_for_invalid_operation(monkeypatch):
+    def fake_clip_diff(_operations):
+        raise ValueError("unsupported clip diff operation: warp_clip")
+
+    monkeypatch.setattr(music, "clip_diff", fake_clip_diff)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/clips/diff",
+        json={"operations": [{"op": "warp_clip"}]},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 400
+    assert body["error"] == "unsupported clip diff operation: warp_clip"
 
 
 async def test_studio_create_track_applies_requested_routing(monkeypatch):

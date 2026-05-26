@@ -1831,6 +1831,12 @@ import {
 } from './pianoQuantize.js'
 import { pianoScrollTopForNotes } from './pianoViewport.js'
 import {
+  buildAutomationReplaceRangeOperations,
+  buildClipDiffOperations,
+  buildMidiEventDiffOperations,
+  buildMidiNoteDiffOperations,
+} from './studioIncrementalDiff.js'
+import {
   beatsToSeconds,
   effectiveTempoAtBeat,
 } from './tempoAutomation.js'
@@ -1868,6 +1874,8 @@ const {
   learnedAutomationParameters,
   loadProject,
   saveProject,
+  diffMidi,
+  diffClips,
   transport,
   updateTrack,
   createTrack,
@@ -1881,6 +1889,7 @@ const {
   setPluginParameter,
   createAutomationTrack,
   retargetAutomationTrack,
+  diffAutomationTrack,
   pollCapturedPluginParameters,
   renameLearnedAutomationParameter,
   selectTrack,
@@ -3268,13 +3277,18 @@ async function onArrangementPointerUp() {
     return
   }
 
+  const drag = arrangementDrag
+  const clipIds = drag.originals.map(record => record.clip.id)
+  const nextRecords = cloneClipsByIds(clipIds)
+  const operations = buildClipDiffOperations(drag.originals, nextRecords)
   arrangementDrag = null
   unbindArrangementDrag()
-  await saveProject(project.value, { broadcast: true })
+  await diffClips(operations)
   drawAll()
 }
 
 function startAutomationDrag(track, point, pointerId) {
+  const originalPoints = cloneAutomationPoints(ensureAutomationTrackPoints(track))
   const value = automationValueFromY(track, point.y)
   const beat = snapAutomationBeat(point.beat)
   upsertAutomationPointAt(track, beat, value)
@@ -3284,6 +3298,7 @@ function startAutomationDrag(track, point, pointerId) {
     trackId: track.id,
     lastBeat: beat,
     lastValue: value,
+    originalPoints,
   }
   bindAutomationDrag()
   drawAll()
@@ -3293,12 +3308,14 @@ function startAutomationPointDrag(track, pointIndex, pointerId) {
   const points = ensureAutomationTrackPoints(track)
   const point = points[pointIndex]
   if (!point) return
+  const originalPoints = cloneAutomationPoints(points)
   selectedAutomationPoint.value = { trackId: track.id, index: pointIndex }
   automationDrag = {
     type: 'automation-point',
     pointerId,
     trackId: track.id,
     pointIndex,
+    originalPoints,
   }
   bindAutomationDrag()
   drawAll()
@@ -3306,6 +3323,7 @@ function startAutomationPointDrag(track, pointIndex, pointerId) {
 
 function startAutomationCurveDrag(track, hit, pointerY, pointerId) {
   if (!hit?.point) return
+  const originalPoints = cloneAutomationPoints(ensureAutomationTrackPoints(track))
   selectedAutomationPoint.value = { trackId: track.id, index: hit.index }
   automationDrag = {
     type: 'automation-curve',
@@ -3314,6 +3332,7 @@ function startAutomationCurveDrag(track, hit, pointerY, pointerId) {
     pointIndex: hit.index,
     startY: pointerY,
     startCurveAmount: Number(hit.point.curve_amount || 0),
+    originalPoints,
   }
   bindAutomationDrag()
   drawAll()
@@ -3368,6 +3387,7 @@ async function onAutomationPointerUp() {
   automationDrag = null
   unbindAutomationDrag()
   await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId), {
+    previousPoints: drag.originalPoints,
     snapBeats: drag.type !== 'automation-curve',
   })
   drawAll()
@@ -3385,6 +3405,10 @@ function ensureAutomationTrackPoints(track) {
   }
   if (!Array.isArray(track.automation.points)) track.automation.points = []
   return track.automation.points
+}
+
+function cloneAutomationPoints(points = []) {
+  return (points || []).map(point => ({ ...point }))
 }
 
 function automationValueRange(track) {
@@ -3429,6 +3453,7 @@ function normalizeAutomationPoint(track, point, options = {}) {
     value,
     curve: String(point?.curve || 'linear'),
   }
+  if (point?.id) normalized.id = String(point.id)
   const curveAmount = normalizeCurveAmount(point?.curve_amount ?? point?.curveAmount)
   if (Math.abs(curveAmount) > 0.000001) {
     normalized.curve_amount = curveAmount
@@ -3546,17 +3571,14 @@ function automationCurveValueAtBeat(track, left, right, beat) {
 
 async function persistAutomationTrackPoints(trackId, points, options = {}) {
   const track = tracks.value.find(item => Number(item.id) === Number(trackId))
+  const previous = (options.previousPoints || ensureAutomationTrackPoints(track))
+    .map(point => normalizeAutomationPoint(track, point, options))
+    .sort(sortAutomationPoints)
   const normalized = (points || [])
     .map(point => normalizeAutomationPoint(track, point, options))
     .sort(sortAutomationPoints)
-  await persistProjectUpdate((nextProject) => {
-    const nextTrack = findProjectTrack(nextProject, trackId)
-    if (!nextTrack) return
-    nextTrack.automation = {
-      ...(nextTrack.automation || {}),
-      points: normalized,
-    }
-  })
+  const operations = buildAutomationReplaceRangeOperations(previous, normalized)
+  await diffAutomationTrack(trackId, operations)
 }
 
 function syncArrangementScroll(event) {
@@ -3742,22 +3764,23 @@ async function pasteClips() {
   if (!clipClipboard.value.length || !activeTrack.value) return
   const pasteStart = snapBeat(Math.max(0, visualPositionBeats.value))
   const pastedIds = []
-  await persistProjectUpdate((nextProject) => {
-    for (const item of clipClipboard.value) {
-      const track = findProjectTrack(nextProject, item.trackId)
-        || findProjectTrack(nextProject, activeTrack.value.id)
-      if (!track) continue
-      const clip = {
-        ...item.clip,
-        id: makeClipId(),
-        start: pasteStart + item.startOffset,
-        notes: cloneNotes(item.clip.notes),
-        events: cloneEvents(item.clip.events),
-      }
-      pastedIds.push(clip.id)
-      track.clips = [...(track.clips || []), clip].sort(sortClips)
+  const nextRecords = []
+  for (const item of clipClipboard.value) {
+    const track = tracks.value.find(candidate => Number(candidate.id) === Number(item.trackId))
+      || activeTrack.value
+    if (!track) continue
+    const clip = {
+      ...item.clip,
+      id: makeClipId(),
+      start: pasteStart + item.startOffset,
+      notes: cloneNotes(item.clip.notes),
+      events: cloneEvents(item.clip.events),
     }
-  })
+    pastedIds.push(clip.id)
+    nextRecords.push({ trackId: track.id, clip })
+  }
+  const operations = buildClipDiffOperations([], nextRecords)
+  await diffClips(operations)
   selectedClipIds.value = new Set(pastedIds)
   const first = findClipRecord(pastedIds[0])
   if (first) {
@@ -3771,11 +3794,8 @@ async function pasteClips() {
 async function deleteSelectedClips() {
   if (!selectedClipIds.value.size) return
   const deleting = new Set(selectedClipIds.value)
-  await persistProjectUpdate((nextProject) => {
-    for (const track of nextProject.tracks || []) {
-      track.clips = (track.clips || []).filter(clip => !deleting.has(clip.id))
-    }
-  })
+  const operations = [...deleting].map(clipId => ({ op: 'delete_clip', clip_id: clipId }))
+  await diffClips(operations)
   if (deleting.has(activeClipId.value)) {
     activeClipId.value = null
     closePiano()
@@ -3859,6 +3879,7 @@ async function onPianoPointerDown(event) {
       noteId,
       noteStart: hit.note.start,
       originals: cloneNotesByIds(movingIds),
+      originalNotes: cloneNotes(activeMidiClip.value.clip.notes),
     }
     bindPianoDrag()
     drawAll()
@@ -4052,6 +4073,7 @@ function startDrawNotePress(event, point, hit) {
     editType: hit.edge === 'right' ? 'resize' : 'move',
     movingIds,
     originals: cloneNotesByIds(movingIds),
+    originalNotes: cloneNotes(activeMidiClip.value?.clip.notes || []),
     moved: false,
     lastPoint: null,
   }
@@ -4073,6 +4095,7 @@ function activateDrawNotePressDrag() {
     noteId: drag.noteId,
     noteStart: drag.noteStart,
     originals: drag.originals,
+    originalNotes: drag.originalNotes,
   }
   if (drag.lastPoint) applyPianoDragAtPoint(pianoDrag, drag.lastPoint)
   drawAll()
@@ -4198,7 +4221,9 @@ async function onPianoPointerUp() {
       : new Set(ids)
     selectionBox.value = null
   } else if (drag.type === 'move' || drag.type === 'resize') {
-    await persistActiveClipNotes(activeMidiClip.value.clip.notes)
+    await persistActiveClipNotes(activeMidiClip.value.clip.notes, {
+      previousNotes: drag.originalNotes,
+    })
   } else if (drag.type === 'draw-note-press') {
     if (!drag.moved) await deletePianoNoteById(drag.noteId)
   } else if (drag.type === 'draw-meter-event-press') {
@@ -4542,22 +4567,15 @@ function applyDraggedNotes(mapper) {
     .sort(sortNotes)
 }
 
-async function persistActiveClipNotes(notes) {
+async function persistActiveClipNotes(notes, options = {}) {
   if (!activeMidiClip.value) return
   const clipId = activeMidiClip.value.clip.id
+  const previous = (options.previousNotes || activeMidiClip.value.clip.notes)
+    .map(normalizeClientNote)
+    .sort(sortNotes)
   const normalized = notes.map(normalizeClientNote).sort(sortNotes)
-  await persistProjectUpdate((nextProject) => {
-    for (const track of nextProject.tracks || []) {
-      const clip = (track.clips || []).find(item => item.id === clipId)
-      if (!clip) continue
-      clip.notes = normalized
-      const noteEnd = Math.max(
-        0,
-        ...normalized.map(note => Number(note.start || 0) + Number(note.duration || 0))
-      )
-      clip.duration = Math.max(Number(clip.duration || 0.25), noteEnd, activeNoteStep.value)
-    }
-  })
+  const operations = buildMidiNoteDiffOperations(previous, normalized, clipId)
+  await diffMidi(activeMidiClip.value.track.id, operations)
 }
 
 function normalizeClientNote(note) {
@@ -4765,25 +4783,17 @@ function normalizeEditableControllerEvent(event) {
   return normalizeControllerEvent(definition, event, null)
 }
 
-async function persistActiveClipEvents(events) {
+async function persistActiveClipEvents(events, options = {}) {
   if (!activeMidiClip.value) return
   const clipId = activeMidiClip.value.clip.id
+  const previous = (options.previousEvents || activeMidiClip.value.clip.events || [])
+    .map(normalizeEditableControllerEvent)
+    .sort(sortControllerEvents)
   const normalized = events
     .map(normalizeEditableControllerEvent)
     .sort(sortControllerEvents)
-  await persistProjectUpdate((nextProject) => {
-    for (const track of nextProject.tracks || []) {
-      const clip = (track.clips || []).find(item => item.id === clipId)
-      if (!clip) continue
-      clip.events = normalized
-      const noteEnd = Math.max(
-        0,
-        ...(clip.notes || []).map(note => Number(note.start || 0) + Number(note.duration || 0))
-      )
-      const eventEnd = Math.max(0, ...normalized.map(event => Number(event.start || 0)))
-      clip.duration = Math.max(Number(clip.duration || 0.25), noteEnd, eventEnd, activeNoteStep.value)
-    }
-  })
+  const operations = buildMidiEventDiffOperations(previous, normalized, clipId)
+  await diffMidi(activeMidiClip.value.track.id, operations)
 }
 
 function sortControllerEvents(a, b) {
@@ -4800,6 +4810,8 @@ function onControllerLanePointerDown(event, lane) {
   event.preventDefault()
   const definition = controllerDefinitionForLane(lane)
   const value = controllerValueFromY(point.y, definition)
+  const originalNotes = cloneNotes(activeMidiClip.value.clip.notes || [])
+  const originalEvents = cloneEvents(activeMidiClip.value.clip.events || [])
 
   if (definition.type === 'velocity') {
     selectedControllerEventId.value = null
@@ -4811,6 +4823,7 @@ function onControllerLanePointerDown(event, lane) {
       laneId: lane.id,
       noteId: note.id,
       definition,
+      originalNotes,
     }
   } else {
     const hit = hitTestControllerEvent(definition, point.x, point.y)
@@ -4821,6 +4834,7 @@ function onControllerLanePointerDown(event, lane) {
         laneId: lane.id,
         eventId: hit.id,
         definition,
+        originalEvents,
       }
       bindControllerDrag()
       drawAll()
@@ -4836,6 +4850,7 @@ function onControllerLanePointerDown(event, lane) {
         definition,
         startY: point.y,
         startCurveAmount: Number(curveHit.event.curve_amount || 0),
+        originalEvents,
       }
       bindControllerDrag()
       drawAll()
@@ -4851,6 +4866,7 @@ function onControllerLanePointerDown(event, lane) {
       definition,
       lastBeat: beat,
       lastValue: value,
+      originalEvents,
     }
   }
 
@@ -4906,9 +4922,13 @@ async function onControllerPointerUp() {
   controllerDrag = null
   unbindControllerDrag()
   if (drag.type === 'velocity') {
-    await persistActiveClipNotes(activeMidiClip.value.clip.notes)
+    await persistActiveClipNotes(activeMidiClip.value.clip.notes, {
+      previousNotes: drag.originalNotes,
+    })
   } else {
-    await persistActiveClipEvents(activeMidiClip.value.clip.events || [])
+    await persistActiveClipEvents(activeMidiClip.value.clip.events || [], {
+      previousEvents: drag.originalEvents,
+    })
   }
   drawAll()
 }

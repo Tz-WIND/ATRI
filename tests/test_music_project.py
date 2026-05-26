@@ -8,6 +8,7 @@ from core.music_project import (
     automation_query,
     automation_retarget,
     automation_write,
+    clip_diff,
     create_track,
     delete_track,
     import_audio_clip,
@@ -1375,6 +1376,100 @@ def test_midi_diff_adds_note_to_offset_clip_using_absolute_beat(tmp_path, monkey
     track = project["tracks"][0]
     assert track["clips"][0]["notes"][0]["start"] == 1
     assert track["notes"][0]["start"] == 9
+
+
+def test_clip_diff_adds_updates_moves_and_deletes_clips(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Lead",
+                    "color": "#58a7b8",
+                    "clips": [
+                        {
+                            "id": "clip_keep",
+                            "type": "midi",
+                            "start": 0,
+                            "duration": 2,
+                            "notes": [{"id": "n1", "pitch": 60, "start": 0, "duration": 1}],
+                        },
+                        {
+                            "id": "clip_delete",
+                            "type": "midi",
+                            "start": 4,
+                            "duration": 1,
+                        },
+                    ],
+                },
+                {
+                    "id": 2,
+                    "name": "Bass",
+                    "color": "#7c5cff",
+                    "clips": [],
+                },
+            ]
+        }
+    )
+
+    project, summary = clip_diff(
+        [
+            {
+                "op": "update_clip",
+                "clip_id": "clip_keep",
+                "track_id": 2,
+                "clip": {"start": 8, "duration": 3, "name": "Moved Lead"},
+            },
+            {
+                "op": "add_clip",
+                "track_id": 1,
+                "clip": {
+                    "id": "clip_new",
+                    "type": "midi",
+                    "start": 2,
+                    "duration": 1,
+                    "notes": [{"id": "n2", "pitch": 67, "start": 0, "duration": 0.5}],
+                },
+            },
+            {"op": "delete_clip", "clip_id": "clip_delete"},
+        ]
+    )
+
+    assert summary == {
+        "operations": 3,
+        "added": 1,
+        "updated": 1,
+        "deleted": 1,
+        "clip_count": 2,
+    }
+    lead, bass = project["tracks"]
+    assert [clip["id"] for clip in lead["clips"]] == ["clip_new"]
+    assert lead["clips"][0]["color"] == "#58a7b8"
+    assert [clip["id"] for clip in bass["clips"]] == ["clip_keep"]
+    moved = bass["clips"][0]
+    assert moved["name"] == "Moved Lead"
+    assert moved["start"] == 8
+    assert moved["duration"] == 3
+    assert moved["notes"][0]["id"] == "n1"
+    assert moved["color"] == "#58a7b8"
+    assert bass["notes"][0]["start"] == 8
+
+
+def test_clip_diff_rejects_missing_target_track(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project({"tracks": [{"id": 1, "name": "Lead", "clips": []}]})
+
+    with pytest.raises(ValueError, match="track 99 not found"):
+        clip_diff(
+            [
+                {
+                    "op": "add_clip",
+                    "track_id": 99,
+                    "clip": {"id": "clip_missing", "type": "midi"},
+                }
+            ]
+        )
 
 
 def test_project_preserves_zero_host_track_id(tmp_path, monkeypatch):

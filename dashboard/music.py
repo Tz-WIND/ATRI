@@ -16,6 +16,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from quart import Blueprint, Response, jsonify, request, send_file
 
@@ -26,6 +27,7 @@ from core.music_project import (
     automation_query,
     automation_retarget,
     automation_write,
+    clip_diff,
     default_project,
     find_track,
     import_audio_clip,
@@ -76,6 +78,9 @@ RAW_HOST_COMMAND_DENYLIST = {"bounce", "render_wav"}
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
 _lifecycle: Lifecycle | None = None
+_HOST_SYNC_SESSION_KEY = "__session__"
+_host_sync_fingerprints: WeakKeyDictionary[object, dict[str, str]] = WeakKeyDictionary()
+_host_sync_fingerprints_by_id: dict[int, dict[str, str]] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -1507,6 +1512,70 @@ def _project_differs_from_saved_project(project: dict[str, Any]) -> bool:
     return _project_save_fingerprint(project) != _project_save_fingerprint(load_project())
 
 
+def _host_sync_cache_for(host: Any) -> dict[str, str]:
+    try:
+        cache = _host_sync_fingerprints.get(host)
+    except TypeError:
+        return _host_sync_fingerprints_by_id.setdefault(id(host), {})
+    if cache is None:
+        cache = {}
+        _host_sync_fingerprints[host] = cache
+    return cache
+
+
+def _clear_host_sync_caches() -> None:
+    _host_sync_fingerprints.clear()
+    _host_sync_fingerprints_by_id.clear()
+
+
+def _clear_host_track_sync_cache(cache: dict[str, str], host_track_id: int) -> None:
+    prefix = f"track:{host_track_id}:"
+    for key in [key for key in cache if key.startswith(prefix)]:
+        cache.pop(key, None)
+
+
+def _host_sync_fingerprint(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _host_sync_session_fingerprint(host: Any) -> str:
+    process = getattr(host, "_process", None)
+    process_identity = None
+    if process is not None:
+        process_identity = {
+            "object_id": id(process),
+            "pid": getattr(process, "pid", None),
+        }
+    return _host_sync_fingerprint(
+        {
+            "binary_path": str(getattr(host, "binary_path", "") or ""),
+            "process": process_identity,
+        }
+    )
+
+
+async def _send_changed_host_command(
+    host: Any,
+    commands: list[dict[str, Any]],
+    cache: dict[str, str],
+    key: str,
+    cmd: str,
+    params: dict[str, Any],
+    *,
+    force: bool = False,
+) -> bool:
+    fingerprint = _host_sync_fingerprint({"cmd": cmd, "params": params})
+    if not force and cache.get(key) == fingerprint:
+        return False
+    response = cast(dict[str, Any], await host.send_command(cmd, params))
+    commands.append(response)
+    if response.get("type") == "error":
+        cache.pop(key, None)
+    else:
+        cache[key] = fingerprint
+    return True
+
+
 async def _sync_project_to_host(
     project: dict[str, Any],
     *,
@@ -1514,6 +1583,7 @@ async def _sync_project_to_host(
 ) -> dict[str, Any]:
     host = _host_manager()
     if not host.is_running:
+        _clear_host_sync_caches()
         project = save_project(project)
         if broadcast:
             await _broadcast_project(project)
@@ -1525,6 +1595,11 @@ async def _sync_project_to_host(
         }
 
     commands: list[dict[str, Any]] = []
+    sync_cache = _host_sync_cache_for(host)
+    session_fingerprint = _host_sync_session_fingerprint(host)
+    if sync_cache.get(_HOST_SYNC_SESSION_KEY) != session_fingerprint:
+        sync_cache.clear()
+        sync_cache[_HOST_SYNC_SESSION_KEY] = session_fingerprint
     project_changed = _project_differs_from_saved_project(project)
     status = await host.send_command("get_status")
     host_track_ids = {
@@ -1544,11 +1619,13 @@ async def _sync_project_to_host(
         project_host_track_ids.add(int(master_bus["host_track_id"]))
 
     meter = project.get("time_signature") or [4, 4]
-    commands.append(
-        await host.send_command(
-            "set_tempo",
-            {"bpm": float(project.get("tempo", 120.0)), "time_sig": meter},
-        )
+    await _send_changed_host_command(
+        host,
+        commands,
+        sync_cache,
+        "global:tempo",
+        "set_tempo",
+        {"bpm": float(project.get("tempo", 120.0)), "time_sig": meter},
     )
 
     for stale_host_track_id in sorted(host_track_ids - project_host_track_ids):
@@ -1556,9 +1633,11 @@ async def _sync_project_to_host(
         commands.append(response)
         if response.get("type") != "error":
             host_track_ids.remove(stale_host_track_id)
+            _clear_host_track_sync_cache(sync_cache, stale_host_track_id)
 
     routing_skipped: list[dict[str, Any]] = []
     routing_routes = 0
+    force_track_sync_ids: set[int] = set()
     route_tracks: list[dict[str, Any]] = []
     master_slots_loaded = False
     for track in project.get("tracks", []):
@@ -1568,23 +1647,32 @@ async def _sync_project_to_host(
             track["host_track_id"] = None
             continue
         host_track_id = track.get("host_track_id")
-        if host_track_id is None or int(host_track_id) not in host_track_ids:
+        previous_host_track_id = int(host_track_id) if host_track_id is not None else None
+        if previous_host_track_id is None or previous_host_track_id not in host_track_ids:
+            if previous_host_track_id is not None:
+                _clear_host_track_sync_cache(sync_cache, previous_host_track_id)
             response = await host.send_command("add_track", {"name": track.get("name", "Track")})
             commands.append(response)
-            host_track_id = _response_data(response).get("track_id")
-            if host_track_id is None:
+            new_host_track_id = _response_data(response).get("track_id")
+            if new_host_track_id is None:
                 continue
+            host_track_id = int(new_host_track_id)
             track["host_track_id"] = int(host_track_id)
-            host_track_ids.add(int(host_track_id))
+            host_track_ids.add(host_track_id)
+            force_track_sync_ids.add(host_track_id)
             project_changed = True
-            commands.extend(await _load_track_slots(host, int(host_track_id), track))
+            commands.extend(await _load_track_slots(host, host_track_id, track))
+        else:
+            host_track_id = previous_host_track_id
 
-        host_track_id = int(host_track_id)
         route_tracks.append(track)
 
     if master_bus is not None:
         host_track_id = master_bus.get("host_track_id")
-        if host_track_id is None or int(host_track_id) not in host_track_ids:
+        previous_host_track_id = int(host_track_id) if host_track_id is not None else None
+        if previous_host_track_id is None or previous_host_track_id not in host_track_ids:
+            if previous_host_track_id is not None:
+                _clear_host_track_sync_cache(sync_cache, previous_host_track_id)
             response = await host.send_command(
                 "add_track",
                 {"name": master_bus.get("name", "Master Bus")},
@@ -1594,6 +1682,7 @@ async def _sync_project_to_host(
             if host_track_id is not None:
                 master_bus["host_track_id"] = int(host_track_id)
                 host_track_ids.add(int(host_track_id))
+                force_track_sync_ids.add(int(host_track_id))
                 project_changed = True
                 commands.extend(await _load_track_slots(host, int(host_track_id), master_bus))
                 master_slots_loaded = True
@@ -1607,17 +1696,24 @@ async def _sync_project_to_host(
         else None
     )
 
+    route_kind_sent = False
     for track in route_tracks:
         host_track_id = int(track["host_track_id"])
-        commands.append(
-            await host.send_command(
+        route_kind_sent = (
+            await _send_changed_host_command(
+                host,
+                commands,
+                sync_cache,
+                f"track:{host_track_id}:route_kind",
                 "set_route_config",
                 {
                     "track_id": host_track_id,
                     "kind": _route_kind_for_host(track),
                     "output_track_id": None,
                 },
+                force=host_track_id in force_track_sync_ids,
             )
+            or route_kind_sent
         )
         routing_routes += 1
 
@@ -1636,26 +1732,32 @@ async def _sync_project_to_host(
                 output_track_id = master_host_track_id
         if routing_skip is not None:
             routing_skipped.append(routing_skip)
-        commands.append(
-            await host.send_command(
-                "set_route_config",
-                {
-                    "track_id": host_track_id,
-                    "kind": None,
-                    "output_track_id": output_track_id,
-                },
-            )
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:route_output",
+            "set_route_config",
+            {
+                "track_id": host_track_id,
+                "kind": None,
+                "output_track_id": output_track_id,
+            },
+            force=route_kind_sent or host_track_id in force_track_sync_ids,
         )
         route_sends, send_skips = _route_sends_for_host(project, track)
         routing_skipped.extend(send_skips)
-        commands.append(
-            await host.send_command(
-                "set_route_sends",
-                {
-                    "track_id": host_track_id,
-                    "sends": route_sends,
-                },
-            )
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:route_sends",
+            "set_route_sends",
+            {
+                "track_id": host_track_id,
+                "sends": route_sends,
+            },
+            force=route_kind_sent or host_track_id in force_track_sync_ids,
         )
 
     if master_host_track_id is not None and not master_slots_loaded:
@@ -1693,49 +1795,70 @@ async def _sync_project_to_host(
             and clip.get("type") == "audio"
             and str(clip.get("path") or clip.get("source") or "")
         ]
-        commands.append(
-            await host.send_command(
-                "set_midi",
-                {"track_id": host_track_id, "notes": notes, "events": midi_events},
-            )
+        track_force = host_track_id in force_track_sync_ids
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:midi",
+            "set_midi",
+            {"track_id": host_track_id, "notes": notes, "events": midi_events},
+            force=track_force,
         )
-        commands.append(
-            await host.send_command(
-                "set_audio_clips",
-                {"track_id": host_track_id, "clips": audio_clips},
-            )
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:audio_clips",
+            "set_audio_clips",
+            {"track_id": host_track_id, "clips": audio_clips},
+            force=track_force,
         )
-        commands.append(
-            await host.send_command(
-                "set_volume",
-                {"track_id": host_track_id, "value": float(track.get("volume", 0.8))},
-            )
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:volume",
+            "set_volume",
+            {"track_id": host_track_id, "value": float(track.get("volume", 0.8))},
+            force=track_force,
         )
-        commands.append(
-            await host.send_command(
-                "set_pan",
-                {"track_id": host_track_id, "value": float(track.get("pan", 0.0))},
-            )
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:pan",
+            "set_pan",
+            {"track_id": host_track_id, "value": float(track.get("pan", 0.0))},
+            force=track_force,
         )
-        commands.append(
-            await host.send_command(
-                "set_mute",
-                {"track_id": host_track_id, "value": bool(track.get("mute", False))},
-            )
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:mute",
+            "set_mute",
+            {"track_id": host_track_id, "value": bool(track.get("mute", False))},
+            force=track_force,
         )
-        commands.append(
-            await host.send_command(
-                "set_solo",
-                {"track_id": host_track_id, "value": bool(track.get("solo", False))},
-            )
+        await _send_changed_host_command(
+            host,
+            commands,
+            sync_cache,
+            f"track:{host_track_id}:solo",
+            "set_solo",
+            {"track_id": host_track_id, "value": bool(track.get("solo", False))},
+            force=track_force,
         )
 
     automation_lanes, skipped_automation = _automation_lanes_for_host(project)
-    commands.append(
-        await host.send_command(
-            "set_automation",
-            {"lanes": automation_lanes},
-        )
+    await _send_changed_host_command(
+        host,
+        commands,
+        sync_cache,
+        "global:automation",
+        "set_automation",
+        {"lanes": automation_lanes},
     )
 
     if project_changed or broadcast:
@@ -2175,6 +2298,17 @@ async def studio_midi_diff():
     data = await _json_payload()
     try:
         project, summary = midi_diff(int(data.get("track_id", 1)), data.get("operations") or [])
+    except (TypeError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    sync = await _sync_project_to_host(project, broadcast=True)
+    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/clips/diff", methods=["POST"])
+async def studio_clip_diff():
+    data = await _json_payload()
+    try:
+        project, summary = clip_diff(data.get("operations") or [])
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)

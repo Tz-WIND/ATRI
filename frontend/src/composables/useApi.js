@@ -201,6 +201,10 @@ export function useApi() {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+    studioClipDiff: (operations) => request('/api/music/studio/clips/diff', {
+      method: 'POST',
+      body: JSON.stringify({ operations }),
+    }),
     studioAutomationQuery: (options = {}) => {
       const params = new URLSearchParams()
       if (options.track_id !== undefined && options.track_id !== null) params.set('track_id', options.track_id)

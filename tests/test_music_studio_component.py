@@ -717,6 +717,88 @@ def test_music_studio_automation_points_can_be_selected_and_dragged_without_redr
     assert "function drawAutomationHoldLine(ctx, track, points, trackIndex, right)" in studio_text
 
 
+def test_music_studio_persists_piano_notes_and_controller_events_with_midi_diff():
+    studio_text = _read(STUDIO_COMPONENT)
+    host_text = _read(DAW_HOST)
+
+    assert "async function diffMidi(trackId, operations)" in host_text
+    assert "const res = await api.studioMidiDiff({" in host_text
+    assert "diffMidi," in studio_text
+
+    note_persist = studio_text[
+        studio_text.index("async function persistActiveClipNotes") : studio_text.index(
+            "function normalizeClientNote"
+        )
+    ]
+    assert "buildMidiNoteDiffOperations(previous, normalized, clipId)" in note_persist
+    assert "await diffMidi(activeMidiClip.value.track.id, operations)" in note_persist
+    assert "persistProjectUpdate" not in note_persist
+
+    event_persist = studio_text[
+        studio_text.index("async function persistActiveClipEvents") : studio_text.index(
+            "function sortControllerEvents"
+        )
+    ]
+    assert "buildMidiEventDiffOperations(previous, normalized, clipId)" in event_persist
+    assert "await diffMidi(activeMidiClip.value.track.id, operations)" in event_persist
+    assert "persistProjectUpdate" not in event_persist
+
+
+def test_music_studio_persists_automation_points_with_automation_diff():
+    studio_text = _read(STUDIO_COMPONENT)
+    host_text = _read(DAW_HOST)
+
+    assert "async function diffAutomationTrack(trackId, operations)" in host_text
+    assert "const res = await api.studioAutomationDiff(trackId, operations)" in host_text
+    assert "diffAutomationTrack," in studio_text
+
+    automation_persist = studio_text[
+        studio_text.index("async function persistAutomationTrackPoints") : studio_text.index(
+            "function syncArrangementScroll"
+        )
+    ]
+    assert "buildAutomationReplaceRangeOperations(previous, normalized)" in automation_persist
+    assert "await diffAutomationTrack(trackId, operations)" in automation_persist
+    assert "persistProjectUpdate" not in automation_persist
+
+
+def test_music_studio_persists_arrangement_clips_with_clip_diff():
+    studio_text = _read(STUDIO_COMPONENT)
+    host_text = _read(DAW_HOST)
+    api_text = _read(API)
+
+    assert "studioClipDiff: (operations)" in api_text
+    assert "async function diffClips(operations)" in host_text
+    assert "const res = await api.studioClipDiff(operations)" in host_text
+    assert "diffClips," in studio_text
+
+    arrangement_up = studio_text[
+        studio_text.index("async function onArrangementPointerUp") : studio_text.index(
+            "function startAutomationDrag"
+        )
+    ]
+    assert "buildClipDiffOperations(drag.originals, nextRecords)" in arrangement_up
+    assert "await diffClips(operations)" in arrangement_up
+    assert "saveProject(project.value" not in arrangement_up
+
+    paste_clips = studio_text[
+        studio_text.index("async function pasteClips") : studio_text.index(
+            "async function deleteSelectedClips"
+        )
+    ]
+    assert "await diffClips(operations)" in paste_clips
+    assert "persistProjectUpdate" not in paste_clips
+
+    delete_clips = studio_text[
+        studio_text.index("async function deleteSelectedClips") : studio_text.index(
+            "async function onPianoPointerDown"
+        )
+    ]
+    assert "op: 'delete_clip'" in delete_clips
+    assert "await diffClips(operations)" in delete_clips
+    assert "persistProjectUpdate" not in delete_clips
+
+
 def test_music_studio_controller_events_can_be_selected_and_dragged_without_redrawing():
     studio_text = _read(STUDIO_COMPONENT)
 

@@ -256,6 +256,35 @@ async function writeNotes(payload) {
   return res
 }
 
+async function diffMidi(trackId, operations) {
+  if (!Array.isArray(operations) || operations.length === 0) return null
+  hostError.value = ''
+  try {
+    const res = await api.studioMidiDiff({
+      track_id: trackId,
+      operations,
+    })
+    if (res.project) setProject(res.project)
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to apply MIDI edit'
+    return null
+  }
+}
+
+async function diffClips(operations) {
+  if (!Array.isArray(operations) || operations.length === 0) return null
+  hostError.value = ''
+  try {
+    const res = await api.studioClipDiff(operations)
+    if (res.project) setProject(res.project)
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to apply clip edit'
+    return null
+  }
+}
+
 async function replaceTrackNotes(trackId, notes) {
   const length = Number(project.value?.length_beats || 16)
   return writeNotes({
@@ -437,6 +466,19 @@ async function retargetAutomationTrack(trackId, target) {
   const res = await api.studioAutomationRetarget(trackId, target)
   if (res.project) setProject(res.project)
   return res
+}
+
+async function diffAutomationTrack(trackId, operations) {
+  if (!Array.isArray(operations) || operations.length === 0) return null
+  hostError.value = ''
+  try {
+    const res = await api.studioAutomationDiff(trackId, operations)
+    if (res.project) setProject(res.project)
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to apply automation edit'
+    return null
+  }
 }
 
 async function pollCapturedPluginParameters() {
@@ -728,6 +770,8 @@ export function useDawHost() {
     transport,
     addNote,
     writeNotes,
+    diffMidi,
+    diffClips,
     replaceTrackNotes,
     updateTrack,
     createTrack,
@@ -741,6 +785,7 @@ export function useDawHost() {
     setPluginParameter,
     createAutomationTrack,
     retargetAutomationTrack,
+    diffAutomationTrack,
     pollCapturedPluginParameters,
     renameLearnedAutomationParameter,
     selectTrack,
