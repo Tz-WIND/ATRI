@@ -23,6 +23,10 @@ NO_SYNC_NEEDED_HINT = (
 _dashboard_session_token = ""
 STUDIO_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 STUDIO_AUDIO_FORMATS = "AAC, FLAC, M4A, MP3, WAV"
+STUDIO_EXPORT_FORMATS = {"wav", "flac", "mp3"}
+STUDIO_EXPORT_SAMPLE_RATES = {44100, 48000, 88200, 96000, 192000}
+STUDIO_EXPORT_BIT_DEPTHS = {"i16", "i24", "f32"}
+STUDIO_EXPORT_BITRATES = {"128k", "192k", "256k", "320k"}
 
 
 def set_dashboard_session_token(token: str | None) -> None:
@@ -531,6 +535,130 @@ class StudioAudioImportTool(_StudioDashboardTool):
             }
         )
         return _dump(_with_agent_sync_hint(_dashboard_audio_import_file(metadata)))
+
+
+class StudioExportAudioTool(_StudioDashboardTool):
+    name = "studio_export_audio"
+    description = (
+        "Export the current Music Studio project audio through the Rust host. Supports "
+        "whole-project or selected-track mixdowns, per-track stems, WAV/FLAC/MP3 formats, "
+        "and quality settings such as sample_rate, bit_depth, and MP3 bitrate."
+    )
+    parameters: dict[str, Any] = {  # noqa: RUF012
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "enum": ["entire_project", "selected_tracks"],
+                "default": "entire_project",
+            },
+            "track_ids": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1},
+                "description": "Project track IDs. Required when target=selected_tracks.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["mixdown", "stems"],
+                "default": "mixdown",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["wav", "flac", "mp3"],
+                "default": "wav",
+            },
+            "sample_rate": {
+                "type": "integer",
+                "enum": [44100, 48000, 88200, 96000, 192000],
+                "default": 48000,
+            },
+            "bit_depth": {
+                "type": "string",
+                "enum": ["i16", "i24", "f32"],
+                "default": "i24",
+            },
+            "bitrate": {
+                "type": "string",
+                "enum": ["128k", "192k", "256k", "320k"],
+                "default": "320k",
+                "description": "MP3 bitrate.",
+            },
+            "start": {"type": "number", "minimum": 0},
+            "end": {"type": "number", "minimum": 0},
+        },
+    }
+    capabilities = ToolCapabilities(
+        capability="music.studio.export",
+        writes_files=True,
+        network=True,
+    )
+
+    def execute(
+        self,
+        target: str = "entire_project",
+        track_ids: list[int] | None = None,
+        mode: str = "mixdown",
+        audio_format: str = "",
+        sample_rate: int = 48000,
+        bit_depth: str = "i24",
+        bitrate: str | int | None = None,
+        start: float | None = None,
+        end: float | None = None,
+        **kwargs: Any,
+    ) -> str:
+        safe_target = str(target or "entire_project").strip().lower()
+        safe_mode = str(mode or "mixdown").strip().lower()
+        safe_format = str(audio_format or kwargs.get("format") or "wav").strip().lower().lstrip(".")
+        safe_bit_depth = str(bit_depth or "i24").strip().lower()
+
+        if safe_target not in {"entire_project", "selected_tracks"}:
+            return "Error: target must be entire_project or selected_tracks"
+        if safe_target == "selected_tracks" and not track_ids:
+            return "Error: track_ids is required for selected_tracks export"
+        if safe_mode not in {"mixdown", "stems"}:
+            return "Error: mode must be mixdown or stems"
+        if safe_format not in STUDIO_EXPORT_FORMATS:
+            return "Error: format must be wav, flac, or mp3"
+        try:
+            safe_sample_rate = int(sample_rate)
+        except (TypeError, ValueError):
+            return "Error: sample_rate must be 44100, 48000, 88200, 96000, or 192000"
+        if safe_sample_rate not in STUDIO_EXPORT_SAMPLE_RATES:
+            return "Error: sample_rate must be 44100, 48000, 88200, 96000, or 192000"
+        if safe_bit_depth not in STUDIO_EXPORT_BIT_DEPTHS:
+            return "Error: bit_depth must be i16, i24, or f32"
+
+        safe_bitrate: str | None = None
+        if safe_format == "mp3":
+            if bitrate is None or bitrate == "":
+                safe_bitrate = "320k"
+            elif isinstance(bitrate, int):
+                safe_bitrate = f"{bitrate}k"
+            else:
+                safe_bitrate = str(bitrate).strip().lower()
+                if safe_bitrate.isdigit():
+                    safe_bitrate = f"{safe_bitrate}k"
+            if safe_bitrate not in STUDIO_EXPORT_BITRATES:
+                return "Error: bitrate must be 128k, 192k, 256k, or 320k"
+
+        payload = _compact_payload(
+            {
+                "target": safe_target,
+                "track_ids": track_ids or [],
+                "mode": safe_mode,
+                "format": safe_format,
+                "sample_rate": safe_sample_rate,
+                "bit_depth": safe_bit_depth,
+                "bitrate": safe_bitrate,
+                "start": start,
+                "end": end,
+            }
+        )
+        return _dump(
+            _with_agent_sync_hint(
+                _dashboard_json("POST", "/api/music/studio/export", payload, timeout=120)
+            )
+        )
 
 
 class StudioSyncTool(_StudioDashboardTool):

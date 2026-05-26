@@ -1,7 +1,11 @@
 import io
+import threading
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from anyio import Path as AsyncPath
 from quart import Quart
 from werkzeug.datastructures import FileStorage
 
@@ -18,11 +22,40 @@ class FakeStudioHost:
         self.bit_depth = "f32"
         self.binary_path = ""
 
-    async def send_command(self, cmd, params=None):
+    async def send_command(self, cmd, params=None, *, response_timeout=None):
         params = params or {}
         self.commands.append((cmd, params))
         if cmd == "get_status":
             return {"tracks": [{"id": 1}, {"id": 2}]}
+        return {"type": "ack", "cmd": cmd}
+
+
+class ExportStudioHost(FakeStudioHost):
+    def __init__(self):
+        super().__init__()
+        self.host_track_ids = [10, 20, 99]
+
+    async def send_command(self, cmd, params=None, *, response_timeout=None):
+        params = params or {}
+        self.commands.append((cmd, params))
+        if cmd == "get_status":
+            return {"tracks": [{"id": track_id} for track_id in self.host_track_ids]}
+        if cmd == "bounce":
+            output_path = Path(params["path"])
+            await AsyncPath(output_path.parent).mkdir(parents=True, exist_ok=True)
+            await AsyncPath(output_path).write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt data")
+            return {
+                "type": "ack",
+                "cmd": "bounce",
+                "data": {
+                    "path": str(output_path),
+                    "format": "wav",
+                    "sample_rate": params.get("sample_rate", 48000),
+                    "bit_depth": params.get("bit_depth", "f32"),
+                    "frames": 128,
+                    "channels": 2,
+                },
+            }
         return {"type": "ack", "cmd": cmd}
 
 
@@ -144,6 +177,54 @@ class FreshRoutingHost:
 
 class StoppedStudioHost:
     is_running = False
+
+
+def _save_export_project() -> dict[str, Any]:
+    return music.save_project(
+        {
+            "title": "Export Session",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "master_bus": {
+                "host_track_id": 99,
+                "name": "Master Bus",
+                "plugin_slots": [],
+            },
+            "tracks": [
+                {
+                    "id": 1,
+                    "host_track_id": 10,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "volume": 0.8,
+                    "pan": 0,
+                    "mute": False,
+                    "solo": False,
+                    "notes": [],
+                    "midi_events": [],
+                    "clips": [],
+                    "plugin_slots": [
+                        {"id": "instrument", "type": "builtin", "name": "ATRI Basic Synth"}
+                    ],
+                },
+                {
+                    "id": 2,
+                    "host_track_id": 20,
+                    "type": "audio",
+                    "name": "Drums",
+                    "volume": 0.9,
+                    "pan": 0,
+                    "mute": False,
+                    "solo": False,
+                    "notes": [],
+                    "midi_events": [],
+                    "clips": [],
+                    "plugin_slots": [],
+                },
+            ],
+        }
+    )
 
 
 async def test_load_track_slots_does_not_load_builtin_for_empty_bus():
@@ -1305,6 +1386,225 @@ async def test_studio_create_track_applies_requested_routing(monkeypatch):
         },
     }
     assert body["track"]["output_bus_id"] == 2
+
+
+async def test_raw_host_command_rejects_export_render_commands(tmp_path, monkeypatch):
+    host = FakeStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    for cmd in ("bounce", "render_wav"):
+        response = await client.post(
+            "/api/music/studio/host/command",
+            json={
+                "cmd": cmd,
+                "params": {
+                    "path": str(tmp_path / f"{cmd}.wav"),
+                    "format": "wav",
+                    "start": 0,
+                    "end": 1,
+                },
+            },
+        )
+        body = await response.get_json()
+
+        assert response.status_code == 403
+        assert body["error"] == "command is not allowed through the raw host endpoint"
+        assert all(sent_cmd != cmd for sent_cmd, _ in host.commands)
+
+
+async def test_render_host_wav_waits_without_short_host_timeout(tmp_path):
+    timeout_not_passed = object()
+
+    class CaptureBounceTimeoutHost:
+        def __init__(self):
+            self.timeout = timeout_not_passed
+
+        async def send_command(
+            self,
+            cmd,
+            params=None,
+            *,
+            response_timeout=timeout_not_passed,
+        ):
+            self.cmd = cmd
+            self.params = params
+            self.timeout = response_timeout
+            return {"type": "ack", "cmd": cmd, "data": {"path": str(params["path"])}}
+
+    host = CaptureBounceTimeoutHost()
+
+    await music._render_host_wav(
+        host,
+        tmp_path / "long.wav",
+        start=0.0,
+        end=120.0,
+        track_ids=None,
+        sample_rate=48000,
+        bit_depth="i24",
+    )
+
+    assert host.cmd == "bounce"
+    assert host.timeout is None
+
+
+async def test_studio_export_selected_tracks_mixdown_maps_to_host_track_ids(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    _save_export_project()
+    host = ExportStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/export",
+        json={
+            "target": "selected_tracks",
+            "track_ids": [2],
+            "mode": "mixdown",
+            "format": "wav",
+            "sample_rate": 44100,
+            "bit_depth": "i24",
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["export"]["format"] == "wav"
+    assert body["export"]["mode"] == "mixdown"
+    assert body["export"]["download_url"].startswith("/api/music/studio/export/download/")
+    bounce = next(params for cmd, params in host.commands if cmd == "bounce")
+    assert bounce["track_ids"] == [20]
+    assert bounce["sample_rate"] == 44100
+    assert bounce["bit_depth"] == "i24"
+    assert bounce["start"] == 0.0
+    assert bounce["end"] == 8.0
+    assert await AsyncPath(body["export"]["path"]).exists()
+
+
+async def test_studio_export_stems_encodes_each_stem_from_host_wav_and_zips(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    _save_export_project()
+    host = ExportStudioHost()
+    encode_calls = []
+    event_loop_thread = threading.get_ident()
+
+    def fake_encode(source, target, *, format_name, bit_depth, bitrate):
+        encode_calls.append(
+            {
+                "source": Path(source),
+                "target": Path(target),
+                "format": format_name,
+                "bit_depth": bit_depth,
+                "bitrate": bitrate,
+                "thread": threading.get_ident(),
+            }
+        )
+        Path(target).write_bytes(f"{format_name}:{Path(source).suffix}".encode())
+
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+    monkeypatch.setattr(music, "_ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr(music, "_run_ffmpeg_encode", fake_encode)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/export",
+        json={
+            "target": "selected_tracks",
+            "track_ids": [1, 2],
+            "mode": "stems",
+            "format": "flac",
+            "sample_rate": 48000,
+            "bit_depth": "i24",
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["export"]["filename"].endswith(".zip")
+    assert [params["track_ids"] for cmd, params in host.commands if cmd == "bounce"] == [
+        [10],
+        [20],
+    ]
+    assert [call["format"] for call in encode_calls] == ["flac", "flac"]
+    assert all(call["source"].suffix == ".wav" for call in encode_calls)
+    assert all(call["target"].suffix == ".flac" for call in encode_calls)
+    assert all(call["thread"] != event_loop_thread for call in encode_calls)
+
+    zip_path = body["export"]["path"]
+    assert await AsyncPath(zip_path).exists()
+    with zipfile.ZipFile(zip_path) as archive:
+        assert sorted(archive.namelist()) == ["Drums.flac", "Lead.flac"]
+        assert archive.read("Lead.flac") == b"flac:.wav"
+    assert all(not call["target"].exists() for call in encode_calls)
+
+
+async def test_studio_export_mp3_requires_ffmpeg(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _save_export_project()
+    host = ExportStudioHost()
+    monkeypatch.setattr(music, "_host_manager", lambda: host)
+    monkeypatch.setattr(music, "_ffmpeg_path", lambda: None)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/export",
+        json={"mode": "mixdown", "format": "mp3", "sample_rate": 48000, "bitrate": "320k"},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 409
+    assert body["ok"] is False
+    assert body["error"] == "ffmpeg is required for mp3 export"
+    assert all(cmd != "bounce" for cmd, _ in host.commands)
+
+
+async def test_studio_export_download_streams_file_without_reading_into_memory(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    export_path = music._audio_export_dir() / "large.wav"
+    export_bytes = b"RIFF....WAVE"
+    export_path.write_bytes(export_bytes)
+    export_path_resolved = export_path.resolve()
+    original_read_bytes = type(export_path).read_bytes
+
+    def fail_if_export_file_is_buffered(self):
+        if self.resolve() == export_path_resolved:
+            raise AssertionError("export download must not buffer the whole file")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(type(export_path), "read_bytes", fail_if_export_file_is_buffered)
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.get("/api/music/studio/export/download/large.wav")
+
+    assert response.status_code == 200
+    assert await response.get_data() == export_bytes
+    assert response.headers["Content-Disposition"] == 'attachment; filename="large.wav"'
 
 
 async def test_studio_import_audio_rejects_host_unsupported_extension_with_type_error():

@@ -13,7 +13,7 @@ use atri_core::time::tempo_map::{SwapLock, TempoMap};
 
 use super::audio_clip::AudioClip;
 use super::mixer::Mixer;
-use super::processor::Processor;
+use super::processor::{GainState, Processor};
 use super::route::{Route, RouteKind, RouteSend};
 use super::transport::Transport;
 
@@ -128,6 +128,36 @@ pub struct CapturedRouteParameterEdit {
     pub edit: CapturedPluginParameterEdit,
 }
 
+#[derive(Clone)]
+pub struct SessionRenderState {
+    transport_state: super::transport::TransportState,
+    transport_position: i64,
+    transport_speed: f64,
+    loop_start: Option<i64>,
+    loop_end: Option<i64>,
+    tempo_map: TempoMap,
+    routes: Vec<RouteRenderState>,
+    processors: Vec<ProcessorRenderState>,
+    route_delay_lines: Vec<RouteDelayLine>,
+}
+
+#[derive(Clone)]
+struct RouteRenderState {
+    id: u32,
+    gain: GainState,
+    pan: f32,
+    solo: bool,
+    mute: bool,
+}
+
+#[derive(Clone)]
+struct ProcessorRenderState {
+    track_id: u32,
+    slot_index: usize,
+    state_chunk: Option<Vec<u8>>,
+    parameters: Vec<(u32, f32)>,
+}
+
 pub struct Session {
     routes: Vec<Arc<Mutex<Route>>>,
     pub tempo_map: SwapLock<TempoMap>,
@@ -178,7 +208,7 @@ struct AutomationEvent {
     beat: f64,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct RouteDelayLine {
     delay_samples: usize,
     channels: u16,
@@ -604,6 +634,127 @@ impl Session {
                 })
             })
             .collect()
+    }
+
+    pub fn capture_render_state(&mut self) -> Result<SessionRenderState, String> {
+        let mut routes = Vec::with_capacity(self.routes.len());
+        let mut processors = Vec::new();
+
+        for route_arc in &self.routes {
+            let route = route_arc.lock().map_err(|_| {
+                "failed to lock route for render-state capture (mutex poisoned)".to_string()
+            })?;
+            routes.push(RouteRenderState {
+                id: route.id,
+                gain: route.gain.capture_state(),
+                pan: route.pan.value,
+                solo: route.solo,
+                mute: route.mute,
+            });
+
+            for (slot_index, processor) in route.processors.iter().enumerate() {
+                let Some(processor) = processor else {
+                    continue;
+                };
+                let mut processor = processor.lock().map_err(|_| {
+                    format!(
+                        "failed to lock processor for render-state capture (track {} slot {}, mutex poisoned)",
+                        route.id, slot_index
+                    )
+                })?;
+                let state_chunk = processor.get_state_chunk().ok();
+                let parameter_count = processor.parameter_count();
+                let mut parameters = Vec::with_capacity(parameter_count as usize);
+                for index in 0..parameter_count {
+                    if let Some(value) = processor.get_parameter(index) {
+                        parameters.push((index, value));
+                    }
+                }
+                processors.push(ProcessorRenderState {
+                    track_id: route.id,
+                    slot_index,
+                    state_chunk,
+                    parameters,
+                });
+            }
+        }
+
+        Ok(SessionRenderState {
+            transport_state: self.transport.state,
+            transport_position: self.transport.position,
+            transport_speed: self.transport.speed,
+            loop_start: self.transport.loop_start,
+            loop_end: self.transport.loop_end,
+            tempo_map: self.tempo_map.read().as_ref().clone(),
+            routes,
+            processors,
+            route_delay_lines: self.route_delay_lines.clone(),
+        })
+    }
+
+    pub fn restore_render_state(&mut self, snapshot: &SessionRenderState) -> Result<(), String> {
+        self.transport.state = snapshot.transport_state;
+        self.transport.position = snapshot.transport_position;
+        self.transport.speed = snapshot.transport_speed;
+        self.transport.loop_start = snapshot.loop_start;
+        self.transport.loop_end = snapshot.loop_end;
+        self.tempo_map.update(|_| snapshot.tempo_map.clone());
+        self.route_delay_lines
+            .clone_from(&snapshot.route_delay_lines);
+
+        for state in &snapshot.routes {
+            let Some(route) = self.route(state.id) else {
+                continue;
+            };
+            let mut route = route.lock().map_err(|_| {
+                format!(
+                    "failed to lock route {} for render-state restore (mutex poisoned)",
+                    state.id
+                )
+            })?;
+            route.gain.restore_state(state.gain);
+            route.pan.value = state.pan;
+            route.solo = state.solo;
+            route.mute = state.mute;
+        }
+
+        for state in &snapshot.processors {
+            let Some(processor) = self.processor_slot(state.track_id, state.slot_index) else {
+                continue;
+            };
+            let mut processor = processor.lock().map_err(|_| {
+                format!(
+                    "failed to lock processor for render-state restore (track {} slot {}, mutex poisoned)",
+                    state.track_id, state.slot_index
+                )
+            })?;
+            let restore_parameters = match &state.state_chunk {
+                Some(chunk) => match processor.set_state_chunk(chunk) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        log::warn!(
+                            "[session] failed to restore processor state for track {} slot {}: {err}",
+                            state.track_id,
+                            state.slot_index
+                        );
+                        false
+                    }
+                },
+                None => true,
+            };
+            if restore_parameters {
+                for (index, value) in &state.parameters {
+                    if let Err(err) = processor.set_parameter(*index, *value) {
+                        log::warn!(
+                            "[session] failed to restore processor parameter {index} for track {} slot {}: {err}",
+                            state.track_id,
+                            state.slot_index
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn drain_captured_plugin_parameter_edits(&mut self) -> Vec<CapturedRouteParameterEdit> {

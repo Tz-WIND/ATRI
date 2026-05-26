@@ -63,6 +63,36 @@ def test_daw_host_and_api_support_deleting_tracks():
     assert "method: 'DELETE'" in api_text
 
 
+def test_music_studio_supports_audio_export_dialog():
+    studio_text = _read(STUDIO_COMPONENT)
+    host_text = _read(DAW_HOST)
+    api_text = _read(API)
+
+    assert '@click="openExportDialog"' in studio_text
+    assert 'v-if="exportDialogOpen"' in studio_text
+    assert 'class="export-dialog"' in studio_text
+    assert 'v-model="exportTarget"' in studio_text
+    assert 'value="entire_project"' in studio_text
+    assert 'value="selected_tracks"' in studio_text
+    assert 'v-model="exportMode"' in studio_text
+    assert 'value="mixdown"' in studio_text
+    assert 'value="stems"' in studio_text
+    assert 'v-model="exportFormat"' in studio_text
+    assert 'value="wav"' in studio_text
+    assert 'value="flac"' in studio_text
+    assert 'value="mp3"' in studio_text
+    assert 'v-model.number="exportSampleRate"' in studio_text
+    assert 'v-model="exportBitDepth"' in studio_text
+    assert 'v-model="exportBitrate"' in studio_text
+    assert '@click="exportCurrentAudio"' in studio_text
+    assert "async function exportCurrentAudio()" in studio_text
+    assert "exportAudio({" in studio_text
+    assert "async function exportAudio(payload)" in host_text
+    assert "exporting," in host_text
+    assert "studioExportAudio: (payload)" in api_text
+    assert "/api/music/studio/export" in api_text
+
+
 def test_music_studio_supports_track_type_and_audio_channel_controls():
     studio_text = _read(STUDIO_COMPONENT)
     host_text = _read(DAW_HOST)

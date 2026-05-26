@@ -189,6 +189,10 @@ export function useApi() {
       method: 'POST',
       body: JSON.stringify({ action, ...payload }),
     }),
+    studioExportAudio: (payload) => request('/api/music/studio/export', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
     studioMidiWrite: (payload) => request('/api/music/studio/midi/write', {
       method: 'POST',
       body: JSON.stringify(payload),

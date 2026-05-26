@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use atri_core::midi::event::MidiEvent;
@@ -240,6 +242,43 @@ pub enum Command {
     },
     SetStreaming {
         enabled: bool,
+    },
+    /// Offline-render a WAV segment without permanently changing the live session.
+    ///
+    /// While this command runs, the host temporarily adjusts transport position, disables
+    /// loop playback, sets solo on the listed tracks (when `track_ids` is provided), and
+    /// may change engine sample rate / buffer size. Those changes are reverted when the
+    /// command finishes.
+    ///
+    /// **Captured in the pre-bounce snapshot (restored afterward):** transport
+    /// state/position/speed/loop, tempo map, per-route gain smoothing state, pan, solo/mute,
+    /// route delay-line buffers, and processor state chunks plus parameter values.
+    ///
+    /// **Not snapshotted:** automation lane definitions (lanes are not modified), sequencer
+    /// or clip timeline positions, route topology, or send levels. Automation and transport
+    /// only affect audio during the offline pass; a successful bounce leaves session state
+    /// matching the pre-export snapshot.
+    RenderWav {
+        path: String,
+        start: f64,
+        end: f64,
+        track_ids: Option<Vec<u32>>,
+        sample_rate: Option<u32>,
+        bit_depth: Option<String>,
+        buffer_size: Option<usize>,
+    },
+    /// General bounce/export entry point (currently WAV only). Uses the same temporary
+    /// transport/solo behaviour and pre-bounce session snapshot as `RenderWav`; see that
+    /// variant's documentation for what is and is not restored.
+    Bounce {
+        path: String,
+        format: Option<String>,
+        start: f64,
+        end: f64,
+        track_ids: Option<Vec<u32>>,
+        sample_rate: Option<u32>,
+        bit_depth: Option<String>,
+        buffer_size: Option<usize>,
     },
     ListAudioDevices,
     SetAudioConfig {
@@ -708,6 +747,53 @@ fn execute(
             }
             CommandResponse::ack("set_streaming")
         }
+        Command::RenderWav {
+            path,
+            start,
+            end,
+            track_ids,
+            sample_rate,
+            bit_depth,
+            buffer_size,
+        } => bounce_command(
+            "render_wav",
+            engine,
+            host_config,
+            BounceCommandParams {
+                path,
+                format: Some("wav".to_string()),
+                start,
+                end,
+                track_ids,
+                sample_rate,
+                bit_depth,
+                buffer_size,
+            },
+        ),
+        Command::Bounce {
+            path,
+            format,
+            start,
+            end,
+            track_ids,
+            sample_rate,
+            bit_depth,
+            buffer_size,
+        } => bounce_command(
+            "bounce",
+            engine,
+            host_config,
+            BounceCommandParams {
+                path,
+                format,
+                start,
+                end,
+                track_ids,
+                sample_rate,
+                bit_depth,
+                buffer_size,
+            },
+        ),
         Command::ListAudioDevices => list_audio_devices(engine, host_config),
         Command::SetAudioConfig {
             sample_rate,
@@ -1329,6 +1415,429 @@ fn processor_slot(
     engine.with_session(|session| session.processor_slot(track_id, slot_index))
 }
 
+struct BounceCommandParams {
+    path: String,
+    format: Option<String>,
+    start: f64,
+    end: f64,
+    track_ids: Option<Vec<u32>>,
+    sample_rate: Option<u32>,
+    bit_depth: Option<String>,
+    buffer_size: Option<usize>,
+}
+
+struct BounceRequest {
+    path: PathBuf,
+    format: String,
+    start_sample: i64,
+    end_sample: i64,
+    track_ids: Option<Vec<u32>>,
+    sample_rate: u32,
+    bit_depth: WavBitDepth,
+    buffer_size: usize,
+}
+
+struct BounceStats {
+    path: PathBuf,
+    format: String,
+    sample_rate: u32,
+    bit_depth: WavBitDepth,
+    frames: u64,
+    channels: u16,
+    bytes: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WavBitDepth {
+    I16,
+    I24,
+    F32,
+}
+
+impl WavBitDepth {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "i16" => Some(Self::I16),
+            "i24" => Some(Self::I24),
+            "f32" => Some(Self::F32),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::I16 => "i16",
+            Self::I24 => "i24",
+            Self::F32 => "f32",
+        }
+    }
+
+    fn audio_format(self) -> u16 {
+        match self {
+            Self::F32 => 3,
+            Self::I16 | Self::I24 => 1,
+        }
+    }
+
+    fn bits_per_sample(self) -> u16 {
+        match self {
+            Self::I16 => 16,
+            Self::I24 => 24,
+            Self::F32 => 32,
+        }
+    }
+
+    fn bytes_per_sample(self) -> u16 {
+        self.bits_per_sample() / 8
+    }
+}
+
+struct WavWriter {
+    writer: BufWriter<File>,
+    bit_depth: WavBitDepth,
+}
+
+impl WavWriter {
+    fn create(
+        path: &Path,
+        sample_rate: u32,
+        channels: u16,
+        bit_depth: WavBitDepth,
+        frames: u64,
+    ) -> Result<Self, String> {
+        let bytes_per_sample = u64::from(bit_depth.bytes_per_sample());
+        let data_bytes = frames
+            .checked_mul(u64::from(channels))
+            .and_then(|value| value.checked_mul(bytes_per_sample))
+            .ok_or_else(|| "wav file is too large".to_string())?;
+        let riff_size = 36u64
+            .checked_add(data_bytes)
+            .ok_or_else(|| "wav file is too large".to_string())?;
+        if riff_size > u64::from(u32::MAX) || data_bytes > u64::from(u32::MAX) {
+            return Err("wav file is too large".to_string());
+        }
+
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create output directory: {err}"))?;
+        }
+
+        let file = File::create(path).map_err(|err| format!("failed to create wav file: {err}"))?;
+        let mut writer = BufWriter::new(file);
+        writer
+            .write_all(b"RIFF")
+            .and_then(|_| writer.write_all(&(riff_size as u32).to_le_bytes()))
+            .and_then(|_| writer.write_all(b"WAVE"))
+            .and_then(|_| writer.write_all(b"fmt "))
+            .and_then(|_| writer.write_all(&16u32.to_le_bytes()))
+            .and_then(|_| writer.write_all(&bit_depth.audio_format().to_le_bytes()))
+            .and_then(|_| writer.write_all(&channels.to_le_bytes()))
+            .and_then(|_| writer.write_all(&sample_rate.to_le_bytes()))
+            .and_then(|_| {
+                let byte_rate =
+                    sample_rate * u32::from(channels) * u32::from(bit_depth.bytes_per_sample());
+                writer.write_all(&byte_rate.to_le_bytes())
+            })
+            .and_then(|_| {
+                let block_align = channels * bit_depth.bytes_per_sample();
+                writer.write_all(&block_align.to_le_bytes())
+            })
+            .and_then(|_| writer.write_all(&bit_depth.bits_per_sample().to_le_bytes()))
+            .and_then(|_| writer.write_all(b"data"))
+            .and_then(|_| writer.write_all(&(data_bytes as u32).to_le_bytes()))
+            .map_err(|err| format!("failed to write wav header: {err}"))?;
+
+        Ok(Self { writer, bit_depth })
+    }
+
+    fn write_samples(&mut self, samples: &[f32]) -> Result<(), String> {
+        for sample in samples {
+            let sample = finite_clamped_sample(*sample);
+            match self.bit_depth {
+                WavBitDepth::I16 => {
+                    let value = if sample <= -1.0 {
+                        i16::MIN
+                    } else {
+                        (sample * f32::from(i16::MAX)).round() as i16
+                    };
+                    self.writer
+                        .write_all(&value.to_le_bytes())
+                        .map_err(|err| format!("failed to write wav samples: {err}"))?;
+                }
+                WavBitDepth::I24 => {
+                    let value = if sample <= -1.0 {
+                        -8_388_608
+                    } else {
+                        (sample * 8_388_607.0).round() as i32
+                    };
+                    let bytes = value.to_le_bytes();
+                    self.writer
+                        .write_all(&bytes[..3])
+                        .map_err(|err| format!("failed to write wav samples: {err}"))?;
+                }
+                WavBitDepth::F32 => {
+                    self.writer
+                        .write_all(&sample.to_le_bytes())
+                        .map_err(|err| format!("failed to write wav samples: {err}"))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        self.writer
+            .flush()
+            .map_err(|err| format!("failed to finish wav file: {err}"))
+    }
+}
+
+fn finite_clamped_sample(sample: f32) -> f32 {
+    if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn bounce_command(
+    cmd_name: &str,
+    engine: &Arc<Mutex<AudioEngine>>,
+    host_config: &HostConfig,
+    params: BounceCommandParams,
+) -> CommandResponse {
+    let format = params
+        .format
+        .unwrap_or_else(|| "wav".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    if format != "wav" {
+        return CommandResponse::error(Some(cmd_name), "format is not supported");
+    }
+
+    let path = params.path.trim();
+    if path.is_empty() {
+        return CommandResponse::error(Some(cmd_name), "path is required");
+    }
+
+    let (current_sample_rate, current_buffer_size) = {
+        let eng = engine.lock().unwrap();
+        (eng.sample_rate(), eng.buffer_size())
+    };
+    let sample_rate = params.sample_rate.unwrap_or(current_sample_rate);
+    let buffer_size = params.buffer_size.unwrap_or(current_buffer_size);
+    if sample_rate == 0 {
+        return CommandResponse::error(Some(cmd_name), "sample_rate must be positive");
+    }
+    if buffer_size == 0 {
+        return CommandResponse::error(Some(cmd_name), "buffer_size must be positive");
+    }
+
+    let bit_depth_value = params
+        .bit_depth
+        .unwrap_or_else(|| host_config.audio_host.bit_depth.clone())
+        .trim()
+        .to_ascii_lowercase();
+    let Some(bit_depth) = WavBitDepth::parse(&bit_depth_value) else {
+        return CommandResponse::error(Some(cmd_name), "bit_depth is not supported");
+    };
+
+    let start_sample = match seconds_to_samples(sample_rate, params.start) {
+        Ok(samples) => samples,
+        Err(err) => return CommandResponse::error(Some(cmd_name), err),
+    };
+    let end_sample = match seconds_to_samples(sample_rate, params.end) {
+        Ok(samples) => samples,
+        Err(err) => return CommandResponse::error(Some(cmd_name), err),
+    };
+    if end_sample <= start_sample {
+        return CommandResponse::error(Some(cmd_name), "end must be after start");
+    }
+    if matches!(params.track_ids.as_ref(), Some(track_ids) if track_ids.is_empty()) {
+        return CommandResponse::error(Some(cmd_name), "track_ids must not be empty");
+    }
+
+    let request = BounceRequest {
+        path: PathBuf::from(path),
+        format,
+        start_sample,
+        end_sample,
+        track_ids: params.track_ids,
+        sample_rate,
+        bit_depth,
+        buffer_size,
+    };
+
+    match render_bounce_wav(engine, &request) {
+        Ok(stats) => CommandResponse::ack_with(
+            cmd_name,
+            json!({
+                "path": stats.path,
+                "format": stats.format,
+                "sample_rate": stats.sample_rate,
+                "bit_depth": stats.bit_depth.as_str(),
+                "frames": stats.frames,
+                "duration_seconds": stats.frames as f64 / f64::from(stats.sample_rate),
+                "channels": stats.channels,
+                "bytes": stats.bytes,
+            }),
+        ),
+        Err(err) => CommandResponse::error(Some(cmd_name), &err),
+    }
+}
+
+fn render_bounce_wav(
+    engine: &Arc<Mutex<AudioEngine>>,
+    request: &BounceRequest,
+) -> Result<BounceStats, String> {
+    let frames = u64::try_from(request.end_sample - request.start_sample)
+        .map_err(|_| "end must be after start".to_string())?;
+    let mut engine = engine.lock().unwrap();
+    let original_sample_rate = engine.sample_rate();
+    let original_buffer_size = engine.buffer_size();
+    let original_session = engine.with_session(|session| session.capture_render_state())?;
+
+    if let Some(track_ids) = &request.track_ids {
+        let missing = engine.with_session(|session| {
+            track_ids
+                .iter()
+                .copied()
+                .find(|track_id| !session.has_route(*track_id))
+        });
+        if let Some(track_id) = missing {
+            return Err(format!("track not found: {track_id}"));
+        }
+    }
+
+    let temp_path = bounce_temp_path(&request.path);
+    let writer = match WavWriter::create(
+        &temp_path,
+        request.sample_rate,
+        2,
+        request.bit_depth,
+        frames,
+    ) {
+        Ok(writer) => writer,
+        Err(err) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(err);
+        }
+    };
+
+    if original_sample_rate != request.sample_rate || original_buffer_size != request.buffer_size {
+        engine.reconfigure(request.sample_rate, request.buffer_size);
+    }
+
+    let render_result =
+        engine.with_session(|session| render_session_to_wav(session, request, writer));
+
+    if engine.sample_rate() != original_sample_rate || engine.buffer_size() != original_buffer_size
+    {
+        engine.reconfigure(original_sample_rate, original_buffer_size);
+    }
+    engine.with_session(|session| session.restore_render_state(&original_session))?;
+
+    match cleanup_failed_bounce_temp_file(&temp_path, render_result) {
+        Ok(stats) => {
+            publish_bounce_temp_file(&temp_path, &request.path)?;
+            Ok(stats)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn bounce_temp_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let file_name = path
+        .file_name()
+        .map(|value| value.to_string_lossy())
+        .unwrap_or_else(|| "bounce.wav".into());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    parent.join(format!(".{file_name}.tmp-{}-{nanos}", std::process::id()))
+}
+
+fn cleanup_failed_bounce_temp_file<T>(
+    temp_path: &Path,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_path);
+    }
+    result
+}
+
+fn publish_bounce_temp_file(temp_path: &Path, path: &Path) -> Result<(), String> {
+    match std::fs::rename(temp_path, path) {
+        Ok(()) => Ok(()),
+        Err(_first_err) if path.exists() => {
+            if let Err(err) = std::fs::remove_file(path) {
+                let _ = std::fs::remove_file(temp_path);
+                return Err(format!("failed to replace wav file: {err}"));
+            }
+            if let Err(err) = std::fs::rename(temp_path, path) {
+                let _ = std::fs::remove_file(temp_path);
+                return Err(format!("failed to publish wav file: {err}"));
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(temp_path);
+            Err(format!("failed to publish wav file: {err}"))
+        }
+    }
+}
+
+fn render_session_to_wav(
+    session: &mut Session,
+    request: &BounceRequest,
+    mut writer: WavWriter,
+) -> Result<BounceStats, String> {
+    if let Some(track_ids) = &request.track_ids {
+        let snapshots = session.route_snapshots();
+        for route in snapshots {
+            let _ = session.set_track_solo(route.id, track_ids.contains(&route.id));
+        }
+    }
+
+    session.transport.loop_start = None;
+    session.transport.loop_end = None;
+    session.transport.seek(request.start_sample);
+    session.transport.play();
+
+    let mut remaining = u64::try_from(request.end_sample - request.start_sample)
+        .map_err(|_| "end must be after start".to_string())?;
+    let frames = remaining;
+    let mut buffer = Vec::new();
+    while remaining > 0 {
+        let nframes = remaining.min(session.buffer_size.max(1) as u64) as usize;
+        buffer.resize(nframes * 2, 0.0);
+        session.process(&mut buffer);
+        writer.write_samples(&buffer)?;
+        remaining -= nframes as u64;
+    }
+    writer.finish()?;
+
+    let bytes = frames
+        .checked_mul(2)
+        .and_then(|value| value.checked_mul(u64::from(request.bit_depth.bytes_per_sample())))
+        .ok_or_else(|| "wav file is too large".to_string())?;
+
+    Ok(BounceStats {
+        path: request.path.clone(),
+        format: request.format.clone(),
+        sample_rate: request.sample_rate,
+        bit_depth: request.bit_depth,
+        frames,
+        channels: 2,
+        bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1444,6 +1953,65 @@ mod tests {
             &mut self,
         ) -> Vec<atri_core::plugin::CapturedPluginParameterEdit> {
             std::mem::take(&mut self.edits)
+        }
+    }
+
+    struct RenderStateProcessor {
+        parameter: f32,
+        run_count: u32,
+    }
+
+    impl Processor for RenderStateProcessor {
+        fn name(&self) -> &str {
+            "render-state-processor"
+        }
+
+        fn run(
+            &mut self,
+            _bufs: &mut atri_core::audio::buffer_set::BufferSet,
+            _midi: &[atri_core::midi::event::ScheduledMidiEvent],
+            _start_sample: i64,
+            _end_sample: i64,
+            _speed: f64,
+            _nframes: usize,
+            _result_required: bool,
+        ) {
+            self.run_count += 1;
+        }
+
+        fn activate(&mut self) {}
+        fn deactivate(&mut self) {}
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn input_channels(&self) -> u16 {
+            2
+        }
+        fn output_channels(&self) -> u16 {
+            2
+        }
+        fn get_state_chunk(&mut self) -> Result<Vec<u8>, String> {
+            Ok(self.run_count.to_le_bytes().to_vec())
+        }
+        fn set_state_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
+            if chunk.len() != 4 {
+                return Err("invalid state chunk".to_string());
+            }
+            self.run_count = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            Ok(())
+        }
+        fn get_parameter(&mut self, index: u32) -> Option<f32> {
+            (index == 0).then_some(self.parameter)
+        }
+        fn set_parameter(&mut self, index: u32, value: f32) -> Result<(), String> {
+            if index != 0 {
+                return Err("parameter out of range".to_string());
+            }
+            self.parameter = value;
+            Ok(())
+        }
+        fn parameter_count(&mut self) -> u32 {
+            1
         }
     }
 
@@ -2042,6 +2610,295 @@ mod tests {
             panic!("expected status response");
         };
         assert_eq!(tracks[0].midi_event_count, 1);
+    }
+
+    fn unique_test_wav(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("atri-{name}-{}-{nanos}.wav", std::process::id()));
+        path
+    }
+
+    #[test]
+    fn render_wav_writes_pcm_file_and_restores_session_state() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let (track_a, track_b) = with_session(&engine, |session| {
+            let track_a = session.add_track("Lead".to_string());
+            let track_b = session.add_track("Pad".to_string());
+            assert!(session.set_track_solo(track_b, true));
+            session.transport.state = atri_engine::transport::TransportState::Playing;
+            session.transport.position = 1_234;
+            session.transport.speed = 1.0;
+            session.transport.loop_start = Some(128);
+            session.transport.loop_end = Some(2_048);
+            (track_a, track_b)
+        });
+        let path = unique_test_wav("render-wav");
+
+        let response = handle_command(
+            &json!({
+                "cmd": "render_wav",
+                "path": path.to_string_lossy(),
+                "start": 0.0,
+                "end": 0.01,
+                "track_ids": [track_a],
+                "sample_rate": 44_100,
+                "bit_depth": "i24"
+            }),
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(
+            response,
+            CommandResponse::Ack {
+                cmd,
+                data: Some(data),
+                ..
+            } if cmd == "render_wav"
+                && data["format"] == "wav"
+                && data["sample_rate"] == 44_100
+                && data["bit_depth"] == "i24"
+                && data["frames"] == 441
+                && data["channels"] == 2
+        ));
+        let bytes = std::fs::read(&path).expect("rendered wav should exist");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(&bytes[12..16], b"fmt ");
+        assert_eq!(u16::from_le_bytes([bytes[20], bytes[21]]), 1);
+        assert_eq!(u16::from_le_bytes([bytes[22], bytes[23]]), 2);
+        assert_eq!(
+            u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
+            44_100
+        );
+        assert_eq!(u16::from_le_bytes([bytes[34], bytes[35]]), 24);
+        assert_eq!(&bytes[36..40], b"data");
+        assert!(bytes.len() > 44);
+
+        let restored = with_session(&engine, |session| {
+            let solos = session
+                .route_snapshots()
+                .into_iter()
+                .map(|route| (route.id, route.solo))
+                .collect::<Vec<_>>();
+            (
+                session.sample_rate,
+                session.buffer_size,
+                session.transport.state,
+                session.transport.position,
+                session.transport.speed,
+                session.transport.loop_start,
+                session.transport.loop_end,
+                solos,
+            )
+        });
+        assert_eq!(engine.lock().unwrap().sample_rate(), 48_000);
+        assert_eq!(engine.lock().unwrap().buffer_size(), 128);
+        assert_eq!(restored.0, 48_000);
+        assert_eq!(restored.1, 128);
+        assert_eq!(restored.2, atri_engine::transport::TransportState::Playing);
+        assert_eq!(restored.3, 1_234);
+        assert_eq!(restored.4, 1.0);
+        assert_eq!(restored.5, Some(128));
+        assert_eq!(restored.6, Some(2_048));
+        assert_eq!(restored.7, vec![(track_a, false), (track_b, true)]);
+    }
+
+    #[test]
+    fn render_wav_restores_automation_and_processor_render_state() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let track_id = with_session(&engine, |session| {
+            let track_id = session.add_track("Automated".to_string());
+            assert!(session.set_track_volume(track_id, 0.25));
+            assert!(session.set_track_pan(track_id, -0.5));
+            assert!(session.set_processor_slot(
+                track_id,
+                0,
+                Some(Arc::new(Mutex::new(RenderStateProcessor {
+                    parameter: 0.2,
+                    run_count: 0,
+                }))),
+            ));
+            session.set_automation_lanes(vec![
+                AutomationLane {
+                    target: AutomationTarget::TrackVolume { track_id },
+                    points: vec![AutomationPoint {
+                        beat: 0.0,
+                        value: 0.9,
+                        curve: AutomationCurve::Hold,
+                    }],
+                    muted: false,
+                },
+                AutomationLane {
+                    target: AutomationTarget::TrackPan { track_id },
+                    points: vec![AutomationPoint {
+                        beat: 0.0,
+                        value: 0.45,
+                        curve: AutomationCurve::Hold,
+                    }],
+                    muted: false,
+                },
+                AutomationLane {
+                    target: AutomationTarget::PluginParameter {
+                        track_id,
+                        slot_index: 0,
+                        param_index: 0,
+                    },
+                    points: vec![AutomationPoint {
+                        beat: 0.0,
+                        value: 0.75,
+                        curve: AutomationCurve::Hold,
+                    }],
+                    muted: false,
+                },
+                AutomationLane {
+                    target: AutomationTarget::TempoBpm,
+                    points: vec![AutomationPoint {
+                        beat: 0.0,
+                        value: 150.0,
+                        curve: AutomationCurve::Hold,
+                    }],
+                    muted: false,
+                },
+                AutomationLane {
+                    target: AutomationTarget::TimeSignatureNumerator,
+                    points: vec![AutomationPoint {
+                        beat: 0.0,
+                        value: 7.0,
+                        curve: AutomationCurve::Hold,
+                    }],
+                    muted: false,
+                },
+            ]);
+            track_id
+        });
+        let path = unique_test_wav("render-state");
+
+        let response = handle_command(
+            &json!({
+                "cmd": "render_wav",
+                "path": path.to_string_lossy(),
+                "start": 0.0,
+                "end": 0.01,
+                "sample_rate": 48_000,
+                "bit_depth": "f32"
+            }),
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(response, CommandResponse::Ack { cmd, .. } if cmd == "render_wav"));
+        with_session(&engine, |session| {
+            let route = session
+                .route_snapshots()
+                .into_iter()
+                .find(|route| route.id == track_id)
+                .unwrap();
+            assert_eq!(route.volume, 1.0);
+            assert_eq!(route.volume_target, 0.25);
+            assert_eq!(route.pan, -0.5);
+            let tempo_map = session.tempo_map.read();
+            assert_eq!(tempo_map.current_tempo().bpm, 120.0);
+            assert_eq!(tempo_map.current_meter().num, 4);
+        });
+        let processor =
+            processor_slot(&engine, track_id, 0).expect("processor should remain loaded");
+        let mut processor = processor.lock().unwrap();
+        assert_eq!(processor.get_parameter(0), Some(0.2));
+        assert_eq!(processor.get_state_chunk().unwrap(), 0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn bounce_rejects_invalid_format_range_and_track_ids() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+        let path = unique_test_wav("bounce-invalid");
+
+        let unsupported = handle_command(
+            &json!({
+                "cmd": "bounce",
+                "path": path.to_string_lossy(),
+                "format": "ogg",
+                "start": 0.0,
+                "end": 1.0
+            }),
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        assert!(
+            matches!(unsupported, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "bounce" && message == "format is not supported")
+        );
+
+        let bad_range = handle_command(
+            &json!({
+                "cmd": "bounce",
+                "path": path.to_string_lossy(),
+                "format": "wav",
+                "start": 2.0,
+                "end": 1.0
+            }),
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        assert!(
+            matches!(bad_range, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "bounce" && message == "end must be after start")
+        );
+
+        let missing_track = handle_command(
+            &json!({
+                "cmd": "bounce",
+                "path": path.to_string_lossy(),
+                "format": "wav",
+                "start": 0.0,
+                "end": 1.0,
+                "track_ids": [999]
+            }),
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        assert!(
+            matches!(missing_track, CommandResponse::Error { cmd: Some(cmd), message }
+                if cmd == "bounce" && message == "track not found: 999")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn failed_bounce_render_removes_temp_file_and_preserves_existing_output() {
+        let path = unique_test_wav("bounce-failed-cleanup");
+        let temp_path = bounce_temp_path(&path);
+        std::fs::write(&path, b"previous valid wav").unwrap();
+        std::fs::write(&temp_path, b"RIFF partial render").unwrap();
+
+        let result =
+            cleanup_failed_bounce_temp_file(&temp_path, Err::<(), _>("render failed".to_string()));
+
+        assert_eq!(result.unwrap_err(), "render failed");
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous valid wav");
+        assert!(!temp_path.exists());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

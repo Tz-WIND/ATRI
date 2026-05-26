@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -9,12 +10,14 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
+import zipfile
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import uuid4
 
-from quart import Blueprint, Response, jsonify, request
+from quart import Blueprint, Response, jsonify, request, send_file
 
 from core.music_project import (
     automation_diff,
@@ -64,6 +67,11 @@ AUDIO_EXTS = {
     ".dff",
 }
 HOST_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
+EXPORT_FORMATS = {"wav", "flac", "mp3"}
+EXPORT_BIT_DEPTHS = {"i16", "i24", "f32"}
+EXPORT_SAMPLE_RATES = {44100, 48000, 88200, 96000, 192000}
+EXPORT_BITRATES = {"128k", "192k", "256k", "320k"}
+RAW_HOST_COMMAND_DENYLIST = {"bounce", "render_wav"}
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -107,10 +115,27 @@ def _audio_import_dir() -> Path:
     return path
 
 
+def _audio_export_dir() -> Path:
+    path = Path("data/music_workstation/exports")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _safe_audio_filename(filename: str) -> str:
     raw_name = Path(str(filename or "audio.wav").replace("\\", "/")).name
     safe = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw_name).strip(" ._")
     return safe or "audio.wav"
+
+
+def _safe_export_stem(value: Any, fallback: str = "ATRI Export") -> str:
+    stem = Path(_safe_audio_filename(str(value or fallback))).stem.strip(" ._")
+    return stem or fallback
+
+
+class StudioExportError(Exception):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _audio_duration_seconds(path: Path, fallback: Any = None) -> float:
@@ -157,6 +182,258 @@ def _delete_audio_import_file(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _delete_export_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _normalize_export_format(value: Any) -> str:
+    format_name = str(value or "wav").strip().lower().lstrip(".")
+    if format_name not in EXPORT_FORMATS:
+        raise StudioExportError("format is not supported", 400)
+    return format_name
+
+
+def _normalize_export_mode(value: Any) -> str:
+    mode = str(value or "mixdown").strip().lower()
+    if mode not in {"mixdown", "stems"}:
+        raise StudioExportError("mode must be mixdown or stems", 400)
+    return mode
+
+
+def _normalize_export_target(value: Any) -> str:
+    target = str(value or "entire_project").strip().lower()
+    aliases = {
+        "project": "entire_project",
+        "all": "entire_project",
+        "all_tracks": "entire_project",
+        "selected": "selected_tracks",
+        "tracks": "selected_tracks",
+    }
+    target = aliases.get(target, target)
+    if target not in {"entire_project", "selected_tracks"}:
+        raise StudioExportError("target must be entire_project or selected_tracks", 400)
+    return target
+
+
+def _normalize_export_sample_rate(value: Any) -> int:
+    try:
+        sample_rate = int(value or 48000)
+    except (TypeError, ValueError):
+        raise StudioExportError(
+            "sample_rate must be one of 44100, 48000, 88200, 96000, 192000"
+        ) from None
+    if sample_rate not in EXPORT_SAMPLE_RATES:
+        raise StudioExportError("sample_rate must be one of 44100, 48000, 88200, 96000, 192000")
+    return sample_rate
+
+
+def _normalize_export_bit_depth(value: Any, format_name: str) -> str:
+    bit_depth = str(value or "i24").strip().lower()
+    if bit_depth not in EXPORT_BIT_DEPTHS:
+        raise StudioExportError("bit_depth must be i16, i24, or f32")
+    if format_name == "flac" and bit_depth == "f32":
+        raise StudioExportError("flac export requires i16 or i24 bit_depth")
+    return bit_depth
+
+
+def _normalize_export_bitrate(value: Any) -> str:
+    if value is None or value == "":
+        return "320k"
+    if isinstance(value, int):
+        bitrate = f"{value}k"
+    else:
+        bitrate = str(value).strip().lower()
+        if bitrate.isdigit():
+            bitrate = f"{bitrate}k"
+    if bitrate not in EXPORT_BITRATES:
+        raise StudioExportError("bitrate must be 128k, 192k, 256k, or 320k")
+    return bitrate
+
+
+def _project_length_seconds(project: dict[str, Any]) -> float:
+    try:
+        length_beats = max(0.0, float(project.get("length_beats", 16.0) or 0.0))
+    except (TypeError, ValueError):
+        length_beats = 16.0
+    try:
+        tempo = max(1.0, float(project.get("tempo", 120.0) or 120.0))
+    except (TypeError, ValueError):
+        tempo = 120.0
+    return length_beats * 60.0 / tempo
+
+
+def _export_time_range(project: dict[str, Any], payload: dict[str, Any]) -> tuple[float, float]:
+    try:
+        start = float(payload.get("start", payload.get("start_seconds", 0.0)) or 0.0)
+        end_raw = payload.get("end", payload.get("end_seconds"))
+        end = float(end_raw) if end_raw is not None else _project_length_seconds(project)
+    except (TypeError, ValueError):
+        raise StudioExportError("start and end must be numbers") from None
+    if start < 0:
+        raise StudioExportError("start must be non-negative")
+    if end <= start:
+        raise StudioExportError("end must be after start")
+    return start, end
+
+
+def _non_automation_tracks(project: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        track
+        for track in project.get("tracks", [])
+        if isinstance(track, dict) and not _is_automation_track(track)
+    ]
+
+
+def _export_tracks_for_payload(
+    project: dict[str, Any],
+    payload: dict[str, Any],
+    target: str,
+) -> list[dict[str, Any]]:
+    if target == "entire_project":
+        tracks = _non_automation_tracks(project)
+    else:
+        raw_track_ids = payload.get("track_ids")
+        if not isinstance(raw_track_ids, list) or not raw_track_ids:
+            raise StudioExportError("track_ids is required for selected_tracks export")
+        tracks = []
+        for raw_track_id in raw_track_ids:
+            try:
+                track = find_track(project, int(raw_track_id))
+            except (TypeError, ValueError) as exc:
+                raise StudioExportError(f"track not found: {raw_track_id}", 404) from exc
+            if _is_automation_track(track):
+                raise StudioExportError(f"track is not exportable: {raw_track_id}", 400)
+            tracks.append(track)
+
+    export_tracks: list[dict[str, Any]] = []
+    for track in tracks:
+        host_track_id = track.get("host_track_id")
+        if host_track_id is None:
+            raise StudioExportError(f"track is not synced to the host: {track.get('id')}", 409)
+        export_tracks.append(
+            {
+                "project_track_id": int(track["id"]),
+                "host_track_id": int(host_track_id),
+                "name": str(track.get("name") or f"Track {track['id']}"),
+            }
+        )
+    if not export_tracks:
+        raise StudioExportError("no exportable tracks found", 400)
+    return export_tracks
+
+
+def _unique_zip_names(stems: list[dict[str, Any]], format_name: str) -> dict[int, str]:
+    used: set[str] = set()
+    names: dict[int, str] = {}
+    for stem in stems:
+        base = _safe_export_stem(stem.get("name"), f"Track {stem['project_track_id']}")
+        candidate = f"{base}.{format_name}"
+        suffix = 2
+        while candidate.lower() in used:
+            candidate = f"{base} {suffix}.{format_name}"
+            suffix += 1
+        used.add(candidate.lower())
+        names[int(stem["project_track_id"])] = candidate
+    return names
+
+
+def _ffmpeg_path() -> str | None:
+    return shutil.which("ffmpeg")
+
+
+def _run_ffmpeg_encode(
+    source: Path,
+    target: Path,
+    *,
+    format_name: str,
+    bit_depth: str,
+    bitrate: str,
+) -> None:
+    ffmpeg = _ffmpeg_path()
+    if not ffmpeg:
+        raise StudioExportError(f"ffmpeg is required for {format_name} export", 409)
+
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source),
+        "-map_metadata",
+        "-1",
+    ]
+    if format_name == "flac":
+        sample_fmt = "s16" if bit_depth == "i16" else "s32"
+        command.extend(["-c:a", "flac", "-sample_fmt", sample_fmt, "-compression_level", "8"])
+    elif format_name == "mp3":
+        command.extend(["-c:a", "libmp3lame", "-b:a", bitrate])
+    else:
+        raise StudioExportError("format is not supported", 400)
+    command.append(str(target))
+
+    try:
+        subprocess.run(command, check=True, capture_output=True)  # noqa: S603
+    except FileNotFoundError as exc:
+        raise StudioExportError(f"ffmpeg is required for {format_name} export", 409) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+        raise StudioExportError(f"ffmpeg failed: {stderr or exc}", 409) from exc
+
+
+async def _encode_export_file(
+    source: Path,
+    target: Path,
+    *,
+    format_name: str,
+    bit_depth: str,
+    bitrate: str,
+) -> None:
+    await asyncio.to_thread(
+        _run_ffmpeg_encode,
+        source,
+        target,
+        format_name=format_name,
+        bit_depth=bit_depth,
+        bitrate=bitrate,
+    )
+
+
+async def _render_host_wav(
+    host: Any,
+    path: Path,
+    *,
+    start: float,
+    end: float,
+    track_ids: list[int] | None,
+    sample_rate: int,
+    bit_depth: str,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "path": str(path),
+        "format": "wav",
+        "start": start,
+        "end": end,
+        "sample_rate": sample_rate,
+        "bit_depth": bit_depth,
+    }
+    if track_ids is not None:
+        params["track_ids"] = track_ids
+    response = await host.send_command("bounce", params, response_timeout=None)
+    if response.get("type") == "error":
+        raise StudioExportError(str(response.get("message") or "host bounce failed"), 409)
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    return data
+
+
+def _export_download_url(path: Path) -> str:
+    return f"/api/music/studio/export/download/{path.name}"
 
 
 def _is_in_music_dirs(filepath: str) -> bool:
@@ -1556,6 +1833,8 @@ async def audio_host_command():
     params = data.get("params") if isinstance(data.get("params"), dict) else {}
     if not cmd:
         return jsonify({"error": "cmd is required"}), 400
+    if cmd.lower() in RAW_HOST_COMMAND_DENYLIST:
+        return jsonify({"error": "command is not allowed through the raw host endpoint"}), 403
     host = _host_manager()
     if not host.is_running:
         return jsonify({"error": "host process not running", "host": _host_snapshot()}), 409
@@ -1979,6 +2258,271 @@ async def studio_automation_retarget(track_id: int):
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+
+
+@bp.route("/studio/export", methods=["POST"])
+async def studio_export_audio():
+    data = await _json_payload()
+    try:
+        format_name = _normalize_export_format(data.get("format"))
+        mode = _normalize_export_mode(data.get("mode"))
+        target = _normalize_export_target(data.get("target", data.get("scope")))
+        sample_rate = _normalize_export_sample_rate(data.get("sample_rate"))
+        bit_depth = _normalize_export_bit_depth(data.get("bit_depth"), format_name)
+        bitrate = _normalize_export_bitrate(data.get("bitrate"))
+        if format_name != "wav" and not _ffmpeg_path():
+            raise StudioExportError(f"ffmpeg is required for {format_name} export", 409)
+
+        host = _host_manager()
+        if not host.is_running:
+            raise StudioExportError("host process not running", 409)
+
+        project = load_project()
+        start, end = _export_time_range(project, data)
+        sync = await _sync_project_to_host(project, broadcast=False)
+        if not sync.get("host_running"):
+            raise StudioExportError("host process not running", 409)
+        project = cast(dict[str, Any], sync.get("project") or project)
+        export_tracks = _export_tracks_for_payload(project, data, target)
+
+        export_id = uuid4().hex[:10]
+        export = await _perform_studio_export(
+            host,
+            project,
+            export_tracks,
+            export_id=export_id,
+            mode=mode,
+            target=target,
+            format_name=format_name,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            bitrate=bitrate,
+            start=start,
+            end=end,
+        )
+    except StudioExportError as exc:
+        return (
+            jsonify({"ok": False, "error": str(exc), "host": _host_snapshot()}),
+            exc.status_code,
+        )
+
+    return jsonify(
+        {
+            "ok": True,
+            "export": export,
+            "exports": [export],
+            "used_ffmpeg": format_name != "wav",
+            "sync": sync,
+            "host": _host_snapshot(),
+        }
+    )
+
+
+async def _perform_studio_export(
+    host: Any,
+    project: dict[str, Any],
+    export_tracks: list[dict[str, Any]],
+    *,
+    export_id: str,
+    mode: str,
+    target: str,
+    format_name: str,
+    sample_rate: int,
+    bit_depth: str,
+    bitrate: str,
+    start: float,
+    end: float,
+) -> dict[str, Any]:
+    export_dir = _audio_export_dir()
+    project_stem = _safe_export_stem(project.get("title"), "ATRI Export")
+
+    if mode == "mixdown":
+        return await _perform_mixdown_export(
+            host,
+            export_dir,
+            export_tracks,
+            export_id=export_id,
+            project_stem=project_stem,
+            target=target,
+            format_name=format_name,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            bitrate=bitrate,
+            start=start,
+            end=end,
+        )
+
+    return await _perform_stems_export(
+        host,
+        export_dir,
+        export_tracks,
+        export_id=export_id,
+        project_stem=project_stem,
+        target=target,
+        format_name=format_name,
+        sample_rate=sample_rate,
+        bit_depth=bit_depth,
+        bitrate=bitrate,
+        start=start,
+        end=end,
+    )
+
+
+async def _perform_mixdown_export(
+    host: Any,
+    export_dir: Path,
+    export_tracks: list[dict[str, Any]],
+    *,
+    export_id: str,
+    project_stem: str,
+    target: str,
+    format_name: str,
+    sample_rate: int,
+    bit_depth: str,
+    bitrate: str,
+    start: float,
+    end: float,
+) -> dict[str, Any]:
+    filename = f"{export_id}_{project_stem}.{format_name}"
+    final_path = export_dir / filename
+    wav_path = (
+        final_path if format_name == "wav" else export_dir / f"{export_id}_{project_stem}.wav"
+    )
+    track_ids = (
+        [int(track["host_track_id"]) for track in export_tracks]
+        if target == "selected_tracks"
+        else None
+    )
+
+    await _render_host_wav(
+        host,
+        wav_path,
+        start=start,
+        end=end,
+        track_ids=track_ids,
+        sample_rate=sample_rate,
+        bit_depth=bit_depth,
+    )
+    if format_name != "wav":
+        await _encode_export_file(
+            wav_path,
+            final_path,
+            format_name=format_name,
+            bit_depth=bit_depth,
+            bitrate=bitrate,
+        )
+        _delete_export_file(wav_path)
+
+    return {
+        "id": export_id,
+        "mode": "mixdown",
+        "target": target,
+        "format": format_name,
+        "sample_rate": sample_rate,
+        "bit_depth": bit_depth,
+        "bitrate": bitrate if format_name == "mp3" else None,
+        "path": str(final_path),
+        "filename": final_path.name,
+        "download_url": _export_download_url(final_path),
+        "track_ids": [int(track["project_track_id"]) for track in export_tracks]
+        if target == "selected_tracks"
+        else None,
+        "files": [
+            {
+                "path": str(final_path),
+                "filename": final_path.name,
+                "download_url": _export_download_url(final_path),
+            }
+        ],
+    }
+
+
+async def _perform_stems_export(
+    host: Any,
+    export_dir: Path,
+    export_tracks: list[dict[str, Any]],
+    *,
+    export_id: str,
+    project_stem: str,
+    target: str,
+    format_name: str,
+    sample_rate: int,
+    bit_depth: str,
+    bitrate: str,
+    start: float,
+    end: float,
+) -> dict[str, Any]:
+    zip_path = export_dir / f"{export_id}_{project_stem}_stems.zip"
+    zip_names = _unique_zip_names(export_tracks, format_name)
+    files: list[dict[str, Any]] = []
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for track in export_tracks:
+            track_stem = _safe_export_stem(track.get("name"), f"Track {track['project_track_id']}")
+            file_prefix = f"{export_id}_{track['project_track_id']}_{track_stem}"
+            final_path = export_dir / f"{file_prefix}.{format_name}"
+            wav_path = final_path if format_name == "wav" else export_dir / f"{file_prefix}.wav"
+
+            await _render_host_wav(
+                host,
+                wav_path,
+                start=start,
+                end=end,
+                track_ids=[int(track["host_track_id"])],
+                sample_rate=sample_rate,
+                bit_depth=bit_depth,
+            )
+            if format_name != "wav":
+                await _encode_export_file(
+                    wav_path,
+                    final_path,
+                    format_name=format_name,
+                    bit_depth=bit_depth,
+                    bitrate=bitrate,
+                )
+                _delete_export_file(wav_path)
+
+            archive_name = zip_names[int(track["project_track_id"])]
+            archive.write(final_path, arcname=archive_name)
+            _delete_export_file(final_path)
+            files.append(
+                {
+                    "track_id": int(track["project_track_id"]),
+                    "host_track_id": int(track["host_track_id"]),
+                    "name": track["name"],
+                    "path": str(final_path),
+                    "filename": archive_name,
+                }
+            )
+
+    return {
+        "id": export_id,
+        "mode": "stems",
+        "target": target,
+        "format": format_name,
+        "sample_rate": sample_rate,
+        "bit_depth": bit_depth,
+        "bitrate": bitrate if format_name == "mp3" else None,
+        "path": str(zip_path),
+        "filename": zip_path.name,
+        "download_url": _export_download_url(zip_path),
+        "track_ids": [int(track["project_track_id"]) for track in export_tracks],
+        "files": files,
+    }
+
+
+@bp.route("/studio/export/download/<path:filename>", methods=["GET"])
+async def studio_download_export(filename: str):
+    safe_name = Path(str(filename).replace("\\", "/")).name
+    if safe_name != filename:
+        return jsonify({"error": "invalid export filename"}), 403
+    path = _audio_export_dir() / safe_name
+    if not path.exists() or not path.is_file():
+        return jsonify({"error": "export not found"}), 404
+    mimetype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    response = await send_file(path, mimetype=mimetype, conditional=True)
+    response.headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
+    return response
 
 
 @bp.route("/studio/audio/import", methods=["POST"])

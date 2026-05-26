@@ -38,6 +38,7 @@ from .search import SearchTool
 from .skill import LoadSkillTool
 from .studio import (
     StudioAudioImportTool,
+    StudioExportAudioTool,
     StudioHostControlTool,
     StudioPluginTool,
     StudioProjectQueryTool,
@@ -118,6 +119,7 @@ def create_tools(
         StudioTrackTool(workspace),
         StudioPluginTool(workspace),
         StudioAudioImportTool(workspace),
+        StudioExportAudioTool(workspace),
         StudioPianoLaneWriteTool(workspace),
         StudioPianoLaneDiffTool(workspace),
         StudioSyncTool(workspace),

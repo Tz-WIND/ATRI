@@ -174,6 +174,21 @@
           Mixer
         </button>
         <button
+          class="tool-btn"
+          type="button"
+          title="Export audio"
+          aria-label="Export audio"
+          :disabled="loading || exporting"
+          @click="openExportDialog"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          ><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
+        </button>
+        <button
           :class="['tool-btn text', { active: inspectorVisible }]"
           title="Show or hide inspector"
           @click="inspectorVisible = !inspectorVisible"
@@ -1513,6 +1528,192 @@
     </div>
 
     <div
+      v-if="exportDialogOpen"
+      class="modal-backdrop export-backdrop"
+      @click.self="closeExportDialog"
+      @keydown.esc.stop.prevent="closeExportDialog"
+    >
+      <section
+        class="export-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-dialog-title"
+        tabindex="-1"
+      >
+        <header class="track-create-dialog-head">
+          <div>
+            <span>Bounce</span>
+            <h2 id="export-dialog-title">
+              Export Audio
+            </h2>
+          </div>
+          <button
+            class="mini-btn"
+            type="button"
+            title="Close"
+            aria-label="Close"
+            @click="closeExportDialog"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            ><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </header>
+
+        <div class="track-create-form export-form">
+          <label class="track-create-field">
+            <span>Target</span>
+            <select v-model="exportTarget">
+              <option value="entire_project">
+                Entire Project
+              </option>
+              <option value="selected_tracks">
+                Selected Tracks
+              </option>
+            </select>
+          </label>
+          <div
+            v-if="exportTarget === 'selected_tracks'"
+            class="export-track-list"
+          >
+            <label
+              v-for="track in exportableTracks"
+              :key="track.id"
+              class="export-track-row"
+            >
+              <input
+                v-model="exportSelectedTrackIds"
+                type="checkbox"
+                :value="track.id"
+              >
+              <span>{{ track.name || `Track ${track.id}` }}</span>
+            </label>
+          </div>
+          <label class="track-create-field">
+            <span>Mode</span>
+            <select v-model="exportMode">
+              <option value="mixdown">
+                Mixdown
+              </option>
+              <option value="stems">
+                Stems
+              </option>
+            </select>
+          </label>
+          <label class="track-create-field">
+            <span>Format</span>
+            <select v-model="exportFormat">
+              <option value="wav">
+                WAV
+              </option>
+              <option value="flac">
+                FLAC
+              </option>
+              <option value="mp3">
+                MP3
+              </option>
+            </select>
+          </label>
+          <label class="track-create-field">
+            <span>Rate</span>
+            <select v-model.number="exportSampleRate">
+              <option :value="44100">
+                44.1 kHz
+              </option>
+              <option :value="48000">
+                48 kHz
+              </option>
+              <option :value="96000">
+                96 kHz
+              </option>
+              <option :value="192000">
+                192 kHz
+              </option>
+            </select>
+          </label>
+          <label
+            v-if="exportFormat !== 'mp3'"
+            class="track-create-field"
+          >
+            <span>Depth</span>
+            <select v-model="exportBitDepth">
+              <option value="i16">
+                16-bit PCM
+              </option>
+              <option value="i24">
+                24-bit PCM
+              </option>
+              <option
+                v-if="exportFormat === 'wav'"
+                value="f32"
+              >
+                32-bit Float
+              </option>
+            </select>
+          </label>
+          <label
+            v-if="exportFormat === 'mp3'"
+            class="track-create-field"
+          >
+            <span>Bitrate</span>
+            <select v-model="exportBitrate">
+              <option value="128k">
+                128 kbps
+              </option>
+              <option value="192k">
+                192 kbps
+              </option>
+              <option value="256k">
+                256 kbps
+              </option>
+              <option value="320k">
+                320 kbps
+              </option>
+            </select>
+          </label>
+        </div>
+
+        <div
+          v-if="exportErrorMessage"
+          class="export-status error"
+        >
+          {{ exportErrorMessage }}
+        </div>
+        <a
+          v-if="exportResult?.download_url"
+          class="export-status link"
+          :href="exportResult.download_url"
+          target="_blank"
+          rel="noreferrer"
+        >
+          {{ exportResult.filename }}
+        </a>
+
+        <footer class="track-create-actions">
+          <button
+            class="mini-btn text"
+            type="button"
+            :disabled="exporting"
+            @click="closeExportDialog"
+          >
+            Cancel
+          </button>
+          <button
+            class="mini-btn text active"
+            type="button"
+            :disabled="exporting || (exportTarget === 'selected_tracks' && !exportSelectedTrackIds.length)"
+            @click="exportCurrentAudio"
+          >
+            {{ exporting ? 'Exporting' : 'Export' }}
+          </button>
+        </footer>
+      </section>
+    </div>
+
+    <div
       v-if="automationParameterPicker.open"
       class="modal-backdrop automation-parameter-backdrop"
       @click.self="closeAutomationParameterPicker"
@@ -1652,6 +1853,7 @@ const {
   tracks,
   activeTrack,
   loading,
+  exporting,
   hostError,
   audioConnected,
   hostStreamingEnabled,
@@ -1670,6 +1872,7 @@ const {
   updateTrack,
   createTrack,
   importAudioFile,
+  exportAudio,
   deleteTrack,
   loadPlugins,
   setTrackPlugin,
@@ -1825,6 +2028,16 @@ const trackCreateType = ref('instrument')
 const trackCreateChannelType = ref('multichannel')
 const trackCreateOutputBusId = ref(null)
 const trackCreateAutomationTarget = ref(null)
+const exportDialogOpen = ref(false)
+const exportTarget = ref('entire_project')
+const exportMode = ref('mixdown')
+const exportFormat = ref('wav')
+const exportSampleRate = ref(48000)
+const exportBitDepth = ref('i24')
+const exportBitrate = ref('320k')
+const exportSelectedTrackIds = ref([])
+const exportResult = ref(null)
+const exportErrorMessage = ref('')
 const automationParameterPicker = ref({ open: false, mode: 'create', trackId: null })
 const pianoPanelHeight = ref(null)
 const inspectorVisible = ref(true)
@@ -1919,6 +2132,7 @@ const lowerEditorVisible = computed(() => (
   (pianoVisible.value && activeMidiClip.value) || mixerVisible.value
 ))
 const mixerTracks = computed(() => tracks.value.filter(track => !isAutomationTrack(track)))
+const exportableTracks = computed(() => tracks.value.filter(track => !isAutomationTrack(track)))
 const masterBus = computed(() => normalizeMasterBus(project.value?.master_bus))
 const editorStackStyle = computed(() => {
   if (!lowerEditorVisible.value || !pianoPanelHeight.value) return {}
@@ -2521,6 +2735,84 @@ async function createSelectedTrack() {
   })
   closeTrackCreateDialog()
   return res
+}
+
+function defaultExportTrackIds() {
+  const activeId = activeTrack.value && !isAutomationTrack(activeTrack.value)
+    ? activeTrack.value.id
+    : null
+  if (activeId != null) return [activeId]
+  return exportableTracks.value[0]?.id != null ? [exportableTracks.value[0].id] : []
+}
+
+function openExportDialog() {
+  exportDialogOpen.value = true
+  exportResult.value = null
+  exportErrorMessage.value = ''
+  exportTarget.value = 'entire_project'
+  exportMode.value = 'mixdown'
+  exportFormat.value = 'wav'
+  exportSampleRate.value = Number(host.value?.sample_rate || 48000)
+  if (![44100, 48000, 96000, 192000].includes(exportSampleRate.value)) {
+    exportSampleRate.value = 48000
+  }
+  exportBitDepth.value = 'i24'
+  exportBitrate.value = '320k'
+  exportSelectedTrackIds.value = defaultExportTrackIds()
+}
+
+function closeExportDialog() {
+  if (exporting.value) return
+  exportDialogOpen.value = false
+}
+
+function exportPayloadTrackIds() {
+  const seen = new Set()
+  return exportSelectedTrackIds.value
+    .map(id => Number(id))
+    .filter((id) => {
+      if (!Number.isFinite(id) || seen.has(id)) return false
+      seen.add(id)
+      return true
+    })
+}
+
+function triggerExportDownload(exportItem) {
+  if (!exportItem?.download_url || typeof document === 'undefined') return
+  const link = document.createElement('a')
+  link.href = exportItem.download_url
+  link.download = exportItem.filename || ''
+  link.rel = 'noreferrer'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+async function exportCurrentAudio() {
+  exportErrorMessage.value = ''
+  exportResult.value = null
+  const selectedTrackIds = exportPayloadTrackIds()
+  if (exportTarget.value === 'selected_tracks' && !selectedTrackIds.length) {
+    exportErrorMessage.value = 'Select at least one track'
+    return null
+  }
+  try {
+    const res = await exportAudio({
+      target: exportTarget.value,
+      track_ids: exportTarget.value === 'selected_tracks' ? selectedTrackIds : [],
+      mode: exportMode.value,
+      format: exportFormat.value,
+      sample_rate: exportSampleRate.value,
+      bit_depth: exportFormat.value === 'mp3' ? 'i24' : exportBitDepth.value,
+      bitrate: exportFormat.value === 'mp3' ? exportBitrate.value : null,
+    })
+    exportResult.value = res.export || null
+    triggerExportDownload(exportResult.value)
+    return res
+  } catch (err) {
+    exportErrorMessage.value = err.message || 'Export failed'
+    return null
+  }
 }
 
 function automationUnassignedTarget() {
@@ -6791,6 +7083,11 @@ watch(positionBeats, (value) => {
   syncTransportDisplayFields(project.value)
   drawAll()
 })
+watch(exportFormat, (format) => {
+  if (format === 'flac' && exportBitDepth.value === 'f32') {
+    exportBitDepth.value = 'i24'
+  }
+})
 
 watch(() => host.value.running, (running) => {
   if (running) {
@@ -7274,7 +7571,8 @@ watch(() => host.value.running, (running) => {
   backdrop-filter: blur(7px);
 }
 
-.track-create-dialog {
+.track-create-dialog,
+.export-dialog {
   width: min(420px, 100%);
   max-height: calc(100% - 24px);
   overflow: auto;
@@ -7400,6 +7698,70 @@ watch(() => host.value.running, (running) => {
   gap: 8px;
   padding: 12px 16px 16px;
   border-top: 1px solid rgba(229, 236, 245, 0.08);
+}
+
+.export-dialog {
+  width: min(520px, 100%);
+}
+
+.export-form {
+  gap: 10px;
+}
+
+.export-track-list {
+  max-height: 156px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(229, 236, 245, 0.1);
+  border-radius: 6px;
+  background: rgba(12, 15, 18, 0.38);
+}
+
+.export-track-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--t2);
+  font-size: 12px;
+}
+
+.export-track-row input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--orange);
+}
+
+.export-track-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-status {
+  display: block;
+  margin: 0 16px 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(229, 236, 245, 0.1);
+  border-radius: 6px;
+  color: var(--t2);
+  background: rgba(12, 15, 18, 0.34);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.export-status.link {
+  color: var(--orange);
+}
+
+.export-status.error {
+  color: #ffb0a7;
+  border-color: rgba(217, 91, 85, 0.38);
+  background: rgba(87, 30, 28, 0.22);
 }
 
 .automation-parameter-dialog {

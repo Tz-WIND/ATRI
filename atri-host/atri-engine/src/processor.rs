@@ -124,6 +124,14 @@ pub trait Processor: Send + Sync {
 }
 
 /// Simple gain processor with smooth ramping.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GainState {
+    value: f32,
+    current: f32,
+    smooth: f32,
+    target: f32,
+}
+
 pub struct Gain {
     pub value: f32,
     current: f32,
@@ -144,6 +152,22 @@ impl Gain {
     pub fn set_value(&mut self, value: f32) {
         self.target = value;
         self.smooth = 0.0;
+    }
+
+    pub fn capture_state(&self) -> GainState {
+        GainState {
+            value: self.value,
+            current: self.current,
+            smooth: self.smooth,
+            target: self.target,
+        }
+    }
+
+    pub fn restore_state(&mut self, state: GainState) {
+        self.value = state.value;
+        self.current = state.current;
+        self.smooth = state.smooth;
+        self.target = state.target;
     }
 }
 

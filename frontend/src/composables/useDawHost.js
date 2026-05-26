@@ -10,6 +10,8 @@ const engine = ref(null)
 const activeTrackId = ref(1)
 const loading = ref(false)
 const syncing = ref(false)
+const exporting = ref(false)
+const exportError = ref('')
 const hostError = ref('')
 const audioConnected = ref(false)
 const audioReady = ref(false)
@@ -291,6 +293,24 @@ async function importAudioFile(file, metadata = {}) {
     throw err
   } finally {
     loading.value = false
+  }
+}
+
+async function exportAudio(payload) {
+  exporting.value = true
+  exportError.value = ''
+  hostError.value = ''
+  try {
+    const res = await api.studioExportAudio(payload)
+    if (res.host) host.value = res.host
+    if (res.sync?.project) setProject(res.sync.project)
+    return res
+  } catch (err) {
+    exportError.value = err.message || 'Failed to export audio'
+    hostError.value = exportError.value
+    throw err
+  } finally {
+    exporting.value = false
   }
 }
 
@@ -684,6 +704,8 @@ export function useDawHost() {
     activeTrackId,
     loading,
     syncing,
+    exporting,
+    exportError,
     hostError,
     audioConnected,
     audioReady,
@@ -710,6 +732,7 @@ export function useDawHost() {
     updateTrack,
     createTrack,
     importAudioFile,
+    exportAudio,
     deleteTrack,
     loadPlugins,
     setTrackPlugin,

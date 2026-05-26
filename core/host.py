@@ -166,7 +166,13 @@ class HostManager:
         self._tasks.clear()
         logger.info("atri-host stopped")
 
-    async def send_command(self, cmd: str, params: dict | None = None) -> dict:
+    async def send_command(
+        self,
+        cmd: str,
+        params: dict | None = None,
+        *,
+        response_timeout: float | None = 5.0,
+    ) -> dict:
         """Send a JSON command to the host and wait for the response."""
         async with self._command_lock:
             if self._process is None or self._process.stdin is None or not self.is_running:
@@ -181,7 +187,7 @@ class HostManager:
             self._process.stdin.flush()
 
             # Read response (non-audio JSON line)
-            response = await self._read_response()
+            response = await self._read_response(response_timeout=response_timeout)
             self._sync_audio_config_from_response(response)
             return response
 
@@ -202,10 +208,12 @@ class HostManager:
         if isinstance(bit_depth, str) and bit_depth:
             self.bit_depth = bit_depth
 
-    async def _read_response(self) -> dict:
+    async def _read_response(self, *, response_timeout: float | None = 5.0) -> dict:
         """Read a single JSON response line from the response queue."""
+        if response_timeout is None:
+            return await self._response_queue.get()
         try:
-            return await asyncio.wait_for(self._response_queue.get(), timeout=5.0)
+            return await asyncio.wait_for(self._response_queue.get(), timeout=response_timeout)
         except TimeoutError:
             return {"type": "error", "message": "timeout waiting for host response"}
 

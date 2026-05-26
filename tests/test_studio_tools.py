@@ -20,6 +20,7 @@ from core.tools.bash import CONFIRM_MARKER
 from core.tools.piano_lane import StudioPianoLaneDiffTool, StudioPianoLaneWriteTool
 from core.tools.studio import (
     StudioAudioImportTool,
+    StudioExportAudioTool,
     StudioHostControlTool,
     StudioPluginTool,
     StudioProjectQueryTool,
@@ -306,6 +307,64 @@ def test_studio_audio_import_rejects_missing_file_path_or_path(tmp_path):
     result = StudioAudioImportTool(str(tmp_path)).execute()
 
     assert result == "Error: file_path or path is required"
+
+
+def test_studio_export_audio_tool_posts_track_format_and_quality_payload(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_dashboard_json(method, path, payload=None, timeout=3):
+        calls.append((method, path, payload, timeout))
+        return {
+            "ok": True,
+            "export": {"format": payload["format"], "mode": payload["mode"]},
+            "sync": {"host_running": True},
+        }
+
+    monkeypatch.setattr("core.tools.studio._dashboard_json", fake_dashboard_json)
+
+    result = json.loads(
+        StudioExportAudioTool(str(tmp_path)).execute(
+            target="selected_tracks",
+            track_ids=[1, 2],
+            mode="stems",
+            format="flac",
+            sample_rate=96000,
+            bit_depth="i24",
+        )
+    )
+
+    assert calls == [
+        (
+            "POST",
+            "/api/music/studio/export",
+            {
+                "target": "selected_tracks",
+                "track_ids": [1, 2],
+                "mode": "stems",
+                "format": "flac",
+                "sample_rate": 96000,
+                "bit_depth": "i24",
+            },
+            120,
+        )
+    ]
+    assert result["export"] == {"format": "flac", "mode": "stems"}
+    assert result["agent_sync_hint"] == (
+        "This operation already requested project-to-host sync. Do not call studio_sync "
+        "again unless sync reports an error, sync is missing, or the user asks to force resync."
+    )
+
+
+def test_studio_export_audio_tool_rejects_selected_without_tracks(tmp_path):
+    result = StudioExportAudioTool(str(tmp_path)).execute(target="selected_tracks", track_ids=[])
+
+    assert result == "Error: track_ids is required for selected_tracks export"
+
+
+def test_studio_export_audio_tool_rejects_invalid_sample_rate_without_raising(tmp_path):
+    result = StudioExportAudioTool(str(tmp_path)).execute(sample_rate="abc")
+
+    assert result == "Error: sample_rate must be 44100, 48000, 88200, 96000, or 192000"
 
 
 def test_studio_piano_lane_write_writes_meter_events_and_syncs(

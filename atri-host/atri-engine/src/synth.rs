@@ -145,6 +145,102 @@ impl Plugin for BasicSynth {
     fn parameter_count(&self) -> u32 {
         0
     }
+
+    fn get_state_chunk(&mut self) -> Result<Vec<u8>, String> {
+        let mut chunk = Vec::with_capacity(20 + self.voices.len() * 15);
+        chunk.extend_from_slice(b"ABS1");
+        chunk.extend_from_slice(&self.sample_rate.to_le_bytes());
+        chunk.push(u8::from(self.active));
+        chunk.extend_from_slice(&(self.block_size as u64).to_le_bytes());
+        chunk.extend_from_slice(&(self.voices.len() as u32).to_le_bytes());
+        for voice in &self.voices {
+            chunk.push(voice.pitch);
+            chunk.push(u8::from(voice.releasing));
+            chunk.extend_from_slice(&voice.phase.to_le_bytes());
+            chunk.extend_from_slice(&voice.phase_step.to_le_bytes());
+            chunk.extend_from_slice(&voice.gain.to_le_bytes());
+        }
+        Ok(chunk)
+    }
+
+    fn set_state_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
+        if chunk.len() < 21 || &chunk[0..4] != b"ABS1" {
+            return Err("invalid BasicSynth state chunk".to_string());
+        }
+
+        let mut cursor = 4;
+        let read_f32 = |chunk: &[u8], cursor: &mut usize| -> Result<f32, String> {
+            let bytes = chunk
+                .get(*cursor..*cursor + 4)
+                .ok_or_else(|| "truncated BasicSynth state chunk".to_string())?;
+            *cursor += 4;
+            Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        let read_u32 = |chunk: &[u8], cursor: &mut usize| -> Result<u32, String> {
+            let bytes = chunk
+                .get(*cursor..*cursor + 4)
+                .ok_or_else(|| "truncated BasicSynth state chunk".to_string())?;
+            *cursor += 4;
+            Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        let read_u64 = |chunk: &[u8], cursor: &mut usize| -> Result<u64, String> {
+            let bytes = chunk
+                .get(*cursor..*cursor + 8)
+                .ok_or_else(|| "truncated BasicSynth state chunk".to_string())?;
+            *cursor += 8;
+            Ok(u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]))
+        };
+
+        let sample_rate = read_f32(chunk, &mut cursor)?;
+        let active = *chunk
+            .get(cursor)
+            .ok_or_else(|| "truncated BasicSynth state chunk".to_string())?
+            != 0;
+        cursor += 1;
+        let block_size = read_u64(chunk, &mut cursor)?;
+        let voice_count = read_u32(chunk, &mut cursor)? as usize;
+        let expected_len = cursor
+            .checked_add(
+                voice_count
+                    .checked_mul(14)
+                    .ok_or_else(|| "invalid BasicSynth state chunk".to_string())?,
+            )
+            .ok_or_else(|| "invalid BasicSynth state chunk".to_string())?;
+        if chunk.len() != expected_len {
+            return Err("invalid BasicSynth state chunk".to_string());
+        }
+
+        let mut voices = Vec::with_capacity(voice_count);
+        for _ in 0..voice_count {
+            let pitch = *chunk
+                .get(cursor)
+                .ok_or_else(|| "truncated BasicSynth state chunk".to_string())?;
+            cursor += 1;
+            let releasing = *chunk
+                .get(cursor)
+                .ok_or_else(|| "truncated BasicSynth state chunk".to_string())?
+                != 0;
+            cursor += 1;
+            let phase = read_f32(chunk, &mut cursor)?;
+            let phase_step = read_f32(chunk, &mut cursor)?;
+            let gain = read_f32(chunk, &mut cursor)?;
+            voices.push(Voice {
+                pitch,
+                phase,
+                phase_step,
+                gain,
+                releasing,
+            });
+        }
+
+        self.sample_rate = sample_rate;
+        self.active = active;
+        self.block_size = block_size.min(usize::MAX as u64) as usize;
+        self.voices = voices;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -286,5 +382,34 @@ mod tests {
             zc_48k >= zc_96k * 2 - 1,
             "48k/96k crossing ratio mismatch: 48k={zc_48k}, 96k={zc_96k}"
         );
+    }
+
+    #[test]
+    fn state_chunk_restores_active_voice_phase() {
+        let mut synth = BasicSynth::new(48_000);
+        let mut bufs = BufferSet::new(1, 2, 64);
+        let midi = [ScheduledMidiEvent::new(
+            MidiEvent::new(
+                0,
+                MidiMessage::NoteOn {
+                    channel: 0,
+                    pitch: 69,
+                    velocity: 100,
+                },
+            ),
+            0,
+        )];
+
+        synth.activate();
+        synth.connect_and_run(&mut bufs, &midi, 0, 64, 1.0, 64);
+        let captured = synth.get_state_chunk().unwrap();
+        assert!(!captured.is_empty());
+
+        bufs.silence(64);
+        synth.connect_and_run(&mut bufs, &[], 64, 128, 1.0, 64);
+        assert_ne!(synth.get_state_chunk().unwrap(), captured);
+
+        synth.set_state_chunk(&captured).unwrap();
+        assert_eq!(synth.get_state_chunk().unwrap(), captured);
     }
 }
