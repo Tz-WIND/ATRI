@@ -936,6 +936,41 @@ def test_music_studio_frontend_transport_uses_tempo_automation_and_meter_events(
     assert "syncTransportDisplayFields(project.value)" in studio_text
 
 
+def test_music_studio_separates_host_audio_ws_and_pcm_streaming_statuses():
+    studio_text = _read(STUDIO_COMPONENT)
+    host_text = _read(DAW_HOST)
+
+    assert "const hostStreamingEnabled = ref(false)" in host_text
+    assert "const pcmStreaming = ref(false)" in host_text
+    assert "let audioContext = null" in host_text
+    assert "async function ensurePcmPlayer()" in host_text
+    assert "new URL('../worklets/pcm-player-worklet.js', import.meta.url)" in host_text
+    assert "new AudioWorkletNode(audioContext, 'atri-pcm-player'" in host_text
+    assert "playerNode.connect(audioContext.destination)" in host_text
+    assert "hostStreamingEnabled.value = res.engine.streaming_enabled === true" in host_text
+    assert "hostStreamingEnabled.value = false" in host_text
+    assert "markPcmStreaming()" in host_text
+    assert "clearPcmStreaming()" in host_text
+    assert "closePcmPlayer()" in host_text
+    assert "hostStreamingEnabled," in host_text
+    assert "pcmStreaming," in host_text
+    assert "connectAudioStream()" in studio_text
+    assert "disconnectAudioStream()" in studio_text
+    assert "hostStreamingEnabled," in studio_text
+    assert "Audio WS Connected" in studio_text
+    assert "PCM Streaming" in studio_text
+    assert "Host Online" in studio_text
+    assert "{{ hostStreamingEnabled ? 'enabled' : 'disabled' }}" in studio_text
+    assert "{{ audioConnected ? 'connected' : 'disconnected' }}" in studio_text
+    assert "{{ pcmStreaming ? 'streaming' : 'idle' }}" in studio_text
+    audio_message_start = host_text.index("audioWs.onmessage = async (event) => {")
+    ensure_player = host_text.index("await ensurePcmPlayer()", audio_message_start)
+    player_guard = host_text.index("if (!playerNode) return", audio_message_start)
+    player_post = host_text.index("playerNode.port.postMessage(", audio_message_start)
+    pcm_mark = host_text.index("markPcmStreaming()", audio_message_start)
+    assert ensure_player < player_guard < player_post < pcm_mark
+
+
 def test_music_studio_audio_waveform_uses_zrythm_region_style():
     studio_text = _read(STUDIO_COMPONENT)
 

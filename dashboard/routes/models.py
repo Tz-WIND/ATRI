@@ -333,7 +333,11 @@ def _normalize_audio_engine(value: Any) -> str:
 async def _restart_audio_host_for_config(audio_cfg: dict) -> dict:
     """Restart the Rust host so hardware-level audio config is applied."""
     from core.host import get_host_manager
-    from dashboard.music import _capture_and_save_plugin_states, sync_current_project_to_host
+    from dashboard.music import (
+        _capture_and_save_plugin_states,
+        reconcile_dashboard_audio_streaming,
+        sync_current_project_to_host,
+    )
 
     host = get_host_manager()
     if not host.is_running:
@@ -357,6 +361,7 @@ async def _restart_audio_host_for_config(audio_cfg: dict) -> dict:
     )
     await host.start()
     sync = await sync_current_project_to_host(broadcast=True)
+    await reconcile_dashboard_audio_streaming()
     return {"restarted": True, "running": host.is_running, "state": state_capture, "sync": sync}
 
 

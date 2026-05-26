@@ -49,6 +49,7 @@ class Dashboard:
         self.app.config["MAX_CONTENT_LENGTH"] = DASHBOARD_MAX_CONTENT_LENGTH
         self._ws_clients: set = set()
         self._audio_clients: set = set()
+        self._audio_send_failed_clients: set = set()
         self._wire_audio_host()
         self._register_routes()
 
@@ -378,6 +379,41 @@ class Dashboard:
             except Exception:
                 self._ws_clients.discard(ws)
 
+    def _has_audio_stream_consumers(self) -> bool:
+        return any(ws not in self._audio_send_failed_clients for ws in self._audio_clients)
+
+    async def register_audio_client(self, ws: object) -> None:
+        """Track an audio WebSocket client and enable host PCM streaming."""
+        had_consumers = self._has_audio_stream_consumers()
+        self._audio_send_failed_clients.discard(ws)
+        self._audio_clients.add(ws)
+        if not had_consumers and self._has_audio_stream_consumers():
+            await self._set_host_streaming(True)
+
+    async def discard_audio_client(self, ws: object) -> None:
+        """Forget an audio WebSocket client and stop PCM when the last one leaves."""
+        had_client = ws in self._audio_clients
+        self._audio_clients.discard(ws)
+        self._audio_send_failed_clients.discard(ws)
+        if had_client and not self._audio_clients:
+            await self._set_host_streaming(False)
+
+    async def reconcile_audio_streaming_state(self) -> None:
+        """Replay desired PCM streaming state after the host starts or restarts."""
+        if self._has_audio_stream_consumers():
+            await self._set_host_streaming(True)
+
+    async def _set_host_streaming(self, enabled: bool) -> None:
+        from core.host import get_host_manager
+
+        host = get_host_manager()
+        if not host.is_running:
+            return
+        try:
+            await host.send_command("set_streaming", {"enabled": enabled})
+        except Exception as e:
+            logger.debug("Failed to set host streaming=%s: %s", enabled, e)
+
     async def broadcast_audio(
         self,
         pcm_bytes: bytes,
@@ -400,11 +436,23 @@ class Dashboard:
             }
         )
         for ws in list(audio_clients):
+            if ws in self._audio_send_failed_clients:
+                continue
             try:
                 await ws.send(header)
                 await ws.send(pcm_bytes)
-            except Exception:
-                audio_clients.discard(ws)
+            except Exception as e:
+                logger.debug("Audio WebSocket send failed: %s", e)
+                self._audio_send_failed_clients.add(ws)
+                close = getattr(ws, "close", None)
+                if close is not None:
+                    try:
+                        await close(1011)
+                    except Exception as close_error:
+                        logger.debug(
+                            "Audio WebSocket close after send failure failed: %s",
+                            close_error,
+                        )
 
     async def run(self):
         from hypercorn.asyncio import serve

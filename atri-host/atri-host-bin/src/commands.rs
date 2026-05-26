@@ -67,6 +67,7 @@ pub enum CommandResponse {
         buffer_size: usize,
         audio_engine: String,
         bit_depth: String,
+        streaming_enabled: bool,
         tracks: Vec<TrackStatus>,
         editor_windows: Vec<EditorWindowStatus>,
     },
@@ -771,7 +772,7 @@ fn execute(
                 bit_depth: host_config.audio_host.bit_depth.clone(),
             }
         }
-        Command::GetStatus => status(engine, host_config, editor_manager),
+        Command::GetStatus => status(engine, streamer, host_config, editor_manager),
         Command::Shutdown => {
             let _ = cmd_tx.send(AppCommand::Shutdown);
             CommandResponse::Shutdown {
@@ -1548,6 +1549,36 @@ mod tests {
     }
 
     #[test]
+    fn status_reports_streaming_enabled_flag() {
+        let (engine, cmd_tx, _cmd_rx, streamer, config) = command_context();
+
+        execute(
+            Command::SetStreaming { enabled: true },
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+        let response = execute(
+            Command::GetStatus,
+            &engine,
+            &cmd_tx,
+            &streamer,
+            &config,
+            None,
+        );
+
+        assert!(matches!(
+            response,
+            CommandResponse::Status {
+                streaming_enabled: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn set_tempo_rejects_invalid_bpm_without_sending_command() {
         for bpm in [
             -1.0,
@@ -2144,6 +2175,7 @@ fn resolve_vst3_library_path(path: PathBuf) -> PathBuf {
 
 fn status(
     engine: &Arc<Mutex<AudioEngine>>,
+    streamer: &Arc<Mutex<AudioStreamer>>,
     host_config: &HostConfig,
     editor_manager: Option<&EditorWindowManager>,
 ) -> CommandResponse {
@@ -2159,6 +2191,11 @@ fn status(
                 .collect()
         })
         .unwrap_or_default();
+
+    let streaming_enabled = streamer
+        .lock()
+        .map(|streamer| streamer.is_enabled())
+        .unwrap_or(false);
 
     with_session(engine, |session| {
         let tempo_map = session.tempo_map.read();
@@ -2206,6 +2243,7 @@ fn status(
             buffer_size: session.buffer_size,
             audio_engine: host_config.audio_host.audio_engine.clone(),
             bit_depth: host_config.audio_host.bit_depth.clone(),
+            streaming_enabled,
             tracks,
             editor_windows,
         }

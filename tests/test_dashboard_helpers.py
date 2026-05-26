@@ -2,6 +2,7 @@ import io
 import json
 import zipfile
 from http.cookies import SimpleCookie
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -76,6 +77,40 @@ class _FakeDashboardHost:
         self.callback = callback
 
 
+class _FakeStreamingDashboardHost:
+    def __init__(self, *, running: bool = True):
+        self.is_running = running
+        self.sample_rate = 48000
+        self.buffer_size = 256
+        self.audio_engine = "default"
+        self.bit_depth = "f32"
+        self.binary_path = None
+        self.commands: list[tuple[str, dict[str, Any]]] = []
+
+    def set_audio_callback(self, callback):
+        self.callback = callback
+
+    async def start(self):
+        self.is_running = True
+
+    async def send_command(self, cmd, params=None):
+        self.commands.append((cmd, params or {}))
+        return {"type": "ack", "cmd": cmd, "status": "ok"}
+
+
+class _FailingAudioWebSocket:
+    def __init__(self):
+        self.send_calls = 0
+        self.close_calls = 0
+
+    async def send(self, _message):
+        self.send_calls += 1
+        raise RuntimeError("send failed")
+
+    async def close(self, _code=1000):
+        self.close_calls += 1
+
+
 def _set_test_dashboard_password_cost(monkeypatch):
     monkeypatch.setattr(_helpers, "_PBKDF2_ITERATIONS", 1)
 
@@ -120,6 +155,110 @@ def test_dashboard_audio_waveform_form_accepts_structured_metrics():
         {"min": -0.2, "max": 0.6, "rms": 0.2, "peak": 0.6},
         0.5,
     ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_audio_client_registration_enables_host_streaming(monkeypatch, tmp_path):
+    _set_test_dashboard_password_cost(monkeypatch)
+    host = _FakeStreamingDashboardHost()
+    monkeypatch.setattr("core.host.configure_host_manager", lambda **kwargs: host)
+    monkeypatch.setattr("core.host.get_host_manager", lambda: host)
+    monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
+    dashboard = Dashboard(
+        cast("Lifecycle", _FakeDashboardLifecycle(tmp_path, _helpers.hash_password("secret"))),
+    )
+
+    ws_obj = object()
+    await dashboard.register_audio_client(ws_obj)
+
+    assert ws_obj in dashboard._audio_clients
+    assert host.commands == [("set_streaming", {"enabled": True})]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_audio_streaming_commands_follow_client_count_edges(
+    monkeypatch, tmp_path
+):
+    _set_test_dashboard_password_cost(monkeypatch)
+    host = _FakeStreamingDashboardHost()
+    monkeypatch.setattr("core.host.configure_host_manager", lambda **kwargs: host)
+    monkeypatch.setattr("core.host.get_host_manager", lambda: host)
+    monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
+    dashboard = Dashboard(
+        cast("Lifecycle", _FakeDashboardLifecycle(tmp_path, _helpers.hash_password("secret"))),
+    )
+    first = object()
+    second = object()
+
+    await dashboard.register_audio_client(first)
+    await dashboard.register_audio_client(second)
+    await dashboard.discard_audio_client(first)
+    await dashboard.discard_audio_client(second)
+
+    assert dashboard._audio_clients == set()
+    assert host.commands == [
+        ("set_streaming", {"enabled": True}),
+        ("set_streaming", {"enabled": False}),
+    ]
+
+
+def test_audio_websocket_route_uses_dashboard_audio_client_lifecycle():
+    text = Path("dashboard/routes/websocket.py").read_text(encoding="utf-8")
+
+    assert "await dashboard.register_audio_client(ws_obj)" in text
+    assert "await dashboard.discard_audio_client(ws_obj)" in text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_audio_send_failure_does_not_stop_handler_owned_streaming(
+    monkeypatch, tmp_path
+):
+    _set_test_dashboard_password_cost(monkeypatch)
+    host = _FakeStreamingDashboardHost()
+    monkeypatch.setattr("core.host.configure_host_manager", lambda **kwargs: host)
+    monkeypatch.setattr("core.host.get_host_manager", lambda: host)
+    monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
+    dashboard = Dashboard(
+        cast("Lifecycle", _FakeDashboardLifecycle(tmp_path, _helpers.hash_password("secret"))),
+    )
+    ws_obj = _FailingAudioWebSocket()
+
+    await dashboard.register_audio_client(ws_obj)
+    await dashboard.broadcast_audio(b"\x00" * 8, nframes=1, channels=2)
+    await dashboard.broadcast_audio(b"\x00" * 8, nframes=1, channels=2)
+
+    assert ws_obj in dashboard._audio_clients
+    assert ws_obj in dashboard._audio_send_failed_clients
+    assert ws_obj.send_calls == 1
+    assert ws_obj.close_calls == 1
+    assert host.commands == [("set_streaming", {"enabled": True})]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_replays_audio_streaming_when_host_starts_with_connected_client(
+    monkeypatch, tmp_path
+):
+    _set_test_dashboard_password_cost(monkeypatch)
+    host = _FakeStreamingDashboardHost(running=False)
+    monkeypatch.setattr("core.host.configure_host_manager", lambda **kwargs: host)
+    monkeypatch.setattr("core.host.get_host_manager", lambda: host)
+    lifecycle = _FakeDashboardLifecycle(tmp_path, _helpers.hash_password("secret"))
+    dashboard = Dashboard(cast("Lifecycle", lifecycle))
+    lifecycle.dashboard = dashboard
+    token = dashboard._create_auth_session()
+    ws_obj = object()
+
+    await dashboard.register_audio_client(ws_obj)
+    response = await dashboard.app.test_client().post(
+        "/api/music/studio/host/start",
+        json={"sync": False},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload["host"]["running"] is True
+    assert host.commands == [("set_streaming", {"enabled": True})]
 
 
 def test_dashboard_password_hash_verify_and_legacy_plaintext(monkeypatch):

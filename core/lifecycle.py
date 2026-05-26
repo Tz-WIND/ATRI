@@ -247,6 +247,10 @@ class Lifecycle:
         except Exception as e:
             logger.warning("Audio host started, but initial project sync failed: %s", e)
 
+        dashboard = getattr(self, "dashboard", None)
+        if dashboard:
+            await dashboard.reconcile_audio_streaming_state()
+
     def cancel_operation(self, session_id: str | None = None) -> bool:
         """Cancel the currently running agent operation (if any).
 

@@ -13,6 +13,8 @@ const syncing = ref(false)
 const hostError = ref('')
 const audioConnected = ref(false)
 const audioReady = ref(false)
+const hostStreamingEnabled = ref(false)
+const pcmStreaming = ref(false)
 const playing = ref(false)
 const positionSeconds = ref(0)
 const plugins = ref({ vst3: [], vst2: [], priority: ['vst3', 'vst2'] })
@@ -21,12 +23,16 @@ const editorWindows = ref({})
 const pluginParameters = ref({})
 
 let playerNode = null
+let audioContext = null
+let playerNodeReady = null
+let audioOutputUnavailable = false
 let audioWs = null
 let commandWs = null
 let commandWsReady = null
 let commandSeq = 0
 let pendingAudioHeader = null
 let reconnectTimer = null
+let pcmStreamingTimer = null
 let statusTimer = null
 const pendingCommandRequests = new Map()
 
@@ -131,14 +137,17 @@ async function refreshHostStatus() {
     if (res.host) host.value = res.host
     if (res.engine) {
       engine.value = res.engine
+      hostStreamingEnabled.value = res.engine.streaming_enabled === true
       playing.value = res.engine.transport === 'playing'
       positionSeconds.value = Number(res.engine.position || 0)
       syncEditorWindowsFromEngine(res.engine)
     } else if (!host.value.running) {
       playing.value = false
+      hostStreamingEnabled.value = false
     }
     if (!host.value.running) {
       editorWindows.value = {}
+      hostStreamingEnabled.value = false
     }
   } catch {}
 }
@@ -193,6 +202,9 @@ async function startHostForTransport() {
 
 async function transport(action, payload = {}) {
   hostError.value = ''
+  if (action === 'play') {
+    await resumePcmPlayer()
+  }
   if (!host.value.running) {
     await refreshHostStatus()
   }
@@ -430,6 +442,90 @@ function selectTrack(trackId) {
   activeTrackId.value = trackId
 }
 
+async function ensurePcmPlayer() {
+  if (playerNode) return playerNode
+  if (playerNodeReady) return playerNodeReady
+  if (audioOutputUnavailable) return null
+
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+  if (!AudioContextCtor || !window.AudioWorkletNode) {
+    audioOutputUnavailable = true
+    audioReady.value = false
+    hostError.value = 'AudioWorklet output is not supported by this browser'
+    return null
+  }
+
+  playerNodeReady = (async () => {
+    const sampleRate = Number(host.value.sample_rate || 48000)
+    const options = Number.isFinite(sampleRate) && sampleRate > 0 ? { sampleRate } : undefined
+    audioContext = new AudioContextCtor(options)
+    audioContext.onstatechange = () => {
+      if (audioContext?.state !== 'running') clearPcmStreaming()
+    }
+    await audioContext.audioWorklet.addModule(
+      new URL('../worklets/pcm-player-worklet.js', import.meta.url)
+    )
+    playerNode = new AudioWorkletNode(audioContext, 'atri-pcm-player', {
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    })
+    playerNode.connect(audioContext.destination)
+    audioReady.value = true
+    return playerNode
+  })()
+
+  try {
+    return await playerNodeReady
+  } catch (err) {
+    audioOutputUnavailable = true
+    audioReady.value = false
+    hostError.value = err?.message || 'Audio output failed to initialize'
+    closePcmPlayer()
+    return null
+  } finally {
+    playerNodeReady = null
+  }
+}
+
+async function resumePcmPlayer() {
+  await ensurePcmPlayer()
+  if (audioContext?.state === 'suspended') {
+    await audioContext.resume().catch(() => null)
+  }
+}
+
+function clearPcmStreaming() {
+  clearTimeout(pcmStreamingTimer)
+  pcmStreamingTimer = null
+  pcmStreaming.value = false
+}
+
+function markPcmStreaming() {
+  pcmStreaming.value = true
+  clearTimeout(pcmStreamingTimer)
+  pcmStreamingTimer = setTimeout(() => {
+    pcmStreaming.value = false
+    pcmStreamingTimer = null
+  }, 1200)
+}
+
+function closePcmPlayer() {
+  clearPcmStreaming()
+  audioReady.value = false
+  playerNodeReady = null
+  if (playerNode) {
+    try {
+      playerNode.disconnect()
+    } catch {}
+  }
+  playerNode = null
+  const context = audioContext
+  audioContext = null
+  if (context && context.state !== 'closed') {
+    context.close().catch(() => null)
+  }
+}
+
 function connectAudioStream() {
   if (audioWs || !host.value.running) return
   clearTimeout(reconnectTimer)
@@ -448,10 +544,11 @@ function connectAudioStream() {
       }
       return
     }
-    if (!playerNode) return
     const buffer = event.data instanceof Blob ? await event.data.arrayBuffer() : event.data
     const header = pendingAudioHeader || {}
     pendingAudioHeader = null
+    await ensurePcmPlayer()
+    if (!playerNode) return
     playerNode.port.postMessage(
       {
         type: 'samples',
@@ -461,9 +558,11 @@ function connectAudioStream() {
       },
       [buffer]
     )
+    if (audioContext?.state === 'running') markPcmStreaming()
   }
   audioWs.onclose = () => {
     audioConnected.value = false
+    clearPcmStreaming()
     audioWs = null
     if (host.value.running) {
       reconnectTimer = setTimeout(connectAudioStream, 1200)
@@ -483,6 +582,8 @@ function disconnectAudioStream() {
     audioWs = null
   }
   audioConnected.value = false
+  clearPcmStreaming()
+  closePcmPlayer()
   pendingAudioHeader = null
 }
 
@@ -586,6 +687,8 @@ export function useDawHost() {
     hostError,
     audioConnected,
     audioReady,
+    hostStreamingEnabled,
+    pcmStreaming,
     playing,
     positionSeconds,
     positionBeats,

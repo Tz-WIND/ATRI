@@ -145,8 +145,27 @@
       </div>
 
       <div class="host-controls">
-        <span :class="['host-dot', { online: host.running, audio: audioConnected }]" />
-        <span class="host-label">{{ host.running ? 'Host Online' : 'Host Offline' }}</span>
+        <div
+          class="host-status"
+          aria-label="Audio host diagnostics"
+        >
+          <span class="host-status-item">
+            <span :class="['host-dot', { online: host.running }]" />
+            <span class="host-label">{{ host.running ? 'Host Online' : 'Host Offline' }}</span>
+          </span>
+          <span class="host-status-item">
+            <span :class="['host-dot', { connected: audioConnected }]" />
+            <span class="host-label">
+              {{ audioConnected ? 'Audio WS Connected' : 'Audio WS Disconnected' }}
+            </span>
+          </span>
+          <span class="host-status-item">
+            <span :class="['host-dot', { connected: hostStreamingEnabled, streaming: pcmStreaming }]" />
+            <span class="host-label">
+              {{ hostStreamingEnabled ? (pcmStreaming ? 'PCM Streaming' : 'PCM Waiting') : 'PCM Idle' }}
+            </span>
+          </span>
+        </div>
         <button
           :class="['tool-btn text', { active: mixerVisible }]"
           title="Show mixer rack"
@@ -1316,8 +1335,16 @@
               <dd>{{ engine?.transport || 'stopped' }}</dd>
             </div>
             <div>
-              <dt>Audio</dt>
-              <dd>{{ audioConnected ? 'streaming' : 'idle' }}</dd>
+              <dt>Audio WS</dt>
+              <dd>{{ audioConnected ? 'connected' : 'disconnected' }}</dd>
+            </div>
+            <div>
+              <dt>Host PCM</dt>
+              <dd>{{ hostStreamingEnabled ? 'enabled' : 'disabled' }}</dd>
+            </div>
+            <div>
+              <dt>PCM</dt>
+              <dd>{{ pcmStreaming ? 'streaming' : 'idle' }}</dd>
             </div>
             <div>
               <dt>Tracks</dt>
@@ -1627,6 +1654,8 @@ const {
   loading,
   hostError,
   audioConnected,
+  hostStreamingEnabled,
+  pcmStreaming,
   playing,
   positionBeats,
   totalNotes,
@@ -1653,6 +1682,8 @@ const {
   renameLearnedAutomationParameter,
   selectTrack,
   refreshHostStatus,
+  connectAudioStream,
+  disconnectAudioStream,
 } = useDawHost()
 
 const arrangementWrap = ref(null)
@@ -6734,6 +6765,7 @@ onUnmounted(() => {
   unbindControllerDrag()
   unbindAutomationDrag()
   if (audioDecodeContext?.close) audioDecodeContext.close()
+  disconnectAudioStream()
   cancelAnimationFrame(raf)
 })
 
@@ -6759,6 +6791,14 @@ watch(positionBeats, (value) => {
   syncTransportDisplayFields(project.value)
   drawAll()
 })
+
+watch(() => host.value.running, (running) => {
+  if (running) {
+    connectAudioStream()
+  } else {
+    disconnectAudioStream()
+  }
+}, { immediate: true })
 </script>
 
 <style scoped>
@@ -6817,6 +6857,22 @@ watch(positionBeats, (value) => {
 
 .host-controls {
   justify-content: flex-end;
+}
+
+.host-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.host-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .tool-btn,
@@ -7078,14 +7134,20 @@ watch(positionBeats, (value) => {
   box-shadow: 0 0 0 3px rgba(143, 216, 199, 0.12);
 }
 
-.host-dot.audio {
+.host-dot.connected {
   background: #f0d17a;
   box-shadow: 0 0 0 3px rgba(240, 209, 122, 0.14);
+}
+
+.host-dot.streaming {
+  background: #58a7b8;
+  box-shadow: 0 0 0 3px rgba(88, 167, 184, 0.16);
 }
 
 .host-label {
   color: var(--t3);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .studio-error {
@@ -8983,6 +9045,10 @@ watch(positionBeats, (value) => {
 
 .studio-page.embedded .host-controls {
   justify-content: space-between;
+  gap: 6px;
+}
+
+.studio-page.embedded .host-status {
   gap: 6px;
 }
 

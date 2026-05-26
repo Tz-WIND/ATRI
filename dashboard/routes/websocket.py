@@ -107,10 +107,7 @@ def register(dashboard: Dashboard) -> None:
                 await websocket.close(1008)
                 return
         ws_obj = websocket._get_current_object()  # type: ignore[attr-defined]
-        # Track audio clients separately for binary audio streaming
-        if not hasattr(dashboard, "_audio_clients"):
-            dashboard._audio_clients = set()
-        dashboard._audio_clients.add(ws_obj)
+        await dashboard.register_audio_client(ws_obj)
         try:
             while True:
                 data = await websocket.receive()
@@ -128,7 +125,7 @@ def register(dashboard: Dashboard) -> None:
         except asyncio.CancelledError:
             pass
         finally:
-            dashboard._audio_clients.discard(ws_obj)
+            await dashboard.discard_audio_client(ws_obj)
 
     # ── SPA fallback (via 404 handler so it never shadows API routes) ──
 

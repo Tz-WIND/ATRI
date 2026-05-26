@@ -1207,6 +1207,12 @@ async def _broadcast_project(project: dict[str, Any]) -> None:
         )
 
 
+async def reconcile_dashboard_audio_streaming() -> None:
+    dashboard = getattr(_lifecycle, "dashboard", None) if _lifecycle else None
+    if dashboard:
+        await dashboard.reconcile_audio_streaming_state()
+
+
 def _project_save_fingerprint(project: dict[str, Any]) -> str:
     normalized = normalize_project(project)
     normalized.pop("updated_at", None)
@@ -1522,6 +1528,7 @@ async def start_audio_host():
     sync = None
     if data.get("sync", True):
         sync = await _sync_project_to_host(load_project(), broadcast=True)
+    await reconcile_dashboard_audio_streaming()
     return jsonify({"ok": True, "host": _host_snapshot(), "sync": sync})
 
 
