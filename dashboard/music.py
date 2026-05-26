@@ -343,7 +343,14 @@ def _unique_zip_names(stems: list[dict[str, Any]], format_name: str) -> dict[int
 
 
 def _ffmpeg_path() -> str | None:
-    return shutil.which("ffmpeg")
+    path = shutil.which("ffmpeg")
+    if path:
+        return path
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None
+    return str(imageio_ffmpeg.get_ffmpeg_exe())
 
 
 def _run_ffmpeg_encode(

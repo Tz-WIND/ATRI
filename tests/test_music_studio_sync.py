@@ -1,4 +1,5 @@
 import io
+import sys
 import threading
 import zipfile
 from pathlib import Path
@@ -57,6 +58,17 @@ class ExportStudioHost(FakeStudioHost):
                 },
             }
         return {"type": "ack", "cmd": cmd}
+
+
+def test_ffmpeg_path_falls_back_to_imageio_ffmpeg_package(monkeypatch):
+    monkeypatch.setattr(music.shutil, "which", lambda _name: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "imageio_ffmpeg",
+        SimpleNamespace(get_ffmpeg_exe=lambda: "bundled-ffmpeg"),
+    )
+
+    assert music._ffmpeg_path() == "bundled-ffmpeg"
 
 
 class ParameterStudioHost(FakeStudioHost):
