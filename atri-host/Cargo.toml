@@ -3,6 +3,7 @@ members = [
     "atri-core",
     "atri-engine",
     "atri-vst3",
+    "atri-bridge-vst3",
     "atri-host-bin",
 ]
 resolver = "2"

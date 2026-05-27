@@ -22,6 +22,13 @@ from weakref import WeakKeyDictionary
 
 from quart import Blueprint, Response, jsonify, request, send_file
 
+from core.music_export import (
+    MIDI_SCHEMA_VERSION,
+    build_export_manifest,
+    write_dawproject_archive,
+    write_export_manifest,
+    write_project_midi,
+)
 from core.music_project import (
     automation_diff,
     automation_learned_parameter_rename,
@@ -71,11 +78,12 @@ AUDIO_EXTS = {
     ".dff",
 }
 HOST_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
-EXPORT_FORMATS = {"wav", "flac", "mp3"}
+EXPORT_FORMATS = {"wav", "flac", "mp3", "midi", "dawproject"}
 EXPORT_BIT_DEPTHS = {"i16", "i24", "f32"}
 EXPORT_SAMPLE_RATES = {44100, 48000, 88200, 96000, 192000}
 EXPORT_BITRATES = {"128k", "192k", "256k", "320k"}
 RAW_HOST_COMMAND_DENYLIST = {"bounce", "render_wav"}
+BRIDGE_API_VERSION = 1
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -450,6 +458,11 @@ async def _render_host_wav(
 
 def _export_download_url(path: Path) -> str:
     return f"/api/music/studio/export/download/{path.name}"
+
+
+def _normalize_export_consumer(value: Any) -> str:
+    consumer = str(value or "export").strip().lower()
+    return consumer if consumer in {"export", "bridge"} else "export"
 
 
 def _is_in_music_dirs(filepath: str) -> bool:
@@ -856,12 +869,12 @@ def _host_manager():
 def _host_snapshot() -> dict[str, Any]:
     host = _host_manager()
     return {
-        "running": host.is_running,
-        "sample_rate": host.sample_rate,
-        "buffer_size": host.buffer_size,
-        "audio_engine": host.audio_engine,
-        "bit_depth": host.bit_depth,
-        "binary_path": host.binary_path or "",
+        "running": bool(getattr(host, "is_running", False)),
+        "sample_rate": getattr(host, "sample_rate", None),
+        "buffer_size": getattr(host, "buffer_size", None),
+        "audio_engine": getattr(host, "audio_engine", ""),
+        "bit_depth": getattr(host, "bit_depth", ""),
+        "binary_path": getattr(host, "binary_path", "") or "",
     }
 
 
@@ -2543,10 +2556,66 @@ async def studio_automation_retarget(track_id: int):
 @bp.route("/studio/export", methods=["POST"])
 async def studio_export_audio():
     data = await _json_payload()
+    payload, status_code = await _studio_export_payload(data)
+    return jsonify(payload), status_code
+
+
+@bp.route("/studio/bridge/status", methods=["GET"])
+async def studio_bridge_status():
+    project = load_project()
+    return jsonify(_bridge_status_payload(project))
+
+
+@bp.route("/studio/bridge/export", methods=["POST"])
+async def studio_bridge_export():
+    data = await _json_payload()
+    bridge_payload = {**data, "consumer": "bridge"}
+    payload, status_code = await _studio_export_payload(bridge_payload)
+    if payload.get("ok"):
+        payload = {
+            **payload,
+            "bridge": _bridge_contract_payload(),
+        }
+    return jsonify(payload), status_code
+
+
+async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    sync: dict[str, Any] | None = None
     try:
         format_name = _normalize_export_format(data.get("format"))
-        mode = _normalize_export_mode(data.get("mode"))
         target = _normalize_export_target(data.get("target", data.get("scope")))
+        if format_name == "midi":
+            project = load_project()
+            export_id = uuid4().hex[:10]
+            export = _perform_midi_export(
+                project,
+                data,
+                export_id=export_id,
+                target=target,
+                consumer=_normalize_export_consumer(data.get("consumer")),
+            )
+            sync = {
+                "host_running": bool(getattr(_host_manager(), "is_running", False)),
+                "skipped": True,
+            }
+            return _studio_export_success_payload(export, used_ffmpeg=False, sync=sync), 200
+        if format_name == "dawproject":
+            project = load_project()
+            export_id = uuid4().hex[:10]
+            export = _perform_dawproject_export(
+                project,
+                data,
+                export_id=export_id,
+                target=target,
+                consumer=_normalize_export_consumer(data.get("consumer")),
+            )
+            sync = {
+                "host_running": bool(getattr(_host_manager(), "is_running", False)),
+                "skipped": True,
+            }
+            return _studio_export_success_payload(export, used_ffmpeg=False, sync=sync), 200
+
+        mode = _normalize_export_mode(data.get("mode"))
         sample_rate = _normalize_export_sample_rate(data.get("sample_rate"))
         bit_depth = _normalize_export_bit_depth(data.get("bit_depth"), format_name)
         bitrate = _normalize_export_bitrate(data.get("bitrate"))
@@ -2581,21 +2650,156 @@ async def studio_export_audio():
             end=end,
         )
     except StudioExportError as exc:
-        return (
-            jsonify({"ok": False, "error": str(exc), "host": _host_snapshot()}),
-            exc.status_code,
-        )
+        return {"ok": False, "error": str(exc), "host": _host_snapshot()}, exc.status_code
 
-    return jsonify(
-        {
-            "ok": True,
-            "export": export,
-            "exports": [export],
-            "used_ffmpeg": format_name != "wav",
-            "sync": sync,
-            "host": _host_snapshot(),
-        }
+    return (
+        _studio_export_success_payload(export, used_ffmpeg=format_name != "wav", sync=sync),
+        200,
     )
+
+
+def _studio_export_success_payload(
+    export: dict[str, Any],
+    *,
+    used_ffmpeg: bool,
+    sync: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "export": export,
+        "exports": [export],
+        "used_ffmpeg": used_ffmpeg,
+        "sync": sync,
+        "host": _host_snapshot(),
+    }
+
+
+def _bridge_contract_payload() -> dict[str, Any]:
+    return {
+        "api_version": BRIDGE_API_VERSION,
+        "manifest_schema_version": MIDI_SCHEMA_VERSION,
+        "local_only": True,
+    }
+
+
+def _bridge_status_payload(project: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "bridge": _bridge_contract_payload(),
+        "project": {
+            "title": str(project.get("title") or "ATRI Session"),
+            "revision": _project_revision(project),
+            "summary": project_summary(project),
+        },
+        "exports": {
+            "formats": sorted(EXPORT_FORMATS),
+            "hostless_formats": ["dawproject", "midi"],
+            "host_required_formats": ["flac", "mp3", "wav"],
+        },
+        "host": _host_snapshot(),
+    }
+
+
+def _perform_midi_export(
+    project: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    export_id: str,
+    target: str,
+    consumer: str,
+) -> dict[str, Any]:
+    export_dir = _audio_export_dir()
+    project_stem = _safe_export_stem(project.get("title"), "ATRI Export")
+    final_path = export_dir / f"{export_id}_{project_stem}.mid"
+    track_ids = _midi_track_ids_for_payload(project, payload, target)
+
+    try:
+        summary = write_project_midi(project, final_path, track_ids=track_ids)
+    except (OSError, ValueError) as exc:
+        raise StudioExportError(str(exc), 400) from exc
+
+    file_entry = {
+        "role": "midi",
+        "path": str(final_path),
+        "filename": final_path.name,
+        "download_url": _export_download_url(final_path),
+    }
+    export: dict[str, Any] = {
+        "id": export_id,
+        "mode": "project",
+        "target": target,
+        "format": "midi",
+        "path": str(final_path),
+        "filename": final_path.name,
+        "download_url": _export_download_url(final_path),
+        "track_ids": summary["track_ids"],
+        "tracks": summary["tracks"],
+        "files": [file_entry],
+        "summary": summary,
+    }
+    manifest = build_export_manifest(project, export, consumer=consumer)
+    manifest_path = export_dir / f"{export_id}_atri-export-manifest.json"
+    try:
+        write_export_manifest(manifest_path, manifest)
+    except OSError as exc:
+        raise StudioExportError(str(exc), 400) from exc
+
+    export["manifest_path"] = str(manifest_path)
+    export["manifest"] = manifest
+    return export
+
+
+def _perform_dawproject_export(
+    project: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    export_id: str,
+    target: str,
+    consumer: str,
+) -> dict[str, Any]:
+    export_dir = _audio_export_dir()
+    project_stem = _safe_export_stem(project.get("title"), "ATRI Export")
+    final_path = export_dir / f"{export_id}_{project_stem}.dawproject"
+    track_ids = _midi_track_ids_for_payload(project, payload, target)
+
+    try:
+        export = write_dawproject_archive(
+            project,
+            final_path,
+            export_id=export_id,
+            consumer=consumer,
+            track_ids=track_ids,
+        )
+    except (OSError, ValueError) as exc:
+        raise StudioExportError(str(exc), 400) from exc
+
+    export["download_url"] = _export_download_url(final_path)
+    for file in export.get("files", []):
+        if isinstance(file, dict) and file.get("role") == "dawproject":
+            file["download_url"] = _export_download_url(final_path)
+    return export
+
+
+def _midi_track_ids_for_payload(
+    project: dict[str, Any],
+    payload: dict[str, Any],
+    target: str,
+) -> list[int] | None:
+    if target == "entire_project":
+        return None
+    raw_track_ids = payload.get("track_ids")
+    if not isinstance(raw_track_ids, list) or not raw_track_ids:
+        raise StudioExportError("track_ids is required for selected_tracks export")
+    track_ids: list[int] = []
+    for raw_track_id in raw_track_ids:
+        try:
+            track = find_track(project, int(raw_track_id))
+        except (TypeError, ValueError) as exc:
+            raise StudioExportError(f"track not found: {raw_track_id}", 404) from exc
+        if _is_automation_track(track):
+            raise StudioExportError(f"track is not exportable: {raw_track_id}", 400)
+        track_ids.append(int(track["id"]))
+    return track_ids
 
 
 async def _perform_studio_export(

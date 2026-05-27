@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest-tmp/
+.pytest-tmp*/
 dist/
 build/
 
@@ -26,6 +27,7 @@ Thumbs.db
 参考/
 workspace/
 skills/
+docs/
 
 # Project data (runtime generated)
 data/knowledge/

@@ -23,7 +23,7 @@ NO_SYNC_NEEDED_HINT = (
 _dashboard_session_token = ""
 STUDIO_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 STUDIO_AUDIO_FORMATS = "AAC, FLAC, M4A, MP3, WAV"
-STUDIO_EXPORT_FORMATS = {"wav", "flac", "mp3"}
+STUDIO_EXPORT_FORMATS = {"wav", "flac", "mp3", "midi", "dawproject"}
 STUDIO_EXPORT_SAMPLE_RATES = {44100, 48000, 88200, 96000, 192000}
 STUDIO_EXPORT_BIT_DEPTHS = {"i16", "i24", "f32"}
 STUDIO_EXPORT_BITRATES = {"128k", "192k", "256k", "320k"}
@@ -540,9 +540,8 @@ class StudioAudioImportTool(_StudioDashboardTool):
 class StudioExportAudioTool(_StudioDashboardTool):
     name = "studio_export_audio"
     description = (
-        "Export the current Music Studio project audio through the Rust host. Supports "
-        "whole-project or selected-track mixdowns, per-track stems, WAV/FLAC/MP3 formats, "
-        "and quality settings such as sample_rate, bit_depth, and MP3 bitrate."
+        "Export the current Music Studio project. Supports MIDI project export, audio "
+        "mixdowns, per-track stems, WAV/FLAC/MP3 formats, and bridge-ready manifests."
     )
     parameters: dict[str, Any] = {  # noqa: RUF012
         "type": "object",
@@ -564,8 +563,13 @@ class StudioExportAudioTool(_StudioDashboardTool):
             },
             "format": {
                 "type": "string",
-                "enum": ["wav", "flac", "mp3"],
+                "enum": ["wav", "flac", "mp3", "midi", "dawproject"],
                 "default": "wav",
+            },
+            "consumer": {
+                "type": "string",
+                "enum": ["export", "bridge"],
+                "default": "export",
             },
             "sample_rate": {
                 "type": "integer",
@@ -602,6 +606,7 @@ class StudioExportAudioTool(_StudioDashboardTool):
         sample_rate: int = 48000,
         bit_depth: str = "i24",
         bitrate: str | int | None = None,
+        consumer: str = "export",
         start: float | None = None,
         end: float | None = None,
         **kwargs: Any,
@@ -618,7 +623,29 @@ class StudioExportAudioTool(_StudioDashboardTool):
         if safe_mode not in {"mixdown", "stems"}:
             return "Error: mode must be mixdown or stems"
         if safe_format not in STUDIO_EXPORT_FORMATS:
-            return "Error: format must be wav, flac, or mp3"
+            return "Error: format must be wav, flac, mp3, midi, or dawproject"
+        safe_consumer = str(consumer or kwargs.get("consumer") or "export").strip().lower()
+        if safe_consumer not in {"export", "bridge"}:
+            return "Error: consumer must be export or bridge"
+
+        if safe_format in {"midi", "dawproject"}:
+            payload = _compact_payload(
+                {
+                    "target": safe_target,
+                    "track_ids": track_ids or [],
+                    "mode": safe_mode,
+                    "format": safe_format,
+                    "consumer": safe_consumer if safe_consumer == "bridge" else None,
+                    "start": start,
+                    "end": end,
+                }
+            )
+            return _dump(
+                _with_agent_sync_hint(
+                    _dashboard_json("POST", "/api/music/studio/export", payload, timeout=120)
+                )
+            )
+
         try:
             safe_sample_rate = int(sample_rate)
         except (TypeError, ValueError):
@@ -650,6 +677,7 @@ class StudioExportAudioTool(_StudioDashboardTool):
                 "sample_rate": safe_sample_rate,
                 "bit_depth": safe_bit_depth,
                 "bitrate": safe_bitrate,
+                "consumer": safe_consumer if safe_consumer == "bridge" else None,
                 "start": start,
                 "end": end,
             }

@@ -367,6 +367,60 @@ def test_studio_export_audio_tool_rejects_invalid_sample_rate_without_raising(tm
     assert result == "Error: sample_rate must be 44100, 48000, 88200, 96000, or 192000"
 
 
+def test_studio_export_audio_tool_posts_midi_bridge_payload(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_dashboard_json(method, path, payload=None, timeout=3):
+        calls.append((method, path, payload, timeout))
+        return {
+            "ok": True,
+            "export": {"format": "midi", "manifest": {"consumer": "bridge"}},
+            "sync": {"skipped": True},
+        }
+
+    monkeypatch.setattr("core.tools.studio._dashboard_json", fake_dashboard_json)
+
+    result = json.loads(
+        StudioExportAudioTool(str(tmp_path)).execute(format="midi", consumer="bridge")
+    )
+
+    assert calls == [
+        (
+            "POST",
+            "/api/music/studio/export",
+            {"target": "entire_project", "mode": "mixdown", "format": "midi", "consumer": "bridge"},
+            120,
+        )
+    ]
+    assert result["export"]["manifest"]["consumer"] == "bridge"
+
+
+def test_studio_export_audio_tool_posts_dawproject_bridge_payload(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_dashboard_json(method, path, payload=None, timeout=3):
+        calls.append((method, path, payload, timeout))
+        return {
+            "ok": True,
+            "export": {"format": "dawproject", "manifest": {"consumer": "bridge"}},
+            "sync": {"skipped": True},
+        }
+
+    monkeypatch.setattr("core.tools.studio._dashboard_json", fake_dashboard_json)
+
+    result = json.loads(
+        StudioExportAudioTool(str(tmp_path)).execute(format="dawproject", consumer="bridge")
+    )
+
+    assert calls[0][2] == {
+        "target": "entire_project",
+        "mode": "mixdown",
+        "format": "dawproject",
+        "consumer": "bridge",
+    }
+    assert result["export"]["format"] == "dawproject"
+
+
 def test_studio_piano_lane_write_writes_meter_events_and_syncs(
     monkeypatch,
     tmp_path,

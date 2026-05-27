@@ -2036,6 +2036,217 @@ async def test_studio_export_mp3_requires_ffmpeg(tmp_path, monkeypatch):
     assert all(cmd != "bounce" for cmd, _ in host.commands)
 
 
+async def test_studio_export_midi_writes_file_and_manifest_without_host_render(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    music.save_project(
+        {
+            "title": "Bridge MIDI",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 4,
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "host_track_id": None,
+                    "notes": [
+                        {
+                            "id": "n1",
+                            "pitch": 60,
+                            "start": 0,
+                            "duration": 1,
+                            "velocity": 96,
+                        }
+                    ],
+                    "midi_events": [],
+                    "plugin_slots": [],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(music, "_host_manager", lambda: StoppedStudioHost())
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/export",
+        json={"format": "midi", "consumer": "bridge"},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["export"]["format"] == "midi"
+    assert body["export"]["manifest"]["consumer"] == "bridge"
+    assert body["export"]["manifest"]["capabilities"]["midi"] is True
+    assert await AsyncPath(body["export"]["path"]).exists()
+    assert await AsyncPath(body["export"]["manifest_path"]).exists()
+
+
+async def test_studio_export_dawproject_preserves_plugin_state_without_host_render(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    state_b64 = "cGx1Z2luLXN0YXRl"
+    music.save_project(
+        {
+            "title": "Bridge DAWProject",
+            "tempo": 128,
+            "time_signature": [4, 4],
+            "length_beats": 4,
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "host_track_id": None,
+                    "notes": [
+                        {
+                            "id": "n1",
+                            "pitch": 60,
+                            "start": 0,
+                            "duration": 1,
+                            "velocity": 96,
+                        }
+                    ],
+                    "midi_events": [],
+                    "plugin_slots": [
+                        {
+                            "id": "instrument",
+                            "type": "vst3",
+                            "name": "Stateful Synth",
+                            "path": "C:/VST3/Stateful Synth.vst3",
+                            "state_b64": state_b64,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(music, "_host_manager", lambda: StoppedStudioHost())
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/export",
+        json={"format": "dawproject", "consumer": "bridge"},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["export"]["format"] == "dawproject"
+    assert body["export"]["manifest"]["consumer"] == "bridge"
+    assert body["export"]["manifest"]["plugin_states"][0]["plugin_name"] == "Stateful Synth"
+    assert await AsyncPath(body["export"]["path"]).exists()
+
+    with zipfile.ZipFile(body["export"]["path"]) as archive:
+        names = set(archive.namelist())
+        assert "project.xml" in names
+        assert any(name.startswith("plugins/") for name in names)
+
+
+async def test_studio_bridge_status_reports_versions_project_and_host(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    music.save_project(
+        {
+            "title": "Bridge Status",
+            "tempo": 122,
+            "time_signature": [3, 4],
+            "length_beats": 12,
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [],
+                    "midi_events": [],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(music, "_host_manager", lambda: StoppedStudioHost())
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.get("/api/music/studio/bridge/status")
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["bridge"]["api_version"] == 1
+    assert body["bridge"]["manifest_schema_version"] == 1
+    assert body["project"]["title"] == "Bridge Status"
+    assert body["project"]["revision"]
+    assert body["host"]["running"] is False
+    assert set(body["exports"]["hostless_formats"]) >= {"midi", "dawproject"}
+    assert set(body["exports"]["host_required_formats"]) >= {"wav", "flac", "mp3"}
+
+
+async def test_studio_bridge_export_forces_bridge_consumer_and_returns_contract(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    music.save_project(
+        {
+            "title": "Bridge Export",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 4,
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [
+                        {
+                            "id": "n1",
+                            "pitch": 60,
+                            "start": 0,
+                            "duration": 1,
+                            "velocity": 96,
+                        }
+                    ],
+                    "midi_events": [],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(music, "_host_manager", lambda: StoppedStudioHost())
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/bridge/export",
+        json={"format": "midi", "consumer": "export"},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["bridge"]["api_version"] == 1
+    assert body["export"]["format"] == "midi"
+    assert body["export"]["manifest"]["consumer"] == "bridge"
+    assert body["export"]["manifest"]["export_id"] == body["export"]["id"]
+    assert await AsyncPath(body["export"]["path"]).exists()
+
+
 async def test_studio_export_download_streams_file_without_reading_into_memory(
     tmp_path,
     monkeypatch,
