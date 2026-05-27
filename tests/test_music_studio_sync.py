@@ -2,6 +2,7 @@ import io
 import sys
 import threading
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -778,6 +779,178 @@ async def test_sync_project_to_host_resends_automation_only_when_lanes_change(mo
         {"beat": 0.0, "value": 0.4, "curve": "linear"},
         {"beat": 4.0, "value": 0.6, "curve": "linear"},
     ]
+
+
+async def test_broadcast_project_sends_patch_revision_without_full_project(monkeypatch):
+    class CaptureDashboard:
+        def __init__(self):
+            self.messages: list[dict[str, Any]] = []
+
+        async def broadcast(self, data):
+            self.messages.append(data)
+
+    dashboard = CaptureDashboard()
+    monkeypatch.setattr(music, "_lifecycle", SimpleNamespace(dashboard=dashboard))
+    monkeypatch.setattr(music, "_project_broadcast_snapshot", None, raising=False)
+    monkeypatch.setattr(music, "_project_broadcast_revision", None, raising=False)
+
+    project = music.normalize_project(
+        {
+            "title": "Patch Broadcast",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "tracks": [
+                {
+                    "id": 1,
+                    "host_track_id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "volume": 0.8,
+                    "pan": 0,
+                    "mute": False,
+                    "solo": False,
+                    "clips": [
+                        {
+                            "id": "clip_1",
+                            "type": "midi",
+                            "name": "Lead",
+                            "start": 0,
+                            "duration": 4,
+                            "notes": [
+                                {
+                                    "id": "lead_1",
+                                    "pitch": 60,
+                                    "start": 0,
+                                    "duration": 1,
+                                    "velocity": 96,
+                                }
+                            ],
+                            "events": [],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    await music._broadcast_project(project)
+
+    dashboard.messages.clear()
+    updated_project = deepcopy(project)
+    updated_project["tracks"][0]["clips"][0]["notes"][0]["start"] = 2
+    updated_project["tracks"][0]["notes"][0]["start"] = 2
+    await music._broadcast_project(updated_project)
+
+    assert len(dashboard.messages) == 1
+    message = dashboard.messages[0]
+    assert message["type"] == "music_project"
+    assert "project" not in message
+    assert message["base_revision"]
+    assert message["revision"] != message["base_revision"]
+    assert message["patch"] == [
+        {"op": "replace", "path": "/tracks/0/clips/0/notes/0/start", "value": 2},
+        {"op": "replace", "path": "/tracks/0/notes/0/start", "value": 2},
+    ]
+    assert message["summary"]["note_count"] == 1
+
+
+async def test_broadcast_project_patch_inserts_identified_note_without_replacing_tail(monkeypatch):
+    class CaptureDashboard:
+        def __init__(self):
+            self.messages: list[dict[str, Any]] = []
+
+        async def broadcast(self, data):
+            self.messages.append(data)
+
+    dashboard = CaptureDashboard()
+    monkeypatch.setattr(music, "_lifecycle", SimpleNamespace(dashboard=dashboard))
+    monkeypatch.setattr(music, "_project_broadcast_snapshot", None, raising=False)
+    monkeypatch.setattr(music, "_project_broadcast_revision", None, raising=False)
+
+    project = music.normalize_project(
+        {
+            "title": "Patch Insert",
+            "tempo": 120,
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Lead",
+                    "clips": [
+                        {
+                            "id": "clip_1",
+                            "type": "midi",
+                            "start": 0,
+                            "duration": 8,
+                            "notes": [
+                                {
+                                    "id": "note_a",
+                                    "pitch": 60,
+                                    "start": 2,
+                                    "duration": 1,
+                                    "velocity": 90,
+                                },
+                                {
+                                    "id": "note_b",
+                                    "pitch": 64,
+                                    "start": 4,
+                                    "duration": 1,
+                                    "velocity": 90,
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    await music._broadcast_project(project)
+
+    dashboard.messages.clear()
+    inserted_note = {"id": "note_new", "pitch": 55, "start": 0, "duration": 1, "velocity": 88}
+    updated_project = deepcopy(project)
+    updated_project["tracks"][0]["clips"][0]["notes"].insert(0, deepcopy(inserted_note))
+    updated_project["tracks"][0]["notes"].insert(0, deepcopy(inserted_note))
+
+    await music._broadcast_project(updated_project)
+
+    patch = dashboard.messages[0]["patch"]
+    assert patch == [
+        {"op": "add", "path": "/tracks/0/clips/0/notes/0", "value": inserted_note},
+        {"op": "add", "path": "/tracks/0/notes/0", "value": inserted_note},
+    ]
+
+
+async def test_studio_project_route_returns_project_revision(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    music.save_project(
+        {
+            "title": "Revision Route",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [],
+                    "midi_events": [],
+                    "clips": [],
+                }
+            ],
+        }
+    )
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.get("/api/music/studio/project")
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert isinstance(body["revision"], str)
+    assert len(body["revision"]) == 64
 
 
 async def test_sync_project_to_host_samples_midi_controller_curve_segments(monkeypatch):

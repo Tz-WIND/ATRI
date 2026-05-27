@@ -1,10 +1,12 @@
 import { computed, ref, shallowRef } from 'vue'
+import { mergeProjectBroadcast } from '@/components/music/studioProjectPatch.js'
 import { secondsToBeats } from '@/components/music/tempoAutomation.js'
 import { useApi } from './useApi.js'
 
 const api = useApi()
 
 const project = shallowRef(null)
+const projectRevision = ref('')
 const host = ref({ running: false, sample_rate: 48000, buffer_size: 256, binary_path: '' })
 const engine = ref(null)
 const activeTrackId = ref(1)
@@ -50,12 +52,23 @@ const learnedAutomationParameters = computed(() => (
     : []
 ))
 
-function setProject(nextProject) {
+function setProject(nextProject, revision = '') {
   if (!nextProject) return
   project.value = nextProject
+  if (revision) projectRevision.value = String(revision)
   if (!tracks.value.some(track => track.id === activeTrackId.value) && tracks.value.length) {
     activeTrackId.value = tracks.value[0].id
   }
+}
+
+function responseRevision(res, fallback = '') {
+  return String(res?.revision || res?.sync?.revision || fallback || '')
+}
+
+function setProjectFromResponse(res) {
+  const revision = responseRevision(res)
+  if (res?.project) setProject(res.project, revision)
+  if (res?.sync?.project) setProject(res.sync.project, responseRevision(res, revision))
 }
 
 async function loadProject() {
@@ -63,7 +76,7 @@ async function loadProject() {
   hostError.value = ''
   try {
     const res = await api.studioProject()
-    setProject(res.project)
+    setProjectFromResponse(res)
     if (res.host) host.value = res.host
     if (host.value.running) startStatusPolling()
   } catch (err) {
@@ -78,7 +91,7 @@ async function saveProject(nextProject, options = {}) {
   hostError.value = ''
   try {
     const res = await api.saveStudioProject(nextProject, { broadcast: true, ...options })
-    if (res.project) setProject(res.project)
+    setProjectFromResponse(res)
     if (res.sync?.host_running) {
       host.value = { ...host.value, running: true }
       startStatusPolling()
@@ -160,7 +173,7 @@ async function syncProject(options = {}) {
   try {
     const res = await api.studioSync(options)
     if (res.host) host.value = res.host
-    if (res.sync?.project) setProject(res.sync.project)
+    setProjectFromResponse(res)
     return res
   } catch (err) {
     hostError.value = err.message || 'Failed to sync project'
@@ -174,7 +187,7 @@ async function resetDemo() {
   loading.value = true
   try {
     const res = await api.studioDemo()
-    setProject(res.project)
+    setProjectFromResponse(res)
     if (res.sync?.host_running) {
       host.value = { ...host.value, running: true }
       startStatusPolling()
@@ -192,8 +205,7 @@ async function startHostForTransport() {
     hostError.value = err.message || 'Audio host failed to start'
     throw err
   }
-  if (res.project) setProject(res.project)
-  if (res.sync?.project) setProject(res.sync.project)
+  setProjectFromResponse(res)
   if (res.host) host.value = res.host
   if (res.sync?.host_running || res.host?.running) {
     host.value = { ...host.value, running: true }
@@ -246,13 +258,13 @@ async function addNote(trackId, note) {
     mode: 'append',
     notes: [note],
   })
-  setProject(res.project)
+  setProjectFromResponse(res)
   return res
 }
 
 async function writeNotes(payload) {
   const res = await api.studioMidiWrite(payload)
-  setProject(res.project)
+  setProjectFromResponse(res)
   return res
 }
 
@@ -264,7 +276,7 @@ async function diffMidi(trackId, operations) {
       track_id: trackId,
       operations,
     })
-    if (res.project) setProject(res.project)
+    setProjectFromResponse(res)
     return res
   } catch (err) {
     hostError.value = err.message || 'Failed to apply MIDI edit'
@@ -277,7 +289,7 @@ async function diffClips(operations) {
   hostError.value = ''
   try {
     const res = await api.studioClipDiff(operations)
-    if (res.project) setProject(res.project)
+    setProjectFromResponse(res)
     return res
   } catch (err) {
     hostError.value = err.message || 'Failed to apply clip edit'
@@ -298,13 +310,13 @@ async function replaceTrackNotes(trackId, notes) {
 
 async function updateTrack(trackId, data) {
   const res = await api.studioUpdateTrack(trackId, data)
-  setProject(res.project)
+  setProjectFromResponse(res)
   return res
 }
 
 async function createTrack(name = 'Instrument', options = {}) {
   const res = await api.studioCreateTrack(name, options)
-  setProject(res.project)
+  setProjectFromResponse(res)
   if (res.track?.id) activeTrackId.value = res.track.id
   return res
 }
@@ -314,7 +326,7 @@ async function importAudioFile(file, metadata = {}) {
   hostError.value = ''
   try {
     const res = await api.studioAudioImport(file, metadata)
-    if (res.project) setProject(res.project)
+    setProjectFromResponse(res)
     if (res.track?.id) activeTrackId.value = res.track.id
     return res
   } catch (err) {
@@ -332,7 +344,7 @@ async function exportAudio(payload) {
   try {
     const res = await api.studioExportAudio(payload)
     if (res.host) host.value = res.host
-    if (res.sync?.project) setProject(res.sync.project)
+    setProjectFromResponse(res)
     return res
   } catch (err) {
     exportError.value = err.message || 'Failed to export audio'
@@ -345,7 +357,7 @@ async function exportAudio(payload) {
 
 async function deleteTrack(trackId) {
   const res = await api.studioDeleteTrack(trackId)
-  if (res.project) setProject(res.project)
+  setProjectFromResponse(res)
   return res
 }
 
@@ -371,7 +383,7 @@ async function loadPlugins(options = null) {
 
 async function setTrackPlugin(trackId, plugin, slotId = 'instrument') {
   const res = await api.studioSetTrackPlugin(trackId, plugin, slotId)
-  if (res.project) setProject(res.project)
+  setProjectFromResponse(res)
   if (res.host) host.value = res.host
   if (res.load?.type === 'error') {
     hostError.value = res.load.message || 'Plugin load failed'
@@ -444,6 +456,7 @@ async function setPluginParameter(trackId, slotId, paramIndex, value) {
     param_index: paramIndex,
     value,
   })
+  setProjectFromResponse(res)
   if (res.host) host.value = res.host
   await loadPluginParameters(trackId, slotId).catch(() => null)
   return res
@@ -458,13 +471,13 @@ async function createAutomationTrack(target, options = {}) {
     name: options.name || target.label || 'Automation',
     color: options.color,
   })
-  if (res.project) setProject(res.project)
+  setProjectFromResponse(res)
   return res
 }
 
 async function retargetAutomationTrack(trackId, target) {
   const res = await api.studioAutomationRetarget(trackId, target)
-  if (res.project) setProject(res.project)
+  setProjectFromResponse(res)
   return res
 }
 
@@ -473,7 +486,7 @@ async function diffAutomationTrack(trackId, operations) {
   hostError.value = ''
   try {
     const res = await api.studioAutomationDiff(trackId, operations)
-    if (res.project) setProject(res.project)
+    setProjectFromResponse(res)
     return res
   } catch (err) {
     hostError.value = err.message || 'Failed to apply automation edit'
@@ -485,7 +498,7 @@ async function pollCapturedPluginParameters() {
   hostError.value = ''
   try {
     const res = await api.studioCapturedPluginParameters()
-    if (res.project) setProject(res.project)
+    setProjectFromResponse(res)
     if (res.host) host.value = res.host
     return res
   } catch (err) {
@@ -496,7 +509,7 @@ async function pollCapturedPluginParameters() {
 
 async function renameLearnedAutomationParameter(id, name) {
   const res = await api.studioRenameLearnedPluginParameter(id, name)
-  if (res.project) setProject(res.project)
+  setProjectFromResponse(res)
   return res
 }
 
@@ -730,15 +743,27 @@ function startStatusPolling() {
   statusTimer = setInterval(refreshHostStatus, 1000)
 }
 
-function handleProjectBroadcast(msg) {
-  if (msg?.project) {
-    setProject(msg.project)
+async function handleProjectBroadcast(msg) {
+  try {
+    const merged = mergeProjectBroadcast(project.value, projectRevision.value, msg)
+    if (merged.needsReload) {
+      await loadProject()
+      return
+    }
+    if (merged.project) {
+      setProject(merged.project, merged.revision)
+    } else if (merged.revision) {
+      projectRevision.value = merged.revision
+    }
+  } catch {
+    await loadProject()
   }
 }
 
 export function useDawHost() {
   return {
     project,
+    projectRevision,
     host,
     engine,
     tracks,

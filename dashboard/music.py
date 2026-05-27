@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 import zipfile
+from copy import deepcopy
+from difflib import SequenceMatcher
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -78,6 +80,8 @@ RAW_HOST_COMMAND_DENYLIST = {"bounce", "render_wav"}
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
 _lifecycle: Lifecycle | None = None
+_project_broadcast_snapshot: dict[str, Any] | None = None
+_project_broadcast_revision: str | None = None
 _HOST_SYNC_SESSION_KEY = "__session__"
 _host_sync_fingerprints: WeakKeyDictionary[object, dict[str, str]] = WeakKeyDictionary()
 _host_sync_fingerprints_by_id: dict[int, dict[str, str]] = {}
@@ -1484,16 +1488,138 @@ async def open_plugin_editor_for_track(
     }, status
 
 
+def _json_pointer_path(path: str, token: object) -> str:
+    escaped = str(token).replace("~", "~0").replace("/", "~1")
+    return f"{path}/{escaped}" if path else f"/{escaped}"
+
+
+def _identified_list_ids(items: list[Any]) -> list[str] | None:
+    ids: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("id") is None:
+            return None
+        ids.append(str(item["id"]))
+    return ids if len(set(ids)) == len(ids) else None
+
+
+def _shared_identified_ids(previous_ids: list[str], current_ids: list[str]) -> list[str]:
+    matcher = SequenceMatcher(a=previous_ids, b=current_ids, autojunk=False)
+    shared: list[str] = []
+    for block in matcher.get_matching_blocks():
+        shared.extend(previous_ids[block.a : block.a + block.size])
+    return shared
+
+
+def _identified_list_patch(
+    previous: list[Any],
+    current: list[Any],
+    path: str,
+) -> list[dict[str, Any]] | None:
+    previous_ids = _identified_list_ids(previous)
+    current_ids = _identified_list_ids(current)
+    if previous_ids is None or current_ids is None:
+        return None
+
+    previous_by_id = dict(zip(previous_ids, previous, strict=True))
+    current_by_id = dict(zip(current_ids, current, strict=True))
+    shared_ids = _shared_identified_ids(previous_ids, current_ids)
+    shared_id_set = set(shared_ids)
+    operations: list[dict[str, Any]] = []
+
+    for index in range(len(previous_ids) - 1, -1, -1):
+        if previous_ids[index] not in shared_id_set:
+            operations.append({"op": "remove", "path": _json_pointer_path(path, index)})
+
+    intermediate_ids = [item_id for item_id in previous_ids if item_id in shared_id_set]
+    for index, item_id in enumerate(current_ids):
+        if item_id in shared_id_set:
+            continue
+        operations.append(
+            {"op": "add", "path": _json_pointer_path(path, index), "value": current_by_id[item_id]}
+        )
+        intermediate_ids.insert(index, item_id)
+
+    if intermediate_ids != current_ids:
+        return [{"op": "replace", "path": path or "", "value": current}]
+
+    for index, item_id in enumerate(current_ids):
+        if item_id in shared_id_set:
+            operations.extend(
+                _json_patch(
+                    previous_by_id[item_id],
+                    current_by_id[item_id],
+                    _json_pointer_path(path, index),
+                )
+            )
+    return operations
+
+
+def _json_patch(previous: Any, current: Any, path: str = "") -> list[dict[str, Any]]:
+    if previous == current:
+        return []
+    if isinstance(previous, dict) and isinstance(current, dict):
+        operations: list[dict[str, Any]] = []
+        for key in sorted(previous.keys() - current.keys()):
+            operations.append({"op": "remove", "path": _json_pointer_path(path, key)})
+        for key in sorted(current.keys()):
+            child_path = _json_pointer_path(path, key)
+            if key not in previous:
+                operations.append({"op": "add", "path": child_path, "value": current[key]})
+            else:
+                operations.extend(_json_patch(previous[key], current[key], child_path))
+        return operations
+    if isinstance(previous, list) and isinstance(current, list):
+        identified_patch = _identified_list_patch(previous, current, path)
+        if identified_patch is not None:
+            return identified_patch
+        operations = []
+        shared_length = min(len(previous), len(current))
+        for index in range(shared_length):
+            operations.extend(
+                _json_patch(previous[index], current[index], _json_pointer_path(path, index))
+            )
+        for index in range(len(previous) - 1, len(current) - 1, -1):
+            operations.append({"op": "remove", "path": _json_pointer_path(path, index)})
+        for index in range(shared_length, len(current)):
+            operations.append(
+                {"op": "add", "path": _json_pointer_path(path, index), "value": current[index]}
+            )
+        return operations
+    return [{"op": "replace", "path": path or "", "value": current}]
+
+
+def _remember_project_broadcast_snapshot(
+    project: dict[str, Any],
+    revision: str | None = None,
+) -> None:
+    global _project_broadcast_revision, _project_broadcast_snapshot
+
+    _project_broadcast_snapshot = deepcopy(project)
+    _project_broadcast_revision = revision or _project_revision(project)
+
+
 async def _broadcast_project(project: dict[str, Any]) -> None:
+    global _project_broadcast_revision, _project_broadcast_snapshot
+
     dashboard = getattr(_lifecycle, "dashboard", None) if _lifecycle else None
     if dashboard:
+        revision = _project_revision(project)
+        base_revision = _project_broadcast_revision
+        patch = (
+            _json_patch(_project_broadcast_snapshot, project)
+            if _project_broadcast_snapshot is not None
+            else None
+        )
         await dashboard.broadcast(
             {
                 "type": "music_project",
-                "project": project,
+                "base_revision": base_revision,
+                "revision": revision,
+                "patch": patch,
                 "summary": project_summary(project),
             }
         )
+        _remember_project_broadcast_snapshot(project, revision)
 
 
 async def reconcile_dashboard_audio_streaming() -> None:
@@ -1506,6 +1632,14 @@ def _project_save_fingerprint(project: dict[str, Any]) -> str:
     normalized = normalize_project(project)
     normalized.pop("updated_at", None)
     return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _project_revision(project: dict[str, Any]) -> str:
+    return hashlib.sha256(_project_save_fingerprint(project).encode("utf-8")).hexdigest()
+
+
+def _project_payload(project: dict[str, Any]) -> dict[str, Any]:
+    return {"project": project, "revision": _project_revision(project)}
 
 
 def _project_differs_from_saved_project(project: dict[str, Any]) -> bool:
@@ -1590,6 +1724,7 @@ async def _sync_project_to_host(
         return {
             "host_running": False,
             "commands": [],
+            "revision": _project_revision(project),
             "project": project,
             "summary": project_summary(project),
         }
@@ -1869,6 +2004,7 @@ async def _sync_project_to_host(
     return {
         "host_running": True,
         "commands": commands,
+        "revision": _project_revision(project),
         "automation": {
             "lanes": len(automation_lanes),
             "skipped": skipped_automation,
@@ -1889,9 +2025,12 @@ async def sync_current_project_to_host(*, broadcast: bool = False) -> dict[str, 
 @bp.route("/studio/project", methods=["GET"])
 async def studio_project():
     project = load_project()
+    revision = _project_revision(project)
+    _remember_project_broadcast_snapshot(project, revision)
     return jsonify(
         {
             "project": project,
+            "revision": revision,
             "summary": project_summary(project),
             "host": _host_snapshot(),
         }
@@ -1907,7 +2046,7 @@ async def save_studio_project():
         project,
         broadcast=True,
     )
-    return jsonify({"ok": True, "project": project, "sync": sync, "state": state_capture})
+    return jsonify({"ok": True, **_project_payload(project), "sync": sync, "state": state_capture})
 
 
 @bp.route("/studio/demo", methods=["POST"])
@@ -1918,7 +2057,7 @@ async def reset_studio_demo():
         project,
         broadcast=True,
     )
-    return jsonify({"ok": True, "project": project, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "sync": sync})
 
 
 @bp.route("/studio/host/start", methods=["POST"])
@@ -2087,7 +2226,7 @@ async def studio_set_plugin_parameter():
                 "ok": ok,
                 "error": response.get("message") if not ok else None,
                 "response": response,
-                "project": project if ok else None,
+                **(_project_payload(project) if ok else {"project": None, "revision": None}),
                 "state": state_capture,
                 "host": _host_snapshot(),
             }
@@ -2169,7 +2308,7 @@ async def studio_captured_plugin_parameters():
                         "error": response.get("message"),
                         "captured": [],
                         "learned_parameters": project.get("automation_learned_parameters", []),
-                        "project": project,
+                        **_project_payload(project),
                         "host": _host_snapshot(),
                     }
                 ),
@@ -2189,7 +2328,7 @@ async def studio_captured_plugin_parameters():
             "ok": True,
             "captured": captured_for_project,
             "learned_parameters": project.get("automation_learned_parameters", []),
-            "project": project,
+            **_project_payload(project),
             "host": _host_snapshot(),
         }
     )
@@ -2206,7 +2345,7 @@ async def studio_rename_learned_plugin_parameter(parameter_id: str):
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     await _broadcast_project(project)
-    return jsonify({"ok": True, "project": project, "learned_parameter": learned})
+    return jsonify({"ok": True, **_project_payload(project), "learned_parameter": learned})
 
 
 @bp.route("/studio/plugins", methods=["GET", "POST"])
@@ -2290,7 +2429,7 @@ async def studio_midi_write():
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/midi/diff", methods=["POST"])
@@ -2301,7 +2440,7 @@ async def studio_midi_diff():
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/clips/diff", methods=["POST"])
@@ -2312,7 +2451,7 @@ async def studio_clip_diff():
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation", methods=["GET"])
@@ -2351,7 +2490,7 @@ async def studio_automation_write():
         message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
         return jsonify({"error": message}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation/global", methods=["POST"])
@@ -2374,7 +2513,7 @@ async def studio_global_automation_write():
         message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
         return jsonify({"error": message}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation/<int:track_id>", methods=["PATCH"])
@@ -2385,7 +2524,7 @@ async def studio_automation_diff(track_id: int):
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation/<int:track_id>/retarget", methods=["POST"])
@@ -2398,7 +2537,7 @@ async def studio_automation_retarget(track_id: int):
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "summary": summary, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/export", methods=["POST"])
@@ -2781,7 +2920,9 @@ async def _finish_audio_import(
     except (StopIteration, TypeError, ValueError):
         pass
     await _broadcast_project(project)
-    return jsonify({"ok": True, "project": project, "track": track, "clip": clip, "sync": sync})
+    return jsonify(
+        {"ok": True, **_project_payload(project), "track": track, "clip": clip, "sync": sync}
+    )
 
 
 @bp.route("/studio/tracks", methods=["POST"])
@@ -2799,7 +2940,7 @@ async def studio_create_track():
     if routing_updates:
         project, track = update_project_track(int(track["id"]), routing_updates)
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
 
 
 @bp.route("/studio/tracks/<int:track_id>", methods=["PATCH"])
@@ -2810,7 +2951,7 @@ async def studio_update_track(track_id: int):
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
 
 
 # ── Agent control endpoint (receives commands from MusicTool) ──
@@ -2825,7 +2966,7 @@ async def studio_delete_track(track_id: int):
         status = 400 if message == "cannot delete the last track" else 404
         return jsonify({"error": message}), status
     sync = await _sync_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, "project": project, "track": track, "sync": sync})
+    return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
 
 
 @bp.route("/studio/tracks/<int:track_id>/plugin", methods=["POST"])
@@ -2856,7 +2997,7 @@ async def studio_set_track_plugin(track_id: int):
     return jsonify(
         {
             "ok": True,
-            "project": project,
+            **_project_payload(project),
             "track": track,
             "plugin": _track_slot(track, slot_id),
             "load": load_response,
