@@ -5,6 +5,7 @@ use crate::dashboard_client::{
     BridgeDashboardClient, DashboardClientError, DashboardEndpoint, DashboardExportWorker,
     DashboardStatusWorker,
 };
+use crate::daw_agent_surface::{DawAgentSurfaceParams, DawAgentWorkspace};
 use crate::drag_drop::BridgeDragPayload;
 use crate::editor::{
     BridgeConnectionState, BridgeEditorAction, BridgeEditorState, BridgeEditorViewModel,
@@ -77,8 +78,32 @@ fn bridge_status_contract_deserializes_dashboard_response() {
     assert_eq!(status.bridge.manifest_schema_version, 1);
     assert!(status.bridge.local_only);
     assert_eq!(status.project.title, "ATRI Session");
-    assert_eq!(status.project.revision, 7);
+    assert_eq!(status.project.revision, "7");
     assert_eq!(status.formats, vec!["midi", "dawproject"]);
+}
+
+#[test]
+fn bridge_status_contract_accepts_dashboard_revision_hash() {
+    let json = r#"{
+        "ok": true,
+        "bridge": {
+            "api_version": 1,
+            "manifest_schema_version": 1,
+            "local_only": true
+        },
+        "project": {
+            "title": "ATRI Session",
+            "revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        },
+        "formats": ["midi", "dawproject"]
+    }"#;
+
+    let status: BridgeStatus = serde_json::from_str(json).unwrap();
+
+    assert_eq!(
+        status.project.revision.to_string(),
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
 }
 
 #[test]
@@ -117,6 +142,17 @@ fn bridge_export_request_serializes_host_context_when_available() {
 }
 
 #[test]
+fn bridge_export_request_serializes_instance_id_when_available() {
+    let request =
+        BridgeExportRequest::new(BridgeExportFormat::Midi).with_instance_id("bridge 1/left");
+    let json = serde_json::to_value(&request).unwrap();
+
+    assert_eq!(json["format"], "midi");
+    assert_eq!(json["consumer"], "bridge");
+    assert_eq!(json["instance_id"], "bridge 1/left");
+}
+
+#[test]
 fn dashboard_endpoint_defaults_to_local_bridge_routes() {
     let endpoint = DashboardEndpoint::default();
 
@@ -129,6 +165,43 @@ fn dashboard_endpoint_defaults_to_local_bridge_routes() {
         endpoint.bridge_export_url(),
         "http://127.0.0.1:6185/api/music/studio/bridge/export"
     );
+    assert_eq!(
+        endpoint.bridge_latest_export_url(None),
+        "http://127.0.0.1:6185/api/music/studio/bridge/export/latest"
+    );
+    assert_eq!(
+        endpoint.bridge_latest_export_url(Some("bridge 1/left")),
+        "http://127.0.0.1:6185/api/music/studio/bridge/export/latest?instance_id=bridge%201%2Fleft"
+    );
+}
+
+#[test]
+fn dashboard_endpoint_builds_daw_agent_surface_url() {
+    let endpoint = DashboardEndpoint::new("http://127.0.0.1:6185/").unwrap();
+    let params =
+        DawAgentSurfaceParams::from_project(Some("ATRI Session"), Some("7"), "bridge-instance-3")
+            .with_workspace(DawAgentWorkspace::AtriStudio)
+            .with_host_name("Studio One");
+
+    assert_eq!(params.project_session_id(), "atri-session");
+    assert_eq!(
+        endpoint.daw_agent_surface_url(&params),
+        "http://127.0.0.1:6185/?surface=daw-agent&project_session_id=atri-session&instance_id=bridge-instance-3&workspace=atri_studio&host=Studio%20One"
+    );
+}
+
+#[test]
+fn daw_agent_surface_url_encodes_query_values_and_uses_revision_fallback() {
+    let endpoint = DashboardEndpoint::new("http://localhost:7000").unwrap();
+    let params = DawAgentSurfaceParams::from_project(None, Some("11"), "bridge 1/left")
+        .with_workspace(DawAgentWorkspace::HostProject)
+        .with_host_name("Studio One 6");
+
+    assert_eq!(params.project_session_id(), "atri-project-r11");
+    assert_eq!(
+        endpoint.daw_agent_surface_url(&params),
+        "http://localhost:7000/?surface=daw-agent&project_session_id=atri-project-r11&instance_id=bridge%201%2Fleft&workspace=host_project&host=Studio%20One%206"
+    );
 }
 
 #[test]
@@ -140,7 +213,7 @@ fn dashboard_client_fetches_bridge_status_from_local_dashboard() {
 
     assert!(status.ok);
     assert_eq!(status.project.title, "ATRI Session");
-    assert_eq!(status.project.revision, 11);
+    assert_eq!(status.project.revision, "11");
 }
 
 #[test]
@@ -156,7 +229,7 @@ fn dashboard_status_worker_updates_editor_state_from_background_result() {
 
     assert_eq!(state.connection(), BridgeConnectionState::Connected);
     assert_eq!(state.project_title(), Some("ATRI Session"));
-    assert_eq!(state.project_revision(), Some(11));
+    assert_eq!(state.project_revision(), Some("11"));
 }
 
 #[test]
@@ -279,7 +352,49 @@ fn editor_state_records_dashboard_connection_without_export_io() {
 
     assert_eq!(state.connection(), BridgeConnectionState::Connected);
     assert_eq!(state.project_title(), Some("ATRI Session"));
-    assert_eq!(state.project_revision(), Some(3));
+    assert_eq!(state.project_revision(), Some("3"));
+}
+
+#[test]
+fn editor_state_builds_daw_agent_surface_url_from_project_status() {
+    let endpoint = DashboardEndpoint::new("http://127.0.0.1:7001").unwrap();
+    let mut state = BridgeEditorState::from(endpoint);
+    state.apply_status(BridgeStatus::connected_for_test("ATRI Session", 7));
+
+    assert_eq!(
+        state.daw_agent_surface_url("bridge-instance-3"),
+        "http://127.0.0.1:7001/?surface=daw-agent&project_session_id=atri-session&instance_id=bridge-instance-3&workspace=atri_studio&host=Studio%20One"
+    );
+}
+
+#[test]
+fn editor_state_daw_agent_surface_url_uses_published_host_application_name() {
+    let _guard = crate::host_context::test_host_context_guard();
+    crate::host_context::clear_latest_host_application_name_for_test();
+    crate::host_context::publish_host_application_name("REAPER");
+
+    let endpoint = DashboardEndpoint::new("http://127.0.0.1:7001").unwrap();
+    let mut state = BridgeEditorState::from(endpoint);
+    state.apply_status(BridgeStatus::connected_for_test("ATRI Session", 7));
+
+    assert_eq!(
+        state.daw_agent_surface_url("bridge-instance-3"),
+        "http://127.0.0.1:7001/?surface=daw-agent&project_session_id=atri-session&instance_id=bridge-instance-3&workspace=atri_studio&host=REAPER"
+    );
+
+    crate::host_context::clear_latest_host_application_name_for_test();
+}
+
+#[test]
+fn editor_state_open_atri_url_is_legacy_dashboard_base_url() {
+    let endpoint = DashboardEndpoint::new("http://127.0.0.1:7001").unwrap();
+    let mut state = BridgeEditorState::from(endpoint);
+    state.apply_status(BridgeStatus::connected_for_test("ATRI Session", 7));
+
+    #[allow(deprecated)]
+    let legacy_url = state.open_atri_url();
+    assert_eq!(legacy_url, "http://127.0.0.1:7001");
+    assert_ne!(state.daw_agent_surface_url("bridge-instance-3"), legacy_url);
 }
 
 #[test]
@@ -306,6 +421,29 @@ fn editor_state_tracks_export_progress_and_result_path() {
     assert_eq!(
         state.last_export_path(),
         Some("data/music_workstation/exports/session.dawproject")
+    );
+    assert_eq!(state.pending_export_format(), None);
+}
+
+#[test]
+fn editor_state_applies_external_export_response_while_export_in_progress() {
+    let mut state = BridgeEditorState::default();
+
+    state.begin_export(BridgeExportFormat::Dawproject);
+    let changed = state.apply_external_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/daw-agent-region.mid"
+        })),
+    });
+
+    assert!(changed);
+    assert_eq!(state.export_state(), BridgeExportState::Completed);
+    assert_eq!(
+        state.last_export_path(),
+        Some("data/music_workstation/exports/daw-agent-region.mid")
     );
     assert_eq!(state.pending_export_format(), None);
 }

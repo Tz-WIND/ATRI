@@ -139,6 +139,12 @@ class MessageEvent:
 # Session ID helpers — shared between ProcessStage and Dashboard
 
 WEBChat_SESSION_PREFIX = "webchat:friend:"
+DAW_AGENT_SESSION_PREFIX = "daw_agent:friend:"
+
+_BARE_SESSION_ID_PREFIXES = (
+    DAW_AGENT_SESSION_PREFIX,
+    WEBChat_SESSION_PREFIX,
+)
 
 
 def normalize_session_id(display_id: str) -> str:
@@ -150,6 +156,26 @@ def normalize_session_id(display_id: str) -> str:
     if ":" in display_id:
         return display_id
     return f"{WEBChat_SESSION_PREFIX}{display_id}"
+
+
+def resolve_session_id(
+    display_id: str,
+    known_ids: set[str] | frozenset[str] | None = None,
+) -> str:
+    """Resolve a bare or internal session ID to unified_msg_origin form.
+
+    Internal IDs (containing ``:``) are returned unchanged. Bare display IDs
+    prefer a matching entry in *known_ids* (daw_agent before webchat), then
+    fall back to the webchat prefix.
+    """
+    if ":" in display_id:
+        return display_id
+    if known_ids:
+        for prefix in _BARE_SESSION_ID_PREFIXES:
+            candidate = f"{prefix}{display_id}"
+            if candidate in known_ids:
+                return candidate
+    return normalize_session_id(display_id)
 
 
 def display_session_id(internal_id: str) -> str:

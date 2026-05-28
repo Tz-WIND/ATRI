@@ -1,4 +1,10 @@
 import { ref } from 'vue'
+import { normalizeAssistantChain } from './chatAssistantChain.js'
+import {
+  hasActiveAssistantStream,
+  hasAssistantResponse,
+  shouldAppendHttpAssistantResponse,
+} from './chatHttpResponse.js'
 import { useApi } from './useApi.js'
 import { useSession } from './useSession.js'
 
@@ -148,6 +154,36 @@ export function useChat() {
     addMessage('assistant', text, true, { attachments })
   }
 
+  async function addAssistantHttpResponse(result) {
+    const response = String(result?.response || '')
+    if (Array.isArray(result?.chain)) {
+      const parsed = normalizeAssistantChain(result.chain, response, makeId)
+      const hasAttachments = parsed.attachments.length > 0
+      if (!parsed.text && hasAttachments) {
+        if (!hasActiveAssistantStream(messages)) {
+          addMessage('assistant', '', true, { attachments: parsed.attachments })
+          return true
+        }
+        return false
+      }
+      if (await shouldAppendHttpAssistantResponse(messages, parsed.text)) {
+        addOrPatchAssistantMessage(parsed.text, parsed.attachments)
+        return true
+      }
+      if (hasAttachments && hasAssistantResponse(messages, parsed.text)) {
+        addOrPatchAssistantMessage(parsed.text, parsed.attachments)
+        return true
+      }
+      return false
+    }
+
+    if (await shouldAppendHttpAssistantResponse(messages, response)) {
+      addMessage('assistant', response, true)
+      return true
+    }
+    return false
+  }
+
   function startThinkingBlock() {
     finishThinkingBlock()
     const now = Date.now()
@@ -214,7 +250,9 @@ export function useChat() {
 
   function finishAssistantStream(finalContent = '') {
     if (!streamingAssistantId || !streamingMessage) {
-      if (finalContent) addMessage('assistant', finalContent, true)
+      if (finalContent && !hasAssistantResponse(messages, finalContent)) {
+        addMessage('assistant', finalContent, true)
+      }
       return
     }
 
@@ -465,32 +503,6 @@ export function useChat() {
     }))
   }
 
-  function normalizeAssistantChain(chain, fallbackText = '') {
-    if (!Array.isArray(chain)) {
-      return { text: String(fallbackText || ''), attachments: [] }
-    }
-    const textParts = []
-    const attachments = []
-    chain.forEach((part, index) => {
-      if (!part || typeof part !== 'object') return
-      if (part.type === 'plain') {
-        textParts.push(part.text || '')
-      } else if (part.type === 'image') {
-        const src = part.url || ''
-        if (src) {
-          attachments.push({
-            id: makeId(),
-            name: part.file || `generated-${index + 1}`,
-            type: part.mime_type || mimeFromDataUrl(src),
-            size: Number(part.size || 0),
-            src,
-          })
-        }
-      }
-    })
-    return { text: textParts.join('\n').trim() || String(fallbackText || ''), attachments }
-  }
-
   function normalizeStoredAttachments(rawAttachments) {
     if (!Array.isArray(rawAttachments)) return []
     return rawAttachments
@@ -598,14 +610,8 @@ export function useChat() {
 
       if (result.error) {
         addMessage('assistant', `Error: ${result.error}`, false)
-      } else if (Array.isArray(result.chain)) {
-        const parsed = normalizeAssistantChain(result.chain, result.response)
-        addOrPatchAssistantMessage(parsed.text, parsed.attachments)
-      } else if (!streamingAssistantId && !messages.value.some((m) => m.role === 'assistant' && m.streaming === false && m.content === result.response)) {
-        await new Promise(r => setTimeout(r, 120))
-        if (!streamingAssistantId) {
-          addMessage('assistant', result.response, true)
-        }
+      } else {
+        await addAssistantHttpResponse(result)
       }
 
       if (!result.error) {
@@ -633,6 +639,7 @@ export function useChat() {
     clearThinking,
     clearToolCards,
     addMessage,
+    addAssistantHttpResponse,
     addToolMessage,
     updateToolMessage,
     resetMessages,

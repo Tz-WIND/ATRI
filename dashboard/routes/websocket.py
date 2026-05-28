@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from quart import jsonify, send_from_directory, websocket
 
 from core.platform.message import normalize_session_id
-from dashboard.routes._helpers import AUTH_COOKIE, cookie_value, parse_int
+from dashboard.routes._helpers import AUTH_COOKIE, cookie_value, parse_int, websocket_from_loopback
 
 if TYPE_CHECKING:
     from dashboard.server import Dashboard
@@ -27,7 +27,10 @@ def register(dashboard: Dashboard) -> None:
             session_token = websocket.headers.get("X-ATRI-Session", "") or cookie_value(
                 websocket.headers.get("Cookie", ""), AUTH_COOKIE
             )
-            if not dashboard._session_ok(session_token):
+            is_daw_surface = websocket.args.get("surface") == "daw-agent"
+            if not dashboard._session_ok(session_token) and not (
+                is_daw_surface and websocket_from_loopback(websocket)
+            ):
                 await websocket.close(1008)
                 return
         ws_obj = websocket._get_current_object()  # type: ignore[attr-defined]

@@ -58,6 +58,7 @@ from core.music_project import (
 from core.music_project import (
     update_track as update_project_track,
 )
+from core.utils import atomic_write_text
 from dashboard.routes._helpers import resolve_workspace_path
 
 if TYPE_CHECKING:
@@ -84,6 +85,7 @@ EXPORT_SAMPLE_RATES = {44100, 48000, 88200, 96000, 192000}
 EXPORT_BITRATES = {"128k", "192k", "256k", "320k"}
 RAW_HOST_COMMAND_DENYLIST = {"bounce", "render_wav"}
 BRIDGE_API_VERSION = 1
+BRIDGE_LATEST_EXPORT_FILENAME = "atri-bridge-latest-export.json"
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -295,6 +297,25 @@ def _export_time_range(project: dict[str, Any], payload: dict[str, Any]) -> tupl
         raise StudioExportError("start must be non-negative")
     if end <= start:
         raise StudioExportError("end must be after start")
+    return start, end
+
+
+def _export_midi_beat_range(payload: dict[str, Any]) -> tuple[float, float] | None:
+    raw_range = payload.get("beat_range")
+    if isinstance(raw_range, (list, tuple)) and len(raw_range) >= 2:
+        start_raw, end_raw = raw_range[0], raw_range[1]
+    elif "start_beat" in payload or "end_beat" in payload:
+        start_raw, end_raw = payload.get("start_beat", 0.0), payload.get("end_beat")
+    else:
+        return None
+
+    try:
+        start = max(0.0, float(start_raw or 0.0))
+        end = float(end_raw)
+    except (TypeError, ValueError):
+        raise StudioExportError("start_beat and end_beat must be numbers") from None
+    if end <= start:
+        raise StudioExportError("end_beat must be after start_beat")
     return start, end
 
 
@@ -2579,11 +2600,24 @@ async def studio_bridge_export():
     return jsonify(payload), status_code
 
 
+@bp.route("/studio/bridge/export/latest", methods=["GET"])
+async def studio_bridge_latest_export():
+    instance_id = _bridge_export_instance_id(request.args)
+    return jsonify(
+        {
+            "ok": True,
+            "bridge": _bridge_contract_payload(),
+            "export": _load_latest_bridge_export(instance_id=instance_id),
+        }
+    )
+
+
 async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
     sync: dict[str, Any] | None = None
     try:
         format_name = _normalize_export_format(data.get("format"))
         target = _normalize_export_target(data.get("target", data.get("scope")))
+        consumer = _normalize_export_consumer(data.get("consumer"))
         if format_name == "midi":
             project = load_project()
             export_id = uuid4().hex[:10]
@@ -2592,8 +2626,9 @@ async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], 
                 data,
                 export_id=export_id,
                 target=target,
-                consumer=_normalize_export_consumer(data.get("consumer")),
+                consumer=consumer,
             )
+            _remember_bridge_export(export, consumer, data)
             sync = {
                 "host_running": bool(getattr(_host_manager(), "is_running", False)),
                 "skipped": True,
@@ -2607,8 +2642,9 @@ async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], 
                 data,
                 export_id=export_id,
                 target=target,
-                consumer=_normalize_export_consumer(data.get("consumer")),
+                consumer=consumer,
             )
+            _remember_bridge_export(export, consumer, data)
             sync = {
                 "host_running": bool(getattr(_host_manager(), "is_running", False)),
                 "skipped": True,
@@ -2652,6 +2688,7 @@ async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], 
     except StudioExportError as exc:
         return {"ok": False, "error": str(exc), "host": _host_snapshot()}, exc.status_code
 
+    _remember_bridge_export(export, consumer, data)
     return (
         _studio_export_success_payload(export, used_ffmpeg=format_name != "wav", sync=sync),
         200,
@@ -2672,6 +2709,70 @@ def _studio_export_success_payload(
         "sync": sync,
         "host": _host_snapshot(),
     }
+
+
+def _remember_bridge_export(
+    export: dict[str, Any],
+    consumer: str,
+    payload: dict[str, Any],
+) -> None:
+    if consumer != "bridge":
+        return
+    instance_id = _bridge_export_instance_id(payload)
+    scoped_export = deepcopy(export)
+    if instance_id:
+        bridge_scope = {"instance_id": instance_id}
+        scoped_export["bridge_scope"] = bridge_scope
+        export["bridge_scope"] = bridge_scope
+    _write_latest_bridge_export(scoped_export)
+    if instance_id:
+        _write_latest_bridge_export(scoped_export, instance_id=instance_id)
+
+
+def _bridge_export_instance_id(payload: Any) -> str | None:
+    if not hasattr(payload, "get"):
+        return None
+    raw = payload.get("instance_id") or payload.get("bridge_instance_id")
+    host_context = payload.get("host_context")
+    if raw in (None, "") and isinstance(host_context, dict):
+        raw = host_context.get("instance_id") or host_context.get("bridge_instance_id")
+    instance_id = str(raw or "").strip()
+    return instance_id or None
+
+
+def _latest_bridge_export_path(*, instance_id: str | None = None) -> Path:
+    if instance_id:
+        return _audio_export_dir() / _bridge_instance_latest_export_filename(instance_id)
+    return _audio_export_dir() / BRIDGE_LATEST_EXPORT_FILENAME
+
+
+def _bridge_instance_latest_export_filename(instance_id: str) -> str:
+    digest = hashlib.sha256(instance_id.encode("utf-8")).hexdigest()[:16]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", instance_id).strip("._-")[:48]
+    return f"atri-bridge-latest-export.{slug or 'instance'}.{digest}.json"
+
+
+def _load_latest_bridge_export(*, instance_id: str | None = None) -> dict[str, Any] | None:
+    path = _latest_bridge_export_path(instance_id=instance_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    export = payload.get("export") if isinstance(payload, dict) else None
+    return deepcopy(export) if isinstance(export, dict) else None
+
+
+def _write_latest_bridge_export(
+    export: dict[str, Any],
+    *,
+    instance_id: str | None = None,
+) -> None:
+    payload = json.dumps({"export": export}, ensure_ascii=False, indent=2)
+    atomic_write_text(
+        _latest_bridge_export_path(instance_id=instance_id),
+        payload,
+        prefix=".bridge_latest_export_",
+    )
 
 
 def _bridge_contract_payload() -> dict[str, Any]:
@@ -2714,7 +2815,13 @@ def _perform_midi_export(
     track_ids = _midi_track_ids_for_payload(project, payload, target)
 
     try:
-        summary = write_project_midi(project, final_path, track_ids=track_ids)
+        beat_range = _export_midi_beat_range(payload)
+        summary = write_project_midi(
+            project,
+            final_path,
+            track_ids=track_ids,
+            beat_range=beat_range,
+        )
     except (OSError, ValueError) as exc:
         raise StudioExportError(str(exc), 400) from exc
 
@@ -2737,6 +2844,8 @@ def _perform_midi_export(
         "files": [file_entry],
         "summary": summary,
     }
+    if "beat_range" in summary:
+        export["beat_range"] = summary["beat_range"]
     manifest = build_export_manifest(project, export, consumer=consumer)
     manifest_path = export_dir / f"{export_id}_atri-export-manifest.json"
     try:
@@ -2769,6 +2878,7 @@ def _perform_dawproject_export(
             export_id=export_id,
             consumer=consumer,
             track_ids=track_ids,
+            workspace_root=_cfg().get("workspace") or ".",
         )
     except (OSError, ValueError) as exc:
         raise StudioExportError(str(exc), 400) from exc

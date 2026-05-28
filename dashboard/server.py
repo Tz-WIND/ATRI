@@ -22,6 +22,7 @@ from dashboard.routes._helpers import (
     AUTH_EXEMPT_API_PATHS,
     DASHBOARD_CSP,
     PBKDF2_PREFIX,
+    local_bridge_api_allowed,
     verify_password,
 )
 
@@ -309,6 +310,8 @@ class Dashboard:
             if not path.startswith("/api/"):
                 return None
             if path in AUTH_EXEMPT_API_PATHS:
+                return None
+            if local_bridge_api_allowed(path, request):
                 return None
             if self.auth_setup_required:
                 return jsonify({"error": "setup required", "setup_required": True}), 428

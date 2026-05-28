@@ -2089,6 +2089,126 @@ async def test_studio_export_midi_writes_file_and_manifest_without_host_render(
     assert await AsyncPath(body["export"]["manifest_path"]).exists()
 
 
+async def test_bridge_latest_export_survives_process_memory_loss(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    music.save_project(
+        {
+            "title": "Bridge Latest",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 4,
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [
+                        {"pitch": 60, "start": 0, "duration": 1, "velocity": 96},
+                        {"pitch": 64, "start": 2, "duration": 1, "velocity": 88},
+                    ],
+                    "midi_events": [],
+                }
+            ],
+        }
+    )
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    export_response = await client.post(
+        "/api/music/studio/export",
+        json={"format": "midi", "consumer": "bridge"},
+    )
+    exported = await export_response.get_json()
+    latest_file = (
+        tmp_path / "data" / "music_workstation" / "exports" / "atri-bridge-latest-export.json"
+    )
+
+    latest_response = await client.get("/api/music/studio/bridge/export/latest")
+    latest = await latest_response.get_json()
+
+    assert export_response.status_code == 200
+    assert await AsyncPath(latest_file).exists()
+    assert not hasattr(music, "_latest_bridge_export")
+    assert latest_response.status_code == 200
+    assert latest["export"]["id"] == exported["export"]["id"]
+    assert latest["export"]["path"] == exported["export"]["path"]
+    assert latest["export"]["manifest"]["consumer"] == "bridge"
+
+
+async def test_bridge_latest_export_can_be_scoped_by_instance_id(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    music.save_project(
+        {
+            "title": "Bridge Scoped",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 8,
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [
+                        {"pitch": 60, "start": 0, "duration": 1, "velocity": 96},
+                        {"pitch": 64, "start": 2, "duration": 1, "velocity": 88},
+                    ],
+                    "midi_events": [],
+                }
+            ],
+        }
+    )
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    first_response = await client.post(
+        "/api/music/studio/export",
+        json={
+            "format": "midi",
+            "consumer": "bridge",
+            "instance_id": "bridge-a",
+            "start_beat": 0,
+            "end_beat": 1,
+        },
+    )
+    second_response = await client.post(
+        "/api/music/studio/export",
+        json={
+            "format": "midi",
+            "consumer": "bridge",
+            "instance_id": "bridge-b",
+            "start_beat": 2,
+            "end_beat": 3,
+        },
+    )
+
+    first_latest_response = await client.get(
+        "/api/music/studio/bridge/export/latest?instance_id=bridge-a"
+    )
+    second_latest_response = await client.get(
+        "/api/music/studio/bridge/export/latest?instance_id=bridge-b"
+    )
+    missing_latest_response = await client.get(
+        "/api/music/studio/bridge/export/latest?instance_id=bridge-c"
+    )
+    global_latest_response = await client.get("/api/music/studio/bridge/export/latest")
+
+    first_export = (await first_response.get_json())["export"]
+    second_export = (await second_response.get_json())["export"]
+    first_latest = await first_latest_response.get_json()
+    second_latest = await second_latest_response.get_json()
+    missing_latest = await missing_latest_response.get_json()
+    global_latest = await global_latest_response.get_json()
+
+    assert first_latest["export"]["id"] == first_export["id"]
+    assert second_latest["export"]["id"] == second_export["id"]
+    assert missing_latest["export"] is None
+    assert global_latest["export"]["id"] == second_export["id"]
+    assert first_latest["export"]["bridge_scope"]["instance_id"] == "bridge-a"
+    assert second_latest["export"]["bridge_scope"]["instance_id"] == "bridge-b"
+
+
 async def test_studio_export_dawproject_preserves_plugin_state_without_host_render(
     tmp_path,
     monkeypatch,

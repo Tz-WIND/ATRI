@@ -10,6 +10,7 @@ from collections import defaultdict
 from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 AUTH_COOKIE = "atri_dashboard_session"
 
@@ -19,6 +20,19 @@ AUTH_EXEMPT_API_PATHS = {
     "/api/auth/setup",
     "/api/auth/logout",
     "/api/config/schema",
+}
+
+LOCAL_BRIDGE_API_PATHS = {
+    "/api/agent-mode",
+    "/api/chat/cancel",
+    "/api/daw-agent/chat",
+    "/api/status",
+    "/api/provider/select",
+    "/api/music/studio/project",
+    "/api/music/studio/export",
+    "/api/music/studio/bridge/status",
+    "/api/music/studio/bridge/export",
+    "/api/music/studio/bridge/export/latest",
 }
 
 DASHBOARD_CSP = (
@@ -101,6 +115,40 @@ def parse_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def is_loopback_address(address: str | None) -> bool:
+    value = str(address or "").strip().lower()
+    if not value:
+        return False
+    if value.startswith("::ffff:"):
+        value = value.removeprefix("::ffff:")
+    return value in {"127.0.0.1", "::1", "localhost"}
+
+
+def request_from_loopback(request_obj: Any) -> bool:
+    return is_loopback_address(getattr(request_obj, "remote_addr", ""))
+
+
+def local_bridge_api_allowed(path: str, request_obj: Any) -> bool:
+    if not request_from_loopback(request_obj):
+        return False
+    if path in LOCAL_BRIDGE_API_PATHS:
+        return True
+    if str(getattr(request_obj, "method", "")).upper() == "GET" and path.startswith(
+        "/api/sessions/"
+    ):
+        session_id = unquote(path.removeprefix("/api/sessions/"))
+        return session_id.startswith("daw_agent:friend:")
+    return False
+
+
+def websocket_from_loopback(websocket_obj: Any) -> bool:
+    scope = getattr(websocket_obj, "scope", {}) or {}
+    client = scope.get("client") if isinstance(scope, dict) else None
+    if isinstance(client, (tuple, list)) and client:
+        return is_loopback_address(str(client[0]))
+    return is_loopback_address(getattr(websocket_obj, "remote_addr", ""))
 
 
 def resolve_workspace_path(workspace: str, rel_path: str) -> tuple[Path, Path]:

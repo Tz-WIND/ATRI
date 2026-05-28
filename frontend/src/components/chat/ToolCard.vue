@@ -61,6 +61,11 @@
       >{{ statusBadge }}</span>
     </button>
 
+    <MidiArtifactCard
+      v-if="midiArtifactVisible"
+      :tool-data="activeTool"
+    />
+
     <div
       v-if="open && hasDetails"
       class="tool-details"
@@ -129,6 +134,8 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import DiffViewer from './DiffViewer.vue'
+import MidiArtifactCard from './MidiArtifactCard.vue'
+import { isMidiArtifactTool } from './midiArtifact.js'
 
 const TOOL_LABELS = {
   read_file: { title: 'Read', ing: 'Reading', done: 'Read', fail: 'Read failed', key: 'file_path' },
@@ -147,6 +154,9 @@ const TOOL_LABELS = {
   agent: { title: 'Agent', ing: 'Running agent', done: 'Agent done', fail: 'Agent failed', key: 'task' },
   chem_draw: { title: 'Chem Draw', ing: 'Drawing chemistry', done: 'Drew chemistry', fail: 'Chem draw failed', key: 'input' },
   novelai_image: { title: 'NovelAI', ing: 'Generating image', done: 'Generated image', fail: 'Image failed', key: 'prompt' },
+  midi_write: { title: 'MIDI', ing: 'Writing MIDI', done: 'MIDI written', fail: 'MIDI failed', key: 'track_id' },
+  midi_diff: { title: 'MIDI', ing: 'Editing MIDI', done: 'MIDI edited', fail: 'MIDI failed', key: 'track_id' },
+  midi_batch_edit: { title: 'MIDI', ing: 'Shaping MIDI', done: 'MIDI shaped', fail: 'MIDI failed', key: 'track_id' },
 }
 
 const props = defineProps({
@@ -171,6 +181,9 @@ const status = computed(() => {
 const statusClass = computed(() => status.value)
 const isRunning = computed(() => status.value === 'executing')
 const isFailed = computed(() => status.value === 'failed')
+const midiArtifactVisible = computed(() =>
+  !isGroup.value && !isRunning.value && isMidiArtifactTool(activeTool.value.tool)
+)
 
 watch(status, (next) => {
   if (next === 'executing') open.value = false

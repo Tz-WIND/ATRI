@@ -4,12 +4,16 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::bridge_contract::{BridgeExportRequest, BridgeExportResponse, BridgeStatus};
+use crate::daw_agent_surface::{
+    DawAgentSurfaceParams, daw_agent_surface_url, percent_encode_query,
+};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 pub const DEFAULT_DASHBOARD_BASE_URL: &str = "http://127.0.0.1:6185";
 const BRIDGE_STATUS_PATH: &str = "/api/music/studio/bridge/status";
 const BRIDGE_EXPORT_PATH: &str = "/api/music/studio/bridge/export";
+const BRIDGE_LATEST_EXPORT_PATH: &str = "/api/music/studio/bridge/export/latest";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashboardEndpoint {
@@ -38,6 +42,18 @@ impl DashboardEndpoint {
 
     pub fn bridge_export_url(&self) -> String {
         format!("{}{}", self.base_url, BRIDGE_EXPORT_PATH)
+    }
+
+    pub fn bridge_latest_export_url(&self, instance_id: Option<&str>) -> String {
+        let base = format!("{}{}", self.base_url, BRIDGE_LATEST_EXPORT_PATH);
+        let Some(instance_id) = instance_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return base;
+        };
+        format!("{base}?instance_id={}", percent_encode_query(instance_id))
+    }
+
+    pub fn daw_agent_surface_url(&self, params: &DawAgentSurfaceParams) -> String {
+        daw_agent_surface_url(&self.base_url, params)
     }
 }
 
@@ -143,6 +159,20 @@ impl BridgeDashboardClient {
         let response = send_http_request(&request, timeout)?;
         parse_json_response(&response)
     }
+
+    pub fn fetch_latest_export(
+        &self,
+        instance_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<BridgeExportResponse, DashboardClientError> {
+        let request = DashboardRequest {
+            method: "GET",
+            url: self.endpoint.bridge_latest_export_url(instance_id),
+            body: None,
+        };
+        let response = send_http_request(&request, timeout)?;
+        parse_json_response(&response)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +211,28 @@ impl DashboardExportWorker {
         let client = self.client.clone();
         let timeout = self.timeout;
         thread::spawn(move || client.request_export(request, timeout))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DashboardLatestExportWorker {
+    client: BridgeDashboardClient,
+    timeout: Duration,
+}
+
+impl DashboardLatestExportWorker {
+    pub fn new(client: BridgeDashboardClient, timeout: Duration) -> Self {
+        Self { client, timeout }
+    }
+
+    pub fn fetch_once(
+        &self,
+        instance_id: impl Into<String>,
+    ) -> JoinHandle<Result<BridgeExportResponse, DashboardClientError>> {
+        let client = self.client.clone();
+        let timeout = self.timeout;
+        let instance_id = instance_id.into();
+        thread::spawn(move || client.fetch_latest_export(Some(instance_id.as_str()), timeout))
     }
 }
 

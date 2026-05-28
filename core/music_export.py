@@ -21,9 +21,17 @@ def write_project_midi(
     path: Path | str,
     *,
     track_ids: list[int] | None = None,
+    beat_range: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Write a Standard MIDI File for the selected project MIDI tracks."""
     export_tracks = _selected_midi_tracks(project, track_ids)
+    normalized_range = _normalize_beat_range(beat_range)
+    if normalized_range is not None:
+        export_tracks = [
+            ranged_track
+            for track in export_tracks
+            if (ranged_track := _midi_track_in_beat_range(track, normalized_range)) is not None
+        ]
     if not export_tracks:
         raise ValueError("no MIDI content found")
 
@@ -44,7 +52,7 @@ def write_project_midi(
     header += MIDI_TICKS_PER_BEAT.to_bytes(2, "big")
     output_path.write_bytes(header + b"".join(chunks))
 
-    return {
+    summary = {
         "path": str(output_path),
         "filename": output_path.name,
         "format": "midi",
@@ -57,6 +65,9 @@ def write_project_midi(
         "note_count": note_count,
         "event_count": event_count,
     }
+    if normalized_range is not None:
+        summary["beat_range"] = [normalized_range[0], normalized_range[1]]
+    return summary
 
 
 def write_dawproject_archive(
@@ -66,12 +77,13 @@ def write_dawproject_archive(
     export_id: str,
     consumer: str = "export",
     track_ids: list[int] | None = None,
+    workspace_root: Path | str = ".",
 ) -> dict[str, Any]:
     """Write a DAWproject archive with ATRI's best-effort plug-in state payloads."""
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     export_tracks = _selected_project_tracks(project, track_ids)
-    audio_files = _collect_audio_files(export_tracks)
+    audio_files = _collect_audio_files(export_tracks, workspace_root=workspace_root)
     plugin_states, plugin_warnings = _collect_plugin_states(export_tracks)
     project_xml = _dawproject_project_xml(project, export_tracks, audio_files, plugin_states)
     metadata_xml = _dawproject_metadata_xml(project)
@@ -195,6 +207,47 @@ def _selected_project_tracks(
     return tracks
 
 
+def _normalize_beat_range(value: tuple[float, float] | None) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    start = max(0.0, _non_negative_float(value[0], 0.0))
+    end = max(start, _non_negative_float(value[1], start))
+    if end <= start:
+        return None
+    return start, end
+
+
+def _midi_track_in_beat_range(
+    track: dict[str, Any],
+    beat_range: tuple[float, float],
+) -> dict[str, Any] | None:
+    start, end = beat_range
+    notes = []
+    for note in track["notes"]:
+        note_start = _non_negative_float(note.get("start"), 0.0)
+        note_end = note_start + _non_negative_float(note.get("duration"), 0.25)
+        if note_start < end and note_end > start:
+            clipped_start = max(note_start, start)
+            clipped_end = min(note_end, end)
+            notes.append(
+                {
+                    **note,
+                    "start": max(0.0, note_start - start),
+                    "duration": max(1.0 / MIDI_TICKS_PER_BEAT, clipped_end - clipped_start),
+                }
+            )
+
+    events = []
+    for event in track["events"]:
+        event_start = _non_negative_float(event.get("start"), 0.0)
+        if start <= event_start <= end:
+            events.append({**event, "start": max(0.0, event_start - start)})
+
+    if not notes and not events:
+        return None
+    return {**track, "notes": notes, "events": events}
+
+
 def _midi_track(track: dict[str, Any], track_id: int) -> dict[str, Any]:
     return {
         "id": track_id,
@@ -236,15 +289,20 @@ def _track_events(track: dict[str, Any]) -> list[dict[str, Any]]:
     return clip_events
 
 
-def _collect_audio_files(tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _collect_audio_files(
+    tracks: list[dict[str, Any]],
+    *,
+    workspace_root: Path | str,
+) -> list[dict[str, Any]]:
     files = []
     used_names: set[str] = set()
+    workspace_path = Path(workspace_root or ".").resolve()
     for track in tracks:
         for clip in track.get("clips", []):
             if not isinstance(clip, dict) or str(clip.get("type") or "").lower() != "audio":
                 continue
-            source_path = Path(str(clip.get("path") or ""))
-            if not source_path.exists() or not source_path.is_file():
+            source_path = _resolve_workspace_asset_path(clip.get("path"), workspace_path)
+            if source_path is None:
                 continue
             archive_name = _unique_archive_name(
                 "media/audio",
@@ -262,6 +320,23 @@ def _collect_audio_files(tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
     return files
+
+
+def _resolve_workspace_asset_path(raw_path: Any, workspace_path: Path) -> Path | None:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return None
+    try:
+        source_path = Path(raw)
+        if not source_path.is_absolute():
+            source_path = workspace_path / source_path
+        source_path = source_path.resolve()
+        source_path.relative_to(workspace_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not source_path.exists() or not source_path.is_file():
+        return None
+    return source_path
 
 
 def _collect_plugin_states(tracks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:

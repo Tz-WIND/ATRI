@@ -4,6 +4,7 @@ use crate::bridge_contract::{
 use crate::dashboard_client::{
     DEFAULT_DASHBOARD_BASE_URL, DashboardClientError, DashboardEndpoint,
 };
+use crate::daw_agent_surface::DawAgentSurfaceParams;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeConnectionState {
@@ -108,8 +109,12 @@ impl BridgeEditorAction {
 pub struct BridgeEditorState {
     connection: BridgeConnectionState,
     project_title: Option<String>,
-    project_revision: Option<u64>,
+    project_revision: Option<String>,
     last_error: Option<String>,
+    dashboard_endpoint: DashboardEndpoint,
+    /// Legacy dashboard base URL retained for backward compatibility.
+    ///
+    /// The Open ATRI action now launches [`Self::daw_agent_surface_url`] instead.
     open_atri_url: String,
     export_state: BridgeExportState,
     pending_export_format: Option<BridgeExportFormat>,
@@ -127,16 +132,35 @@ impl BridgeEditorState {
         self.project_title.as_deref()
     }
 
-    pub fn project_revision(&self) -> Option<u64> {
-        self.project_revision
+    pub fn project_revision(&self) -> Option<&str> {
+        self.project_revision.as_deref()
     }
 
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
 
+    /// Legacy dashboard base URL retained for backward compatibility.
+    ///
+    /// Prefer [`Self::daw_agent_surface_url`] for the Open ATRI action.
+    #[deprecated(
+        note = "Open ATRI now uses daw_agent_surface_url(); this returns the legacy dashboard base URL"
+    )]
     pub fn open_atri_url(&self) -> &str {
         &self.open_atri_url
+    }
+
+    /// URL opened by the Open ATRI editor action.
+    pub fn daw_agent_surface_url(&self, instance_id: &str) -> String {
+        let mut params = DawAgentSurfaceParams::from_project(
+            self.project_title(),
+            self.project_revision(),
+            instance_id,
+        );
+        if let Some(host_name) = crate::host_context::latest_host_application_name() {
+            params = params.with_host_name(host_name);
+        }
+        self.dashboard_endpoint.daw_agent_surface_url(&params)
     }
 
     pub fn export_state(&self) -> BridgeExportState {
@@ -218,6 +242,24 @@ impl BridgeEditorState {
         self.mark_export_error("ATRI dashboard returned a failed export response");
     }
 
+    pub fn apply_external_export_response(&mut self, response: BridgeExportResponse) -> bool {
+        if !response.ok {
+            return false;
+        }
+        let Some(path) = response.export_path().map(ToOwned::to_owned) else {
+            return false;
+        };
+        if self.last_export_path.as_deref() == Some(path.as_str()) {
+            return false;
+        }
+
+        self.export_state = BridgeExportState::Completed;
+        self.last_export_path = Some(path);
+        self.last_export_error = None;
+        self.pending_export_format = None;
+        true
+    }
+
     pub fn mark_export_error(&mut self, message: impl Into<String>) {
         self.export_state = BridgeExportState::Error;
         self.last_export_error = Some(message.into());
@@ -231,12 +273,15 @@ impl BridgeEditorState {
 
 impl Default for BridgeEditorState {
     fn default() -> Self {
+        let dashboard_endpoint = DashboardEndpoint::default();
+        let open_atri_url = dashboard_endpoint.base_url().to_string();
         Self {
             connection: BridgeConnectionState::Disconnected,
             project_title: None,
             project_revision: None,
             last_error: None,
-            open_atri_url: DashboardEndpoint::default().base_url().to_string(),
+            dashboard_endpoint,
+            open_atri_url,
             export_state: BridgeExportState::Idle,
             pending_export_format: None,
             last_export_path: None,
@@ -250,11 +295,16 @@ impl From<DashboardEndpoint> for BridgeEditorState {
     fn from(endpoint: DashboardEndpoint) -> Self {
         Self {
             open_atri_url: endpoint.base_url().to_string(),
+            dashboard_endpoint: endpoint,
             ..Self::default()
         }
     }
 }
 
+/// Legacy default dashboard base URL retained for backward compatibility.
+#[deprecated(
+    note = "Open ATRI now uses daw_agent_surface_url(); this returns the legacy dashboard base URL"
+)]
 pub fn default_open_atri_url() -> &'static str {
     DEFAULT_DASHBOARD_BASE_URL
 }
@@ -265,7 +315,7 @@ fn render_state_lines(state: &BridgeEditorState) -> Vec<String> {
         BridgeConnectionState::Connected => format!(
             "Connected: {} rev {}",
             state.project_title().unwrap_or("Untitled"),
-            state.project_revision().unwrap_or(0)
+            state.project_revision().unwrap_or("0")
         ),
         BridgeConnectionState::Connecting => "Connecting to ATRI dashboard".to_string(),
         BridgeConnectionState::Disconnected => "Disconnected".to_string(),

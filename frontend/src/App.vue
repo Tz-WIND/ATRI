@@ -1,6 +1,10 @@
 <template>
+  <DawAgentPage
+    v-if="isDawAgentSurface"
+    class="daw-agent-surface"
+  />
   <div
-    v-if="auth.loading"
+    v-else-if="auth.loading"
     class="auth-loading"
   >
     <div class="auth-loading-panel">
@@ -58,6 +62,7 @@ import { ref, computed, markRaw, onMounted, onUnmounted, watch } from 'vue'
 import ActivityBar from './components/activity/ActivityBar.vue'
 import AuthGate from './components/auth/AuthGate.vue'
 import ChatPage from './components/chat/ChatPage.vue'
+import DawAgentPage from './components/chat/DawAgentPage.vue'
 import WorkspacePage from './components/pages/WorkspacePage.vue'
 import AdaptersPage from './components/pages/AdaptersPage.vue'
 import McpPage from './components/pages/McpPage.vue'
@@ -71,6 +76,7 @@ import MusicFullPlayer from './components/music/MusicFullPlayer.vue'
 import { useAuth } from './composables/useAuth.js'
 import { useDawHost } from './composables/useDawHost.js'
 import { useMusic } from './composables/useMusic.js'
+import { clearChatInstance } from './composables/useChat.js'
 import { clearWsInstance } from './composables/useWebSocket.js'
 
 const { auth, initAuth } = useAuth()
@@ -90,6 +96,8 @@ const navPages = [
 ]
 
 const activePage = ref('chat')
+const surface = ref(readSurfaceFromLocation())
+const isDawAgentSurface = computed(() => surface.value === 'daw-agent')
 
 const pageMap = {
   chat: markRaw(ChatPage),
@@ -108,6 +116,21 @@ const hasPlayer = computed(() => !!currentSong.value && !playerCollapsed.value)
 
 function navigateTo(id) {
   activePage.value = id
+}
+
+function readSurfaceFromLocation() {
+  return new URLSearchParams(window.location.search).get('surface') || ''
+}
+
+function refreshSurfaceFromLocation() {
+  surface.value = readSurfaceFromLocation()
+}
+
+function initMainSurface() {
+  if (isDawAgentSurface.value) return
+  initAuth().then(() => {
+    if (!isDawAgentSurface.value && auth.authenticated) connectWs()
+  }).catch(() => {})
 }
 
 // WebSocket listener for AI agent music control
@@ -153,12 +176,22 @@ function disconnectWs() {
 }
 
 onMounted(() => {
-  initAuth().then(() => {
-    if (auth.authenticated) connectWs()
-  }).catch(() => {})
+  window.addEventListener('popstate', refreshSurfaceFromLocation)
+  initMainSurface()
+})
+
+watch(isDawAgentSurface, (isDawAgent, wasDawAgent) => {
+  if (isDawAgent === wasDawAgent) return
+  clearChatInstance()
+  if (isDawAgent) {
+    disconnectWs()
+    return
+  }
+  initMainSurface()
 })
 
 watch(() => auth.authenticated, (authenticated) => {
+  if (isDawAgentSurface.value) return
   if (authenticated) {
     connectWs()
   } else {
@@ -167,7 +200,9 @@ watch(() => auth.authenticated, (authenticated) => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('popstate', refreshSurfaceFromLocation)
   disconnectWs()
+  clearChatInstance()
 })
 </script>
 
@@ -177,6 +212,10 @@ onUnmounted(() => {
   height: 100vh;
   background: var(--app-bg);
   color: var(--t1);
+}
+
+.daw-agent-surface {
+  height: 100vh;
 }
 
 .app-main {

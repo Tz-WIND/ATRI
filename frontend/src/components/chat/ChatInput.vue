@@ -232,7 +232,7 @@
       >
       <div class="input-toolbar">
         <div class="tools-left">
-          <ModelSelector />
+          <ModelSelector :local-only="dawWorkspacePicker" />
           <div
             ref="modePicker"
             class="mode-picker"
@@ -309,6 +309,7 @@
             </svg>
           </button>
           <button
+            v-if="!dawWorkspacePicker"
             class="icon-btn optional-tool optional-stash"
             type="button"
             title="Stash draft (Ctrl+S)"
@@ -324,6 +325,55 @@
               <path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" />
             </svg>
           </button>
+          <div
+            v-if="dawWorkspacePicker"
+            ref="workspacePicker"
+            class="workspace-picker"
+          >
+            <button
+              :class="['workspace-picker-trigger', { active: workspaceMenuOpen }]"
+              type="button"
+              :title="`Workspace ${workspaceLabel}`"
+              @pointerdown.prevent.stop="toggleWorkspaceMenu"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect
+                  x="5"
+                  y="6"
+                  width="14"
+                  height="9"
+                  rx="1.5"
+                />
+                <path d="M3.5 18h17" />
+                <path d="M8 15h8" />
+              </svg>
+            </button>
+            <transition name="mode-menu">
+              <div
+                v-if="workspaceMenuOpen"
+                class="workspace-menu"
+              >
+                <button
+                  v-for="option in workspaceOptions"
+                  :key="option.id"
+                  :class="['workspace-menu-item', { active: normalizedWorkspace === option.id }]"
+                  :disabled="option.disabled"
+                  type="button"
+                  @pointerdown.prevent.stop="selectWorkspace(option.id)"
+                >
+                  <span class="workspace-menu-label">{{ option.label }}</span>
+                  <span class="workspace-menu-desc">{{ option.description }}</span>
+                </button>
+              </div>
+            </transition>
+          </div>
           <button
             class="icon-btn"
             :class="{ active: attachments.length }"
@@ -415,9 +465,11 @@ const props = defineProps({
   sending: { type: Boolean, default: false },
   agentMode: { type: String, default: 'agent' },
   modePending: { type: Boolean, default: false },
+  dawWorkspacePicker: { type: Boolean, default: false },
+  workspace: { type: String, default: 'atri_studio' },
 })
 
-const emit = defineEmits(['send', 'cancel', 'set-mode'])
+const emit = defineEmits(['send', 'cancel', 'set-mode', 'set-workspace'])
 const api = useApi()
 
 const text = ref('')
@@ -425,11 +477,13 @@ const textarea = ref(null)
 const imageInput = ref(null)
 const popover = ref(null)
 const modePicker = ref(null)
+const workspacePicker = ref(null)
 const panelSearch = ref(null)
 const activePanel = ref('')
 const panelQuery = ref('')
 const selectedIndex = ref(0)
 const modeMenuOpen = ref(false)
+const workspaceMenuOpen = ref(false)
 const statusMessage = ref('')
 const queuedDrafts = ref([])
 const history = ref([])
@@ -587,6 +641,26 @@ const placeholderText = computed(() => (
 const currentMode = computed(() => (props.agentMode === 'plan' ? 'plan' : 'agent'))
 const currentModeLabel = computed(() => currentMode.value.toUpperCase())
 const modeOptions = ['plan', 'agent']
+const normalizedWorkspace = computed(() => (
+  props.workspace === 'host_project' ? 'host_project' : 'atri_studio'
+))
+const workspaceLabel = computed(() => (
+  normalizedWorkspace.value === 'host_project' ? 'Host Project' : 'ATRI Studio'
+))
+const workspaceOptions = computed(() => [
+  {
+    id: 'atri_studio',
+    label: 'ATRI Studio',
+    description: 'Write to ATRI, then sync/export',
+    disabled: false,
+  },
+  {
+    id: 'host_project',
+    label: 'Host Project',
+    description: 'Direct host workspace',
+    disabled: true,
+  },
+])
 
 const hasDraft = computed(() => Boolean(text.value.trim() || attachments.value.length))
 
@@ -1201,12 +1275,26 @@ function closePanel({ focus = true } = {}) {
 
 function toggleModeMenu() {
   closePanel({ focus: false })
+  workspaceMenuOpen.value = false
   modeMenuOpen.value = !modeMenuOpen.value
 }
 
 function selectMode(mode) {
   modeMenuOpen.value = false
   requestMode(mode)
+}
+
+function toggleWorkspaceMenu() {
+  closePanel({ focus: false })
+  modeMenuOpen.value = false
+  workspaceMenuOpen.value = !workspaceMenuOpen.value
+}
+
+function selectWorkspace(workspace) {
+  const option = workspaceOptions.value.find((item) => item.id === workspace)
+  if (!option || option.disabled) return
+  workspaceMenuOpen.value = false
+  emit('set-workspace', workspace)
 }
 
 function closePanelFromOutside() {
@@ -1223,6 +1311,9 @@ function onDocumentPointerdown(e) {
   if (!(target instanceof Node)) return
   if (modeMenuOpen.value && !modePicker.value?.contains(target)) {
     modeMenuOpen.value = false
+  }
+  if (workspaceMenuOpen.value && !workspacePicker.value?.contains(target)) {
+    workspaceMenuOpen.value = false
   }
   if (!activePanel.value) return
   if (popover.value?.contains(target)) return
@@ -2030,6 +2121,11 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 
+.workspace-picker {
+  position: relative;
+  flex-shrink: 0;
+}
+
 .mode-current {
   height: 28px;
   display: inline-flex;
@@ -2098,6 +2194,86 @@ textarea::placeholder {
 .mode-menu-item.active {
   background: var(--bg-100);
   color: var(--t1);
+}
+
+.workspace-picker-trigger {
+  width: 31px;
+  height: 31px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(133, 133, 133, 0.82);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.workspace-picker-trigger:hover,
+.workspace-picker-trigger.active {
+  background: var(--bg-100);
+  color: var(--t2);
+  border-color: var(--border-light);
+}
+
+.workspace-picker-trigger svg {
+  width: 16px;
+  height: 16px;
+}
+
+.workspace-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: 238px;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--glass-strong);
+  box-shadow: var(--shadow-panel);
+  padding: 5px;
+}
+
+.workspace-menu-item {
+  min-height: 44px;
+  display: grid;
+  gap: 1px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--t3);
+  text-align: left;
+  padding: 7px 8px;
+  cursor: pointer;
+}
+
+.workspace-menu-item:hover,
+.workspace-menu-item.active {
+  background: var(--bg-100);
+  border-color: var(--border-light);
+  color: var(--t1);
+}
+
+.workspace-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.workspace-menu-label {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workspace-menu-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t3);
+  font-size: 11px;
 }
 
 .mode-menu-enter-active,

@@ -4,6 +4,7 @@
 
 pub mod bridge_contract;
 pub mod dashboard_client;
+pub mod daw_agent_surface;
 pub mod drag_drop;
 pub mod editor;
 pub mod editor_surface;

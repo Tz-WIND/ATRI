@@ -13,11 +13,22 @@ if TYPE_CHECKING:
 
 def register_all(dashboard: Dashboard) -> None:
     """Register every route group on *dashboard*."""
-    from dashboard.routes import auth, chat, knowledge, management, mcp, models, skills, websocket
+    from dashboard.routes import (
+        auth,
+        chat,
+        daw_agent,
+        knowledge,
+        management,
+        mcp,
+        models,
+        skills,
+        websocket,
+    )
 
     auth.register(dashboard)
     models.register(dashboard)
     chat.register(dashboard)
+    daw_agent.register(dashboard)
     knowledge.register(dashboard)
     mcp.register(dashboard)
     skills.register(dashboard)

@@ -77,7 +77,11 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useProviders } from '@/composables/useProviders.js'
 
-const { activeModel, activeModelProvider, activeModels, switchModel, loadStatus } = useProviders()
+const props = defineProps({
+  localOnly: { type: Boolean, default: false },
+})
+
+const { activeModel, activeModelProvider, activeModels, switchModel, setLocalModel, loadStatus } = useProviders()
 
 const open = ref(false)
 const search = ref('')
@@ -107,6 +111,10 @@ function isActive(model) {
 
 async function selectModel(m) {
   open.value = false
+  if (props.localOnly) {
+    setLocalModel(m.provider || '', m.model)
+    return
+  }
   await switchModel(m.provider || '', m.model)
   await loadStatus()
 }

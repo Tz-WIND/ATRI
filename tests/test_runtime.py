@@ -170,6 +170,51 @@ def test_summarize_text_collapses_whitespace_and_truncates():
     assert summarize_text("abcdef", limit=4) == "abc..."
 
 
+def test_runtime_turn_recorder_includes_daw_agent_metadata(tmp_path):
+    store = RuntimeTimelineStore(tmp_path / "runtime")
+    try:
+        stage = SimpleNamespace(
+            runtime_store=store,
+            workspace=str(tmp_path),
+            broadcast_fn=None,
+            _loop=None,
+        )
+        event = MessageEvent(
+            message_str="add a bass track",
+            platform_name="daw_agent",
+            session_id="song-a",
+        )
+        event._extras["daw_agent_workspace"] = "atri_studio"
+        event._extras["daw_agent_instance_id"] = "bridge-1"
+        event._extras["daw_agent_host_context"] = {
+            "host": "Studio One",
+            "tempo_bpm": 128,
+        }
+
+        _RuntimeTurnRecorder(
+            cast(ProcessStage, stage),
+            event,
+            event.unified_msg_origin,
+            "test-model",
+        )
+
+        detail = store.thread_detail(event.unified_msg_origin)
+
+        assert detail is not None
+        assert detail["turns"][0]["metadata"]["daw_agent"] == {
+            "workspace": "atri_studio",
+            "workspace_label": "ATRI Studio",
+            "project_session_id": "song-a",
+            "instance_id": "bridge-1",
+            "host_context": {
+                "host": "Studio One",
+                "tempo_bpm": 128,
+            },
+        }
+    finally:
+        store.close()
+
+
 # ── RuntimeTurnRecorder ─────────────────────────────────────────────
 
 

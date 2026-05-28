@@ -21,6 +21,7 @@ from core.config_schema import (
 from core.event_bus import EventBus
 from core.pipeline.scheduler import PipelineScheduler
 from core.pipeline.stages import *  # noqa: F403 - registers stages
+from core.platform.daw_agent import DawAgentAdapter
 from core.platform.onebot11 import OneBot11Adapter
 from core.platform.webchat import WebChatAdapter
 from core.plugin.manager import PluginManager
@@ -39,6 +40,7 @@ class Lifecycle:
         self.start_time: float = 0
         self.onebot11: OneBot11Adapter | None = None
         self.webchat: WebChatAdapter | None = None
+        self.daw_agent: DawAgentAdapter | None = None
         self.process_stage: Any = None
         self.knowledge_manager: Any = None
         self._tasks: list[asyncio.Task] = []
@@ -104,6 +106,10 @@ class Lifecycle:
         # WebChat adapter (always enabled when dashboard is on)
         self.webchat = WebChatAdapter(self.event_queue)
         platforms["webchat"] = self.webchat
+
+        # DAW/VST embedded agent adapter (driven by dashboard HTTP/WebView)
+        self.daw_agent = DawAgentAdapter(self.event_queue)
+        platforms["daw_agent"] = self.daw_agent
 
         # OneBot11 adapter
         ob_config = self.config.get("onebot11", {})
@@ -182,6 +188,12 @@ class Lifecycle:
         # WebChat adapter (idle loop, driven by dashboard HTTP)
         if self.webchat:
             self._tasks.append(asyncio.create_task(self._safe_task(self.webchat.run(), "WebChat")))
+
+        # DAW/VST agent adapter (idle loop, driven by dashboard HTTP/WebView)
+        if self.daw_agent:
+            self._tasks.append(
+                asyncio.create_task(self._safe_task(self.daw_agent.run(), "DawAgent"))
+            )
 
         # OneBot11 adapter
         if self.onebot11:
@@ -276,6 +288,8 @@ class Lifecycle:
             await self.onebot11.terminate()
         if self.webchat:
             await self.webchat.terminate()
+        if self.daw_agent:
+            await self.daw_agent.terminate()
 
         # 3. Cancel all running background tasks
         for task in self._tasks:

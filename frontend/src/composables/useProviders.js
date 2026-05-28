@@ -104,6 +104,11 @@ export function useProviders() {
     await loadStatus()
   }
 
+  function setLocalModel(provider, model) {
+    activeModel.value = String(model || '')
+    activeModelProvider.value = String(provider || '')
+  }
+
   async function activatePoolModel(pool, provider, model) {
     await api.activatePoolModel(pool, provider, model)
     await loadStatus()
@@ -151,6 +156,7 @@ export function useProviders() {
     activateModel,
     deactivateModel,
     switchModel,
+    setLocalModel,
     activatePoolModel,
     deactivatePoolModel,
     selectPoolModel,

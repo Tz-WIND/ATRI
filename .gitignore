@@ -39,6 +39,7 @@ data/music_workstation/
 
 # Claude
 .claude/
+.superpowers/
 
 # Secrets baseline (tracked intentionally by detect-secrets)
 # .secrets.baseline

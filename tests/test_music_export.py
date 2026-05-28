@@ -16,9 +16,7 @@ def test_write_project_midi_with_notes_should_create_type_one_file(tmp_path):
                 "id": 1,
                 "type": "instrument",
                 "name": "Lead",
-                "notes": [
-                    {"id": "n1", "pitch": 60, "start": 0, "duration": 1, "velocity": 96}
-                ],
+                "notes": [{"id": "n1", "pitch": 60, "start": 0, "duration": 1, "velocity": 96}],
                 "midi_events": [
                     {
                         "id": "cc1",
@@ -101,6 +99,51 @@ def test_write_project_midi_with_selected_track_ids_should_filter_tracks(tmp_pat
     assert summary["note_count"] == 1
 
 
+def test_write_project_midi_with_beat_range_exports_only_that_region(tmp_path):
+    project = {
+        "title": "Range MIDI",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "tracks": [
+            {
+                "id": 1,
+                "type": "instrument",
+                "name": "Lead",
+                "notes": [
+                    {"id": "before", "pitch": 50, "start": 1, "duration": 0.5},
+                    {"id": "inside", "pitch": 64, "start": 5, "duration": 1.0},
+                    {"id": "after", "pitch": 72, "start": 10, "duration": 0.5},
+                ],
+                "midi_events": [
+                    {
+                        "id": "cc-before",
+                        "type": "control_change",
+                        "start": 1.5,
+                        "controller": 1,
+                        "value": 30,
+                    },
+                    {
+                        "id": "cc-inside",
+                        "type": "control_change",
+                        "start": 6,
+                        "controller": 1,
+                        "value": 90,
+                    },
+                ],
+            }
+        ],
+    }
+    path = tmp_path / "range.mid"
+
+    summary = write_project_midi(project, path, track_ids=[1], beat_range=(4, 8))
+
+    assert path.read_bytes().startswith(b"MThd")
+    assert summary["track_ids"] == [1]
+    assert summary["beat_range"] == [4.0, 8.0]
+    assert summary["note_count"] == 1
+    assert summary["event_count"] == 1
+
+
 def test_write_dawproject_archive_should_preserve_plugin_state_files(tmp_path):
     audio_path = tmp_path / "loop.wav"
     audio_path.write_bytes(b"RIFF....WAVE")
@@ -118,9 +161,7 @@ def test_write_dawproject_archive_should_preserve_plugin_state_files(tmp_path):
                 "color": "#4e79ff",
                 "volume": 0.8,
                 "pan": 0.1,
-                "notes": [
-                    {"id": "n1", "pitch": 60, "start": 0, "duration": 1, "velocity": 96}
-                ],
+                "notes": [{"id": "n1", "pitch": 60, "start": 0, "duration": 1, "velocity": 96}],
                 "midi_events": [],
                 "plugin_slots": [
                     {
@@ -160,6 +201,7 @@ def test_write_dawproject_archive_should_preserve_plugin_state_files(tmp_path):
         archive_path,
         export_id="export123",
         consumer="bridge",
+        workspace_root=tmp_path,
     )
 
     assert export["format"] == "dawproject"
@@ -178,3 +220,75 @@ def test_write_dawproject_archive_should_preserve_plugin_state_files(tmp_path):
     assert manifest["consumer"] == "bridge"
     assert manifest["capabilities"]["dawproject"] is True
     assert manifest["plugin_states"][0]["state_sha256"]
+
+
+def test_write_dawproject_archive_should_only_embed_workspace_audio_files(tmp_path):
+    workspace = tmp_path / "workspace"
+    samples = workspace / "samples"
+    samples.mkdir(parents=True)
+    inside_audio = samples / "loop.wav"
+    inside_audio.write_bytes(b"RIFF-inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    absolute_secret = outside / "absolute-secret.wav"
+    traversal_secret = outside / "traversal-secret.wav"
+    absolute_secret.write_bytes(b"RIFF-absolute-secret")
+    traversal_secret.write_bytes(b"RIFF-traversal-secret")
+    project = {
+        "title": "DAWProject Path Jail",
+        "tempo": 120,
+        "time_signature": [4, 4],
+        "tracks": [
+            {
+                "id": 1,
+                "type": "audio",
+                "name": "Audio",
+                "notes": [],
+                "midi_events": [],
+                "clips": [
+                    {
+                        "id": "inside",
+                        "type": "audio",
+                        "name": "Inside",
+                        "path": "samples/loop.wav",
+                    },
+                    {
+                        "id": "absolute",
+                        "type": "audio",
+                        "name": "Absolute Secret",
+                        "path": str(absolute_secret),
+                    },
+                    {
+                        "id": "traversal",
+                        "type": "audio",
+                        "name": "Traversal Secret",
+                        "path": "../outside/traversal-secret.wav",
+                    },
+                ],
+                "plugin_slots": [],
+            }
+        ],
+    }
+    archive_path = tmp_path / "session.dawproject"
+
+    export = write_dawproject_archive(
+        project,
+        archive_path,
+        export_id="export123",
+        workspace_root=workspace,
+    )
+
+    with zipfile.ZipFile(archive_path) as archive:
+        names = set(archive.namelist())
+        project_xml = archive.read("project.xml").decode("utf-8")
+        manifest = json.loads(archive.read("atri-export-manifest.json").decode("utf-8"))
+
+    assert "media/audio/loop.wav" in names
+    assert not any("absolute-secret" in name for name in names)
+    assert not any("traversal-secret" in name for name in names)
+    assert "Absolute Secret" not in project_xml
+    assert "Traversal Secret" not in project_xml
+    assert [file["filename"] for file in export["files"] if file["role"] == "audio"] == ["loop.wav"]
+    assert [file["filename"] for file in manifest["files"] if file["role"] == "audio"] == [
+        "loop.wav"
+    ]

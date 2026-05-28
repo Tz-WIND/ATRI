@@ -136,6 +136,28 @@ export function useApi() {
 
     // Chat
     sendMessage: (message, sessionId, images = []) => request('/api/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, images }) }),
+    sendDawAgentMessage: ({
+      message,
+      projectSessionId = '',
+      instanceId = '',
+      workspace = 'atri_studio',
+      hostContext = {},
+      images = [],
+      model = '',
+      modelProvider = '',
+    }) => request('/api/daw-agent/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        message,
+        project_session_id: projectSessionId,
+        instance_id: instanceId,
+        workspace,
+        host_context: hostContext,
+        images,
+        ...(model ? { model } : {}),
+        ...(modelProvider ? { model_provider: modelProvider } : {}),
+      }),
+    }),
     cancelChat: (sessionId) => request('/api/chat/cancel', { method: 'POST', body: JSON.stringify({ session_id: sessionId || '' }) }),
     getAgentMode: () => request('/api/agent-mode'),
     setAgentMode: (mode, reason = '') => request('/api/agent-mode', { method: 'POST', body: JSON.stringify({ mode, reason }) }),

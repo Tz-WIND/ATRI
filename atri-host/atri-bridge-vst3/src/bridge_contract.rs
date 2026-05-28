@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeContract {
@@ -10,7 +10,8 @@ pub struct BridgeContract {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeProjectSummary {
     pub title: String,
-    pub revision: u64,
+    #[serde(deserialize_with = "deserialize_project_revision")]
+    pub revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,10 +35,24 @@ impl BridgeStatus {
             },
             project: BridgeProjectSummary {
                 title: title.to_string(),
-                revision,
+                revision: revision.to_string(),
             },
             formats: vec!["midi".to_string(), "dawproject".to_string()],
         }
+    }
+}
+
+fn deserialize_project_revision<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::String(revision) => Ok(revision),
+        serde_json::Value::Number(revision) => Ok(revision.to_string()),
+        _ => Err(serde::de::Error::custom(
+            "project revision must be a string or number",
+        )),
     }
 }
 
@@ -71,6 +86,8 @@ pub struct BridgeExportRequest {
     pub format: BridgeExportFormat,
     pub consumer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host_context: Option<BridgeHostContext>,
 }
 
@@ -79,8 +96,18 @@ impl BridgeExportRequest {
         Self {
             format,
             consumer: "bridge".to_string(),
+            instance_id: None,
             host_context: None,
         }
+    }
+
+    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
+        let instance_id = instance_id.into();
+        let instance_id = instance_id.trim();
+        if !instance_id.is_empty() {
+            self.instance_id = Some(instance_id.to_string());
+        }
+        self
     }
 
     pub fn with_host_context(mut self, host_context: BridgeHostContext) -> Self {

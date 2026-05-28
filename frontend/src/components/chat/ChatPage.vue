@@ -182,6 +182,7 @@ import SessionPanel from './SessionPanel.vue'
 import FilePanel from './FilePanel.vue'
 import EditorTabs from './EditorTabs.vue'
 import { useApi } from '@/composables/useApi.js'
+import { buildChatDisplayItems } from '@/composables/chatDisplayItems.js'
 import { useChat } from '@/composables/useChat.js'
 import { useWebSocket } from '@/composables/useWebSocket.js'
 import { useSession } from '@/composables/useSession.js'
@@ -219,44 +220,7 @@ const EDITOR_MAX_WIDTH = 1200
 const PANEL_MIN_WIDTH = 200
 const PANEL_MAX_WIDTH = 600
 const HANDLE_SPACE = 4
-const CONTEXT_TOOL_NAMES = new Set(['read_file', 'list_dir', 'tree', 'glob', 'grep', 'search'])
-
-const displayItems = computed(() => {
-  const items = []
-  let contextTools = []
-
-  function flushContextTools() {
-    if (!contextTools.length) return
-    const first = contextTools[0]
-    const last = contextTools[contextTools.length - 1]
-    items.push({
-      id: `context-${first.id}-${last.id}`,
-      type: 'tool-group',
-      tools: contextTools.map((message) => ({
-        id: message.id,
-        ...(message.toolData || {}),
-      })),
-    })
-    contextTools = []
-  }
-
-  messages.value.forEach((message) => {
-    if (message.role === 'tool' && CONTEXT_TOOL_NAMES.has(message.toolData?.tool)) {
-      contextTools.push(message)
-      return
-    }
-
-    flushContextTools()
-    items.push({
-      id: message.id,
-      type: message.role,
-      message,
-    })
-  })
-
-  flushContextTools()
-  return items
-})
+const displayItems = computed(() => buildChatDisplayItems(messages.value))
 
 const editorPaneStyle = computed(() => (
   editorExpanded.value

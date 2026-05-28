@@ -1,24 +1,29 @@
 use std::ffi::{CString, c_char, c_void};
 use std::slice;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex, MutexGuard, TryLockError,
+    atomic::{AtomicU64, Ordering},
+};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use vst3::{
-    Class, ComWrapper,
+    Class, ComPtr, ComWrapper,
     Steinberg::{Vst::*, *},
 };
 
-use crate::bridge_contract::{BridgeExportRequest, BridgeExportResponse};
+use crate::bridge_contract::{BridgeExportRequest, BridgeExportResponse, BridgeStatus};
 use crate::dashboard_client::{
     BridgeDashboardClient, DashboardClientError, DashboardEndpoint, DashboardExportWorker,
+    DashboardLatestExportWorker, DashboardStatusWorker,
 };
+use crate::daw_agent_surface::{DawAgentSurfaceOpener, NativeDawAgentSurfaceOpener};
 use crate::drag_drop::{
     BridgeDragError, BridgeDragPayload, BridgeDragService, NativeBridgeDragService,
 };
-#[cfg(test)]
-use crate::editor::BridgeExportState;
-use crate::editor::{BridgeEditorAction, BridgeEditorState, BridgeEditorViewModel};
+use crate::editor::{
+    BridgeConnectionState, BridgeEditorAction, BridgeEditorState, BridgeEditorViewModel,
+};
 use crate::editor_surface::{
     EditorPlatformType, EditorSurfaceSpec, NativeEditorSurface, NativeEditorSurfaceEvent,
 };
@@ -34,7 +39,25 @@ const MAIN_OUTPUT_NAME: &str = "ATRI Bridge";
 const EVENT_INPUT_NAME: &str = "ATRI Control";
 const EDITOR_WIDTH: i32 = 420;
 const EDITOR_HEIGHT: i32 = 220;
+const DASHBOARD_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const DASHBOARD_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
+const BRIDGE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const LATEST_EXPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+static NEXT_DAW_AGENT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn try_lock_recover<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match mutex.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
 
 pub(crate) fn create_plugin_factory() -> *mut IPluginFactory {
     ComWrapper::new(BridgePluginFactory)
@@ -229,7 +252,8 @@ impl Class for BridgeComponent {
 }
 
 impl IPluginBaseTrait for BridgeComponent {
-    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+    unsafe fn initialize(&self, context: *mut FUnknown) -> tresult {
+        capture_host_application_name(context);
         kResultOk
     }
 
@@ -387,9 +411,8 @@ impl IAudioProcessorTrait for BridgeComponent {
         }
 
         let setup = unsafe { &*setup };
-        if let Ok(mut state) = self.state.lock() {
-            state.prepare(setup.sampleRate, setup.maxSamplesPerBlock.max(1) as usize);
-        }
+        let mut state = lock_recover(&self.state);
+        state.prepare(setup.sampleRate, setup.maxSamplesPerBlock.max(1) as usize);
         kResultOk
     }
 
@@ -406,7 +429,7 @@ impl IAudioProcessorTrait for BridgeComponent {
         // intentionally performs no dashboard, filesystem, or allocation work.
         let data = unsafe { &mut *data };
         if !data.processContext.is_null() {
-            if let Ok(mut state) = self.state.try_lock() {
+            if let Some(mut state) = try_lock_recover(&self.state) {
                 state.apply_process_context(unsafe { &*data.processContext });
                 if let Some(host_context) = state.host_context() {
                     crate::host_context::publish_host_context(host_context);
@@ -443,7 +466,8 @@ impl Class for BridgeController {
 }
 
 impl IPluginBaseTrait for BridgeController {
-    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+    unsafe fn initialize(&self, context: *mut FUnknown) -> tresult {
+        capture_host_application_name(context);
         kResultOk
     }
 
@@ -527,9 +551,18 @@ struct BridgePlugView {
     rect: Mutex<ViewRect>,
     editor_state: Mutex<BridgeEditorState>,
     view_model: Mutex<BridgeEditorViewModel>,
+    status_worker: DashboardStatusWorker,
+    status_job: Mutex<Option<JoinHandle<Result<BridgeStatus, DashboardClientError>>>>,
+    last_status_poll: Mutex<Option<Instant>>,
     export_worker: DashboardExportWorker,
     export_job: Mutex<Option<JoinHandle<Result<BridgeExportResponse, DashboardClientError>>>>,
+    latest_export_worker: DashboardLatestExportWorker,
+    latest_export_job:
+        Mutex<Option<JoinHandle<Result<BridgeExportResponse, DashboardClientError>>>>,
+    last_latest_export_poll: Mutex<Option<Instant>>,
     drag_service: Box<dyn BridgeDragService + Send>,
+    surface_opener: Box<dyn DawAgentSurfaceOpener + Send>,
+    instance_id: String,
     surface_parent: Mutex<Option<(usize, EditorPlatformType)>>,
     native_surface: Mutex<Option<NativeEditorSurface>>,
 }
@@ -552,9 +585,17 @@ impl Default for BridgePlugView {
                 height,
             )),
             editor_state: Mutex::new(editor_state),
+            status_worker: default_status_worker(),
+            status_job: Mutex::new(None),
+            last_status_poll: Mutex::new(None),
             export_worker: default_export_worker(),
             export_job: Mutex::new(None),
+            latest_export_worker: default_latest_export_worker(),
+            latest_export_job: Mutex::new(None),
+            last_latest_export_poll: Mutex::new(None),
             drag_service: Box::new(NativeBridgeDragService),
+            surface_opener: Box::new(NativeDawAgentSurfaceOpener),
+            instance_id: next_daw_agent_instance_id(),
             surface_parent: Mutex::new(None),
             native_surface: Mutex::new(None),
         }
@@ -571,6 +612,14 @@ impl BridgePlugView {
     }
 
     #[cfg(test)]
+    fn with_latest_export_worker(latest_export_worker: DashboardLatestExportWorker) -> Self {
+        Self {
+            latest_export_worker,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
     fn with_drag_service(drag_service: impl BridgeDragService + Send + 'static) -> Self {
         Self {
             drag_service: Box::new(drag_service),
@@ -579,32 +628,60 @@ impl BridgePlugView {
     }
 
     #[cfg(test)]
+    fn with_surface_opener(opener: impl DawAgentSurfaceOpener + Send + 'static) -> Self {
+        Self {
+            surface_opener: Box::new(opener),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn with_status_worker_and_surface_opener(
+        status_worker: DashboardStatusWorker,
+        opener: impl DawAgentSurfaceOpener + Send + 'static,
+    ) -> Self {
+        Self {
+            status_worker,
+            surface_opener: Box::new(opener),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn instance_id(&self) -> String {
+        self.instance_id.clone()
+    }
+
+    #[cfg(test)]
     fn render_lines(&self) -> Vec<String> {
-        self.view_model
-            .lock()
-            .map(|view_model| view_model.render_lines())
-            .unwrap_or_default()
+        lock_recover(&self.view_model).render_lines()
     }
 
     #[cfg(test)]
     fn dispatch_action_at(&self, x: i32, y: i32) -> Option<BridgeEditorAction> {
-        let action = self
-            .view_model
-            .lock()
-            .ok()
-            .and_then(|view_model| view_model.hit_test(x, y))?;
+        let action = {
+            let view_model = lock_recover(&self.view_model);
+            view_model.hit_test(x, y)
+        }?;
         self.dispatch_action(action);
         Some(action)
     }
 
     fn dispatch_action(&self, action: BridgeEditorAction) {
+        let _ = self.poll_status_job();
         let _ = self.poll_export_job();
         self.refresh_host_context();
-        let request = self
-            .editor_state
-            .lock()
-            .ok()
-            .and_then(|mut state| state.handle_action(action));
+        if action == BridgeEditorAction::OpenAtri {
+            self.open_daw_agent_surface();
+            self.refresh_view_model();
+            self.sync_native_surface();
+            return;
+        }
+        let request = {
+            let mut state = lock_recover(&self.editor_state);
+            state.handle_action(action)
+        }
+        .map(|request| request.with_instance_id(self.instance_id.clone()));
         if let Some(request) = request {
             self.start_export_job(request);
         }
@@ -612,16 +689,25 @@ impl BridgePlugView {
         self.sync_native_surface();
     }
 
-    fn start_export_job(&self, request: BridgeExportRequest) {
-        let Ok(mut export_job) = self.export_job.lock() else {
-            self.mark_export_error("failed to lock export worker state");
-            return;
+    fn open_daw_agent_surface(&self) {
+        let url = {
+            let state = lock_recover(&self.editor_state);
+            state.daw_agent_surface_url(&self.instance_id)
         };
+
+        if let Err(error) = self.surface_opener.open(&url) {
+            self.mark_editor_error(format!("failed to open DAW agent surface: {error}"));
+        }
+    }
+
+    fn start_export_job(&self, request: BridgeExportRequest) {
+        let mut export_job = lock_recover(&self.export_job);
         if export_job
             .as_ref()
             .map(|job| !job.is_finished())
             .unwrap_or(false)
         {
+            drop(export_job);
             self.mark_export_error("another ATRI bridge export is already running");
             return;
         }
@@ -631,9 +717,7 @@ impl BridgePlugView {
 
     fn poll_export_job(&self) -> bool {
         let finished_job = {
-            let Ok(mut export_job) = self.export_job.lock() else {
-                return false;
-            };
+            let mut export_job = lock_recover(&self.export_job);
             if export_job
                 .as_ref()
                 .map(JoinHandle::is_finished)
@@ -659,62 +743,217 @@ impl BridgePlugView {
         true
     }
 
-    #[cfg(test)]
-    fn pending_export_format(&self) -> Option<crate::bridge_contract::BridgeExportFormat> {
-        self.editor_state
-            .lock()
-            .ok()
-            .and_then(|state| state.pending_export_format())
+    fn handle_tick(&self) {
+        let _ = self.poll_status_job();
+        let _ = self.poll_export_job();
+        let _ = self.poll_latest_export_job();
+        self.start_status_job_if_due();
+        self.start_latest_export_job_if_due();
+    }
+
+    fn start_status_job_if_due(&self) {
+        {
+            let status_job = lock_recover(&self.status_job);
+            if status_job
+                .as_ref()
+                .map(|job| !job.is_finished())
+                .unwrap_or(false)
+            {
+                return;
+            }
+        }
+
+        let now = Instant::now();
+        {
+            let mut last_poll = lock_recover(&self.last_status_poll);
+            if last_poll
+                .map(|last_poll| now.duration_since(last_poll) < BRIDGE_STATUS_POLL_INTERVAL)
+                .unwrap_or(false)
+            {
+                return;
+            }
+            *last_poll = Some(now);
+        }
+
+        let changed = {
+            let mut state = lock_recover(&self.editor_state);
+            if state.connection() == BridgeConnectionState::Disconnected {
+                state.mark_connecting();
+                true
+            } else {
+                false
+            }
+        };
+        let mut status_job = lock_recover(&self.status_job);
+        if status_job
+            .as_ref()
+            .map(|job| !job.is_finished())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        *status_job = Some(self.status_worker.check_once());
+        drop(status_job);
+
+        if changed {
+            self.refresh_view_model();
+            self.sync_native_surface();
+        }
+    }
+
+    fn poll_status_job(&self) -> bool {
+        let finished_job = {
+            let mut status_job = lock_recover(&self.status_job);
+            if status_job
+                .as_ref()
+                .map(JoinHandle::is_finished)
+                .unwrap_or(false)
+            {
+                status_job.take()
+            } else {
+                None
+            }
+        };
+
+        let Some(finished_job) = finished_job else {
+            return false;
+        };
+
+        match finished_job.join() {
+            Ok(Ok(status)) => self.apply_status_response(status),
+            Ok(Err(error)) => self.apply_status_error(error),
+            Err(_) => self.mark_editor_error("ATRI bridge status worker panicked"),
+        }
+        self.refresh_view_model();
+        self.sync_native_surface();
+        true
+    }
+
+    fn start_latest_export_job_if_due(&self) {
+        {
+            let latest_export_job = lock_recover(&self.latest_export_job);
+            if latest_export_job
+                .as_ref()
+                .map(|job| !job.is_finished())
+                .unwrap_or(false)
+            {
+                return;
+            }
+        }
+
+        let now = Instant::now();
+        {
+            let mut last_poll = lock_recover(&self.last_latest_export_poll);
+            if last_poll
+                .map(|last_poll| now.duration_since(last_poll) < LATEST_EXPORT_POLL_INTERVAL)
+                .unwrap_or(false)
+            {
+                return;
+            }
+            *last_poll = Some(now);
+        }
+
+        let mut latest_export_job = lock_recover(&self.latest_export_job);
+        if latest_export_job
+            .as_ref()
+            .map(|job| !job.is_finished())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        *latest_export_job = Some(
+            self.latest_export_worker
+                .fetch_once(self.instance_id.clone()),
+        );
+    }
+
+    fn poll_latest_export_job(&self) -> bool {
+        let finished_job = {
+            let mut latest_export_job = lock_recover(&self.latest_export_job);
+            if latest_export_job
+                .as_ref()
+                .map(JoinHandle::is_finished)
+                .unwrap_or(false)
+            {
+                latest_export_job.take()
+            } else {
+                None
+            }
+        };
+
+        let Some(finished_job) = finished_job else {
+            return false;
+        };
+
+        let changed = match finished_job.join() {
+            Ok(Ok(response)) => self.apply_latest_export_response(response),
+            Ok(Err(_)) | Err(_) => false,
+        };
+        if changed {
+            self.refresh_view_model();
+            self.sync_native_surface();
+        }
+        changed
     }
 
     #[cfg(test)]
-    fn export_state(&self) -> BridgeExportState {
-        self.editor_state
-            .lock()
-            .map(|state| state.export_state())
-            .unwrap_or(BridgeExportState::Error)
+    fn pending_export_format(&self) -> Option<crate::bridge_contract::BridgeExportFormat> {
+        lock_recover(&self.editor_state).pending_export_format()
+    }
+
+    #[cfg(test)]
+    fn export_state(&self) -> crate::editor::BridgeExportState {
+        lock_recover(&self.editor_state).export_state()
     }
 
     #[cfg(test)]
     fn last_export_path(&self) -> Option<String> {
-        self.editor_state
-            .lock()
-            .ok()
-            .and_then(|state| state.last_export_path().map(ToOwned::to_owned))
+        lock_recover(&self.editor_state)
+            .last_export_path()
+            .map(ToOwned::to_owned)
     }
 
     #[cfg(test)]
     fn last_export_error(&self) -> Option<String> {
-        self.editor_state
-            .lock()
-            .ok()
-            .and_then(|state| state.last_export_error().map(ToOwned::to_owned))
+        lock_recover(&self.editor_state)
+            .last_export_error()
+            .map(ToOwned::to_owned)
     }
 
     fn apply_export_response(&self, response: BridgeExportResponse) {
-        if let Ok(mut state) = self.editor_state.lock() {
-            state.apply_export_response(response);
-        }
+        lock_recover(&self.editor_state).apply_export_response(response);
+    }
+
+    fn apply_status_response(&self, status: BridgeStatus) {
+        lock_recover(&self.editor_state).apply_status(status);
+    }
+
+    fn apply_status_error(&self, error: DashboardClientError) {
+        lock_recover(&self.editor_state).mark_error(error.user_message());
+    }
+
+    fn apply_latest_export_response(&self, response: BridgeExportResponse) -> bool {
+        lock_recover(&self.editor_state).apply_external_export_response(response)
     }
 
     fn apply_export_error(&self, error: DashboardClientError) {
-        if let Ok(mut state) = self.editor_state.lock() {
-            state.apply_export_error(error);
-        }
+        lock_recover(&self.editor_state).apply_export_error(error);
     }
 
     fn mark_export_error(&self, message: impl Into<String>) {
-        if let Ok(mut state) = self.editor_state.lock() {
-            state.mark_export_error(message);
-        }
+        lock_recover(&self.editor_state).mark_export_error(message);
+    }
+
+    fn mark_editor_error(&self, message: impl Into<String>) {
+        lock_recover(&self.editor_state).mark_error(message);
     }
 
     fn start_drag_from_last_export(&self) {
-        let result = self
-            .editor_state
-            .lock()
-            .ok()
-            .and_then(|state| state.last_export_path().map(ToOwned::to_owned))
+        let export_path = {
+            let state = lock_recover(&self.editor_state);
+            state.last_export_path().map(ToOwned::to_owned)
+        };
+        let result = export_path
             .ok_or(BridgeDragError::MissingCompletedExport)
             .and_then(BridgeDragPayload::from_export_path)
             .and_then(|payload| self.drag_service.start_drag(payload));
@@ -727,29 +966,20 @@ impl BridgePlugView {
     }
 
     fn update_rect(&self, rect: ViewRect) {
-        if let Ok(mut current_rect) = self.rect.lock() {
-            *current_rect = rect;
-        }
+        *lock_recover(&self.rect) = rect;
         self.refresh_view_model();
         self.sync_native_surface();
     }
 
     fn view_size(&self) -> (i32, i32) {
-        self.rect
-            .lock()
-            .map(|rect| rect_size(*rect))
-            .unwrap_or((EDITOR_WIDTH, EDITOR_HEIGHT))
+        rect_size(*lock_recover(&self.rect))
     }
 
     fn refresh_view_model(&self) {
         self.refresh_host_context();
         let (width, height) = self.view_size();
-        let Ok(state) = self.editor_state.lock() else {
-            return;
-        };
-        let Ok(mut view_model) = self.view_model.lock() else {
-            return;
-        };
+        let state = lock_recover(&self.editor_state).clone();
+        let mut view_model = lock_recover(&self.view_model);
         *view_model = BridgeEditorViewModel::from_state(&state, width, height);
     }
 
@@ -757,9 +987,7 @@ impl BridgePlugView {
         let Some(host_context) = crate::host_context::latest_host_context() else {
             return;
         };
-        if let Ok(mut state) = self.editor_state.lock() {
-            state.apply_host_context(host_context);
-        }
+        lock_recover(&self.editor_state).apply_host_context(host_context);
     }
 
     fn attach_native_surface(
@@ -767,22 +995,8 @@ impl BridgePlugView {
         parent: *mut c_void,
         platform_type: FIDString,
     ) -> Result<(), crate::editor_surface::EditorSurfaceError> {
-        let rect = self
-            .rect
-            .lock()
-            .map(|rect| *rect)
-            .unwrap_or_else(|_| default_editor_rect());
-        let view_model = self
-            .view_model
-            .lock()
-            .map(|view_model| view_model.clone())
-            .unwrap_or_else(|_| {
-                BridgeEditorViewModel::from_state(
-                    &BridgeEditorState::default(),
-                    EDITOR_WIDTH,
-                    EDITOR_HEIGHT,
-                )
-            });
+        let rect = *lock_recover(&self.rect);
+        let view_model = lock_recover(&self.view_model).clone();
         let spec = EditorSurfaceSpec::from_vst3(parent, platform_type, rect, &view_model)?;
         let surface = unsafe {
             NativeEditorSurface::attach(
@@ -792,45 +1006,31 @@ impl BridgePlugView {
             )
         }?;
 
-        if let Ok(mut surface_parent) = self.surface_parent.lock() {
-            *surface_parent = Some((spec.parent_handle(), spec.platform()));
-        }
-        if let Ok(mut native_surface) = self.native_surface.lock() {
-            *native_surface = Some(surface);
-        }
+        *lock_recover(&self.surface_parent) = Some((spec.parent_handle(), spec.platform()));
+        *lock_recover(&self.native_surface) = Some(surface);
         Ok(())
     }
 
     fn detach_native_surface(&self) {
-        if let Ok(mut native_surface) = self.native_surface.lock() {
-            *native_surface = None;
-        }
-        if let Ok(mut surface_parent) = self.surface_parent.lock() {
-            *surface_parent = None;
-        }
+        *lock_recover(&self.surface_parent) = None;
+        *lock_recover(&self.native_surface) = None;
     }
 
     fn sync_native_surface(&self) {
         let Some(spec) = self.current_surface_spec() else {
             return;
         };
-        if let Ok(mut native_surface) = self.native_surface.lock() {
-            if let Some(surface) = native_surface.as_mut() {
-                let _ = surface.update(&spec);
-            }
+        let mut native_surface = lock_recover(&self.native_surface);
+        if let Some(surface) = native_surface.as_mut() {
+            let _ = surface.update(&spec);
         }
     }
 
     fn current_surface_spec(&self) -> Option<EditorSurfaceSpec> {
-        let (parent_handle, platform) =
-            self.surface_parent.lock().ok().and_then(|parent| *parent)?;
-        let rect = self.rect.lock().map(|rect| *rect).ok()?;
+        let (parent_handle, platform) = (*lock_recover(&self.surface_parent))?;
+        let rect = *lock_recover(&self.rect);
         let rect = crate::editor_surface::SurfaceRect::from_view_rect(rect).ok()?;
-        let view_model = self
-            .view_model
-            .lock()
-            .map(|view_model| view_model.clone())
-            .ok()?;
+        let view_model = lock_recover(&self.view_model).clone();
         EditorSurfaceSpec::from_view_model(parent_handle, platform, rect, &view_model).ok()
     }
 }
@@ -944,9 +1144,7 @@ unsafe fn bridge_surface_event_callback(context: *mut c_void, event: NativeEdito
     match event {
         NativeEditorSurfaceEvent::Action(action) => view.dispatch_action(action),
         NativeEditorSurfaceEvent::DragExport => view.start_drag_from_last_export(),
-        NativeEditorSurfaceEvent::Tick => {
-            let _ = view.poll_export_job();
-        }
+        NativeEditorSurfaceEvent::Tick => view.handle_tick(),
     }
 }
 
@@ -966,6 +1164,13 @@ fn rect_size(rect: ViewRect) -> (i32, i32) {
     )
 }
 
+fn next_daw_agent_instance_id() -> String {
+    format!(
+        "bridge-{}",
+        NEXT_DAW_AGENT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 fn editor_action_for_key(key: char16) -> Option<BridgeEditorAction> {
     let ch = char::from_u32(key as u32)?.to_ascii_lowercase();
     match ch {
@@ -980,6 +1185,20 @@ fn editor_action_for_key(key: char16) -> Option<BridgeEditorAction> {
 
 fn default_export_worker() -> DashboardExportWorker {
     DashboardExportWorker::new(
+        BridgeDashboardClient::new(DashboardEndpoint::default()),
+        DASHBOARD_EXPORT_TIMEOUT,
+    )
+}
+
+fn default_status_worker() -> DashboardStatusWorker {
+    DashboardStatusWorker::new(
+        BridgeDashboardClient::new(DashboardEndpoint::default()),
+        DASHBOARD_STATUS_TIMEOUT,
+    )
+}
+
+fn default_latest_export_worker() -> DashboardLatestExportWorker {
+    DashboardLatestExportWorker::new(
         BridgeDashboardClient::new(DashboardEndpoint::default()),
         DASHBOARD_EXPORT_TIMEOUT,
     )
@@ -1034,13 +1253,48 @@ fn copy_wstring(src: &str, dst: &mut [TChar]) {
     }
 }
 
+fn capture_host_application_name(context: *mut FUnknown) {
+    if context.is_null() {
+        return;
+    }
+    let Some(host_context) = (unsafe { ComPtr::from_raw(context) }) else {
+        return;
+    };
+    let Some(host_app) = host_context.cast::<IHostApplication>() else {
+        return;
+    };
+    let mut name = [0 as TChar; 128];
+    if unsafe { host_app.getName(&mut name) } != kResultOk {
+        return;
+    }
+    let host_name = read_wstring(&name);
+    if !host_name.trim().is_empty() {
+        crate::host_context::publish_host_application_name(host_name);
+    }
+}
+
+fn read_wstring(units: &[TChar]) -> String {
+    let len = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
+    String::from_utf16_lossy(
+        &units[..len]
+            .iter()
+            .map(|unit| *unit as u16)
+            .collect::<Vec<_>>(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bridge_contract::{BridgeExportFormat, BridgeHostContext};
     use crate::dashboard_client::{
         BridgeDashboardClient, DashboardEndpoint, DashboardExportWorker,
+        DashboardLatestExportWorker, DashboardStatusWorker,
     };
+    use crate::daw_agent_surface::{DawAgentSurfaceOpenError, DawAgentSurfaceOpener};
     use crate::editor::{BridgeEditorAction, BridgeExportState};
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1072,6 +1326,43 @@ mod tests {
         });
 
         assert_eq!(view.view_size(), (640, 320));
+    }
+
+    #[test]
+    fn bridge_plug_view_recovers_poisoned_view_model_lock() {
+        let view = BridgePlugView::default();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = view.view_model.lock().unwrap();
+            panic!("poison view model");
+        }));
+
+        let lines = view.render_lines();
+
+        assert!(lines.iter().any(|line| line == "ATRI Bridge"));
+    }
+
+    #[test]
+    fn bridge_plug_view_recovers_poisoned_editor_state_lock_for_export_updates() {
+        let view = BridgePlugView::default();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = view.editor_state.lock().unwrap();
+            panic!("poison editor state");
+        }));
+
+        view.apply_export_response(BridgeExportResponse {
+            ok: true,
+            bridge: None,
+            export: Some(serde_json::json!({
+                "format": "midi",
+                "path": "data/music_workstation/exports/session.mid"
+            })),
+        });
+
+        assert_eq!(view.export_state(), BridgeExportState::Completed);
+        assert_eq!(
+            view.last_export_path(),
+            Some("data/music_workstation/exports/session.mid".to_string())
+        );
     }
 
     #[test]
@@ -1120,6 +1411,72 @@ mod tests {
             Some(BridgeEditorAction::OpenAtri)
         );
         assert_eq!(editor_action_for_key('x' as char16), None);
+    }
+
+    #[test]
+    fn bridge_plug_view_open_atri_launches_daw_agent_surface_url() {
+        let opener = RecordingDawAgentSurfaceOpener::default();
+        let recordings = opener.recordings();
+        let view = BridgePlugView::with_surface_opener(opener);
+        view.editor_state.lock().unwrap().apply_status(
+            crate::bridge_contract::BridgeStatus::connected_for_test("ATRI Session", 7),
+        );
+        let instance_id = view.instance_id();
+
+        view.dispatch_action(BridgeEditorAction::OpenAtri);
+
+        assert_eq!(
+            recordings.lock().unwrap().clone(),
+            vec![format!(
+                "http://127.0.0.1:6185/?surface=daw-agent&project_session_id=atri-session&instance_id={instance_id}&workspace=atri_studio&host=Studio%20One"
+            )]
+        );
+        assert_eq!(view.export_state(), BridgeExportState::Idle);
+        assert_eq!(view.pending_export_format(), None);
+    }
+
+    #[test]
+    fn bridge_plug_view_surface_tick_applies_bridge_status_before_opening_daw_agent() {
+        let endpoint = spawn_bridge_status_server(
+            r#"{
+                "ok": true,
+                "bridge": {
+                    "api_version": 1,
+                    "manifest_schema_version": 1,
+                    "local_only": true
+                },
+                "project": {
+                    "title": "Bridge Status Session",
+                    "revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                },
+                "exports": {
+                    "formats": ["midi", "dawproject"],
+                    "hostless_formats": ["midi", "dawproject"],
+                    "host_required_formats": ["wav"]
+                },
+                "host": {"running": false}
+            }"#,
+        );
+        let opener = RecordingDawAgentSurfaceOpener::default();
+        let recordings = opener.recordings();
+        let view = BridgePlugView::with_status_worker_and_surface_opener(
+            DashboardStatusWorker::new(
+                BridgeDashboardClient::new(endpoint),
+                Duration::from_secs(1),
+            ),
+            opener,
+        );
+        let instance_id = view.instance_id();
+
+        wait_for_status_tick(&view);
+        view.dispatch_action(BridgeEditorAction::OpenAtri);
+
+        assert_eq!(
+            recordings.lock().unwrap().clone(),
+            vec![format!(
+                "http://127.0.0.1:6185/?surface=daw-agent&project_session_id=bridge-status-session&instance_id={instance_id}&workspace=atri_studio&host=Studio%20One"
+            )]
+        );
     }
 
     #[test]
@@ -1222,6 +1579,58 @@ mod tests {
     }
 
     #[test]
+    fn bridge_plug_view_surface_tick_applies_latest_daw_agent_export() {
+        let endpoint = spawn_bridge_latest_export_server(
+            r#"{
+                "ok": true,
+                "bridge": {
+                    "api_version": 1,
+                    "manifest_schema_version": 1,
+                    "local_only": true
+                },
+                "export": {
+                    "format": "midi",
+                    "path": "data/music_workstation/exports/daw-agent-region.mid"
+                }
+            }"#,
+            200,
+        );
+        let view = BridgePlugView::with_latest_export_worker(DashboardLatestExportWorker::new(
+            BridgeDashboardClient::new(endpoint),
+            Duration::from_secs(1),
+        ));
+
+        wait_for_latest_export_tick(&view);
+
+        assert_eq!(view.export_state(), BridgeExportState::Completed);
+        assert_eq!(
+            view.last_export_path(),
+            Some("data/music_workstation/exports/daw-agent-region.mid".to_string())
+        );
+    }
+
+    #[test]
+    fn bridge_plug_view_starts_latest_export_poll_while_button_export_in_progress() {
+        let endpoint = DashboardEndpoint::new("http://127.0.0.1:0").unwrap();
+        let view = BridgePlugView::with_latest_export_worker(DashboardLatestExportWorker::new(
+            BridgeDashboardClient::new(endpoint),
+            Duration::from_millis(1),
+        ));
+        view.editor_state
+            .lock()
+            .unwrap()
+            .begin_export(BridgeExportFormat::Dawproject);
+
+        view.start_latest_export_job_if_due();
+
+        let job = view.latest_export_job.lock().unwrap().take();
+        assert!(job.is_some());
+        if let Some(job) = job {
+            let _ = job.join();
+        }
+    }
+
+    #[test]
     fn bridge_component_process_publishes_host_context_snapshot() {
         let _guard = crate::host_context::test_host_context_guard();
         crate::host_context::clear_latest_host_context_for_test();
@@ -1314,6 +1723,70 @@ mod tests {
         }
     }
 
+    fn wait_for_latest_export_tick(view: &BridgePlugView) {
+        let started = Instant::now();
+        loop {
+            unsafe {
+                bridge_surface_event_callback(
+                    view as *const BridgePlugView as *mut c_void,
+                    crate::editor_surface::NativeEditorSurfaceEvent::Tick,
+                );
+            }
+            if view.export_state() == BridgeExportState::Completed {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for latest export worker"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_status_tick(view: &BridgePlugView) {
+        let started = Instant::now();
+        loop {
+            unsafe {
+                bridge_surface_event_callback(
+                    view as *const BridgePlugView as *mut c_void,
+                    crate::editor_surface::NativeEditorSurfaceEvent::Tick,
+                );
+            }
+            if view
+                .render_lines()
+                .iter()
+                .any(|line| line == "Connected: Bridge Status Session rev 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for status worker"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn spawn_bridge_status_server(body: &'static str) -> DashboardEndpoint {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(request.starts_with("GET /api/music/studio/bridge/status "));
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        DashboardEndpoint::new(format!("http://127.0.0.1:{port}")).unwrap()
+    }
+
     fn spawn_bridge_export_server(body: &'static str, status: u16) -> DashboardEndpoint {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1324,6 +1797,30 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..bytes]);
             assert!(request.starts_with("POST /api/music/studio/bridge/export "));
             assert!(request.contains("\"consumer\":\"bridge\""));
+            assert!(request.contains("\"instance_id\":\"bridge-"));
+
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        DashboardEndpoint::new(format!("http://127.0.0.1:{port}")).unwrap()
+    }
+
+    fn spawn_bridge_latest_export_server(body: &'static str, status: u16) -> DashboardEndpoint {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(
+                request
+                    .starts_with("GET /api/music/studio/bridge/export/latest?instance_id=bridge-")
+            );
 
             let response = format!(
                 "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1357,5 +1854,79 @@ mod tests {
             );
             Ok(())
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingDawAgentSurfaceOpener {
+        recordings: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl RecordingDawAgentSurfaceOpener {
+        fn recordings(&self) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+            std::sync::Arc::clone(&self.recordings)
+        }
+    }
+
+    impl DawAgentSurfaceOpener for RecordingDawAgentSurfaceOpener {
+        fn open(&self, url: &str) -> Result<(), DawAgentSurfaceOpenError> {
+            self.recordings.lock().unwrap().push(url.to_string());
+            Ok(())
+        }
+    }
+
+    struct TestHostApplication {
+        name: String,
+    }
+
+    impl TestHostApplication {
+        fn new(name: impl Into<String>) -> Self {
+            Self { name: name.into() }
+        }
+    }
+
+    impl Class for TestHostApplication {
+        type Interfaces = (IHostApplication,);
+    }
+
+    impl IHostApplicationTrait for TestHostApplication {
+        unsafe fn getName(&self, name: *mut String128) -> tresult {
+            if name.is_null() {
+                return kInvalidArgument;
+            }
+            copy_wstring(&self.name, unsafe { &mut *name });
+            kResultOk
+        }
+
+        unsafe fn createInstance(
+            &self,
+            _cid: *mut TUID,
+            _iid: *mut TUID,
+            obj: *mut *mut c_void,
+        ) -> tresult {
+            if !obj.is_null() {
+                unsafe {
+                    *obj = ptr::null_mut();
+                }
+            }
+            kNoInterface
+        }
+    }
+
+    #[test]
+    fn capture_host_application_name_reads_vst3_host_application() {
+        let _guard = crate::host_context::test_host_context_guard();
+        crate::host_context::clear_latest_host_application_name_for_test();
+        let host_app = ComWrapper::new(TestHostApplication::new("REAPER"));
+        let host_context = host_app
+            .to_com_ptr::<FUnknown>()
+            .expect("TestHostApplication exposes FUnknown");
+
+        capture_host_application_name(host_context.as_ptr());
+
+        assert_eq!(
+            crate::host_context::latest_host_application_name(),
+            Some("REAPER".to_string())
+        );
+        crate::host_context::clear_latest_host_application_name_for_test();
     }
 }

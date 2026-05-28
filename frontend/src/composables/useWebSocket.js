@@ -1,12 +1,34 @@
 import { ref, unref } from 'vue'
 
-let instance = null
+const instances = new Map()
+const sessionObjectIds = new WeakMap()
+let nextSessionObjectId = 1
 
-export function useWebSocket(sessionId) {
-  if (instance) return instance
+function sessionCacheKey(sessionId) {
+  if ((typeof sessionId === 'object' || typeof sessionId === 'function') && sessionId !== null) {
+    let id = sessionObjectIds.get(sessionId)
+    if (!id) {
+      id = nextSessionObjectId
+      nextSessionObjectId += 1
+      sessionObjectIds.set(sessionId, id)
+    }
+    return `object:${id}`
+  }
+  return `value:${String(sessionId ?? '')}`
+}
+
+function socketCacheKey(sessionId, options) {
+  return `${String(options?.surface || '')}:${sessionCacheKey(sessionId)}`
+}
+
+export function useWebSocket(sessionId, options = {}) {
+  const cacheKey = socketCacheKey(sessionId, options)
+  const cached = instances.get(cacheKey)
+  if (cached) return cached
 
   const connected = ref(false)
   const events = ref([])
+  const surfaceKey = String(options.surface || '')
   let ws = null
   let reconnectTimer = null
   let openedOnce = false
@@ -35,7 +57,8 @@ export function useWebSocket(sessionId) {
 
   function connect() {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${protocol}://${location.host}/ws`)
+    const surface = surfaceKey ? `?surface=${encodeURIComponent(surfaceKey)}` : ''
+    ws = new WebSocket(`${protocol}://${location.host}/ws${surface}`)
 
     ws.onopen = () => {
       connected.value = true
@@ -74,18 +97,20 @@ export function useWebSocket(sessionId) {
       ws.close()
       ws = null
     }
+    instances.delete(cacheKey)
   }
 
   connect()
 
-  instance = { connected, events, cleanup }
+  const instance = { connected, events, cleanup }
+  instances.set(cacheKey, instance)
 
   return instance
 }
 
 export function clearWsInstance() {
-  if (instance) {
+  for (const instance of [...instances.values()]) {
     instance.cleanup()
-    instance = null
   }
+  instances.clear()
 }
