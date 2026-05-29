@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "test": "node --test \"src/**/*.test.js\""
+    "test": "node --test"
   },
   "dependencies": {
     "vue": "^3.5.0",

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "ATRI - AI Coding Agent Framework with OneBot11 & WebUI"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "AGPL-3.0-or-later"
 dependencies = [
     "openai>=1.30.0",
     "aiocqhttp>=1.4.0",
