@@ -7,6 +7,8 @@ use crate::dashboard_client::{
 };
 use crate::daw_agent_surface::DawAgentSurfaceParams;
 
+const MIDI_PREVIEW_VISIBLE_ROWS: usize = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeConnectionState {
     Disconnected,
@@ -49,6 +51,14 @@ impl BridgeEditorButton {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeEditorPreviewTrackRow {
+    pub title: String,
+    pub detail: String,
+    pub pitch_low: i32,
+    pub pitch_high: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeEditorPreview {
     pub title: String,
     pub detail: String,
@@ -58,11 +68,18 @@ pub struct BridgeEditorPreview {
     pub height: i32,
     pub pitch_low: i32,
     pub pitch_high: i32,
+    pub can_scroll_up: bool,
+    pub can_scroll_down: bool,
+    track_rows: Vec<BridgeEditorPreviewTrackRow>,
 }
 
 impl BridgeEditorPreview {
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+
+    pub fn track_rows(&self) -> &[BridgeEditorPreviewTrackRow] {
+        &self.track_rows
     }
 }
 
@@ -146,6 +163,7 @@ pub struct BridgeEditorState {
     last_export_path: Option<String>,
     last_export_error: Option<String>,
     last_midi_preview: Option<BridgeMidiPreview>,
+    midi_preview_scroll_offset: usize,
     host_context: Option<BridgeHostContext>,
 }
 
@@ -209,6 +227,26 @@ impl BridgeEditorState {
         self.last_midi_preview.as_ref()
     }
 
+    pub fn scroll_midi_preview(&mut self, rows: i32) -> bool {
+        let Some(preview) = self.last_midi_preview.as_ref() else {
+            return false;
+        };
+        let track_count = preview.display_tracks().len();
+        let max_offset = track_count.saturating_sub(MIDI_PREVIEW_VISIBLE_ROWS);
+        let next = if rows < 0 {
+            self.midi_preview_scroll_offset
+                .saturating_sub(rows.unsigned_abs() as usize)
+        } else {
+            self.midi_preview_scroll_offset.saturating_add(rows as usize)
+        }
+        .min(max_offset);
+        if next == self.midi_preview_scroll_offset {
+            return false;
+        }
+        self.midi_preview_scroll_offset = next;
+        true
+    }
+
     pub fn host_context(&self) -> Option<BridgeHostContext> {
         self.host_context
     }
@@ -265,6 +303,7 @@ impl BridgeEditorState {
             self.export_state = BridgeExportState::Completed;
             self.last_export_path = response.export_path().map(ToOwned::to_owned);
             self.last_midi_preview = response.midi_preview();
+            self.midi_preview_scroll_offset = 0;
             self.last_export_error = None;
             self.pending_export_format = None;
             return;
@@ -287,6 +326,7 @@ impl BridgeEditorState {
         self.export_state = BridgeExportState::Completed;
         self.last_export_path = Some(path);
         self.last_midi_preview = response.midi_preview();
+        self.midi_preview_scroll_offset = 0;
         self.last_export_error = None;
         self.pending_export_format = None;
         true
@@ -296,6 +336,7 @@ impl BridgeEditorState {
         self.export_state = BridgeExportState::Error;
         self.last_export_error = Some(message.into());
         self.last_midi_preview = None;
+        self.midi_preview_scroll_offset = 0;
         self.pending_export_format = None;
     }
 
@@ -320,6 +361,7 @@ impl Default for BridgeEditorState {
             last_export_path: None,
             last_export_error: None,
             last_midi_preview: None,
+            midi_preview_scroll_offset: 0,
             host_context: None,
         }
     }
@@ -416,10 +458,37 @@ fn preview_from_state(state: &BridgeEditorState, width: i32) -> Option<BridgeEdi
     let preview = state.last_midi_preview()?;
     let [start, end] = preview.beat_range;
     let [pitch_low, pitch_high] = preview.pitch_range;
+    let tracks = preview.display_tracks();
+    if tracks.is_empty() {
+        return None;
+    }
+    let max_offset = tracks.len().saturating_sub(MIDI_PREVIEW_VISIBLE_ROWS);
+    let offset = state.midi_preview_scroll_offset.min(max_offset);
+    let track_rows = tracks
+        .iter()
+        .skip(offset)
+        .take(MIDI_PREVIEW_VISIBLE_ROWS)
+        .map(|track| {
+            let [track_low, track_high] = track.pitch_range;
+            BridgeEditorPreviewTrackRow {
+                title: track.track_name.clone(),
+                detail: format!(
+                    "{} notes | {}-{}",
+                    track.note_count,
+                    midi_note_name(track_low),
+                    midi_note_name(track_high)
+                ),
+                pitch_low: track_low,
+                pitch_high: track_high,
+            }
+        })
+        .collect();
+
     Some(BridgeEditorPreview {
         title: preview.track_name.clone(),
         detail: format!(
-            "{start:.2}-{end:.2} beat | {} notes | {}-{}",
+            "{start:.2}-{end:.2} beat | {} | {} notes | {}-{}",
+            track_count_label(tracks.len()),
             preview.note_count,
             midi_note_name(pitch_low),
             midi_note_name(pitch_high)
@@ -430,7 +499,18 @@ fn preview_from_state(state: &BridgeEditorState, width: i32) -> Option<BridgeEdi
         height: 44,
         pitch_low,
         pitch_high,
+        can_scroll_up: offset > 0,
+        can_scroll_down: offset < max_offset,
+        track_rows,
     })
+}
+
+fn track_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 track".to_string()
+    } else {
+        format!("{count} tracks")
+    }
 }
 
 fn midi_note_name(pitch: i32) -> String {

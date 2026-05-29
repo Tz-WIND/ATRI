@@ -443,12 +443,87 @@ fn editor_view_model_exposes_midi_preview() {
     let preview = view.preview().expect("preview should render");
 
     assert_eq!(preview.title, "Edited Synth");
-    assert_eq!(preview.detail, "4.00-8.00 beat | 12 notes | C3-C5");
+    assert_eq!(preview.detail, "4.00-8.00 beat | 1 track | 12 notes | C3-C5");
+    assert_eq!(preview.track_rows()[0].title, "Edited Synth");
     assert!(
         view.render_lines()
             .iter()
             .any(|line| line == "Drag MIDI preview into DAW")
     );
+}
+
+#[test]
+fn editor_view_model_limits_midi_preview_to_two_visible_track_rows() {
+    let mut state = BridgeEditorState::default();
+    state.apply_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/region.mid",
+            "bridge_preview": {
+                "kind": "midi_region",
+                "track_id": 1,
+                "track_name": "Piano",
+                "beat_range": [4.0, 8.0],
+                "note_count": 20,
+                "pitch_range": [36, 84],
+                "tracks": [
+                    {"track_id": 1, "track_name": "Piano", "note_count": 8, "pitch_range": [60, 84]},
+                    {"track_id": 2, "track_name": "Bass", "note_count": 6, "pitch_range": [36, 48]},
+                    {"track_id": 3, "track_name": "Pad", "note_count": 6, "pitch_range": [52, 72]}
+                ]
+            }
+        })),
+    });
+
+    let view = BridgeEditorViewModel::from_state(&state, 640, 320);
+    let preview = view.preview().expect("preview should render");
+
+    assert_eq!(preview.track_rows().len(), 2);
+    assert_eq!(preview.track_rows()[0].title, "Piano");
+    assert_eq!(preview.track_rows()[1].title, "Bass");
+    assert!(!preview.can_scroll_up);
+    assert!(preview.can_scroll_down);
+}
+
+#[test]
+fn editor_state_scrolls_midi_preview_rows_and_clamps_at_bounds() {
+    let mut state = BridgeEditorState::default();
+    state.apply_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/region.mid",
+            "bridge_preview": {
+                "kind": "midi_region",
+                "track_id": 1,
+                "track_name": "Piano",
+                "beat_range": [4.0, 8.0],
+                "note_count": 20,
+                "pitch_range": [36, 84],
+                "tracks": [
+                    {"track_id": 1, "track_name": "Piano", "note_count": 8, "pitch_range": [60, 84]},
+                    {"track_id": 2, "track_name": "Bass", "note_count": 6, "pitch_range": [36, 48]},
+                    {"track_id": 3, "track_name": "Pad", "note_count": 6, "pitch_range": [52, 72]}
+                ]
+            }
+        })),
+    });
+
+    assert!(state.scroll_midi_preview(1));
+    let view = BridgeEditorViewModel::from_state(&state, 640, 320);
+    let preview = view.preview().expect("preview should render");
+    assert_eq!(preview.track_rows()[0].title, "Bass");
+    assert_eq!(preview.track_rows()[1].title, "Pad");
+    assert!(preview.can_scroll_up);
+    assert!(!preview.can_scroll_down);
+
+    assert!(!state.scroll_midi_preview(1));
+    assert!(state.scroll_midi_preview(-1));
+    let view = BridgeEditorViewModel::from_state(&state, 640, 320);
+    assert_eq!(view.preview().unwrap().track_rows()[0].title, "Piano");
 }
 
 #[test]
