@@ -1,5 +1,6 @@
 use crate::bridge_contract::{
     BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext, BridgeStatus,
+    BridgeMidiPreview,
 };
 use crate::dashboard_client::{
     BridgeDashboardClient, DashboardClientError, DashboardEndpoint, DashboardExportWorker,
@@ -262,6 +263,98 @@ fn dashboard_client_posts_bridge_export_request_to_local_dashboard() {
     assert_eq!(
         response.export_path(),
         Some("data/music_workstation/exports/session.dawproject")
+    );
+}
+
+#[test]
+fn bridge_export_response_parses_midi_preview_metadata() {
+    let response: BridgeExportResponse = serde_json::from_str(
+        r#"{
+            "ok": true,
+            "export": {
+                "format": "midi",
+                "path": "data/music_workstation/exports/region.mid",
+                "bridge_preview": {
+                    "kind": "midi_region",
+                    "track_id": 3,
+                    "track_name": "Edited Synth",
+                    "beat_range": [4.0, 8.0],
+                    "note_count": 12,
+                    "pitch_range": [48, 72]
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        response.midi_preview(),
+        Some(BridgeMidiPreview {
+            kind: "midi_region".to_string(),
+            track_id: 3,
+            track_name: "Edited Synth".to_string(),
+            beat_range: [4.0, 8.0],
+            note_count: 12,
+            pitch_range: [48, 72],
+        })
+    );
+}
+
+#[test]
+fn editor_state_tracks_midi_preview_from_latest_export() {
+    let mut state = BridgeEditorState::default();
+
+    let changed = state.apply_external_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/region.mid",
+            "bridge_preview": {
+                "kind": "midi_region",
+                "track_id": 3,
+                "track_name": "Edited Synth",
+                "beat_range": [4.0, 8.0],
+                "note_count": 12,
+                "pitch_range": [48, 72]
+            }
+        })),
+    });
+
+    assert!(changed);
+    assert_eq!(state.last_midi_preview().unwrap().track_name, "Edited Synth");
+    assert_eq!(state.last_midi_preview().unwrap().beat_range, [4.0, 8.0]);
+}
+
+#[test]
+fn editor_view_model_exposes_midi_preview() {
+    let mut state = BridgeEditorState::default();
+    state.apply_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/region.mid",
+            "bridge_preview": {
+                "kind": "midi_region",
+                "track_id": 3,
+                "track_name": "Edited Synth",
+                "beat_range": [4.0, 8.0],
+                "note_count": 12,
+                "pitch_range": [48, 72]
+            }
+        })),
+    });
+
+    let view = BridgeEditorViewModel::from_state(&state, 640, 320);
+    let preview = view.preview().expect("preview should render");
+
+    assert_eq!(preview.title, "Edited Synth");
+    assert_eq!(preview.detail, "4.00-8.00 beat | 12 notes | C3-C5");
+    assert!(
+        view.render_lines()
+            .iter()
+            .any(|line| line == "Drag MIDI preview into DAW")
     );
 }
 

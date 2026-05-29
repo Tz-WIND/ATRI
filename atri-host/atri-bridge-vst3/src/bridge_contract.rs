@@ -125,11 +125,29 @@ pub struct BridgeExportResponse {
     pub export: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BridgeMidiPreview {
+    pub kind: String,
+    pub track_id: i64,
+    pub track_name: String,
+    pub beat_range: [f64; 2],
+    pub note_count: u64,
+    pub pitch_range: [i32; 2],
+}
+
 impl BridgeExportResponse {
     pub fn export_path(&self) -> Option<&str> {
         self.export
             .as_ref()
             .and_then(|export| export.get("path"))
             .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn midi_preview(&self) -> Option<BridgeMidiPreview> {
+        let preview = self
+            .export
+            .as_ref()
+            .and_then(|export| export.get("bridge_preview"))?;
+        serde_json::from_value(preview.clone()).ok()
     }
 }

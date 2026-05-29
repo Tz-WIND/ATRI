@@ -1,5 +1,6 @@
 use crate::bridge_contract::{
-    BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext, BridgeStatus,
+    BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext,
+    BridgeMidiPreview, BridgeStatus,
 };
 use crate::dashboard_client::{
     DEFAULT_DASHBOARD_BASE_URL, DashboardClientError, DashboardEndpoint,
@@ -48,11 +49,30 @@ impl BridgeEditorButton {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeEditorPreview {
+    pub title: String,
+    pub detail: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub pitch_low: i32,
+    pub pitch_high: i32,
+}
+
+impl BridgeEditorPreview {
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeEditorViewModel {
     width: i32,
     height: i32,
     lines: Vec<String>,
     buttons: Vec<BridgeEditorButton>,
+    preview: Option<BridgeEditorPreview>,
 }
 
 impl BridgeEditorViewModel {
@@ -62,6 +82,7 @@ impl BridgeEditorViewModel {
             height,
             lines: render_state_lines(state),
             buttons: layout_buttons(width),
+            preview: preview_from_state(state, width),
         }
     }
 
@@ -71,6 +92,10 @@ impl BridgeEditorViewModel {
 
     pub fn buttons(&self) -> &[BridgeEditorButton] {
         &self.buttons
+    }
+
+    pub fn preview(&self) -> Option<&BridgeEditorPreview> {
+        self.preview.as_ref()
     }
 
     pub fn button_labels(&self) -> Vec<&'static str> {
@@ -120,6 +145,7 @@ pub struct BridgeEditorState {
     pending_export_format: Option<BridgeExportFormat>,
     last_export_path: Option<String>,
     last_export_error: Option<String>,
+    last_midi_preview: Option<BridgeMidiPreview>,
     host_context: Option<BridgeHostContext>,
 }
 
@@ -179,6 +205,10 @@ impl BridgeEditorState {
         self.last_export_error.as_deref()
     }
 
+    pub fn last_midi_preview(&self) -> Option<&BridgeMidiPreview> {
+        self.last_midi_preview.as_ref()
+    }
+
     pub fn host_context(&self) -> Option<BridgeHostContext> {
         self.host_context
     }
@@ -234,6 +264,7 @@ impl BridgeEditorState {
         if response.ok {
             self.export_state = BridgeExportState::Completed;
             self.last_export_path = response.export_path().map(ToOwned::to_owned);
+            self.last_midi_preview = response.midi_preview();
             self.last_export_error = None;
             self.pending_export_format = None;
             return;
@@ -255,6 +286,7 @@ impl BridgeEditorState {
 
         self.export_state = BridgeExportState::Completed;
         self.last_export_path = Some(path);
+        self.last_midi_preview = response.midi_preview();
         self.last_export_error = None;
         self.pending_export_format = None;
         true
@@ -286,6 +318,7 @@ impl Default for BridgeEditorState {
             pending_export_format: None,
             last_export_path: None,
             last_export_error: None,
+            last_midi_preview: None,
             host_context: None,
         }
     }
@@ -346,6 +379,10 @@ fn render_state_lines(state: &BridgeEditorState) -> Vec<String> {
         ),
     });
 
+    if state.last_midi_preview().is_some() {
+        lines.push("Drag MIDI preview into DAW".to_string());
+    }
+
     if let Some(host_context) = state.host_context() {
         lines.push(render_host_context_line(host_context));
     }
@@ -372,6 +409,36 @@ fn render_host_context_line(host_context: BridgeHostContext) -> String {
         .unwrap_or_default();
 
     format!("Host: {tempo} {meter} {transport}{sample_rate}")
+}
+
+fn preview_from_state(state: &BridgeEditorState, width: i32) -> Option<BridgeEditorPreview> {
+    let preview = state.last_midi_preview()?;
+    let [start, end] = preview.beat_range;
+    let [pitch_low, pitch_high] = preview.pitch_range;
+    Some(BridgeEditorPreview {
+        title: preview.track_name.clone(),
+        detail: format!(
+            "{start:.2}-{end:.2} beat | {} notes | {}-{}",
+            preview.note_count,
+            midi_note_name(pitch_low),
+            midi_note_name(pitch_high)
+        ),
+        x: 24,
+        y: 68,
+        width: width.saturating_sub(48).max(120),
+        height: 44,
+        pitch_low,
+        pitch_high,
+    })
+}
+
+fn midi_note_name(pitch: i32) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let clamped = pitch.clamp(0, 127);
+    let octave = clamped / 12 - 1;
+    format!("{}{}", NAMES[(clamped % 12) as usize], octave)
 }
 
 fn layout_buttons(_width: i32) -> Vec<BridgeEditorButton> {
