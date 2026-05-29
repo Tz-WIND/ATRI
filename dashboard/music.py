@@ -2846,6 +2846,10 @@ def _perform_midi_export(
     }
     if "beat_range" in summary:
         export["beat_range"] = summary["beat_range"]
+    if consumer == "bridge":
+        preview = _bridge_preview_for_midi_export(project, track_ids, summary.get("beat_range"))
+        if preview:
+            export["bridge_preview"] = preview
     manifest = build_export_manifest(project, export, consumer=consumer)
     manifest_path = export_dir / f"{export_id}_atri-export-manifest.json"
     try:
@@ -2856,6 +2860,100 @@ def _perform_midi_export(
     export["manifest_path"] = str(manifest_path)
     export["manifest"] = manifest
     return export
+
+
+def _bridge_preview_for_midi_export(
+    project: dict[str, Any],
+    track_ids: list[int] | None,
+    beat_range: Any,
+) -> dict[str, Any] | None:
+    selected_ids = set(track_ids or [])
+    tracks: list[dict[str, Any]] = []
+    for track in project.get("tracks", []):
+        if not isinstance(track, dict) or _is_automation_track(track):
+            continue
+        try:
+            track_id = int(track.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if selected_ids and track_id not in selected_ids:
+            continue
+        tracks.append(track)
+    if not tracks:
+        return None
+
+    track = tracks[0]
+    start, end = _preview_beat_range(project, beat_range)
+    notes = [
+        note
+        for note in _preview_track_notes(track)
+        if note["start"] < end and note["start"] + note["duration"] > start
+    ]
+    pitches = [note["pitch"] for note in notes]
+    pitch_range = [min(pitches), max(pitches)] if pitches else [60, 60]
+    return {
+        "kind": "midi_region",
+        "track_id": int(track["id"]),
+        "track_name": str(track.get("name") or f"Track {track['id']}"),
+        "beat_range": [float(start), float(end)],
+        "note_count": len(notes),
+        "pitch_range": pitch_range,
+    }
+
+
+def _preview_beat_range(project: dict[str, Any], beat_range: Any) -> tuple[float, float]:
+    if isinstance(beat_range, (list, tuple)) and len(beat_range) >= 2:
+        try:
+            start = max(0.0, float(beat_range[0]))
+            end = max(start + 0.25, float(beat_range[1]))
+            return start, end
+        except (TypeError, ValueError):
+            pass
+    length = project.get("length_beats", 16)
+    try:
+        return 0.0, max(0.25, float(length or 16))
+    except (TypeError, ValueError):
+        return 0.0, 16.0
+
+
+def _preview_track_notes(track: dict[str, Any]) -> list[dict[str, float | int]]:
+    notes: list[dict[str, float | int]] = []
+    raw_notes = track.get("notes")
+    if isinstance(raw_notes, list):
+        for note in raw_notes:
+            normalized = _preview_note(note, clip_start=0.0)
+            if normalized:
+                notes.append(normalized)
+
+    raw_clips = track.get("clips")
+    if isinstance(raw_clips, list):
+        for clip in raw_clips:
+            if not isinstance(clip, dict) or clip.get("type") != "midi":
+                continue
+            try:
+                clip_start = float(clip.get("start") or 0.0)
+            except (TypeError, ValueError):
+                clip_start = 0.0
+            clip_notes = clip.get("notes")
+            if not isinstance(clip_notes, list):
+                continue
+            for note in clip_notes:
+                normalized = _preview_note(note, clip_start=clip_start)
+                if normalized:
+                    notes.append(normalized)
+    return notes
+
+
+def _preview_note(note: Any, *, clip_start: float) -> dict[str, float | int] | None:
+    if not isinstance(note, dict):
+        return None
+    try:
+        start = clip_start + float(note.get("start", note.get("beat", 0.0)) or 0.0)
+        duration = max(0.001, float(note.get("duration", 0.25) or 0.25))
+        pitch = max(0, min(127, int(round(float(note.get("pitch", 60) or 60)))))
+    except (TypeError, ValueError):
+        return None
+    return {"start": start, "duration": duration, "pitch": pitch}
 
 
 def _perform_dawproject_export(

@@ -321,3 +321,70 @@ async def test_bridge_latest_export_tracks_daw_agent_midi_export(monkeypatch, tm
     assert latest["export"]["path"] == exported["export"]["path"]
     assert latest["export"]["format"] == "midi"
     assert latest["export"]["beat_range"] == [0.0, 1.0]
+    assert latest["export"]["bridge_preview"] == {
+        "kind": "midi_region",
+        "track_id": 1,
+        "track_name": "Lead",
+        "beat_range": [0.0, 1.0],
+        "note_count": 1,
+        "pitch_range": [60, 60],
+    }
+
+
+@pytest.mark.asyncio
+async def test_bridge_latest_export_preserves_preview_for_instance(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        music_routes,
+        "load_project",
+        lambda: {
+            "title": "Bridge MIDI",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [
+                        {"pitch": 60, "start": 0, "duration": 0.5, "velocity": 96},
+                        {"pitch": 67, "start": 0.5, "duration": 0.5, "velocity": 96},
+                    ],
+                    "midi_events": [],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(music_routes, "_audio_export_dir", lambda: tmp_path / "exports")
+    dashboard = _dashboard(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+
+    export_response = await client.post(
+        "/api/music/studio/export",
+        json={
+            "format": "midi",
+            "target": "selected_tracks",
+            "track_ids": [1],
+            "consumer": "bridge",
+            "instance_id": "bridge-preview",
+            "start_beat": 0,
+            "end_beat": 1,
+        },
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+    latest_response = await client.get(
+        "/api/music/studio/bridge/export/latest?instance_id=bridge-preview",
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+
+    assert export_response.status_code == 200
+    assert latest_response.status_code == 200
+    latest = await latest_response.get_json()
+    assert latest["export"]["bridge_scope"] == {"instance_id": "bridge-preview"}
+    assert latest["export"]["bridge_preview"] == {
+        "kind": "midi_region",
+        "track_id": 1,
+        "track_name": "Lead",
+        "beat_range": [0.0, 1.0],
+        "note_count": 2,
+        "pitch_range": [60, 67],
+    }
