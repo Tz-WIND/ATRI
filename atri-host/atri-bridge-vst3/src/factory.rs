@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use vst3::{
-    Class, ComPtr, ComWrapper,
+    Class, ComRef, ComWrapper,
     Steinberg::{Vst::*, *},
 };
 
@@ -1272,7 +1272,7 @@ fn capture_host_application_name(context: *mut FUnknown) {
     if context.is_null() {
         return;
     }
-    let Some(host_context) = (unsafe { ComPtr::from_raw(context) }) else {
+    let Some(host_context) = (unsafe { ComRef::from_raw(context) }) else {
         return;
     };
     let Some(host_app) = host_context.cast::<IHostApplication>() else {
