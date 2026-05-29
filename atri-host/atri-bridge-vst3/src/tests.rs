@@ -930,6 +930,50 @@ fn editor_surface_spec_marks_midi_preview_as_primary_drag_source() {
 }
 
 #[test]
+fn editor_surface_spec_scrolls_only_when_wheel_is_inside_midi_preview() {
+    let mut state = BridgeEditorState::default();
+    state.apply_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/region.mid",
+            "bridge_preview": {
+                "kind": "midi_region",
+                "track_id": 1,
+                "track_name": "Piano",
+                "beat_range": [4.0, 8.0],
+                "note_count": 20,
+                "pitch_range": [36, 84],
+                "tracks": [
+                    {"track_id": 1, "track_name": "Piano", "note_count": 8, "pitch_range": [60, 84]},
+                    {"track_id": 2, "track_name": "Bass", "note_count": 6, "pitch_range": [36, 48]},
+                    {"track_id": 3, "track_name": "Pad", "note_count": 6, "pitch_range": [52, 72]}
+                ]
+            }
+        })),
+    });
+    let view = BridgeEditorViewModel::from_state(&state, 640, 320);
+    let spec = EditorSurfaceSpec::from_view_model(
+        0x1234,
+        EditorPlatformType::WindowsHwnd,
+        SurfaceRect {
+            left: 0,
+            top: 0,
+            width: 640,
+            height: 320,
+        },
+        &view,
+    )
+    .unwrap();
+
+    assert_eq!(spec.preview_scroll_rows(48, 84, -120), Some(1));
+    assert_eq!(spec.preview_scroll_rows(48, 84, 120), Some(-1));
+    assert_eq!(spec.preview_scroll_rows(48, 124, -120), None);
+    assert_eq!(spec.preview_scroll_rows(48, 84, 0), None);
+}
+
+#[test]
 fn drag_payload_uses_last_export_path_as_single_file() {
     let payload =
         BridgeDragPayload::from_export_path("data/music_workstation/exports/session.dawproject")

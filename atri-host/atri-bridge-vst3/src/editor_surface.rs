@@ -135,6 +135,17 @@ impl EditorSurfaceSpec {
             && x < self.rect.width.saturating_sub(24)
             && (68..100).contains(&y)
     }
+
+    pub fn preview_scroll_rows(&self, x: i32, y: i32, wheel_delta: i32) -> Option<i32> {
+        if wheel_delta == 0 {
+            return None;
+        }
+        let preview = self.preview.as_ref()?;
+        if !preview.contains(x, y) {
+            return None;
+        }
+        Some(if wheel_delta < 0 { 1 } else { -1 })
+    }
 }
 
 impl EditorPlatformType {
@@ -163,6 +174,7 @@ pub enum EditorSurfaceError {
 pub enum NativeEditorSurfaceEvent {
     Action(BridgeEditorAction),
     DragExport,
+    ScrollPreview(i32),
     Tick,
 }
 
@@ -234,20 +246,20 @@ mod windows_editor {
     use std::sync::OnceLock;
 
     use windows_sys::Win32::Foundation::{
-        COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+        COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, CreateSolidBrush, DC_PEN, DeleteObject, EndPaint, FillRect, GetStockObject,
         HBRUSH, HGDIOBJ, InvalidateRect, NULL_BRUSH, PAINTSTRUCT, Rectangle, SelectObject,
-        SetBkMode, SetDCPenColor, SetTextColor, TRANSPARENT, TextOutW,
+        ScreenToClient, SetBkMode, SetDCPenColor, SetTextColor, TRANSPARENT, TextOutW,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
         GWLP_USERDATA, GetWindowLongPtrW, KillTimer, RegisterClassW, SW_SHOW, SWP_NOACTIVATE,
         SWP_NOZORDER, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ERASEBKGND,
-        WM_LBUTTONDOWN, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CHILD,
-        WS_VISIBLE,
+        WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_TIMER, WNDCLASSW,
+        WS_CHILD, WS_VISIBLE,
     };
 
     use super::{
@@ -423,6 +435,38 @@ mod windows_editor {
                     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
                 }
             }
+            WM_MOUSEWHEEL => {
+                if let Some(state) = window_state(hwnd) {
+                    let mut point = POINT {
+                        x: signed_low_word(lparam),
+                        y: signed_high_word(lparam),
+                    };
+                    unsafe {
+                        ScreenToClient(hwnd, &mut point);
+                    }
+                    let wheel_delta = ((wparam >> 16) & 0xffff) as i16 as i32;
+                    let dispatch = unsafe {
+                        let state_ref = &*state;
+                        state_ref
+                            .spec
+                            .preview_scroll_rows(point.x, point.y, wheel_delta)
+                            .map(|rows| {
+                                (
+                                    NativeEditorSurfaceEvent::ScrollPreview(rows),
+                                    state_ref.callback_context,
+                                    state_ref.callback,
+                                )
+                            })
+                    };
+                    if let Some((event, context, callback)) = dispatch {
+                        unsafe {
+                            callback(context, event);
+                        }
+                        return 0;
+                    }
+                }
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
             WM_TIMER => {
                 if wparam == EXPORT_POLL_TIMER_ID {
                     if let Some(state) = window_state(hwnd) {
@@ -529,41 +573,51 @@ mod windows_editor {
         fill_rect(hdc, &rect, rgb(18, 22, 28));
         stroke_rect(hdc, &rect, rgb(92, 142, 218));
 
-        let key_rect = RECT {
-            left: preview.x + 8,
-            top: preview.y + 8,
-            right: preview.x + 54,
-            bottom: preview.y + preview.height - 8,
-        };
-        fill_rect(hdc, &key_rect, rgb(34, 39, 47));
-        for i in 0..4 {
-            let y = key_rect.top + i * ((key_rect.bottom - key_rect.top) / 4);
-            let row = RECT {
-                left: key_rect.left,
-                top: y,
-                right: key_rect.right,
-                bottom: y + 1,
-            };
-            fill_rect(hdc, &row, rgb(69, 78, 92));
-        }
-
-        let lane = RECT {
-            left: preview.x + 64,
-            top: preview.y + 11,
-            right: preview.x + preview.width - 12,
-            bottom: preview.y + preview.height - 11,
-        };
-        fill_rect(hdc, &lane, rgb(37, 63, 99));
-        stroke_rect(hdc, &lane, rgb(112, 166, 242));
-
         unsafe {
             SetTextColor(hdc, rgb(244, 247, 250));
         }
-        text_out(hdc, preview.x + 72, preview.y + 8, &preview.title);
+        text_out(hdc, preview.x + 10, preview.y + 5, &preview.detail);
+
+        let mut row_y = preview.y + 20;
+        for row in preview.track_rows() {
+            let key_rect = RECT {
+                left: preview.x + 10,
+                top: row_y,
+                right: preview.x + 44,
+                bottom: row_y + 10,
+            };
+            fill_rect(hdc, &key_rect, rgb(34, 39, 47));
+            stroke_rect(hdc, &key_rect, rgb(69, 78, 92));
+
+            let lane = RECT {
+                left: preview.x + 50,
+                top: row_y,
+                right: preview.x + preview.width - 12,
+                bottom: row_y + 10,
+            };
+            fill_rect(hdc, &lane, rgb(37, 63, 99));
+            stroke_rect(hdc, &lane, rgb(112, 166, 242));
+
+            unsafe {
+                SetTextColor(hdc, rgb(244, 247, 250));
+            }
+            text_out(hdc, preview.x + 56, row_y - 2, &row.title);
+            unsafe {
+                SetTextColor(hdc, rgb(166, 178, 194));
+            }
+            text_out(hdc, preview.x + 190, row_y - 2, &row.detail);
+            row_y += 12;
+        }
+
         unsafe {
             SetTextColor(hdc, rgb(166, 178, 194));
         }
-        text_out(hdc, preview.x + 72, preview.y + 25, &preview.detail);
+        if preview.can_scroll_up {
+            text_out(hdc, preview.x + preview.width - 22, preview.y + 5, "^");
+        }
+        if preview.can_scroll_down {
+            text_out(hdc, preview.x + preview.width - 22, preview.y + 28, "v");
+        }
     }
 
     fn fill_rect(hdc: isize, rect: &RECT, color: COLORREF) {

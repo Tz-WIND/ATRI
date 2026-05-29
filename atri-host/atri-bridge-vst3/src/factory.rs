@@ -965,6 +965,14 @@ impl BridgePlugView {
         }
     }
 
+    fn scroll_midi_preview(&self, rows: i32) {
+        let changed = lock_recover(&self.editor_state).scroll_midi_preview(rows);
+        if changed {
+            self.refresh_view_model();
+            self.sync_native_surface();
+        }
+    }
+
     fn update_rect(&self, rect: ViewRect) {
         *lock_recover(&self.rect) = rect;
         self.refresh_view_model();
@@ -1144,6 +1152,7 @@ unsafe fn bridge_surface_event_callback(context: *mut c_void, event: NativeEdito
     match event {
         NativeEditorSurfaceEvent::Action(action) => view.dispatch_action(action),
         NativeEditorSurfaceEvent::DragExport => view.start_drag_from_last_export(),
+        NativeEditorSurfaceEvent::ScrollPreview(rows) => view.scroll_midi_preview(rows),
         NativeEditorSurfaceEvent::Tick => view.handle_tick(),
     }
 }
@@ -1700,6 +1709,43 @@ mod tests {
             recordings.lock().unwrap().clone(),
             vec!["data/music_workstation/exports/session.dawproject".to_string()]
         );
+    }
+
+    #[test]
+    fn bridge_surface_event_callback_scrolls_midi_preview_rows() {
+        let view = BridgePlugView::default();
+        view.apply_export_response(BridgeExportResponse {
+            ok: true,
+            bridge: None,
+            export: Some(serde_json::json!({
+                "format": "midi",
+                "path": "data/music_workstation/exports/region.mid",
+                "bridge_preview": {
+                    "kind": "midi_region",
+                    "track_id": 1,
+                    "track_name": "Piano",
+                    "beat_range": [4.0, 8.0],
+                    "note_count": 20,
+                    "pitch_range": [36, 84],
+                    "tracks": [
+                        {"track_id": 1, "track_name": "Piano", "note_count": 8, "pitch_range": [60, 84]},
+                        {"track_id": 2, "track_name": "Bass", "note_count": 6, "pitch_range": [36, 48]},
+                        {"track_id": 3, "track_name": "Pad", "note_count": 6, "pitch_range": [52, 72]}
+                    ]
+                }
+            })),
+        });
+        view.refresh_view_model();
+
+        unsafe {
+            bridge_surface_event_callback(
+                &view as *const BridgePlugView as *mut c_void,
+                NativeEditorSurfaceEvent::ScrollPreview(1),
+            );
+        }
+
+        let preview = lock_recover(&view.view_model).preview().cloned().unwrap();
+        assert_eq!(preview.track_rows()[0].title, "Bass");
     }
 
     fn wait_for_export_completion(view: &BridgePlugView) {
