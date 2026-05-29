@@ -1,6 +1,6 @@
 use crate::bridge_contract::{
-    BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext, BridgeStatus,
-    BridgeMidiPreview,
+    BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext,
+    BridgeMidiPreview, BridgeStatus,
 };
 use crate::dashboard_client::{
     BridgeDashboardClient, DashboardClientError, DashboardEndpoint, DashboardExportWorker,
@@ -322,7 +322,10 @@ fn editor_state_tracks_midi_preview_from_latest_export() {
     });
 
     assert!(changed);
-    assert_eq!(state.last_midi_preview().unwrap().track_name, "Edited Synth");
+    assert_eq!(
+        state.last_midi_preview().unwrap().track_name,
+        "Edited Synth"
+    );
     assert_eq!(state.last_midi_preview().unwrap().beat_range, [4.0, 8.0]);
 }
 
