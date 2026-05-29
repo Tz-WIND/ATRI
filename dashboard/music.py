@@ -2882,22 +2882,39 @@ def _bridge_preview_for_midi_export(
     if not tracks:
         return None
 
-    track = tracks[0]
     start, end = _preview_beat_range(project, beat_range)
-    notes = [
-        note
-        for note in _preview_track_notes(track)
-        if note["start"] < end and note["start"] + note["duration"] > start
-    ]
-    pitches = [note["pitch"] for note in notes]
-    pitch_range = [min(pitches), max(pitches)] if pitches else [60, 60]
+    track_previews: list[dict[str, Any]] = []
+    all_pitches: list[int] = []
+    note_count = 0
+    for track in tracks:
+        notes = [
+            note
+            for note in _preview_track_notes(track)
+            if note["start"] < end and note["start"] + note["duration"] > start
+        ]
+        pitches = [int(note["pitch"]) for note in notes]
+        all_pitches.extend(pitches)
+        note_count += len(notes)
+        track_previews.append(
+            {
+                "track_id": int(track["id"]),
+                "track_name": str(track.get("name") or f"Track {track['id']}"),
+                "note_count": len(notes),
+                "pitch_range": [min(pitches), max(pitches)] if pitches else [60, 60],
+            }
+        )
+
+    if not track_previews:
+        return None
+    first_track = track_previews[0]
     return {
         "kind": "midi_region",
-        "track_id": int(track["id"]),
-        "track_name": str(track.get("name") or f"Track {track['id']}"),
+        "track_id": int(first_track["track_id"]),
+        "track_name": str(first_track["track_name"]),
         "beat_range": [float(start), float(end)],
-        "note_count": len(notes),
-        "pitch_range": pitch_range,
+        "note_count": note_count,
+        "pitch_range": [min(all_pitches), max(all_pitches)] if all_pitches else [60, 60],
+        "tracks": track_previews,
     }
 
 
