@@ -39,6 +39,13 @@ const MIN_REALTIME_PROCESSING_MAX_SAMPLES: usize = 4096;
 const STATE_MAGIC: &[u8; 8] = b"ATRI3ST\0";
 const STATE_VERSION: u32 = 1;
 const STATE_HEADER_LEN: usize = 8 + 4 + 8 + 8;
+const MEDIA_TYPE_AUDIO: i32 = MediaTypes_::kAudio as i32;
+const MEDIA_TYPE_EVENT: i32 = MediaTypes_::kEvent as i32;
+const BUS_DIRECTION_INPUT: i32 = BusDirections_::kInput as i32;
+const BUS_DIRECTION_OUTPUT: i32 = BusDirections_::kOutput as i32;
+const IO_MODE_SIMPLE: i32 = IoModes_::kSimple as i32;
+const PROCESS_MODE_REALTIME: i32 = ProcessModes_::kRealtime as i32;
+const SAMPLE_SIZE_32: i32 = SymbolicSampleSizes_::kSample32 as i32;
 
 /// A VST3 plugin instance wrapping the component, edit controller, and editor view factory path.
 pub struct Vst3Plugin {
@@ -566,12 +573,12 @@ impl Vst3Instance {
             component.initialize(host_context.as_ptr())
         })?;
         let audio_processor = component.cast::<IAudioProcessor>();
-        let input_channels = component_channel_count(&component, BusDirections_::kInput);
-        let output_channels = component_channel_count(&component, BusDirections_::kOutput);
+        let input_channels = component_channel_count(&component, BUS_DIRECTION_INPUT);
+        let output_channels = component_channel_count(&component, BUS_DIRECTION_OUTPUT);
         let audio_input_bus_count =
-            component_bus_count(&component, MediaTypes_::kAudio, BusDirections_::kInput);
+            component_bus_count(&component, MEDIA_TYPE_AUDIO, BUS_DIRECTION_INPUT);
         let audio_output_bus_count =
-            component_bus_count(&component, MediaTypes_::kAudio, BusDirections_::kOutput);
+            component_bus_count(&component, MEDIA_TYPE_AUDIO, BUS_DIRECTION_OUTPUT);
 
         let instance = Self {
             component,
@@ -598,7 +605,7 @@ impl Vst3Instance {
 
     fn set_active(&mut self, active: bool) -> Result<(), String> {
         if active {
-            let _ = unsafe { self.component.setIoMode(IoModes_::kSimple) };
+            let _ = unsafe { self.component.setIoMode(IO_MODE_SIMPLE) };
             self.configure_bus_arrangements();
             self.activate_buses(true);
             check_result("VST3 component setActive", unsafe {
@@ -908,8 +915,8 @@ impl Vst3Instance {
         };
         let output_buses = std::slice::from_mut(&mut output_bus);
         let mut data = ProcessData {
-            processMode: ProcessModes_::kRealtime,
-            symbolicSampleSize: SymbolicSampleSizes_::kSample32,
+            processMode: PROCESS_MODE_REALTIME,
+            symbolicSampleSize: SAMPLE_SIZE_32,
             numSamples: nframes as i32,
             numInputs: input_buses.len() as i32,
             numOutputs: output_buses.len() as i32,
@@ -1073,14 +1080,13 @@ impl Vst3Instance {
             .audio_processor
             .as_ref()
             .ok_or_else(|| "VST3 component does not expose IAudioProcessor".to_string())?;
-        let sample_size =
-            unsafe { audio_processor.canProcessSampleSize(SymbolicSampleSizes_::kSample32) };
+        let sample_size = unsafe { audio_processor.canProcessSampleSize(SAMPLE_SIZE_32) };
         if sample_size == kResultFalse {
             return Err("VST3 processor does not support 32-bit float processing".to_string());
         }
         let mut setup = ProcessSetup {
-            processMode: ProcessModes_::kRealtime,
-            symbolicSampleSize: SymbolicSampleSizes_::kSample32,
+            processMode: PROCESS_MODE_REALTIME,
+            symbolicSampleSize: SAMPLE_SIZE_32,
             maxSamplesPerBlock: max_samples as i32,
             sampleRate: sample_rate,
         };
@@ -1139,8 +1145,8 @@ impl Vst3Instance {
     }
 
     fn activate_buses(&self, active: bool) {
-        for media_type in [MediaTypes_::kAudio, MediaTypes_::kEvent] {
-            for direction in [BusDirections_::kInput, BusDirections_::kOutput] {
+        for media_type in [MEDIA_TYPE_AUDIO, MEDIA_TYPE_EVENT] {
+            for direction in [BUS_DIRECTION_INPUT, BUS_DIRECTION_OUTPUT] {
                 let count = unsafe { self.component.getBusCount(media_type, direction) };
                 for index in 0..count.max(0) {
                     let result = unsafe {
@@ -1340,12 +1346,11 @@ fn component_bus_count(component: &ComPtr<IComponent>, media_type: i32, directio
 }
 
 fn component_channel_count(component: &ComPtr<IComponent>, direction: i32) -> u16 {
-    let count = component_bus_count(component, MediaTypes_::kAudio, direction);
+    let count = component_bus_count(component, MEDIA_TYPE_AUDIO, direction);
     let mut channels = 0_i32;
     for index in 0..count {
         let mut bus = unsafe { mem::zeroed::<BusInfo>() };
-        let result =
-            unsafe { component.getBusInfo(MediaTypes_::kAudio, direction, index, &mut bus) };
+        let result = unsafe { component.getBusInfo(MEDIA_TYPE_AUDIO, direction, index, &mut bus) };
         if result == kResultOk && bus.channelCount > 0 {
             channels = channels.saturating_add(bus.channelCount);
         }
@@ -1717,7 +1722,7 @@ mod tests {
         }
 
         unsafe fn getBusCount(&self, r#type: MediaType, _dir: BusDirection) -> int32 {
-            if r#type == MediaTypes_::kAudio { 1 } else { 0 }
+            if r#type == MEDIA_TYPE_AUDIO { 1 } else { 0 }
         }
 
         unsafe fn getBusInfo(
@@ -1727,7 +1732,7 @@ mod tests {
             index: int32,
             bus: *mut BusInfo,
         ) -> tresult {
-            if r#type != MediaTypes_::kAudio || index != 0 || bus.is_null() {
+            if r#type != MEDIA_TYPE_AUDIO || index != 0 || bus.is_null() {
                 return kInvalidArgument;
             }
             unsafe {
@@ -1793,7 +1798,7 @@ mod tests {
         }
 
         unsafe fn canProcessSampleSize(&self, symbolic_sample_size: int32) -> tresult {
-            if symbolic_sample_size == SymbolicSampleSizes_::kSample32 {
+            if symbolic_sample_size == SAMPLE_SIZE_32 {
                 kResultOk
             } else {
                 kResultFalse

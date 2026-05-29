@@ -14,6 +14,10 @@ use atri_core::plugin::{
 };
 use vst3::{Class, ComPtr, ComWrapper, Steinberg::Vst::*, Steinberg::*};
 
+const STREAM_SEEK_SET: int32 = IBStream_::IStreamSeekMode_::kIBSeekSet as int32;
+const STREAM_SEEK_CUR: int32 = IBStream_::IStreamSeekMode_::kIBSeekCur as int32;
+const STREAM_SEEK_END: int32 = IBStream_::IStreamSeekMode_::kIBSeekEnd as int32;
+
 #[derive(Debug)]
 struct MemoryStreamState {
     bytes: Vec<u8>,
@@ -148,9 +152,9 @@ impl IBStreamTrait for Vst3MemoryStream {
         };
 
         let base = match mode {
-            IBStream_::IStreamSeekMode_::kIBSeekSet => 0_i64,
-            IBStream_::IStreamSeekMode_::kIBSeekCur => state.position as int64,
-            IBStream_::IStreamSeekMode_::kIBSeekEnd => state.bytes.len() as int64,
+            STREAM_SEEK_SET => 0_i64,
+            STREAM_SEEK_CUR => state.position as int64,
+            STREAM_SEEK_END => state.bytes.len() as int64,
             _ => return kInvalidArgument,
         };
         let Some(new_position) = base.checked_add(pos) else {
@@ -1109,12 +1113,7 @@ mod tests {
 
             let mut seek_pos = 0;
             assert_eq!(
-                ((*(*ptr).vtbl).seek)(
-                    ptr,
-                    0,
-                    IBStream_::IStreamSeekMode_::kIBSeekSet,
-                    &mut seek_pos,
-                ),
+                ((*(*ptr).vtbl).seek)(ptr, 0, STREAM_SEEK_SET, &mut seek_pos,),
                 kResultOk
             );
             let mut out = [0_u8; 4];
