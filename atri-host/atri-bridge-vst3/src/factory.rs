@@ -1590,7 +1590,15 @@ mod tests {
                 },
                 "export": {
                     "format": "midi",
-                    "path": "data/music_workstation/exports/daw-agent-region.mid"
+                    "path": "data/music_workstation/exports/daw-agent-region.mid",
+                    "bridge_preview": {
+                        "kind": "midi_region",
+                        "track_id": 3,
+                        "track_name": "Edited Synth",
+                        "beat_range": [4.0, 8.0],
+                        "note_count": 12,
+                        "pitch_range": [48, 72]
+                    }
                 }
             }"#,
             200,
@@ -1606,6 +1614,11 @@ mod tests {
         assert_eq!(
             view.last_export_path(),
             Some("data/music_workstation/exports/daw-agent-region.mid".to_string())
+        );
+        assert!(
+            view.render_lines()
+                .iter()
+                .any(|line| line == "Drag MIDI preview into DAW")
         );
     }
 

@@ -724,6 +724,44 @@ fn editor_surface_spec_marks_completed_export_line_as_drag_source() {
 }
 
 #[test]
+fn editor_surface_spec_marks_midi_preview_as_primary_drag_source() {
+    let mut state = BridgeEditorState::default();
+    state.apply_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/region.mid",
+            "bridge_preview": {
+                "kind": "midi_region",
+                "track_id": 3,
+                "track_name": "Edited Synth",
+                "beat_range": [4.0, 8.0],
+                "note_count": 12,
+                "pitch_range": [48, 72]
+            }
+        })),
+    });
+    let view = BridgeEditorViewModel::from_state(&state, 640, 320);
+    let spec = EditorSurfaceSpec::from_view_model(
+        0x1234,
+        EditorPlatformType::WindowsHwnd,
+        SurfaceRect {
+            left: 0,
+            top: 0,
+            width: 640,
+            height: 320,
+        },
+        &view,
+    )
+    .unwrap();
+
+    assert_eq!(spec.preview().unwrap().title, "Edited Synth");
+    assert!(spec.drag_export_hit_test(48, 84));
+    assert!(!spec.drag_export_hit_test(116, 138));
+}
+
+#[test]
 fn drag_payload_uses_last_export_path_as_single_file() {
     let payload =
         BridgeDragPayload::from_export_path("data/music_workstation/exports/session.dawproject")

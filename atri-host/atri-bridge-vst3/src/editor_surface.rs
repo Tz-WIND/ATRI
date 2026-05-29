@@ -3,7 +3,9 @@ use std::ffi::{CStr, c_void};
 use thiserror::Error;
 use vst3::Steinberg::{FIDString, ViewRect};
 
-use crate::editor::{BridgeEditorAction, BridgeEditorButton, BridgeEditorViewModel};
+use crate::editor::{
+    BridgeEditorAction, BridgeEditorButton, BridgeEditorPreview, BridgeEditorViewModel,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorPlatformType {
@@ -42,6 +44,7 @@ pub struct EditorSurfaceSpec {
     rect: SurfaceRect,
     lines: Vec<String>,
     buttons: Vec<BridgeEditorButton>,
+    preview: Option<BridgeEditorPreview>,
 }
 
 impl EditorSurfaceSpec {
@@ -64,6 +67,7 @@ impl EditorSurfaceSpec {
             rect,
             lines: view_model.render_lines(),
             buttons: view_model.buttons().to_vec(),
+            preview: view_model.preview().cloned(),
         })
     }
 
@@ -99,6 +103,10 @@ impl EditorSurfaceSpec {
         &self.buttons
     }
 
+    pub fn preview(&self) -> Option<&BridgeEditorPreview> {
+        self.preview.as_ref()
+    }
+
     pub fn hit_test(&self, x: i32, y: i32) -> Option<BridgeEditorAction> {
         self.buttons
             .iter()
@@ -112,6 +120,11 @@ impl EditorSurfaceSpec {
     }
 
     pub fn drag_export_hit_test(&self, x: i32, y: i32) -> bool {
+        if let Some(preview) = &self.preview {
+            if preview.contains(x, y) {
+                return self.hit_test(x, y).is_none();
+            }
+        }
         let has_completed_export = self
             .lines
             .iter()
@@ -238,7 +251,8 @@ mod windows_editor {
     };
 
     use super::{
-        EditorSurfaceError, EditorSurfaceSpec, NativeEditorSurfaceEvent, SurfaceEventCallback,
+        BridgeEditorPreview, EditorSurfaceError, EditorSurfaceSpec, NativeEditorSurfaceEvent,
+        SurfaceEventCallback,
     };
 
     const CLASS_NAME: &str = "ATRI Bridge Editor Surface";
@@ -481,6 +495,10 @@ mod windows_editor {
             y += 24;
         }
 
+        if let Some(preview) = spec.preview() {
+            paint_preview(hdc, preview);
+        }
+
         for button in spec.buttons() {
             let rect = RECT {
                 left: button.x,
@@ -499,6 +517,53 @@ mod windows_editor {
         unsafe {
             EndPaint(hwnd, &paint);
         }
+    }
+
+    fn paint_preview(hdc: isize, preview: &BridgeEditorPreview) {
+        let rect = RECT {
+            left: preview.x,
+            top: preview.y,
+            right: preview.x + preview.width,
+            bottom: preview.y + preview.height,
+        };
+        fill_rect(hdc, &rect, rgb(18, 22, 28));
+        stroke_rect(hdc, &rect, rgb(92, 142, 218));
+
+        let key_rect = RECT {
+            left: preview.x + 8,
+            top: preview.y + 8,
+            right: preview.x + 54,
+            bottom: preview.y + preview.height - 8,
+        };
+        fill_rect(hdc, &key_rect, rgb(34, 39, 47));
+        for i in 0..4 {
+            let y = key_rect.top + i * ((key_rect.bottom - key_rect.top) / 4);
+            let row = RECT {
+                left: key_rect.left,
+                top: y,
+                right: key_rect.right,
+                bottom: y + 1,
+            };
+            fill_rect(hdc, &row, rgb(69, 78, 92));
+        }
+
+        let lane = RECT {
+            left: preview.x + 64,
+            top: preview.y + 11,
+            right: preview.x + preview.width - 12,
+            bottom: preview.y + preview.height - 11,
+        };
+        fill_rect(hdc, &lane, rgb(37, 63, 99));
+        stroke_rect(hdc, &lane, rgb(112, 166, 242));
+
+        unsafe {
+            SetTextColor(hdc, rgb(244, 247, 250));
+        }
+        text_out(hdc, preview.x + 72, preview.y + 8, &preview.title);
+        unsafe {
+            SetTextColor(hdc, rgb(166, 178, 194));
+        }
+        text_out(hdc, preview.x + 72, preview.y + 25, &preview.detail);
     }
 
     fn fill_rect(hdc: isize, rect: &RECT, color: COLORREF) {
