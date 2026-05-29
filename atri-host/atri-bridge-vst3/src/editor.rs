@@ -295,6 +295,7 @@ impl BridgeEditorState {
     pub fn mark_export_error(&mut self, message: impl Into<String>) {
         self.export_state = BridgeExportState::Error;
         self.last_export_error = Some(message.into());
+        self.last_midi_preview = None;
         self.pending_export_format = None;
     }
 

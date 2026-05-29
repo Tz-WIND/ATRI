@@ -330,6 +330,59 @@ fn editor_state_tracks_midi_preview_from_latest_export() {
 }
 
 #[test]
+fn editor_state_clears_midi_preview_when_export_response_fails() {
+    let mut state = BridgeEditorState::default();
+    state.apply_export_response(BridgeExportResponse {
+        ok: true,
+        bridge: None,
+        export: Some(serde_json::json!({
+            "format": "midi",
+            "path": "data/music_workstation/exports/region.mid",
+            "bridge_preview": {
+                "kind": "midi_region",
+                "track_id": 3,
+                "track_name": "Edited Synth",
+                "beat_range": [4.0, 8.0],
+                "note_count": 12,
+                "pitch_range": [48, 72]
+            }
+        })),
+    });
+
+    state.apply_export_response(BridgeExportResponse {
+        ok: false,
+        bridge: None,
+        export: None,
+    });
+
+    assert_eq!(state.export_state(), BridgeExportState::Error);
+    assert_eq!(state.last_midi_preview(), None);
+
+    let view = BridgeEditorViewModel::from_state(&state, 640, 320);
+    let spec = EditorSurfaceSpec::from_view_model(
+        0x1234,
+        EditorPlatformType::WindowsHwnd,
+        SurfaceRect {
+            left: 0,
+            top: 0,
+            width: 640,
+            height: 320,
+        },
+        &view,
+    )
+    .unwrap();
+
+    assert!(view.preview().is_none());
+    assert!(
+        !view
+            .render_lines()
+            .iter()
+            .any(|line| line == "Drag MIDI preview into DAW")
+    );
+    assert!(!spec.drag_export_hit_test(48, 84));
+}
+
+#[test]
 fn editor_view_model_exposes_midi_preview() {
     let mut state = BridgeEditorState::default();
     state.apply_export_response(BridgeExportResponse {
