@@ -126,6 +126,14 @@ pub struct BridgeExportResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BridgeMidiPreviewTrack {
+    pub track_id: i64,
+    pub track_name: String,
+    pub note_count: u64,
+    pub pitch_range: [i32; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgeMidiPreview {
     pub kind: String,
     pub track_id: i64,
@@ -133,6 +141,22 @@ pub struct BridgeMidiPreview {
     pub beat_range: [f64; 2],
     pub note_count: u64,
     pub pitch_range: [i32; 2],
+    #[serde(default)]
+    pub tracks: Vec<BridgeMidiPreviewTrack>,
+}
+
+impl BridgeMidiPreview {
+    pub fn display_tracks(&self) -> Vec<BridgeMidiPreviewTrack> {
+        if self.tracks.is_empty() {
+            return vec![BridgeMidiPreviewTrack {
+                track_id: self.track_id,
+                track_name: self.track_name.clone(),
+                note_count: self.note_count,
+                pitch_range: self.pitch_range,
+            }];
+        }
+        self.tracks.clone()
+    }
 }
 
 impl BridgeExportResponse {

@@ -1,6 +1,5 @@
 use crate::bridge_contract::{
-    BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext,
-    BridgeMidiPreview, BridgeStatus,
+    BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext, BridgeStatus,
 };
 use crate::dashboard_client::{
     BridgeDashboardClient, DashboardClientError, DashboardEndpoint, DashboardExportWorker,
@@ -279,6 +278,50 @@ fn bridge_export_response_parses_midi_preview_metadata() {
                     "track_id": 3,
                     "track_name": "Edited Synth",
                     "beat_range": [4.0, 8.0],
+                    "note_count": 20,
+                    "pitch_range": [36, 72],
+                    "tracks": [
+                        {
+                            "track_id": 3,
+                            "track_name": "Edited Synth",
+                            "note_count": 12,
+                            "pitch_range": [48, 72]
+                        },
+                        {
+                            "track_id": 4,
+                            "track_name": "Bass",
+                            "note_count": 8,
+                            "pitch_range": [36, 48]
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let preview = response.midi_preview().unwrap();
+    assert_eq!(preview.track_name, "Edited Synth");
+    assert_eq!(preview.note_count, 20);
+    assert_eq!(preview.pitch_range, [36, 72]);
+    assert_eq!(preview.tracks.len(), 2);
+    assert_eq!(preview.tracks[0].track_name, "Edited Synth");
+    assert_eq!(preview.tracks[1].track_name, "Bass");
+}
+
+#[test]
+fn bridge_export_response_falls_back_to_legacy_single_track_preview() {
+    let response: BridgeExportResponse = serde_json::from_str(
+        r#"{
+            "ok": true,
+            "export": {
+                "format": "midi",
+                "path": "data/music_workstation/exports/region.mid",
+                "bridge_preview": {
+                    "kind": "midi_region",
+                    "track_id": 3,
+                    "track_name": "Edited Synth",
+                    "beat_range": [4.0, 8.0],
                     "note_count": 12,
                     "pitch_range": [48, 72]
                 }
@@ -287,17 +330,11 @@ fn bridge_export_response_parses_midi_preview_metadata() {
     )
     .unwrap();
 
-    assert_eq!(
-        response.midi_preview(),
-        Some(BridgeMidiPreview {
-            kind: "midi_region".to_string(),
-            track_id: 3,
-            track_name: "Edited Synth".to_string(),
-            beat_range: [4.0, 8.0],
-            note_count: 12,
-            pitch_range: [48, 72],
-        })
-    );
+    let preview = response.midi_preview().unwrap();
+
+    assert!(preview.tracks.is_empty());
+    assert_eq!(preview.display_tracks().len(), 1);
+    assert_eq!(preview.display_tracks()[0].track_name, "Edited Synth");
 }
 
 #[test]
