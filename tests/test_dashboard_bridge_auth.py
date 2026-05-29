@@ -25,6 +25,8 @@ class _FakeDawAgent:
         workspace="atri_studio",
         host_context=None,
         images=None,
+        model="",
+        model_provider="",
     ):
         event = MessageEvent(
             message_str=message,
