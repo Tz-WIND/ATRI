@@ -638,7 +638,7 @@
 
         <div
           v-if="pianoVisible && activeMidiClip"
-          ref="pianoPanel"
+          ref="lowerEditorPanel"
           class="piano-panel"
         >
           <div
@@ -646,7 +646,7 @@
             role="separator"
             aria-orientation="horizontal"
             title="Resize piano roll"
-            @pointerdown="startPianoResize"
+            @pointerdown="startLowerEditorResize"
           >
             <span />
           </div>
@@ -977,363 +977,11 @@
           </div>
         </div>
 
-        <div
+        <MixerPanel
           v-if="mixerVisible"
-          ref="pianoPanel"
-          class="mixer-panel"
-        >
-          <div
-            class="piano-resize-handle"
-            role="separator"
-            aria-orientation="horizontal"
-            title="Resize mixer"
-            @pointerdown="startPianoResize"
-          >
-            <span />
-          </div>
-          <div class="mixer-head">
-            <div>
-              <span>Mixer</span>
-              <strong>{{ mixerTracks.length }} routes</strong>
-            </div>
-            <div class="mixer-actions">
-              <button
-                class="mini-btn text"
-                :disabled="pluginsLoading"
-                @click="loadPlugins()"
-              >
-                {{ pluginsLoading ? 'Scanning' : 'Scan' }}
-              </button>
-              <button
-                class="mini-btn"
-                title="Close mixer"
-                @click="closeMixer"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                ><path d="M18 6 6 18M6 6l12 12" /></svg>
-              </button>
-            </div>
-          </div>
-          <div class="mixer-strip-body">
-            <div class="mixer-track-strip-scroll">
-              <div class="mixer-strip-row">
-                <section
-                  v-for="track in mixerTracks"
-                  :key="`mixer-${track.id}`"
-                  :class="['mixer-strip', { active: activeTrack?.id === track.id }]"
-                  @click="selectTrack(track.id)"
-                >
-                  <div class="mixer-strip-head">
-                    <span
-                      class="track-color"
-                      :style="{ background: track.color }"
-                    />
-                    <strong :title="track.name">
-                      {{ track.name }}
-                    </strong>
-                    <small>{{ trackTypeLabel(track) }}</small>
-                  </div>
-
-                  <div class="mixer-section mixer-inserts">
-                    <span class="mixer-section-label">Insert</span>
-                    <label
-                      v-if="!canUseMixerInserts(track)"
-                      class="mixer-insert-slot empty"
-                    >
-                      <span>No Inserts</span>
-                      <select disabled>
-                        <option>Unavailable</option>
-                      </select>
-                    </label>
-                    <template v-else>
-                      <label
-                        v-for="slot in mixerInsertSlots(track)"
-                        :key="`${track.id}-${slot.id}`"
-                        :class="['mixer-insert-slot', { empty: pluginSlot(track, slot.id).type === 'empty' }]"
-                      >
-                        <span>{{ uniqueMixerPluginLabel(track, slot) }}</span>
-                        <select
-                          :value="pluginSlotValue(track, slot.id)"
-                          :title="pluginSlotLabel(track, slot.id)"
-                          @change="onPluginSelect(track, slot.id, $event.target.value)"
-                        >
-                          <option value="empty::">
-                            Empty
-                          </option>
-                          <option
-                            v-if="selectedPluginMissing(track, slot.id)"
-                            :value="pluginSlotValue(track, slot.id)"
-                          >
-                            {{ pluginSlot(track, slot.id).name }}
-                          </option>
-                          <option
-                            v-for="plugin in pluginOptions.vst3"
-                            :key="`${track.id}-${slot.id}-vst3-${plugin.path}`"
-                            :value="`vst3::${plugin.path}`"
-                          >
-                            {{ plugin.name }}
-                          </option>
-                          <option
-                            v-for="plugin in pluginOptions.vst2"
-                            :key="`${track.id}-${slot.id}-vst2-${plugin.path}`"
-                            :value="`vst2::${plugin.path}`"
-                            disabled
-                          >
-                            {{ plugin.name }} (VST2)
-                          </option>
-                        </select>
-                        <button
-                          type="button"
-                          class="mixer-param-load"
-                          :disabled="pluginSlot(track, slot.id).type === 'empty'"
-                          @click.stop="loadPluginParameters(track.id, slot.id)"
-                        >
-                          Params
-                        </button>
-                        <div
-                          v-if="pluginParameterRows(track.id, slot.id).length"
-                          class="mixer-params"
-                          @click.stop
-                        >
-                          <div
-                            v-for="param in pluginParameterRows(track.id, slot.id)"
-                            :key="`${track.id}-${slot.id}-${param.index}`"
-                            class="mixer-param-row"
-                            @contextmenu.prevent="openAutomationMenu($event, automationTargetForPluginParameter(track, slot.id, param), `${track.name} ${param.name}`)"
-                          >
-                            <span>{{ param.name }}</span>
-                            <input
-                              type="range"
-                              min="0"
-                              max="1"
-                              step="0.001"
-                              :value="param.value"
-                              :disabled="param.automatable === false"
-                              @change="setLivePluginParameter(track.id, slot.id, param.index, Number($event.target.value))"
-                            >
-                            <small>{{ parameterValueLabel(param) }}</small>
-                          </div>
-                        </div>
-                      </label>
-                    </template>
-                  </div>
-
-                  <div class="mixer-section mixer-sends">
-                    <span class="mixer-section-label">Send</span>
-                    <div
-                      v-for="(send, index) in mixerSendRows(track)"
-                      :key="send.id || `${track.id}-send-${index}`"
-                      class="mixer-send-row"
-                    >
-                      <select
-                        :value="send.target_bus_id"
-                        @change="updateTrackSend(track, index, { target_bus_id: Number($event.target.value), id: `send_${$event.target.value}` })"
-                      >
-                        <option
-                          v-for="bus in availableOutputBuses(track.id)"
-                          :key="`send-${track.id}-${bus.id}`"
-                          :value="bus.id"
-                        >
-                          {{ bus.name }}
-                        </option>
-                      </select>
-                      <input
-                        type="range"
-                        min="0"
-                        max="2"
-                        step="0.01"
-                        :value="send.level ?? 1"
-                        @change="updateTrackSend(track, index, { level: Number($event.target.value) })"
-                      >
-                      <button
-                        type="button"
-                        :class="{ active: send.enabled !== false }"
-                        @click.stop="updateTrackSend(track, index, { enabled: send.enabled === false })"
-                      >
-                        S
-                      </button>
-                      <button
-                        type="button"
-                        @click.stop="removeTrackSend(track, index)"
-                      >
-                        x
-                      </button>
-                    </div>
-                    <select
-                      class="mixer-send-add"
-                      value=""
-                      @change="onAddTrackSendChange(track, $event)"
-                    >
-                      <option value="">
-                        Add Send
-                      </option>
-                      <option
-                        v-for="bus in availableOutputBuses(track.id)"
-                        :key="`add-send-${track.id}-${bus.id}`"
-                        :value="bus.id"
-                      >
-                        {{ bus.name }}
-                      </option>
-                    </select>
-                  </div>
-
-                  <label class="mixer-pan">
-                    <span>L</span>
-                    <span class="mixer-pan-control">
-                      <span class="mixer-pan-center-line" />
-                      <input
-                        type="range"
-                        min="-1"
-                        max="1"
-                        step="0.01"
-                        :value="track.pan"
-                        @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackPan(track), `${track.name} Pan`)"
-                        @change="updateTrack(track.id, { pan: Number($event.target.value) })"
-                      >
-                    </span>
-                    <span>R</span>
-                    <strong>{{ Number(track.pan || 0).toFixed(2) }}</strong>
-                  </label>
-
-                  <div class="mixer-strip-buttons">
-                    <button
-                      :class="['track-flag', { on: track.mute }]"
-                      title="Mute"
-                      @click.stop="updateTrack(track.id, { mute: !track.mute })"
-                    >
-                      M
-                    </button>
-                    <button
-                      :class="['track-flag', { on: track.solo }]"
-                      title="Solo"
-                      @click.stop="updateTrack(track.id, { solo: !track.solo })"
-                    >
-                      S
-                    </button>
-                  </div>
-
-                  <label class="mixer-fader">
-                    <span>{{ volumeDbLabel(track.volume) }}</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1.4"
-                      step="0.01"
-                      orient="vertical"
-                      :value="track.volume"
-                      @contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackVolume(track), `${track.name} Volume`)"
-                      @change="updateTrack(track.id, { volume: Number($event.target.value) })"
-                    >
-                  </label>
-                </section>
-              </div>
-            </div>
-            <div class="mixer-master-dock">
-              <section class="mixer-strip master-strip">
-                <div class="mixer-strip-head">
-                  <span
-                    class="master-strip-color"
-                    :style="{ background: masterBus.color }"
-                  />
-                  <strong>{{ masterBus.name }}</strong>
-                  <small>Main Output</small>
-                </div>
-
-                <div class="mixer-section mixer-inserts">
-                  <span class="mixer-section-label">Insert</span>
-                  <label
-                    v-for="slot in mixerInsertSlots(masterBus)"
-                    :key="`master-${slot.id}`"
-                    :class="['mixer-insert-slot', { empty: pluginSlot(masterBus, slot.id).type === 'empty' }]"
-                  >
-                    <span>{{ uniqueMixerPluginLabel(masterBus, slot) }}</span>
-                    <select
-                      :value="pluginSlotValue(masterBus, slot.id)"
-                      :title="pluginSlotLabel(masterBus, slot.id)"
-                      @change="onMasterBusPluginSelect(slot.id, $event.target.value)"
-                    >
-                      <option value="empty::">
-                        Empty
-                      </option>
-                      <option
-                        v-if="selectedPluginMissing(masterBus, slot.id)"
-                        :value="pluginSlotValue(masterBus, slot.id)"
-                      >
-                        {{ pluginSlot(masterBus, slot.id).name }}
-                      </option>
-                      <option
-                        v-for="plugin in pluginOptions.vst3"
-                        :key="`master-${slot.id}-vst3-${plugin.path}`"
-                        :value="`vst3::${plugin.path}`"
-                      >
-                        {{ plugin.name }}
-                      </option>
-                      <option
-                        v-for="plugin in pluginOptions.vst2"
-                        :key="`master-${slot.id}-vst2-${plugin.path}`"
-                        :value="`vst2::${plugin.path}`"
-                        disabled
-                      >
-                        {{ plugin.name }} (VST2)
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <label class="mixer-pan">
-                  <span>L</span>
-                  <span class="mixer-pan-control">
-                    <span class="mixer-pan-center-line" />
-                    <input
-                      type="range"
-                      min="-1"
-                      max="1"
-                      step="0.01"
-                      :value="masterBus.pan"
-                      @change="updateMasterBus({ pan: Number($event.target.value) })"
-                    >
-                  </span>
-                  <span>R</span>
-                  <strong>{{ Number(masterBus.pan || 0).toFixed(2) }}</strong>
-                </label>
-
-                <div class="mixer-strip-buttons">
-                  <button
-                    :class="['track-flag', { on: masterBus.mute }]"
-                    title="Mute"
-                    @click.stop="updateMasterBus({ mute: !masterBus.mute })"
-                  >
-                    M
-                  </button>
-                  <button
-                    :class="['track-flag', { on: masterBus.solo }]"
-                    title="Solo"
-                    @click.stop="updateMasterBus({ solo: !masterBus.solo })"
-                  >
-                    S
-                  </button>
-                </div>
-
-                <label class="mixer-fader">
-                  <span>{{ volumeDbLabel(masterBus.volume) }}</span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1.4"
-                    step="0.01"
-                    orient="vertical"
-                    :value="masterBus.volume"
-                    @change="updateMasterBus({ volume: Number($event.target.value) })"
-                  >
-                </label>
-              </section>
-            </div>
-          </div>
-        </div>
+          ref="lowerEditorPanel"
+          :context="mixerPanelContext"
+        />
       </section>
 
       <aside
@@ -1374,345 +1022,37 @@
       </aside>
     </main>
 
-    <div
+    <TrackCreateDialog
       v-if="trackCreateDialogOpen"
-      class="modal-backdrop track-create-backdrop"
-      @click.self="closeTrackCreateDialog"
-      @keydown.esc.stop.prevent="closeTrackCreateDialog"
-    >
-      <section
-        class="track-create-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="track-create-title"
-        tabindex="-1"
-      >
-        <header class="track-create-dialog-head">
-          <div>
-            <span>New Track</span>
-            <h2 id="track-create-title">
-              Create Track
-            </h2>
-          </div>
-          <button
-            class="mini-btn"
-            type="button"
-            title="Close"
-            aria-label="Close"
-            @click="closeTrackCreateDialog"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            ><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </header>
+      v-model:name="trackCreateName"
+      v-model:color="trackCreateColor"
+      v-model:type="trackCreateType"
+      v-model:channel-type="trackCreateChannelType"
+      v-model:output-bus-id="trackCreateOutputBusId"
+      :automation-target-label="automationTargetLabel(trackCreateAutomationTarget)"
+      :palette="trackCreatePalette"
+      :output-buses="availableOutputBuses(null)"
+      @open-automation-parameter-picker="openAutomationParameterPickerForCreate"
+      @close="closeTrackCreateDialog"
+      @create="createSelectedTrack"
+    />
 
-        <div class="track-create-form">
-          <label class="track-create-field">
-            <span>Name</span>
-            <input
-              ref="trackCreateNameInput"
-              v-model="trackCreateName"
-              type="text"
-              autocomplete="off"
-              placeholder="Auto name"
-              @keydown.enter.stop.prevent="createSelectedTrack"
-            >
-          </label>
-          <label class="track-create-field track-create-color-field">
-            <span>Color</span>
-            <div class="track-create-color-control">
-              <input
-                v-model="trackCreateColor"
-                type="color"
-                title="Track color"
-                aria-label="Track color"
-              >
-              <div class="track-create-swatches">
-                <button
-                  v-for="color in trackCreatePalette"
-                  :key="color"
-                  type="button"
-                  :class="['track-create-swatch', { active: trackCreateColor === color }]"
-                  :style="{ background: color }"
-                  :aria-label="`Use ${color}`"
-                  @click="trackCreateColor = color"
-                />
-              </div>
-            </div>
-          </label>
-          <label class="track-create-field">
-            <span>Type</span>
-            <select v-model="trackCreateType">
-              <option value="instrument">
-                Instrument
-              </option>
-              <option value="audio">
-                Audio
-              </option>
-              <option value="bus">
-                Bus
-              </option>
-              <option value="automation">
-                Automation
-              </option>
-            </select>
-          </label>
-          <label
-            v-if="trackCreateType !== 'automation'"
-            class="track-create-field"
-          >
-            <span>Output</span>
-            <select v-model="trackCreateOutputBusId">
-              <option :value="null">
-                Master
-              </option>
-              <option
-                v-for="bus in availableOutputBuses(null)"
-                :key="bus.id"
-                :value="bus.id"
-              >
-                {{ bus.name }}
-              </option>
-            </select>
-          </label>
-          <label
-            v-if="trackCreateType === 'automation'"
-            class="track-create-field"
-          >
-            <span>Parameter</span>
-            <button
-              class="automation-parameter-button"
-              type="button"
-              @click="openAutomationParameterPickerForCreate"
-            >
-              {{ automationTargetLabel(trackCreateAutomationTarget) }}
-            </button>
-          </label>
-          <label
-            v-if="trackCreateType === 'audio'"
-            class="track-create-field"
-          >
-            <span>Channels</span>
-            <select v-model="trackCreateChannelType">
-              <option value="mono">
-                Mono
-              </option>
-              <option value="multichannel">
-                Multi-channel
-              </option>
-            </select>
-          </label>
-        </div>
-
-        <footer class="track-create-actions">
-          <button
-            class="mini-btn text"
-            type="button"
-            @click="closeTrackCreateDialog"
-          >
-            Cancel
-          </button>
-          <button
-            class="mini-btn text active"
-            type="button"
-            @click="createSelectedTrack"
-          >
-            Create
-          </button>
-        </footer>
-      </section>
-    </div>
-
-    <div
+    <StudioExportDialog
       v-if="exportDialogOpen"
-      class="modal-backdrop export-backdrop"
-      @click.self="closeExportDialog"
-      @keydown.esc.stop.prevent="closeExportDialog"
-    >
-      <section
-        class="export-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="export-dialog-title"
-        tabindex="-1"
-      >
-        <header class="track-create-dialog-head">
-          <div>
-            <span>Bounce</span>
-            <h2 id="export-dialog-title">
-              Export Audio
-            </h2>
-          </div>
-          <button
-            class="mini-btn"
-            type="button"
-            title="Close"
-            aria-label="Close"
-            @click="closeExportDialog"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            ><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </header>
-
-        <div class="track-create-form export-form">
-          <label class="track-create-field">
-            <span>Target</span>
-            <select v-model="exportTarget">
-              <option value="entire_project">
-                Entire Project
-              </option>
-              <option value="selected_tracks">
-                Selected Tracks
-              </option>
-            </select>
-          </label>
-          <div
-            v-if="exportTarget === 'selected_tracks'"
-            class="export-track-list"
-          >
-            <label
-              v-for="track in exportableTracks"
-              :key="track.id"
-              class="export-track-row"
-            >
-              <input
-                v-model="exportSelectedTrackIds"
-                type="checkbox"
-                :value="track.id"
-              >
-              <span>{{ track.name || `Track ${track.id}` }}</span>
-            </label>
-          </div>
-          <label class="track-create-field">
-            <span>Mode</span>
-            <select v-model="exportMode">
-              <option value="mixdown">
-                Mixdown
-              </option>
-              <option value="stems">
-                Stems
-              </option>
-            </select>
-          </label>
-          <label class="track-create-field">
-            <span>Format</span>
-            <select v-model="exportFormat">
-              <option value="wav">
-                WAV
-              </option>
-              <option value="flac">
-                FLAC
-              </option>
-              <option value="mp3">
-                MP3
-              </option>
-            </select>
-          </label>
-          <label class="track-create-field">
-            <span>Rate</span>
-            <select v-model.number="exportSampleRate">
-              <option :value="44100">
-                44.1 kHz
-              </option>
-              <option :value="48000">
-                48 kHz
-              </option>
-              <option :value="96000">
-                96 kHz
-              </option>
-              <option :value="192000">
-                192 kHz
-              </option>
-            </select>
-          </label>
-          <label
-            v-if="exportFormat !== 'mp3'"
-            class="track-create-field"
-          >
-            <span>Depth</span>
-            <select v-model="exportBitDepth">
-              <option value="i16">
-                16-bit PCM
-              </option>
-              <option value="i24">
-                24-bit PCM
-              </option>
-              <option
-                v-if="exportFormat === 'wav'"
-                value="f32"
-              >
-                32-bit Float
-              </option>
-            </select>
-          </label>
-          <label
-            v-if="exportFormat === 'mp3'"
-            class="track-create-field"
-          >
-            <span>Bitrate</span>
-            <select v-model="exportBitrate">
-              <option value="128k">
-                128 kbps
-              </option>
-              <option value="192k">
-                192 kbps
-              </option>
-              <option value="256k">
-                256 kbps
-              </option>
-              <option value="320k">
-                320 kbps
-              </option>
-            </select>
-          </label>
-        </div>
-
-        <div
-          v-if="exportErrorMessage"
-          class="export-status error"
-        >
-          {{ exportErrorMessage }}
-        </div>
-        <a
-          v-if="exportResult?.download_url"
-          class="export-status link"
-          :href="exportResult.download_url"
-          target="_blank"
-          rel="noreferrer"
-        >
-          {{ exportResult.filename }}
-        </a>
-
-        <footer class="track-create-actions">
-          <button
-            class="mini-btn text"
-            type="button"
-            :disabled="exporting"
-            @click="closeExportDialog"
-          >
-            Cancel
-          </button>
-          <button
-            class="mini-btn text active"
-            type="button"
-            :disabled="exporting || (exportTarget === 'selected_tracks' && !exportSelectedTrackIds.length)"
-            @click="exportCurrentAudio"
-          >
-            {{ exporting ? 'Exporting' : 'Export' }}
-          </button>
-        </footer>
-      </section>
-    </div>
-
+      v-model:target="exportTarget"
+      v-model:mode="exportMode"
+      v-model:format="exportFormat"
+      v-model:sample-rate="exportSampleRate"
+      v-model:bit-depth="exportBitDepth"
+      v-model:bitrate="exportBitrate"
+      v-model:selected-track-ids="exportSelectedTrackIds"
+      :exportable-tracks="exportableTracks"
+      :result="exportResult"
+      :error-message="exportErrorMessage"
+      :exporting="exporting"
+      @close="closeExportDialog"
+      @export="exportCurrentAudio"
+    />
     <div
       v-if="automationParameterPicker.open"
       class="modal-backdrop automation-parameter-backdrop"
@@ -1800,6 +1140,10 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDawHost } from '@/composables/useDawHost.js'
+import MixerPanel from './studio/MixerPanel.vue'
+import StudioExportDialog from './studio/StudioExportDialog.vue'
+import TrackCreateDialog from './studio/TrackCreateDialog.vue'
+import './studio/StudioDialogs.css'
 import {
   CONTROLLER_PRESETS,
   DEFAULT_CONTROLLER_IDS,
@@ -1902,7 +1246,7 @@ const arrangementWrap = ref(null)
 const arrangementHeaderCanvas = ref(null)
 const arrangementCanvas = ref(null)
 const editorStack = ref(null)
-const pianoPanel = ref(null)
+const lowerEditorPanel = ref(null)
 const pianoWorkspace = ref(null)
 const pianoWrap = ref(null)
 const pianoHeaderCanvas = ref(null)
@@ -2031,7 +1375,6 @@ const audioDropActive = ref(false)
 const audioImporting = ref(false)
 const trackCreateDialogOpen = ref(false)
 const trackCreateName = ref('')
-const trackCreateNameInput = ref(null)
 const trackCreateColor = ref(trackCreatePalette[0])
 const trackCreateType = ref('instrument')
 const trackCreateChannelType = ref('multichannel')
@@ -2048,7 +1391,7 @@ const exportSelectedTrackIds = ref([])
 const exportResult = ref(null)
 const exportErrorMessage = ref('')
 const automationParameterPicker = ref({ open: false, mode: 'create', trackId: null })
-const pianoPanelHeight = ref(null)
+const lowerEditorPanelHeight = ref(null)
 const inspectorVisible = ref(true)
 const controllerLanes = ref(createDefaultControllerLanes())
 const controllerMenuLaneId = ref(null)
@@ -2065,7 +1408,7 @@ let resizeObserver = null
 let raf = 0
 let lastFrame = 0
 let pianoDrag = null
-let pianoResizeDrag = null
+let lowerEditorResizeDrag = null
 let trackListResizeDrag = null
 let arrangementDrag = null
 let controllerDrag = null
@@ -2079,7 +1422,7 @@ let learnedParameterPollTimer = null
 const snapStep = 0.25
 const minFreehandStep = 0.0625
 const minArrangementPanelHeight = arrangementToolbarH + arrangementRulerH
-const minPianoPanelHeight = 140
+const minLowerEditorPanelHeight = 140
 
 const tempo = computed(() => effectiveTempoAtBeat(project.value, visualPositionBeats.value))
 const meterBeats = computed(() => {
@@ -2143,10 +1486,47 @@ const lowerEditorVisible = computed(() => (
 const mixerTracks = computed(() => tracks.value.filter(track => !isAutomationTrack(track)))
 const exportableTracks = computed(() => tracks.value.filter(track => !isAutomationTrack(track)))
 const masterBus = computed(() => normalizeMasterBus(project.value?.master_bus))
+const mixerPanelContext = computed(() => ({
+  mixerTracks: mixerTracks.value,
+  activeTrack: activeTrack.value,
+  masterBus: masterBus.value,
+  pluginOptions: pluginOptions.value,
+  pluginsLoading: pluginsLoading.value,
+  startResize: startLowerEditorResize,
+  loadPlugins,
+  close: closeMixer,
+  selectTrack,
+  trackTypeLabel,
+  canUseMixerInserts,
+  mixerInsertSlots,
+  pluginSlot,
+  uniqueMixerPluginLabel,
+  pluginSlotValue,
+  pluginSlotLabel,
+  pluginSelect: onPluginSelect,
+  selectedPluginMissing,
+  loadPluginParameters,
+  pluginParameterRows,
+  openAutomationMenu,
+  automationTargetForPluginParameter,
+  setLivePluginParameter,
+  parameterValueLabel,
+  mixerSendRows,
+  availableOutputBuses,
+  updateTrackSend,
+  removeTrackSend,
+  addTrackSendChange: onAddTrackSendChange,
+  automationTargetForTrackPan,
+  updateTrack,
+  automationTargetForTrackVolume,
+  masterBusPluginSelect: onMasterBusPluginSelect,
+  updateMasterBus,
+  volumeDbLabel,
+}))
 const editorStackStyle = computed(() => {
-  if (!lowerEditorVisible.value || !pianoPanelHeight.value) return {}
+  if (!lowerEditorVisible.value || !lowerEditorPanelHeight.value) return {}
   return {
-    gridTemplateRows: `minmax(${minArrangementPanelHeight}px, 1fr) ${pianoPanelHeight.value}px`,
+    gridTemplateRows: `minmax(${minArrangementPanelHeight}px, 1fr) ${lowerEditorPanelHeight.value}px`,
   }
 })
 const arrangementLayoutStyle = computed(() => ({
@@ -2688,7 +2068,6 @@ function openTrackCreateDialog() {
   trackCreateOutputBusId.value = null
   trackCreateAutomationTarget.value = automationUnassignedTarget()
   trackCreateDialogOpen.value = true
-  nextTick(() => trackCreateNameInput.value?.focus?.())
 }
 
 function closeTrackCreateDialog() {
@@ -3954,20 +3333,20 @@ function drawPressMoved(event, drag) {
   return Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > pianoDrawMoveTolerancePx
 }
 
-function currentPianoPanelHeight() {
-  const panelHeight = pianoPanel.value?.getBoundingClientRect?.().height
-  if (panelHeight) return clampPianoPanelHeight(panelHeight)
+function currentLowerEditorPanelHeight() {
+  const panelHeight = lowerEditorPanel.value?.getBoundingClientRect?.().height
+  if (panelHeight) return clampLowerEditorPanelHeight(panelHeight)
   const stackHeight = editorStack.value?.clientHeight || 0
-  return clampPianoPanelHeight(stackHeight * 0.42)
+  return clampLowerEditorPanelHeight(stackHeight * 0.42)
 }
 
-function clampPianoPanelHeight(height) {
+function clampLowerEditorPanelHeight(height) {
   const stackHeight = editorStack.value?.clientHeight || 0
   if (!stackHeight) {
-    return Math.round(Math.max(minPianoPanelHeight, Number(height || 0)))
+    return Math.round(Math.max(minLowerEditorPanelHeight, Number(height || 0)))
   }
   const maxHeight = Math.max(1, stackHeight - minArrangementPanelHeight)
-  const minHeight = Math.min(minPianoPanelHeight, maxHeight)
+  const minHeight = Math.min(minLowerEditorPanelHeight, maxHeight)
   return Math.round(clamp(Number(height || minHeight), minHeight, maxHeight))
 }
 
@@ -4019,41 +3398,41 @@ function onTrackListResizeEnd() {
   nextTick(drawAll)
 }
 
-function startPianoResize(event) {
+function startLowerEditorResize(event) {
   event.preventDefault()
   event.stopPropagation()
-  const startHeight = currentPianoPanelHeight()
-  pianoPanelHeight.value = startHeight
-  pianoResizeDrag = {
+  const startHeight = currentLowerEditorPanelHeight()
+  lowerEditorPanelHeight.value = startHeight
+  lowerEditorResizeDrag = {
     pointerId: event.pointerId,
     startY: event.clientY,
     startHeight,
   }
-  bindPianoResize()
+  bindLowerEditorResize()
 }
 
-function bindPianoResize() {
-  window.addEventListener('pointermove', onPianoResizeMove)
-  window.addEventListener('pointerup', onPianoResizeEnd)
+function bindLowerEditorResize() {
+  window.addEventListener('pointermove', onLowerEditorResizeMove)
+  window.addEventListener('pointerup', onLowerEditorResizeEnd)
 }
 
-function unbindPianoResize() {
-  window.removeEventListener('pointermove', onPianoResizeMove)
-  window.removeEventListener('pointerup', onPianoResizeEnd)
+function unbindLowerEditorResize() {
+  window.removeEventListener('pointermove', onLowerEditorResizeMove)
+  window.removeEventListener('pointerup', onLowerEditorResizeEnd)
 }
 
-function onPianoResizeMove(event) {
-  if (!pianoResizeDrag) return
+function onLowerEditorResizeMove(event) {
+  if (!lowerEditorResizeDrag) return
   event.preventDefault()
-  const deltaY = event.clientY - pianoResizeDrag.startY
-  pianoPanelHeight.value = clampPianoPanelHeight(pianoResizeDrag.startHeight - deltaY)
+  const deltaY = event.clientY - lowerEditorResizeDrag.startY
+  lowerEditorPanelHeight.value = clampLowerEditorPanelHeight(lowerEditorResizeDrag.startHeight - deltaY)
   drawAll()
 }
 
-function onPianoResizeEnd() {
-  if (!pianoResizeDrag) return
-  pianoResizeDrag = null
-  unbindPianoResize()
+function onLowerEditorResizeEnd() {
+  if (!lowerEditorResizeDrag) return
+  lowerEditorResizeDrag = null
+  unbindLowerEditorResize()
   nextTick(drawAll)
 }
 
@@ -5227,7 +4606,7 @@ function closePiano() {
   selectedControllerEventId.value = null
   draftNote.value = null
   selectionBox.value = null
-  pianoResizeDrag = null
+  lowerEditorResizeDrag = null
   controllerDrag = null
   automationDrag = null
   controllerMenuLaneId.value = null
@@ -5235,7 +4614,7 @@ function closePiano() {
   closePianoMeterEditor()
   closePianoHarmonyEditor()
   unbindPianoDrag()
-  unbindPianoResize()
+  unbindLowerEditorResize()
   unbindControllerDrag()
   unbindAutomationDrag()
   drawAll()
@@ -5254,7 +4633,7 @@ function openMixer() {
   closePianoMeterEditor()
   closePianoHarmonyEditor()
   unbindPianoDrag()
-  unbindPianoResize()
+  unbindLowerEditorResize()
   unbindControllerDrag()
   drawAll()
 }
@@ -7048,8 +6427,8 @@ onMounted(async () => {
   await loadPlugins()
   await nextTick()
   resizeObserver = new ResizeObserver(() => {
-    if (pianoPanelHeight.value) {
-      pianoPanelHeight.value = clampPianoPanelHeight(pianoPanelHeight.value)
+    if (lowerEditorPanelHeight.value) {
+      lowerEditorPanelHeight.value = clampLowerEditorPanelHeight(lowerEditorPanelHeight.value)
     }
     drawAll()
   })
@@ -7071,7 +6450,7 @@ onUnmounted(() => {
   clearInterval(learnedParameterPollTimer)
   if (resizeObserver) resizeObserver.disconnect()
   unbindPianoDrag()
-  unbindPianoResize()
+  unbindLowerEditorResize()
   unbindTrackListResize()
   unbindArrangementDrag()
   unbindControllerDrag()
@@ -7580,209 +6959,6 @@ watch(() => host.value.running, (running) => {
   flex: 1 1 auto;
 }
 
-.modal-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 18px;
-  background: rgba(9, 11, 13, 0.66);
-  backdrop-filter: blur(7px);
-}
-
-.track-create-dialog,
-.export-dialog {
-  width: min(420px, 100%);
-  max-height: calc(100% - 24px);
-  overflow: auto;
-  border: 1px solid rgba(229, 236, 245, 0.16);
-  border-radius: 8px;
-  background: #202428;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
-}
-
-.track-create-dialog-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 16px 12px;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.1);
-}
-
-.track-create-dialog-head span {
-  color: var(--orange);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.track-create-dialog-head h2 {
-  margin: 2px 0 0;
-  color: var(--t1);
-  font-size: 17px;
-  line-height: 1.2;
-}
-
-.track-create-form {
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-}
-
-.track-create-field {
-  display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-}
-
-.track-create-field span {
-  color: var(--t4);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.track-create-field input,
-.track-create-field select,
-.automation-parameter-button {
-  min-width: 0;
-  width: 100%;
-  height: 32px;
-  border: 1px solid rgba(229, 236, 245, 0.14);
-  border-radius: 6px;
-  background: #101215;
-  color: var(--t2);
-  font-size: 12px;
-}
-
-.automation-parameter-button {
-  padding: 0 10px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.track-create-field input {
-  padding: 0 10px;
-}
-
-.track-create-color-control {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.track-create-color-field input[type='color'] {
-  flex: 0 0 40px;
-  width: 40px;
-  padding: 2px;
-  cursor: pointer;
-}
-
-.track-create-swatches {
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.track-create-swatch {
-  width: 22px;
-  height: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  border-radius: 5px;
-  cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.24);
-}
-
-.track-create-swatch.active {
-  border-color: rgba(240, 209, 122, 0.92);
-  box-shadow:
-    0 0 0 2px rgba(240, 209, 122, 0.16),
-    inset 0 0 0 1px rgba(0, 0, 0, 0.26);
-}
-
-.track-create-field input:focus,
-.track-create-field select:focus,
-.automation-parameter-button:focus {
-  outline: none;
-  border-color: rgba(240, 209, 122, 0.5);
-  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
-}
-
-.track-create-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px 16px;
-  border-top: 1px solid rgba(229, 236, 245, 0.08);
-}
-
-.export-dialog {
-  width: min(520px, 100%);
-}
-
-.export-form {
-  gap: 10px;
-}
-
-.export-track-list {
-  max-height: 156px;
-  overflow: auto;
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid rgba(229, 236, 245, 0.1);
-  border-radius: 6px;
-  background: rgba(12, 15, 18, 0.38);
-}
-
-.export-track-row {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  color: var(--t2);
-  font-size: 12px;
-}
-
-.export-track-row input {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--orange);
-}
-
-.export-track-row span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.export-status {
-  display: block;
-  margin: 0 16px 12px;
-  padding: 8px 10px;
-  border: 1px solid rgba(229, 236, 245, 0.1);
-  border-radius: 6px;
-  color: var(--t2);
-  background: rgba(12, 15, 18, 0.34);
-  font-size: 12px;
-  text-decoration: none;
-}
-
-.export-status.link {
-  color: var(--orange);
-}
-
-.export-status.error {
-  color: #ffb0a7;
-  border-color: rgba(217, 91, 85, 0.38);
-  background: rgba(87, 30, 28, 0.22);
-}
 
 .automation-parameter-dialog {
   width: min(760px, 100%);
@@ -9007,349 +8183,6 @@ watch(() => host.value.running, (running) => {
   font-size: 12px;
 }
 
-.mixer-panel {
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: #17191c;
-}
-
-.mixer-head {
-  flex: 0 0 auto;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 10px;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.12);
-  background: #202428;
-}
-
-.mixer-head div:first-child,
-.mixer-actions {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.mixer-head span {
-  color: var(--t3);
-  font-size: 11px;
-  text-transform: uppercase;
-}
-
-.mixer-head strong {
-  color: var(--t1);
-  font-size: 12px;
-}
-
-.mixer-actions {
-  align-items: center;
-}
-
-.mixer-strip-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 154px;
-  overflow: hidden;
-  background: #14171a;
-}
-
-.mixer-track-strip-scroll {
-  min-height: 0;
-  min-width: 0;
-  overflow: auto;
-  background: #14171a;
-}
-
-.mixer-strip-row {
-  height: 100%;
-  width: max-content;
-  min-width: 100%;
-  display: flex;
-  align-items: stretch;
-}
-
-.mixer-strip {
-  width: 154px;
-  min-width: 154px;
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(48px, 1fr) auto minmax(40px, auto) auto 132px;
-  gap: 8px;
-  padding: 8px;
-  border-right: 1px solid rgba(229, 236, 245, 0.1);
-  background: #202428;
-  color: var(--t2);
-}
-
-.mixer-strip.active {
-  background: #252a2f;
-  box-shadow: inset 0 2px 0 rgba(240, 209, 122, 0.7);
-}
-
-.mixer-strip-head {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 4px minmax(0, 1fr);
-  gap: 3px 7px;
-  align-items: center;
-}
-
-.mixer-strip-head .track-color,
-.master-strip-color {
-  grid-row: 1 / 3;
-  width: 4px;
-  height: 100%;
-  min-height: 28px;
-  border-radius: 999px;
-}
-
-.master-strip-color {
-  display: block;
-  background: #58a7b8;
-}
-
-.mixer-strip-head strong,
-.mixer-strip-head small {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mixer-strip-head strong {
-  color: var(--t1);
-  font-size: 12px;
-}
-
-.mixer-strip-head small {
-  color: var(--t4);
-  font-size: 10px;
-}
-
-.mixer-section {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.mixer-section-label {
-  color: var(--t4);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.mixer-inserts {
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.mixer-sends {
-  max-height: 92px;
-  overflow-y: auto;
-}
-
-.mixer-insert-slot {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 4px;
-  padding: 5px;
-  border: 1px solid rgba(229, 236, 245, 0.09);
-  border-radius: 5px;
-  background: #181b1f;
-}
-
-.mixer-insert-slot span {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--t3);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mixer-insert-slot select,
-.mixer-send-row select,
-.mixer-send-add {
-  min-width: 0;
-  width: 100%;
-  height: 24px;
-  overflow: hidden;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 4px;
-  background: #101215;
-  color: var(--t2);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mixer-insert-slot.empty select {
-  color: var(--t4);
-}
-
-.mixer-param-load,
-.mixer-send-row button {
-  height: 22px;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 4px;
-  background: #15181b;
-  color: var(--t3);
-  cursor: pointer;
-  font-size: 10px;
-}
-
-.mixer-param-load:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
-}
-
-.mixer-params {
-  display: grid;
-  gap: 4px;
-  padding: 5px;
-  border: 1px solid rgba(229, 236, 245, 0.08);
-  border-radius: 5px;
-  background: rgba(13, 15, 18, 0.56);
-}
-
-.mixer-param-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 3px;
-}
-
-.mixer-param-row span,
-.mixer-param-row small {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--t3);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mixer-param-row input {
-  min-width: 0;
-}
-
-.mixer-param-row small {
-  color: var(--t4);
-  font-family: var(--mono);
-}
-
-.mixer-send-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px 22px 22px;
-  gap: 4px;
-  align-items: center;
-}
-
-.mixer-send-row input {
-  min-width: 0;
-  accent-color: #58a7b8;
-}
-
-.mixer-send-row button.active {
-  color: #fff;
-  border-color: rgba(88, 167, 184, 0.56);
-  background: #0d74c9;
-}
-
-.mixer-pan {
-  min-height: 40px;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 4px 6px;
-  align-items: center;
-  color: var(--t4);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.mixer-pan-control {
-  position: relative;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-}
-
-.mixer-pan-center-line {
-  position: absolute;
-  left: 50%;
-  top: 2px;
-  bottom: 2px;
-  width: 2px;
-  border-radius: 999px;
-  background: #0d74c9;
-  pointer-events: none;
-  transform: translateX(-50%);
-}
-
-.mixer-pan input {
-  width: 100%;
-  min-width: 0;
-  accent-color: #9ebfff;
-}
-
-.mixer-pan strong {
-  grid-column: 1 / -1;
-  color: var(--t2);
-  font-size: 10px;
-  text-align: center;
-}
-
-.mixer-strip-buttons {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-}
-
-.mixer-fader {
-  min-height: 132px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  justify-items: center;
-  gap: 6px;
-}
-
-.mixer-fader span {
-  color: var(--t3);
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.mixer-fader input {
-  width: 108px;
-  align-self: center;
-  accent-color: #58a7b8;
-  transform: rotate(-90deg);
-}
-
-.mixer-master-dock {
-  min-height: 0;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.master-strip {
-  height: 100%;
-  grid-template-rows: auto minmax(48px, 1fr) minmax(40px, auto) auto 132px;
-  border-left: 1px solid rgba(88, 167, 184, 0.32);
-  background: #252b30;
-  box-shadow: -12px 0 22px rgba(0, 0, 0, 0.26);
-}
 
 @media (max-width: 1120px) {
   .studio-topbar {

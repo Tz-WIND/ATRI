@@ -2,12 +2,29 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STUDIO_COMPONENT = ROOT / "frontend" / "src" / "components" / "music" / "MusicStudio.vue"
+STUDIO_EXPORT_DIALOG = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "StudioExportDialog.vue"
+)
+STUDIO_TRACK_CREATE_DIALOG = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "TrackCreateDialog.vue"
+)
+STUDIO_MIXER_PANEL = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "MixerPanel.vue"
+)
+STUDIO_DIALOGS_CSS = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "StudioDialogs.css"
+)
+STUDIO_MIXER_CSS = ROOT / "frontend" / "src" / "components" / "music" / "studio" / "MixerPanel.css"
 DAW_HOST = ROOT / "frontend" / "src" / "composables" / "useDawHost.js"
 API = ROOT / "frontend" / "src" / "composables" / "useApi.js"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _read_many(*paths: Path) -> str:
+    return "\n".join(_read(path) for path in paths)
 
 
 def test_music_studio_exposes_track_context_delete_control():
@@ -65,26 +82,30 @@ def test_daw_host_and_api_support_deleting_tracks():
 
 def test_music_studio_supports_audio_export_dialog():
     studio_text = _read(STUDIO_COMPONENT)
+    export_dialog_text = _read(STUDIO_EXPORT_DIALOG)
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
     assert '@click="openExportDialog"' in studio_text
+    assert "StudioExportDialog" in studio_text
     assert 'v-if="exportDialogOpen"' in studio_text
-    assert 'class="export-dialog"' in studio_text
-    assert 'v-model="exportTarget"' in studio_text
-    assert 'value="entire_project"' in studio_text
-    assert 'value="selected_tracks"' in studio_text
-    assert 'v-model="exportMode"' in studio_text
-    assert 'value="mixdown"' in studio_text
-    assert 'value="stems"' in studio_text
-    assert 'v-model="exportFormat"' in studio_text
-    assert 'value="wav"' in studio_text
-    assert 'value="flac"' in studio_text
-    assert 'value="mp3"' in studio_text
-    assert 'v-model.number="exportSampleRate"' in studio_text
-    assert 'v-model="exportBitDepth"' in studio_text
-    assert 'v-model="exportBitrate"' in studio_text
-    assert '@click="exportCurrentAudio"' in studio_text
+    assert 'v-model:target="exportTarget"' in studio_text
+    assert 'v-model:format="exportFormat"' in studio_text
+    assert '@export="exportCurrentAudio"' in studio_text
+    assert 'class="export-dialog"' in export_dialog_text
+    assert 'v-model="targetValue"' in export_dialog_text
+    assert 'value="entire_project"' in export_dialog_text
+    assert 'value="selected_tracks"' in export_dialog_text
+    assert 'v-model="modeValue"' in export_dialog_text
+    assert 'value="mixdown"' in export_dialog_text
+    assert 'value="stems"' in export_dialog_text
+    assert 'v-model="formatValue"' in export_dialog_text
+    assert 'value="wav"' in export_dialog_text
+    assert 'value="flac"' in export_dialog_text
+    assert 'value="mp3"' in export_dialog_text
+    assert 'v-model.number="sampleRateValue"' in export_dialog_text
+    assert 'v-model="bitDepthValue"' in export_dialog_text
+    assert 'v-model="bitrateValue"' in export_dialog_text
     assert "async function exportCurrentAudio()" in studio_text
     assert "exportAudio({" in studio_text
     assert "async function exportAudio(payload)" in host_text
@@ -95,25 +116,31 @@ def test_music_studio_supports_audio_export_dialog():
 
 def test_music_studio_supports_track_type_and_audio_channel_controls():
     studio_text = _read(STUDIO_COMPONENT)
+    track_dialog_text = _read(STUDIO_TRACK_CREATE_DIALOG)
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
     assert '@click="openTrackCreateDialog"' in studio_text
+    assert "TrackCreateDialog" in studio_text
     assert 'v-if="trackCreateDialogOpen"' in studio_text
-    assert 'class="track-create-dialog"' in studio_text
-    assert 'role="dialog"' in studio_text
-    assert 'aria-modal="true"' in studio_text
-    assert 'v-model="trackCreateName"' in studio_text
-    assert 'v-model="trackCreateColor"' in studio_text
-    assert 'type="color"' in studio_text
+    assert 'v-model:name="trackCreateName"' in studio_text
+    assert 'v-model:color="trackCreateColor"' in studio_text
+    assert 'v-model:type="trackCreateType"' in studio_text
+    assert 'v-model:channel-type="trackCreateChannelType"' in studio_text
+    assert 'class="track-create-dialog"' in track_dialog_text
+    assert 'role="dialog"' in track_dialog_text
+    assert 'aria-modal="true"' in track_dialog_text
+    assert 'v-model="nameValue"' in track_dialog_text
+    assert 'v-model="colorValue"' in track_dialog_text
+    assert 'type="color"' in track_dialog_text
     assert "trackCreatePalette" in studio_text
-    assert '@click="trackCreateColor = color"' in studio_text
-    assert 'v-model="trackCreateType"' in studio_text
-    assert '<option value="instrument">' in studio_text
-    assert '<option value="audio">' in studio_text
-    assert "v-if=\"trackCreateType === 'audio'\"" in studio_text
-    assert '@click="createSelectedTrack"' in studio_text
-    assert '@click="closeTrackCreateDialog"' in studio_text
+    assert '@click="colorValue = swatch"' in track_dialog_text
+    assert 'v-model="typeValue"' in track_dialog_text
+    assert '<option value="instrument">' in track_dialog_text
+    assert '<option value="audio">' in track_dialog_text
+    assert "v-if=\"typeValue === 'audio'\"" in track_dialog_text
+    assert '@create="createSelectedTrack"' in studio_text
+    assert '@close="closeTrackCreateDialog"' in studio_text
     assert "function openTrackCreateDialog()" in studio_text
     assert "function closeTrackCreateDialog()" in studio_text
     assert "function createSelectedTrack()" in studio_text
@@ -129,7 +156,7 @@ def test_music_studio_supports_track_type_and_audio_channel_controls():
 
 
 def test_music_studio_exposes_bus_track_creation_and_output_selector():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_TRACK_CREATE_DIALOG)
 
     assert '<option value="bus">' in studio_text
     assert "trackCreateType.value === 'bus'" in studio_text
@@ -393,6 +420,7 @@ def test_music_studio_track_list_sidebar_can_be_resized():
 
 def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_mixer():
     studio_text = _read(STUDIO_COMPONENT)
+    mixer_text = _read(STUDIO_MIXER_PANEL)
 
     assert ':draggable="canDragTrackRow(track)"' in studio_text
     assert '@dragstart.stop="startTrackReorderDrag($event, track)"' in studio_text
@@ -414,7 +442,7 @@ def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_mixer
     )
     assert ".track-row.reorder-before::before" in studio_text
     assert ".track-row.reorder-after::after" in studio_text
-    assert ':key="`mixer-${track.id}`"' in studio_text
+    assert ':key="`mixer-${track.id}`"' in mixer_text
 
 
 def test_music_studio_track_list_sidebar_uses_single_aligned_divider():
@@ -481,16 +509,16 @@ def test_music_studio_exposes_automation_tracks_and_context_creation():
 
 
 def test_music_studio_exposes_plugin_parameter_browser_and_live_set():
-    studio_text = _read(STUDIO_COMPONENT)
+    mixer_text = _read(STUDIO_MIXER_PANEL)
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
-    assert "loadPluginParameters(track.id, slot.id)" in studio_text
-    assert "pluginParameterRows(track.id, slot.id)" in studio_text
-    assert "automationTargetForPluginParameter(track, slot.id, param)" in studio_text
+    assert "context.loadPluginParameters(track.id, slot.id)" in mixer_text
+    assert "context.pluginParameterRows(track.id, slot.id)" in mixer_text
+    assert "context.automationTargetForPluginParameter(track, slot.id, param)" in mixer_text
     assert (
-        "setLivePluginParameter(track.id, slot.id, param.index, Number($event.target.value))"
-        in studio_text
+        "context.setLivePluginParameter("
+        "track.id, slot.id, param.index, Number($event.target.value))" in mixer_text
     )
     assert "async function loadPluginParameters(trackId, slotId = 'instrument')" in host_text
     assert "async function setPluginParameter(trackId, slotId, paramIndex, value)" in host_text
@@ -500,6 +528,7 @@ def test_music_studio_exposes_plugin_parameter_browser_and_live_set():
 
 def test_music_studio_plugin_names_truncate_like_track_titles():
     studio_text = _read(STUDIO_COMPONENT)
+    mixer_css = _read(STUDIO_MIXER_CSS)
 
     assert (
         ".track-plugin-select {\n"
@@ -519,9 +548,9 @@ def test_music_studio_plugin_names_truncate_like_track_titles():
         "  width: 100%;\n"
         "  height: 24px;\n"
         "  overflow: hidden;\n"
-    ) in studio_text
-    assert ".mixer-insert-slot span {" in studio_text
-    assert "text-overflow: ellipsis;" in studio_text
+    ) in mixer_css
+    assert ".mixer-insert-slot span {" in mixer_css
+    assert "text-overflow: ellipsis;" in _read_many(STUDIO_COMPONENT, STUDIO_MIXER_CSS)
 
 
 def test_music_studio_has_mutually_exclusive_piano_and_mixer_lower_windows():
@@ -590,17 +619,26 @@ def test_music_studio_recenters_piano_viewport_when_opening_or_switching_clips()
 
 def test_music_studio_mixer_window_replaces_inspector_rack():
     studio_text = _read(STUDIO_COMPONENT)
+    mixer_text = _read(STUDIO_MIXER_PANEL)
 
-    assert 'class="mixer-panel"' in studio_text
-    assert ":class=\"['mixer-strip', { active: activeTrack?.id === track.id }]\"" in studio_text
-    assert 'v-for="track in mixerTracks"' in studio_text
+    assert "<MixerPanel" in studio_text
+    assert ':context="mixerPanelContext"' in studio_text
+    assert "mixerTracks: mixerTracks.value" in studio_text
+    assert "defineProps({\n  context: { type: Object, required: true },\n})" in mixer_text
+    assert ':mixer-tracks="mixerTracks"' not in studio_text
+    assert ':volume-db-label="volumeDbLabel"' not in studio_text
+    assert 'class="mixer-panel"' in mixer_text
+    assert (
+        ":class=\"['mixer-strip', { active: context.activeTrack?.id === track.id }]\"" in mixer_text
+    )
+    assert 'v-for="track in context.mixerTracks"' in mixer_text
     assert (
         "const mixerTracks = computed(() => tracks.value.filter("
         "track => !isAutomationTrack(track)))" in studio_text
     )
-    assert 'class="mixer-strip master-strip"' in studio_text
+    assert 'class="mixer-strip master-strip"' in mixer_text
     assert "Master Bus" in studio_text
-    assert 'class="mixer-master-dock"' in studio_text
+    assert 'class="mixer-master-dock"' in mixer_text
     assert 'class="plugin-rack"' not in studio_text
     assert "const rackSlots =" not in studio_text
     assert ">Mixer\n          </div>" not in studio_text
@@ -608,6 +646,8 @@ def test_music_studio_mixer_window_replaces_inspector_rack():
 
 def test_music_studio_mixer_uses_dynamic_inserts_duplicate_labels_and_sends():
     studio_text = _read(STUDIO_COMPONENT)
+    mixer_text = _read(STUDIO_MIXER_PANEL)
+    mixer_css = _read(STUDIO_MIXER_CSS)
 
     assert "function mixerInsertSlots(track)" in studio_text
     assert "function nextInsertSlotId(track)" in studio_text
@@ -623,22 +663,25 @@ def test_music_studio_mixer_uses_dynamic_inserts_duplicate_labels_and_sends():
     assert "function addTrackSend(track, targetBusId)" in studio_text
     assert "function removeTrackSend(track, index)" in studio_text
     assert (
-        '@contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackPan(track), '
+        '@contextmenu.prevent="context.openAutomationMenu('
+        "$event, context.automationTargetForTrackPan(track), "
         '`${track.name} Pan`)"'
-    ) in studio_text
+    ) in mixer_text
     assert (
-        '@contextmenu.prevent="openAutomationMenu($event, automationTargetForTrackVolume(track), '
+        '@contextmenu.prevent="context.openAutomationMenu('
+        "$event, context.automationTargetForTrackVolume(track), "
         '`${track.name} Volume`)"'
-    ) in studio_text
-    assert ".mixer-pan-center-line" in studio_text
+    ) in mixer_text
+    assert ".mixer-pan-center-line" in mixer_css
 
 
 def test_music_studio_mixer_docks_master_and_preserves_pan_fader_space():
-    studio_text = _read(STUDIO_COMPONENT)
+    mixer_text = _read(STUDIO_MIXER_PANEL)
+    mixer_css = _read(STUDIO_MIXER_CSS)
 
-    assert 'class="mixer-strip-body"' in studio_text
-    assert 'class="mixer-track-strip-scroll"' in studio_text
-    assert 'class="mixer-master-dock"' in studio_text
+    assert 'class="mixer-strip-body"' in mixer_text
+    assert 'class="mixer-track-strip-scroll"' in mixer_text
+    assert 'class="mixer-master-dock"' in mixer_text
     assert (
         ".mixer-strip-body {\n"
         "  flex: 1 1 auto;\n"
@@ -646,10 +689,10 @@ def test_music_studio_mixer_docks_master_and_preserves_pan_fader_space():
         "  min-width: 0;\n"
         "  display: grid;\n"
         "  grid-template-columns: minmax(0, 1fr) 154px;"
-    ) in studio_text
+    ) in mixer_css
     assert (
         ".mixer-track-strip-scroll {\n  min-height: 0;\n  min-width: 0;\n  overflow: auto;"
-    ) in studio_text
+    ) in mixer_css
     assert (
         ".mixer-strip {\n"
         "  width: 154px;\n"
@@ -658,18 +701,19 @@ def test_music_studio_mixer_docks_master_and_preserves_pan_fader_space():
         "  min-height: 0;\n"
         "  display: grid;\n"
         "  grid-template-rows: auto minmax(48px, 1fr) auto minmax(40px, auto) auto 132px;"
-    ) in studio_text
-    assert ".mixer-pan {\n  min-height: 40px;" in studio_text
-    assert ".mixer-fader {\n  min-height: 132px;" in studio_text
+    ) in mixer_css
+    assert ".mixer-pan {\n  min-height: 40px;" in mixer_css
+    assert ".mixer-fader {\n  min-height: 132px;" in mixer_css
     assert (
         ".master-strip {\n"
         "  height: 100%;\n"
-        "  grid-template-rows: auto minmax(48px, 1fr) minmax(40px, auto) auto 132px;" in studio_text
+        "  grid-template-rows: auto minmax(48px, 1fr) minmax(40px, auto) auto 132px;" in mixer_css
     )
 
 
 def test_music_studio_master_bus_uses_editable_strip_controls_without_sends():
     studio_text = _read(STUDIO_COMPONENT)
+    mixer_text = _read(STUDIO_MIXER_PANEL)
 
     assert (
         "const masterBus = computed(() => normalizeMasterBus(project.value?.master_bus))"
@@ -679,15 +723,17 @@ def test_music_studio_master_bus_uses_editable_strip_controls_without_sends():
     assert "function updateMasterBus(patch)" in studio_text
     assert "function setMasterBusPlugin(plugin, slotId)" in studio_text
     assert "async function onMasterBusPluginSelect(slotId, value)" in studio_text
-    assert "{{ masterBus.name }}" in studio_text
-    assert ':style="{ background: masterBus.color }"' in studio_text
-    assert 'v-for="slot in mixerInsertSlots(masterBus)"' in studio_text
-    assert '@change="onMasterBusPluginSelect(slot.id, $event.target.value)"' in studio_text
-    assert '@change="updateMasterBus({ pan: Number($event.target.value) })"' in studio_text
-    assert '@click.stop="updateMasterBus({ mute: !masterBus.mute })"' in studio_text
-    assert '@click.stop="updateMasterBus({ solo: !masterBus.solo })"' in studio_text
-    assert '@change="updateMasterBus({ volume: Number($event.target.value) })"' in studio_text
-    assert 'class="mixer-master-body"' not in studio_text
+    assert "{{ context.masterBus.name }}" in mixer_text
+    assert ':style="{ background: context.masterBus.color }"' in mixer_text
+    assert 'v-for="slot in context.mixerInsertSlots(context.masterBus)"' in mixer_text
+    assert '@change="context.masterBusPluginSelect(slot.id, $event.target.value)"' in mixer_text
+    assert '@change="context.updateMasterBus({ pan: Number($event.target.value) })"' in mixer_text
+    assert '@click.stop="context.updateMasterBus({ mute: !context.masterBus.mute })"' in mixer_text
+    assert '@click.stop="context.updateMasterBus({ solo: !context.masterBus.solo })"' in mixer_text
+    assert (
+        '@change="context.updateMasterBus({ volume: Number($event.target.value) })"' in mixer_text
+    )
+    assert 'class="mixer-master-body"' not in mixer_text
 
 
 def test_music_studio_automation_tracks_can_be_drawn_like_controller_lanes():
@@ -1003,12 +1049,14 @@ def test_music_studio_draw_mode_existing_notes_and_meter_events_use_click_delete
 
 
 def test_music_studio_exposes_automation_parameter_picker_and_learned_list():
-    studio_text = _read(STUDIO_COMPONENT)
+    parent_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_TRACK_CREATE_DIALOG)
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
+    assert "import './studio/StudioDialogs.css'" in parent_text
     assert '<option value="automation">' in studio_text
-    assert "v-if=\"trackCreateType === 'automation'\"" in studio_text
+    assert "v-if=\"typeValue === 'automation'\"" in studio_text
     assert "openAutomationParameterPickerForCreate" in studio_text
     assert "openAutomationParameterPickerForTrack(track)" in studio_text
     assert "automation-parameter-dialog" in studio_text

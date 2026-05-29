@@ -1,0 +1,203 @@
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(9, 11, 13, 0.66);
+  backdrop-filter: blur(7px);
+}
+
+.track-create-dialog,
+.export-dialog {
+  width: min(420px, 100%);
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border: 1px solid rgba(229, 236, 245, 0.16);
+  border-radius: 8px;
+  background: #202428;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
+}
+
+.track-create-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid rgba(229, 236, 245, 0.1);
+}
+
+.track-create-dialog-head span {
+  color: var(--orange);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.track-create-dialog-head h2 {
+  margin: 2px 0 0;
+  color: var(--t1);
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.track-create-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.track-create-field {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.track-create-field span {
+  color: var(--t4);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.track-create-field input,
+.track-create-field select,
+.automation-parameter-button {
+  min-width: 0;
+  width: 100%;
+  height: 32px;
+  border: 1px solid rgba(229, 236, 245, 0.14);
+  border-radius: 6px;
+  background: #101215;
+  color: var(--t2);
+  font-size: 12px;
+}
+
+.automation-parameter-button {
+  padding: 0 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.track-create-field input {
+  padding: 0 10px;
+}
+
+.track-create-color-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.track-create-color-field input[type='color'] {
+  flex: 0 0 40px;
+  width: 40px;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.track-create-swatches {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.track-create-swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 5px;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.24);
+}
+
+.track-create-swatch.active {
+  border-color: rgba(240, 209, 122, 0.92);
+  box-shadow:
+    0 0 0 2px rgba(240, 209, 122, 0.16),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.26);
+}
+
+.track-create-field input:focus,
+.track-create-field select:focus,
+.automation-parameter-button:focus {
+  outline: none;
+  border-color: rgba(240, 209, 122, 0.5);
+  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
+}
+
+.track-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid rgba(229, 236, 245, 0.08);
+}
+
+.export-dialog {
+  width: min(520px, 100%);
+}
+
+.export-form {
+  gap: 10px;
+}
+
+.export-track-list {
+  max-height: 156px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(229, 236, 245, 0.1);
+  border-radius: 6px;
+  background: rgba(12, 15, 18, 0.38);
+}
+
+.export-track-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--t2);
+  font-size: 12px;
+}
+
+.export-track-row input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--orange);
+}
+
+.export-track-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-status {
+  display: block;
+  margin: 0 16px 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(229, 236, 245, 0.1);
+  border-radius: 6px;
+  color: var(--t2);
+  background: rgba(12, 15, 18, 0.34);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.export-status.link {
+  color: var(--orange);
+}
+
+.export-status.error {
+  color: #ffb0a7;
+  border-color: rgba(217, 91, 85, 0.38);
+  background: rgba(87, 30, 28, 0.22);
+}
