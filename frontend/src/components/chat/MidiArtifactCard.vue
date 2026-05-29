@@ -88,6 +88,7 @@ const exporting = ref(false)
 const autoExporting = ref(false)
 const bridgeExportError = ref('')
 const lastAutoExportKey = ref('')
+const bridgeAutoExportReadyRevision = ref('')
 const midiExport = ref(null)
 const canvasRef = ref(null)
 let previewAudio = null
@@ -109,7 +110,7 @@ const bridgeStatusLabel = computed(() => {
 })
 
 onMounted(() => {
-  ensureHostProject()
+  ensureBridgeAutoExportReady()
 })
 
 onBeforeUnmount(stopPreview)
@@ -120,7 +121,8 @@ watch(
     midiExport.value = null
     bridgeExportError.value = ''
     lastAutoExportKey.value = ''
-    ensureHostProject()
+    bridgeAutoExportReadyRevision.value = ''
+    ensureBridgeAutoExportReady()
   }
 )
 
@@ -128,7 +130,7 @@ watch(
   () => props.toolData?.status,
   async (status) => {
     if (status === 'success') {
-      await refreshHostProject()
+      await ensureBridgeAutoExportReady()
     }
   }
 )
@@ -145,6 +147,20 @@ watch(artifact, () => {
 async function ensureHostProject() {
   if (project.value) return
   await refreshHostProject()
+}
+
+async function ensureBridgeAutoExportReady() {
+  if (props.toolData?.status !== 'success') {
+    await ensureHostProject()
+    return
+  }
+
+  const toolKey = toolIdentityKey()
+  await refreshHostProject()
+  if (toolKey !== toolIdentityKey()) return
+
+  bridgeAutoExportReadyRevision.value = projectRevision.value
+  await autoExportBridgeMidi()
 }
 
 async function refreshHostProject() {
@@ -197,7 +213,10 @@ async function playPreview() {
 async function autoExportBridgeMidi() {
   const instanceId = bridgeInstanceIdFromLocation()
   if (!isDawAgentSurfaceLocation() || !instanceId) return
-  if (!shouldAutoExportBridgeMidi(props.toolData)) return
+  if (!shouldAutoExportBridgeMidi(props.toolData, {
+    projectRevision: projectRevision.value,
+    readyRevision: bridgeAutoExportReadyRevision.value,
+  })) return
   if (!artifact.value || autoExporting.value) return
 
   const key = bridgeAutoExportKeyForArtifact(artifact.value, props.toolData, projectRevision.value)
@@ -346,6 +365,10 @@ function formatBeat(value) {
 function absoluteUrl(url) {
   if (!url) return ''
   return new URL(url, window.location.href).toString()
+}
+
+function toolIdentityKey() {
+  return `${props.toolData?.tool}:${JSON.stringify(props.toolData?.args || {})}`
 }
 </script>
 

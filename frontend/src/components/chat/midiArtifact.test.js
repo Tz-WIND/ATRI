@@ -34,8 +34,34 @@ assert.equal(isMidiArtifactTool('midi_write'), true)
 assert.equal(isMidiArtifactTool('midi_diff'), true)
 assert.equal(isMidiArtifactTool('read_file'), false)
 
-assert.equal(shouldAutoExportBridgeMidi({ status: 'success' }), true)
-assert.equal(shouldAutoExportBridgeMidi({ status: 'running' }), false)
+assert.equal(
+  shouldAutoExportBridgeMidi(
+    { status: 'success' },
+    { projectRevision: 'revision-a', readyRevision: 'revision-a' }
+  ),
+  true
+)
+assert.equal(
+  shouldAutoExportBridgeMidi(
+    { status: 'success' },
+    { projectRevision: '', readyRevision: '' }
+  ),
+  false
+)
+assert.equal(
+  shouldAutoExportBridgeMidi(
+    { status: 'success' },
+    { projectRevision: 'revision-b', readyRevision: 'revision-a' }
+  ),
+  false
+)
+assert.equal(
+  shouldAutoExportBridgeMidi(
+    { status: 'running' },
+    { projectRevision: 'revision-a', readyRevision: 'revision-a' }
+  ),
+  false
+)
 assert.equal(shouldAutoExportBridgeMidi({ status: undefined }), false)
 assert.equal(shouldAutoExportBridgeMidi({}), false)
 assert.equal(shouldAutoExportBridgeMidi(null), false)
