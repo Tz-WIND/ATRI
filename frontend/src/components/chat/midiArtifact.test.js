@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 
 import {
+  bridgeAutoExportKeyForArtifact,
   bridgeInstanceIdFromLocation,
   buildMidiArtifactPreview,
   buildMidiArtifactView,
   buildMidiArtifactViewFromArgs,
   exportPayloadForMidiArtifact,
+  isDawAgentSurfaceLocation,
   isMidiArtifactTool,
 } from './midiArtifact.js'
 
@@ -80,6 +82,20 @@ const mutableLocation = { search: '?instance_id=bridge-a' }
 assert.equal(bridgeInstanceIdFromLocation(mutableLocation), 'bridge-a')
 mutableLocation.search = '?instance_id=bridge-b'
 assert.equal(bridgeInstanceIdFromLocation(mutableLocation), 'bridge-b')
+
+assert.equal(isDawAgentSurfaceLocation({ search: '?surface=daw-agent&instance_id=bridge-a' }), true)
+assert.equal(isDawAgentSurfaceLocation({ search: '?surface=chat&instance_id=bridge-a' }), false)
+assert.equal(isDawAgentSurfaceLocation({ search: '?instance_id=bridge-a' }), false)
+
+const autoKey = bridgeAutoExportKeyForArtifact(updateByIdView, {
+  tool: 'midi_diff',
+  args: {
+    track_id: 3,
+    operations: [{ op: 'update_note', id: 'inside-b', velocity: 72 }],
+  },
+})
+assert.equal(autoKey, 'midi_diff:3:6:7.5:{"operations":[{"id":"inside-b","op":"update_note","velocity":72}],"track_id":3}')
+assert.equal(bridgeAutoExportKeyForArtifact(null, { tool: 'midi_diff', args: {} }), '')
 
 const previewPayload = exportPayloadForMidiArtifact(writeView, 'wav')
 assert.deepEqual(previewPayload, {

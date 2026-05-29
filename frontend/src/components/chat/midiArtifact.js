@@ -7,6 +7,23 @@ export function bridgeInstanceIdFromLocation(location = globalThis.window?.locat
   return new URLSearchParams(search).get('instance_id') || ''
 }
 
+export function isDawAgentSurfaceLocation(location = globalThis.window?.location) {
+  const search = typeof location?.search === 'string' ? location.search : ''
+  return new URLSearchParams(search).get('surface') === 'daw-agent'
+}
+
+export function bridgeAutoExportKeyForArtifact(view, toolData) {
+  const trackId = Number(view?.track?.id)
+  const start = Number(view?.range?.start)
+  const end = Number(view?.range?.end)
+  if (!Number.isFinite(trackId) || !Number.isFinite(start) || !Number.isFinite(end)) {
+    return ''
+  }
+  const tool = String(toolData?.tool || '')
+  const args = stableJson(toolData?.args || {})
+  return `${tool}:${trackId}:${start}:${end}:${args}`
+}
+
 export function isMidiArtifactTool(toolName) {
   return MIDI_ARTIFACT_TOOLS.has(String(toolName || '').trim())
 }
@@ -288,6 +305,20 @@ function sortNotes(a, b) {
 
 function sortEvents(a, b) {
   return a.start - b.start
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortStable(value))
+}
+
+function sortStable(value) {
+  if (Array.isArray(value)) return value.map(sortStable)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map(key => [key, sortStable(value[key])])
+  )
 }
 
 function defaultPreviewProject(range) {
