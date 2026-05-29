@@ -95,6 +95,22 @@ const autoKey = bridgeAutoExportKeyForArtifact(updateByIdView, {
   },
 })
 assert.equal(autoKey, 'midi_diff:3:6:7.5:{"operations":[{"id":"inside-b","op":"update_note","velocity":72}],"track_id":3}')
+assert.notEqual(
+  bridgeAutoExportKeyForArtifact(updateByIdView, {
+    tool: 'midi_diff',
+    args: {
+      track_id: 3,
+      operations: [{ op: 'update_note', id: 'inside-b', velocity: 72 }],
+    },
+  }, 'revision-a'),
+  bridgeAutoExportKeyForArtifact(updateByIdView, {
+    tool: 'midi_diff',
+    args: {
+      track_id: 3,
+      operations: [{ op: 'update_note', id: 'inside-b', velocity: 72 }],
+    },
+  }, 'revision-b')
+)
 assert.equal(bridgeAutoExportKeyForArtifact(null, { tool: 'midi_diff', args: {} }), '')
 
 const previewPayload = exportPayloadForMidiArtifact(writeView, 'wav')

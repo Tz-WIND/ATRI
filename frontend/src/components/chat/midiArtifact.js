@@ -12,7 +12,7 @@ export function isDawAgentSurfaceLocation(location = globalThis.window?.location
   return new URLSearchParams(search).get('surface') === 'daw-agent'
 }
 
-export function bridgeAutoExportKeyForArtifact(view, toolData) {
+export function bridgeAutoExportKeyForArtifact(view, toolData, projectRevision = '') {
   const trackId = Number(view?.track?.id)
   const start = Number(view?.range?.start)
   const end = Number(view?.range?.end)
@@ -21,7 +21,10 @@ export function bridgeAutoExportKeyForArtifact(view, toolData) {
   }
   const tool = String(toolData?.tool || '')
   const args = stableJson(toolData?.args || {})
-  return `${tool}:${trackId}:${start}:${end}:${args}`
+  const revision = String(projectRevision || '')
+  return revision
+    ? `${revision}:${tool}:${trackId}:${start}:${end}:${args}`
+    : `${tool}:${trackId}:${start}:${end}:${args}`
 }
 
 export function isMidiArtifactTool(toolName) {

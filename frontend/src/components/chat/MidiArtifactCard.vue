@@ -135,6 +135,7 @@ watch(
 
 watch(projectRevision, () => {
   drawArtifact()
+  autoExportBridgeMidi()
 })
 
 watch(artifact, () => {
@@ -200,7 +201,7 @@ async function autoExportBridgeMidi() {
   if (props.toolData?.status && props.toolData.status !== 'success') return
   if (!artifact.value || autoExporting.value) return
 
-  const key = bridgeAutoExportKeyForArtifact(artifact.value, props.toolData)
+  const key = bridgeAutoExportKeyForArtifact(artifact.value, props.toolData, projectRevision.value)
   if (!key || key === lastAutoExportKey.value) return
 
   const payload = exportPayloadForMidiArtifact(artifact.value, 'midi', { instanceId })
@@ -229,7 +230,11 @@ async function exportMidi() {
     })
     const res = await api.studioExportAudio(payload)
     midiExport.value = res.export || null
-    lastAutoExportKey.value = bridgeAutoExportKeyForArtifact(artifact.value, props.toolData)
+    lastAutoExportKey.value = bridgeAutoExportKeyForArtifact(
+      artifact.value,
+      props.toolData,
+      projectRevision.value
+    )
   } catch (err) {
     error.value = err.message || 'MIDI export failed'
   } finally {
