@@ -9,7 +9,7 @@ import json
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from xml.etree import ElementTree
 
 MIDI_TICKS_PER_BEAT = 480
@@ -418,7 +418,7 @@ def _dawproject_project_xml(
     for track in tracks:
         _append_track_xml(structure, arrangement, track, audio_files, plugin_states)
     ElementTree.indent(root)
-    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+    return cast(bytes, ElementTree.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
 def _dawproject_metadata_xml(project: dict[str, Any]) -> bytes:
@@ -426,7 +426,7 @@ def _dawproject_metadata_xml(project: dict[str, Any]) -> bytes:
     ElementTree.SubElement(root, "Title").text = str(project.get("title") or "ATRI Session")
     ElementTree.SubElement(root, "Application", {"name": "ATRI"})
     ElementTree.indent(root)
-    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+    return cast(bytes, ElementTree.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
 def _append_track_xml(

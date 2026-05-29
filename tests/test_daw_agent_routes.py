@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any, cast
 
 import pytest
 from quart import Quart
@@ -6,6 +7,10 @@ from quart import Quart
 from core.platform.daw_agent import normalize_daw_project_session_id
 from core.platform.message import MessageEvent, MessageType, Sender
 from dashboard.routes import daw_agent
+
+
+def _register_fake_dashboard(dashboard: "_FakeDashboard") -> None:
+    daw_agent.register(cast(Any, dashboard))
 
 
 class _FakeDawAgent:
@@ -109,7 +114,7 @@ class _FakeDashboard:
 async def test_daw_agent_chat_route_creates_project_scoped_event():
     adapter = _FakeDawAgent()
     dashboard = _FakeDashboard(adapter)
-    daw_agent.register(dashboard)
+    _register_fake_dashboard(dashboard)
     client = dashboard.app.test_client()
 
     response = await client.post(
@@ -148,7 +153,7 @@ async def test_daw_agent_chat_route_creates_project_scoped_event():
 async def test_daw_agent_chat_route_forwards_selected_model():
     adapter = _FakeDawAgent()
     dashboard = _FakeDashboard(adapter)
-    daw_agent.register(dashboard)
+    _register_fake_dashboard(dashboard)
     client = dashboard.app.test_client()
 
     response = await client.post(
@@ -178,7 +183,7 @@ async def test_daw_agent_chat_route_forwards_selected_model():
 async def test_daw_agent_chat_route_rejects_unbounded_host_context(host_context, error):
     adapter = _FakeDawAgent()
     dashboard = _FakeDashboard(adapter)
-    daw_agent.register(dashboard)
+    _register_fake_dashboard(dashboard)
     client = dashboard.app.test_client()
 
     response = await client.post(
@@ -194,7 +199,7 @@ async def test_daw_agent_chat_route_rejects_unbounded_host_context(host_context,
 @pytest.mark.asyncio
 async def test_daw_agent_chat_route_requires_adapter():
     dashboard = _FakeDashboard(None)
-    daw_agent.register(dashboard)
+    _register_fake_dashboard(dashboard)
     client = dashboard.app.test_client()
 
     response = await client.post("/api/daw-agent/chat", json={"message": "hello"})
@@ -207,7 +212,7 @@ async def test_daw_agent_chat_route_requires_adapter():
 async def test_daw_agent_chat_route_cancels_pending_request_on_timeout():
     adapter = _FailingDawAgent(TimeoutError())
     dashboard = _FakeDashboard(adapter)
-    daw_agent.register(dashboard)
+    _register_fake_dashboard(dashboard)
     client = dashboard.app.test_client()
 
     response = await client.post("/api/daw-agent/chat", json={"message": "hello"})
@@ -222,7 +227,7 @@ async def test_daw_agent_chat_route_cancels_pending_request_on_timeout():
 async def test_daw_agent_chat_route_cancels_pending_request_on_exception():
     adapter = _FailingDawAgent(RuntimeError("pipeline failed"))
     dashboard = _FakeDashboard(adapter)
-    daw_agent.register(dashboard)
+    _register_fake_dashboard(dashboard)
     client = dashboard.app.test_client()
 
     response = await client.post("/api/daw-agent/chat", json={"message": "hello"})

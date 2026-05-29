@@ -67,6 +67,7 @@ class _FakeDashboardLifecycle:
         self.webchat = None
         self.start_time = 0
         self.saved = 0
+        self.dashboard: Dashboard | None = None
 
     def save_config(self):
         self.saved += 1
@@ -779,7 +780,7 @@ async def test_dashboard_rejects_public_onebot11_without_token_or_whitelist(monk
     assert response.status_code == 400
     assert "requires ws_reverse_token or whitelist" in payload["error"]
     assert "onebot11" not in dashboard.lifecycle.config
-    assert dashboard.lifecycle.saved == 0
+    assert cast(_FakeDashboardLifecycle, dashboard.lifecycle).saved == 0
 
 
 @pytest.mark.asyncio
@@ -818,7 +819,7 @@ async def test_dashboard_preserves_existing_token_when_adapter_save_sends_empty_
 
     assert response.status_code == 200
     assert dashboard.lifecycle.config["onebot11"]["ws_reverse_token"] == existing_value
-    assert dashboard.lifecycle.saved == 1
+    assert cast(_FakeDashboardLifecycle, dashboard.lifecycle).saved == 1
 
 
 def test_dashboard_builds_novelai_generation_payload():

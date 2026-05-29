@@ -268,6 +268,7 @@ uv run pytest --tb=short -q
 ```powershell
 Push-Location frontend
 npm run lint
+npm test
 npm run build
 npm run dev
 Pop-Location
@@ -278,7 +279,7 @@ Rust：
 ```powershell
 Push-Location atri-host
 cargo fmt
-cargo test
+cargo test --workspace
 cargo build -p atri-host
 Pop-Location
 ```
@@ -290,7 +291,9 @@ make install
 make lint
 make typecheck
 make test
+make frontend-test
 make frontend-build
+make rust-test
 make ci
 ```
 

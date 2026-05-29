@@ -3,12 +3,11 @@ from typing import Any
 
 import pytest
 
-from core.agent.llm import LLMResponse
+from core.agent.agent import Agent
+from core.agent.llm import LLM, LLMResponse
 from core.pipeline.scheduler import PipelineScheduler
 from core.pipeline.stage import Stage
 from core.pipeline.stages.preprocess import PreProcessStage
-from core.agent.agent import Agent
-from core.agent.llm import LLM
 from core.pipeline.stages.process import ProcessStage, _event_allows_high_privilege_tools
 from core.pipeline.stages.respond import _split_message
 from core.pipeline.stages.waking import WakingCheckStage

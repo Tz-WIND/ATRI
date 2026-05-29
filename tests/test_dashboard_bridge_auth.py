@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -8,6 +9,9 @@ from core.platform.message import MessageEvent, MessageType, Sender
 from dashboard import music as music_routes
 from dashboard.routes import _helpers
 from dashboard.server import Dashboard
+
+if TYPE_CHECKING:
+    from core.lifecycle import Lifecycle
 
 
 class _FakeHost:
@@ -83,13 +87,14 @@ def _dashboard(monkeypatch, tmp_path):
     monkeypatch.setattr(_helpers, "_PBKDF2_ITERATIONS", 1)
     monkeypatch.setattr("core.host.configure_host_manager", lambda **kwargs: _FakeHost())
     monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
-    dashboard = Dashboard(_FakeLifecycle(tmp_path))
-    dashboard.broadcasts = []
+    dashboard = Dashboard(cast("Lifecycle", _FakeLifecycle(tmp_path)))
+    dashboard_any = cast(Any, dashboard)
+    dashboard_any.broadcasts = []
 
     async def broadcast(payload):
-        dashboard.broadcasts.append(payload)
+        dashboard_any.broadcasts.append(payload)
 
-    dashboard.broadcast = broadcast
+    dashboard_any.broadcast = broadcast
     return dashboard
 
 

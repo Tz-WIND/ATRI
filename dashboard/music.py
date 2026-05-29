@@ -2873,7 +2873,10 @@ def _bridge_preview_for_midi_export(
         if not isinstance(track, dict) or _is_automation_track(track):
             continue
         try:
-            track_id = int(track.get("id"))
+            raw_track_id = track.get("id")
+            if raw_track_id is None:
+                continue
+            track_id = int(raw_track_id)
         except (TypeError, ValueError):
             continue
         if selected_ids and track_id not in selected_ids:
@@ -2967,7 +2970,7 @@ def _preview_note(note: Any, *, clip_start: float) -> dict[str, float | int] | N
     try:
         start = clip_start + float(note.get("start", note.get("beat", 0.0)) or 0.0)
         duration = max(0.001, float(note.get("duration", 0.25) or 0.25))
-        pitch = max(0, min(127, int(round(float(note.get("pitch", 60) or 60)))))
+        pitch = max(0, min(127, round(float(note.get("pitch", 60) or 60))))
     except (TypeError, ValueError):
         return None
     return {"start": start, "duration": duration, "pitch": pitch}

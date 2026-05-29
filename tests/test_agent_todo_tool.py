@@ -1,3 +1,5 @@
+from typing import Any
+
 from core.runtime.todos import TodoStore
 from core.tools import create_tools
 from core.tools.todo import AgentTodoTool
@@ -5,7 +7,7 @@ from core.tools.todo import AgentTodoTool
 
 def test_agent_todo_tool_sets_items_and_marks_one_complete(tmp_path):
     store = TodoStore(tmp_path / "runtime")
-    snapshots = []
+    snapshots: list[dict[str, Any]] = []
     tool = AgentTodoTool(
         str(tmp_path),
         todo_store=store,

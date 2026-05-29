@@ -1,5 +1,6 @@
 import asyncio
 import json
+from typing import Any, cast
 
 import pytest
 
@@ -29,7 +30,7 @@ class _FakeProcess:
 async def test_host_send_command_can_wait_without_response_timeout(monkeypatch):
     manager = HostManager()
     process = _FakeProcess()
-    manager._process = process
+    manager._process = cast(Any, process)
     manager._running = True
     await manager._response_queue.put({"type": "ack", "cmd": "bounce"})
 

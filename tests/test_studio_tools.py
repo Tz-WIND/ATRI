@@ -2,7 +2,7 @@ import json
 import sys
 import time
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from quart import Quart
@@ -362,7 +362,7 @@ def test_studio_export_audio_tool_rejects_selected_without_tracks(tmp_path):
 
 
 def test_studio_export_audio_tool_rejects_invalid_sample_rate_without_raising(tmp_path):
-    result = StudioExportAudioTool(str(tmp_path)).execute(sample_rate="abc")
+    result = StudioExportAudioTool(str(tmp_path)).execute(sample_rate=cast(Any, "abc"))
 
     assert result == "Error: sample_rate must be 44100, 48000, 88200, 96000, or 192000"
 

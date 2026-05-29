@@ -21,7 +21,7 @@ class _FakeKnowledgeManager:
 
 
 class _FakeScheduler:
-    latest_ctx = None
+    latest_ctx: dict | None = None
 
     def __init__(self, ctx):
         self.ctx = ctx
@@ -57,4 +57,5 @@ async def test_lifecycle_registers_daw_agent_platform(monkeypatch, tmp_path):
 
     assert isinstance(lifecycle.daw_agent, DawAgentAdapter)
     assert lifecycle.platforms["daw_agent"] is lifecycle.daw_agent
+    assert _FakeScheduler.latest_ctx is not None
     assert _FakeScheduler.latest_ctx["platforms"]["daw_agent"] is lifecycle.daw_agent

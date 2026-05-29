@@ -73,7 +73,7 @@ def test_ffmpeg_path_falls_back_to_imageio_ffmpeg_package(monkeypatch):
 
 
 class ParameterStudioHost(FakeStudioHost):
-    async def send_command(self, cmd, params=None):
+    async def send_command(self, cmd, params=None, *, response_timeout=None):
         params = params or {}
         self.commands.append((cmd, params))
         if cmd == "get_status":
@@ -102,7 +102,7 @@ class ParameterStudioHost(FakeStudioHost):
 
 
 class StatefulParameterStudioHost(ParameterStudioHost):
-    async def send_command(self, cmd, params=None):
+    async def send_command(self, cmd, params=None, *, response_timeout=None):
         params = params or {}
         self.commands.append((cmd, params))
         if cmd == "get_status":
@@ -119,7 +119,7 @@ class StatefulParameterStudioHost(ParameterStudioHost):
 
 
 class CapturedParameterStudioHost(ParameterStudioHost):
-    async def send_command(self, cmd, params=None):
+    async def send_command(self, cmd, params=None, *, response_timeout=None):
         params = params or {}
         self.commands.append((cmd, params))
         if cmd == "poll_captured_plugin_parameters":
@@ -322,7 +322,7 @@ async def test_sync_project_to_host_persists_any_unsaved_project_difference(
     )
 
     class HostWithExistingTracks(FakeStudioHost):
-        async def send_command(self, cmd, params=None):
+        async def send_command(self, cmd, params=None, *, response_timeout=None):
             params = params or {}
             self.commands.append((cmd, params))
             if cmd == "get_status":
@@ -441,7 +441,7 @@ async def test_sync_project_to_host_sends_audio_track_channel_type(monkeypatch):
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
 
-    project = {
+    project: dict[str, Any] = {
         "title": "Mono Audio",
         "tempo": 120,
         "time_signature": [4, 4],
@@ -482,7 +482,7 @@ async def test_sync_project_to_host_skips_automation_routes_and_sends_lanes(monk
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
 
-    project = {
+    project: dict[str, Any] = {
         "title": "Automation Sync",
         "tempo": 120,
         "time_signature": [4, 4],
@@ -583,7 +583,7 @@ async def test_sync_project_to_host_skips_unchanged_sections_after_first_sync(mo
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
 
-    project = {
+    project: dict[str, Any] = {
         "title": "Incremental Host Sync",
         "tempo": 120,
         "time_signature": [4, 4],
@@ -669,7 +669,7 @@ async def test_sync_project_to_host_forces_sections_after_host_track_recreated(m
     host = RecreatedTrackHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
 
-    project = {
+    project: dict[str, Any] = {
         "title": "Recreated Track Sync",
         "tempo": 120,
         "time_signature": [4, 4],
@@ -723,7 +723,7 @@ async def test_sync_project_to_host_resends_automation_only_when_lanes_change(mo
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)
 
-    project = {
+    project: dict[str, Any] = {
         "title": "Incremental Automation Sync",
         "tempo": 120,
         "time_signature": [4, 4],

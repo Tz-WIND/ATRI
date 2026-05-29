@@ -113,5 +113,38 @@ jobs:
       - name: ESLint
         run: npx eslint src/
 
+      - name: Unit tests
+        run: npm test
+
       - name: Build
         run: npm run build
+
+  # ─── Rust (fmt, test, build) ────────────────────────────────────────────────
+  rust:
+    name: Rust (fmt, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: atri-host
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: atri-host
+
+      - name: Install Linux audio dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo build atri-host
+        run: cargo build -p atri-host

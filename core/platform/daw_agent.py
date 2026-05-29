@@ -10,7 +10,7 @@ import json
 import math
 import uuid
 from asyncio import Queue
-from typing import Any
+from typing import Any, cast
 
 from core import logger
 
@@ -292,7 +292,7 @@ def _normalize_daw_host_context_string(value: object) -> str | None:
 def _normalize_daw_host_context_number(value: object) -> int | float:
     if isinstance(value, bool):
         raise ValueError("host_context number must be numeric")
-    number = float(value)
+    number = float(cast(Any, value))
     if not math.isfinite(number):
         raise ValueError("host_context number must be finite")
     return int(number) if number.is_integer() else number
@@ -306,7 +306,7 @@ def _normalize_daw_host_context_int(
 ) -> int:
     if isinstance(value, bool):
         raise ValueError("host_context integer must be numeric")
-    number = int(value)
+    number = int(cast(Any, value))
     if number < min_value or number > max_value:
         raise ValueError("host_context integer is out of range")
     return number

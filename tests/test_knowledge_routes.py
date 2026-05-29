@@ -1,12 +1,15 @@
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
-from tests.test_knowledge_core import FakeEmbeddingClient, FakeRerankClient
 
 from core.knowledge.manager import KnowledgeBaseManager
 from dashboard import music as music_routes
 from dashboard.routes import _helpers
 from dashboard.server import Dashboard
+from tests.test_knowledge_core import FakeEmbeddingClient, FakeRerankClient
+
+if TYPE_CHECKING:
+    from core.lifecycle import Lifecycle
 
 
 class _FakeDashboardHost:
@@ -92,7 +95,7 @@ async def _dashboard(monkeypatch, tmp_path) -> Dashboard:
     monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
     lifecycle = _FakeLifecycle(tmp_path)
     await lifecycle.knowledge_manager.initialize()
-    return Dashboard(cast(object, lifecycle))
+    return Dashboard(cast("Lifecycle", lifecycle))
 
 
 @pytest.mark.asyncio
@@ -291,4 +294,4 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
     }
     assert payload["knowledge"] == dashboard.lifecycle.config["knowledge"]
     assert process_stage.updated[-1]["knowledge"] == dashboard.lifecycle.config["knowledge"]
-    assert dashboard.lifecycle.saved == 1
+    assert cast(_FakeLifecycle, dashboard.lifecycle).saved == 1

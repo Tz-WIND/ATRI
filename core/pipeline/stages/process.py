@@ -729,7 +729,7 @@ class ProcessStage(Stage):
         presses the stop/interrupt button.
         """
         with self._agents_lock:
-            resolved = resolve_session_id(session_id, self._agents.keys())
+            resolved = resolve_session_id(session_id, set(self._agents))
             agent = self._agents.get(resolved)
             if agent:
                 agent.cancel()
