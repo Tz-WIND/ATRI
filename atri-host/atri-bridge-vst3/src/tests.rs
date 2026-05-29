@@ -443,7 +443,10 @@ fn editor_view_model_exposes_midi_preview() {
     let preview = view.preview().expect("preview should render");
 
     assert_eq!(preview.title, "Edited Synth");
-    assert_eq!(preview.detail, "4.00-8.00 beat | 1 track | 12 notes | C3-C5");
+    assert_eq!(
+        preview.detail,
+        "4.00-8.00 beat | 1 track | 12 notes | C3-C5"
+    );
     assert_eq!(preview.track_rows()[0].title, "Edited Synth");
     assert!(
         view.render_lines()

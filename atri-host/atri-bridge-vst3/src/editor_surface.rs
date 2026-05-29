@@ -250,8 +250,8 @@ mod windows_editor {
     };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, CreateSolidBrush, DC_PEN, DeleteObject, EndPaint, FillRect, GetStockObject,
-        HBRUSH, HGDIOBJ, InvalidateRect, NULL_BRUSH, PAINTSTRUCT, Rectangle, SelectObject,
-        ScreenToClient, SetBkMode, SetDCPenColor, SetTextColor, TRANSPARENT, TextOutW,
+        HBRUSH, HGDIOBJ, InvalidateRect, NULL_BRUSH, PAINTSTRUCT, Rectangle, ScreenToClient,
+        SelectObject, SetBkMode, SetDCPenColor, SetTextColor, TRANSPARENT, TextOutW,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{

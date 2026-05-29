@@ -237,7 +237,8 @@ impl BridgeEditorState {
             self.midi_preview_scroll_offset
                 .saturating_sub(rows.unsigned_abs() as usize)
         } else {
-            self.midi_preview_scroll_offset.saturating_add(rows as usize)
+            self.midi_preview_scroll_offset
+                .saturating_add(rows as usize)
         }
         .min(max_offset);
         if next == self.midi_preview_scroll_offset {
