@@ -1,6 +1,6 @@
 <template>
   <section
-    v-if="loading || artifact || error"
+    v-if="loading || artifact || error || bridgeExportError"
     class="midi-artifact"
   >
     <header class="midi-artifact-head">
@@ -9,6 +9,10 @@
         <strong>{{ trackLabel }}</strong>
       </div>
       <span class="midi-range">{{ rangeLabel }}</span>
+      <span
+        v-if="bridgeStatusLabel"
+        class="midi-bridge-status"
+      >{{ bridgeStatusLabel }}</span>
       <div class="midi-actions">
         <button
           class="midi-action"
@@ -49,10 +53,10 @@
     </div>
 
     <div
-      v-if="error"
+      v-if="error || bridgeExportError"
       class="midi-error"
     >
-      {{ error }}
+      {{ error || bridgeExportError }}
     </div>
   </section>
 </template>
@@ -62,9 +66,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useApi } from '@/composables/useApi.js'
 import { useDawHost } from '@/composables/useDawHost.js'
 import {
+  bridgeAutoExportKeyForArtifact,
   bridgeInstanceIdFromLocation,
   buildMidiArtifactPreview,
   exportPayloadForMidiArtifact,
+  isDawAgentSurfaceLocation,
 } from './midiArtifact.js'
 
 const props = defineProps({
@@ -78,6 +84,9 @@ const error = ref('')
 const previewing = ref(false)
 const playing = ref(false)
 const exporting = ref(false)
+const autoExporting = ref(false)
+const bridgeExportError = ref('')
+const lastAutoExportKey = ref('')
 const midiExport = ref(null)
 const canvasRef = ref(null)
 let previewAudio = null
@@ -90,6 +99,13 @@ const rangeLabel = computed(() => {
   const beats = Math.max(0, range.end - range.start)
   return `${formatBeat(range.start)}-${formatBeat(range.end)} · ${beats.toFixed(2)} beat`
 })
+const bridgeStatusLabel = computed(() => {
+  if (!isDawAgentSurfaceLocation() || !bridgeInstanceIdFromLocation()) return ''
+  if (autoExporting.value) return 'Sending to bridge'
+  if (bridgeExportError.value) return 'Bridge export failed'
+  if (midiExport.value?.path) return 'Bridge ready'
+  return ''
+})
 
 onMounted(() => {
   ensureHostProject()
@@ -101,14 +117,19 @@ watch(
   () => `${props.toolData?.tool}:${JSON.stringify(props.toolData?.args || {})}`,
   () => {
     midiExport.value = null
+    bridgeExportError.value = ''
+    lastAutoExportKey.value = ''
     ensureHostProject()
   }
 )
 
 watch(
   () => props.toolData?.status,
-  (status) => {
-    if (status === 'success') refreshHostProject()
+  async (status) => {
+    if (status === 'success') {
+      await refreshHostProject()
+      await autoExportBridgeMidi()
+    }
   }
 )
 
@@ -116,7 +137,10 @@ watch(projectRevision, () => {
   drawArtifact()
 })
 
-watch(artifact, drawArtifact, { immediate: true })
+watch(artifact, () => {
+  drawArtifact()
+  autoExportBridgeMidi()
+}, { immediate: true })
 
 async function ensureHostProject() {
   if (project.value) return
@@ -170,6 +194,31 @@ async function playPreview() {
   }
 }
 
+async function autoExportBridgeMidi() {
+  const instanceId = bridgeInstanceIdFromLocation()
+  if (!isDawAgentSurfaceLocation() || !instanceId) return
+  if (props.toolData?.status && props.toolData.status !== 'success') return
+  if (!artifact.value || autoExporting.value) return
+
+  const key = bridgeAutoExportKeyForArtifact(artifact.value, props.toolData)
+  if (!key || key === lastAutoExportKey.value) return
+
+  const payload = exportPayloadForMidiArtifact(artifact.value, 'midi', { instanceId })
+  if (!payload) return
+
+  autoExporting.value = true
+  bridgeExportError.value = ''
+  try {
+    const res = await api.studioExportAudio(payload)
+    midiExport.value = res.export || null
+    lastAutoExportKey.value = key
+  } catch (err) {
+    bridgeExportError.value = err.message || 'MIDI bridge export failed'
+  } finally {
+    autoExporting.value = false
+  }
+}
+
 async function exportMidi() {
   if (!artifact.value) return
   exporting.value = true
@@ -180,6 +229,7 @@ async function exportMidi() {
     })
     const res = await api.studioExportAudio(payload)
     midiExport.value = res.export || null
+    lastAutoExportKey.value = bridgeAutoExportKeyForArtifact(artifact.value, props.toolData)
   } catch (err) {
     error.value = err.message || 'MIDI export failed'
   } finally {
@@ -308,7 +358,7 @@ function absoluteUrl(url) {
 
 .midi-artifact-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 10px;
   align-items: center;
   margin-bottom: 8px;
@@ -326,6 +376,13 @@ function absoluteUrl(url) {
   color: var(--t3);
   font-family: var(--mono);
   font-size: 11px;
+}
+
+.midi-bridge-status {
+  color: var(--acc2);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .midi-title-stack strong {

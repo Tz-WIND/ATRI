@@ -166,6 +166,19 @@ def test_tool_card_embeds_midi_artifact_renderer_for_midi_tools():
     assert ':tool-data="activeTool"' in source
 
 
+def test_midi_artifact_card_auto_exports_bridge_midi_for_daw_agent_surface():
+    source = (ROOT / "frontend" / "src" / "components" / "chat" / "MidiArtifactCard.vue").read_text(
+        encoding="utf-8"
+    )
+
+    assert "isDawAgentSurfaceLocation" in source
+    assert "bridgeAutoExportKeyForArtifact" in source
+    assert "autoExportBridgeMidi" in source
+    assert "lastAutoExportKey" in source
+    assert "bridgeStatusLabel" in source
+    assert "bridgeInstanceIdFromLocation()" in source
+
+
 def test_app_exposes_daw_agent_surface_without_main_shell():
     source = APP.read_text(encoding="utf-8")
 
