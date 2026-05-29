@@ -9,6 +9,7 @@ import {
   exportPayloadForMidiArtifact,
   isDawAgentSurfaceLocation,
   isMidiArtifactTool,
+  shouldAutoExportBridgeMidi,
 } from './midiArtifact.js'
 
 const project = {
@@ -32,6 +33,12 @@ const project = {
 assert.equal(isMidiArtifactTool('midi_write'), true)
 assert.equal(isMidiArtifactTool('midi_diff'), true)
 assert.equal(isMidiArtifactTool('read_file'), false)
+
+assert.equal(shouldAutoExportBridgeMidi({ status: 'success' }), true)
+assert.equal(shouldAutoExportBridgeMidi({ status: 'running' }), false)
+assert.equal(shouldAutoExportBridgeMidi({ status: undefined }), false)
+assert.equal(shouldAutoExportBridgeMidi({}), false)
+assert.equal(shouldAutoExportBridgeMidi(null), false)
 
 const writeView = buildMidiArtifactView(
   {

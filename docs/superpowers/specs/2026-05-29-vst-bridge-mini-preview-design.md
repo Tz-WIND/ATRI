@@ -56,6 +56,8 @@ The component will reuse `exportPayloadForMidiArtifact(..., "midi", { instanceId
 
 The card should show a small status label such as `Bridge ready`, `Sending to bridge`, or `Bridge export failed`. This is not instructional copy; it is state feedback.
 
+Auto bridge export runs only from the `artifact` watcher (after `status === 'success'` and a valid preview). The `status` watcher refreshes the host project only; `projectRevision` updates redraw the canvas. `autoExporting` and `lastAutoExportKey` still suppress duplicate API calls if the artifact recomputes.
+
 ### Dashboard
 
 Bridge MIDI exports should include lightweight preview metadata in the returned export object before `_remember_bridge_export()` writes latest export state.

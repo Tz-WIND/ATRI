@@ -71,6 +71,7 @@ import {
   buildMidiArtifactPreview,
   exportPayloadForMidiArtifact,
   isDawAgentSurfaceLocation,
+  shouldAutoExportBridgeMidi,
 } from './midiArtifact.js'
 
 const props = defineProps({
@@ -128,14 +129,12 @@ watch(
   async (status) => {
     if (status === 'success') {
       await refreshHostProject()
-      await autoExportBridgeMidi()
     }
   }
 )
 
 watch(projectRevision, () => {
   drawArtifact()
-  autoExportBridgeMidi()
 })
 
 watch(artifact, () => {
@@ -198,7 +197,7 @@ async function playPreview() {
 async function autoExportBridgeMidi() {
   const instanceId = bridgeInstanceIdFromLocation()
   if (!isDawAgentSurfaceLocation() || !instanceId) return
-  if (props.toolData?.status && props.toolData.status !== 'success') return
+  if (!shouldAutoExportBridgeMidi(props.toolData)) return
   if (!artifact.value || autoExporting.value) return
 
   const key = bridgeAutoExportKeyForArtifact(artifact.value, props.toolData, projectRevision.value)
