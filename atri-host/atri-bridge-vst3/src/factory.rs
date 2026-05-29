@@ -45,6 +45,12 @@ const BRIDGE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const LATEST_EXPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 static NEXT_DAW_AGENT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
+const MEDIA_TYPE_AUDIO: MediaType = MediaTypes_::kAudio as MediaType;
+const MEDIA_TYPE_EVENT: MediaType = MediaTypes_::kEvent as MediaType;
+const BUS_DIRECTION_INPUT: BusDirection = BusDirections_::kInput as BusDirection;
+const BUS_DIRECTION_OUTPUT: BusDirection = BusDirections_::kOutput as BusDirection;
+const SAMPLE_SIZE_32: int32 = SymbolicSampleSizes_::kSample32 as int32;
+
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -280,8 +286,8 @@ impl IComponentTrait for BridgeComponent {
 
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> int32 {
         match (media_type, dir) {
-            (MediaTypes_::kAudio, BusDirections_::kOutput) => 1,
-            (MediaTypes_::kEvent, BusDirections_::kInput) => 1,
+            (MEDIA_TYPE_AUDIO, BUS_DIRECTION_OUTPUT) => 1,
+            (MEDIA_TYPE_EVENT, BUS_DIRECTION_INPUT) => 1,
             _ => 0,
         }
     }
@@ -299,18 +305,18 @@ impl IComponentTrait for BridgeComponent {
 
         let bus = unsafe { &mut *bus };
         match (media_type, dir) {
-            (MediaTypes_::kAudio, BusDirections_::kOutput) => {
-                bus.mediaType = MediaTypes_::kAudio;
-                bus.direction = BusDirections_::kOutput;
+            (MEDIA_TYPE_AUDIO, BUS_DIRECTION_OUTPUT) => {
+                bus.mediaType = MEDIA_TYPE_AUDIO;
+                bus.direction = BUS_DIRECTION_OUTPUT;
                 bus.channelCount = 2;
                 bus.busType = BusTypes_::kMain as BusType;
                 bus.flags = BusInfo_::BusFlags_::kDefaultActive as uint32;
                 copy_wstring(MAIN_OUTPUT_NAME, &mut bus.name);
                 kResultOk
             }
-            (MediaTypes_::kEvent, BusDirections_::kInput) => {
-                bus.mediaType = MediaTypes_::kEvent;
-                bus.direction = BusDirections_::kInput;
+            (MEDIA_TYPE_EVENT, BUS_DIRECTION_INPUT) => {
+                bus.mediaType = MEDIA_TYPE_EVENT;
+                bus.direction = BUS_DIRECTION_INPUT;
                 bus.channelCount = 1;
                 bus.busType = BusTypes_::kMain as BusType;
                 bus.flags = 0;
@@ -383,7 +389,7 @@ impl IAudioProcessorTrait for BridgeComponent {
         }
 
         match dir {
-            BusDirections_::kOutput => {
+            BUS_DIRECTION_OUTPUT => {
                 unsafe {
                     *arr = SpeakerArr::kStereo;
                 }
@@ -394,7 +400,7 @@ impl IAudioProcessorTrait for BridgeComponent {
     }
 
     unsafe fn canProcessSampleSize(&self, symbolic_sample_size: int32) -> tresult {
-        if symbolic_sample_size == SymbolicSampleSizes_::kSample32 {
+        if symbolic_sample_size == SAMPLE_SIZE_32 {
             kResultOk
         } else {
             kInvalidArgument
