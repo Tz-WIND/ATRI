@@ -1,5 +1,6 @@
 use crate::bridge_contract::{
-    BridgeExportFormat, BridgeExportRequest, BridgeExportResponse, BridgeHostContext, BridgeStatus,
+    BridgeContextPublishRequest, BridgeExportFormat, BridgeExportRequest, BridgeExportResponse,
+    BridgeHostContext, BridgeStatus,
 };
 use crate::dashboard_client::{
     BridgeDashboardClient, DashboardClientError, DashboardEndpoint, DashboardExportWorker,
@@ -83,6 +84,57 @@ fn bridge_status_contract_deserializes_dashboard_response() {
 }
 
 #[test]
+fn bridge_status_contract_reads_formats_from_exports_object() {
+    let json = r#"{
+        "ok": true,
+        "bridge": {
+            "api_version": 1,
+            "manifest_schema_version": 1,
+            "local_only": true
+        },
+        "project": {
+            "title": "ATRI Session",
+            "revision": 7
+        },
+        "exports": {
+            "formats": ["dawproject", "midi", "wav"],
+            "hostless_formats": ["dawproject", "midi"],
+            "host_required_formats": ["wav"]
+        }
+    }"#;
+
+    let status: BridgeStatus = serde_json::from_str(json).unwrap();
+
+    assert_eq!(status.formats, vec!["dawproject", "midi", "wav"]);
+}
+
+#[test]
+fn bridge_status_contract_accepts_compat_formats_and_exports_object() {
+    let json = r#"{
+        "ok": true,
+        "bridge": {
+            "api_version": 1,
+            "manifest_schema_version": 1,
+            "local_only": true
+        },
+        "project": {
+            "title": "ATRI Session",
+            "revision": 7
+        },
+        "formats": ["midi", "dawproject"],
+        "exports": {
+            "formats": ["dawproject", "midi", "wav"],
+            "hostless_formats": ["dawproject", "midi"],
+            "host_required_formats": ["wav"]
+        }
+    }"#;
+
+    let status: BridgeStatus = serde_json::from_str(json).unwrap();
+
+    assert_eq!(status.formats, vec!["midi", "dawproject"]);
+}
+
+#[test]
 fn bridge_status_contract_accepts_dashboard_revision_hash() {
     let json = r#"{
         "ok": true,
@@ -153,6 +205,33 @@ fn bridge_export_request_serializes_instance_id_when_available() {
 }
 
 #[test]
+fn bridge_context_publish_request_serializes_instance_host_and_context() {
+    let request = BridgeContextPublishRequest::new(
+        "bridge 1/left",
+        BridgeHostContext {
+            sample_rate: Some(48_000.0),
+            block_size: Some(256),
+            is_playing: Some(true),
+            tempo_bpm: Some(128.0),
+            time_signature: Some([7, 8]),
+        },
+    )
+    .with_host_name("REAPER");
+    let json = serde_json::to_value(&request).unwrap();
+
+    assert_eq!(json["instance_id"], "bridge 1/left");
+    assert_eq!(json["host"], "REAPER");
+    assert_eq!(json["host_context"]["sample_rate"], 48_000.0);
+    assert_eq!(json["host_context"]["block_size"], 256);
+    assert_eq!(json["host_context"]["is_playing"], true);
+    assert_eq!(json["host_context"]["tempo_bpm"], 128.0);
+    assert_eq!(
+        json["host_context"]["time_signature"],
+        serde_json::json!([7, 8])
+    );
+}
+
+#[test]
 fn dashboard_endpoint_defaults_to_local_bridge_routes() {
     let endpoint = DashboardEndpoint::default();
 
@@ -172,6 +251,10 @@ fn dashboard_endpoint_defaults_to_local_bridge_routes() {
     assert_eq!(
         endpoint.bridge_latest_export_url(Some("bridge 1/left")),
         "http://127.0.0.1:6185/api/music/studio/bridge/export/latest?instance_id=bridge%201%2Fleft"
+    );
+    assert_eq!(
+        endpoint.bridge_context_url(),
+        "http://127.0.0.1:6185/api/music/studio/bridge/context"
     );
 }
 
@@ -263,6 +346,45 @@ fn dashboard_client_posts_bridge_export_request_to_local_dashboard() {
         response.export_path(),
         Some("data/music_workstation/exports/session.dawproject")
     );
+}
+
+#[test]
+fn dashboard_client_posts_bridge_context_update_to_local_dashboard() {
+    let endpoint = spawn_bridge_context_server(
+        r#"{
+            "ok": true,
+            "bridge": {
+                "api_version": 1,
+                "manifest_schema_version": 1,
+                "local_only": true
+            },
+            "context": {
+                "host": "REAPER",
+                "tempo_bpm": 128
+            }
+        }"#,
+        200,
+    );
+    let client = BridgeDashboardClient::new(endpoint);
+
+    let response = client
+        .publish_context(
+            BridgeContextPublishRequest::new(
+                "bridge-context",
+                BridgeHostContext {
+                    sample_rate: Some(48_000.0),
+                    block_size: Some(256),
+                    is_playing: Some(true),
+                    tempo_bpm: Some(128.0),
+                    time_signature: Some([7, 8]),
+                },
+            )
+            .with_host_name("REAPER"),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+    assert!(response.ok);
 }
 
 #[test]
@@ -621,6 +743,8 @@ fn editor_state_records_dashboard_connection_without_export_io() {
 
 #[test]
 fn editor_state_builds_daw_agent_surface_url_from_project_status() {
+    let _guard = crate::host_context::test_host_context_guard();
+    crate::host_context::clear_latest_host_application_name_for_test();
     let endpoint = DashboardEndpoint::new("http://127.0.0.1:7001").unwrap();
     let mut state = BridgeEditorState::from(endpoint);
     state.apply_status(BridgeStatus::connected_for_test("ATRI Session", 7));
@@ -629,6 +753,7 @@ fn editor_state_builds_daw_agent_surface_url_from_project_status() {
         state.daw_agent_surface_url("bridge-instance-3"),
         "http://127.0.0.1:7001/?surface=daw-agent&project_session_id=atri-session&instance_id=bridge-instance-3&workspace=atri_studio&host=Studio%20One"
     );
+    crate::host_context::clear_latest_host_application_name_for_test();
 }
 
 #[test]
@@ -1237,6 +1362,30 @@ fn spawn_bridge_export_server(body: &'static str, status: u16) -> DashboardEndpo
         assert!(request.starts_with("POST /api/music/studio/bridge/export "));
         assert!(request.contains("Content-Type: application/json"));
         assert!(request.contains("\"consumer\":\"bridge\""));
+
+        let response = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    DashboardEndpoint::new(format!("http://127.0.0.1:{port}")).unwrap()
+}
+
+fn spawn_bridge_context_server(body: &'static str, status: u16) -> DashboardEndpoint {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let bytes = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..bytes]);
+        assert!(request.starts_with("POST /api/music/studio/bridge/context "));
+        assert!(request.contains("Content-Type: application/json"));
+        assert!(request.contains("\"instance_id\":\"bridge-context\""));
+        assert!(request.contains("\"host\":\"REAPER\""));
+        assert!(request.contains("\"tempo_bpm\":128.0"));
 
         let response = format!(
             "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

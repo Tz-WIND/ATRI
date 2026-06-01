@@ -14,13 +14,53 @@ pub struct BridgeProjectSummary {
     pub revision: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BridgeStatus {
     pub ok: bool,
     pub bridge: BridgeContract,
     pub project: BridgeProjectSummary,
     #[serde(default)]
     pub formats: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct BridgeExportCapabilities {
+    #[serde(default)]
+    formats: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for BridgeStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawBridgeStatus {
+            ok: bool,
+            bridge: BridgeContract,
+            project: BridgeProjectSummary,
+            #[serde(default)]
+            formats: Vec<String>,
+            #[serde(default)]
+            exports: Option<BridgeExportCapabilities>,
+        }
+
+        let raw = RawBridgeStatus::deserialize(deserializer)?;
+        let formats = if raw.formats.is_empty() {
+            raw.exports
+                .map(|exports| exports.formats)
+                .unwrap_or_default()
+        } else {
+            raw.formats
+        };
+
+        Ok(Self {
+            ok: raw.ok,
+            bridge: raw.bridge,
+            project: raw.project,
+            formats,
+        })
+    }
 }
 
 impl BridgeStatus {
@@ -91,6 +131,33 @@ pub struct BridgeExportRequest {
     pub host_context: Option<BridgeHostContext>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BridgeContextPublishRequest {
+    pub instance_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    pub host_context: BridgeHostContext,
+}
+
+impl BridgeContextPublishRequest {
+    pub fn new(instance_id: impl Into<String>, host_context: BridgeHostContext) -> Self {
+        Self {
+            instance_id: instance_id.into(),
+            host: None,
+            host_context,
+        }
+    }
+
+    pub fn with_host_name(mut self, host_name: impl Into<String>) -> Self {
+        let host_name = host_name.into();
+        let host_name = host_name.trim();
+        if !host_name.is_empty() {
+            self.host = Some(host_name.to_string());
+        }
+        self
+    }
+}
+
 impl BridgeExportRequest {
     pub fn new(format: BridgeExportFormat) -> Self {
         Self {
@@ -123,6 +190,26 @@ pub struct BridgeExportResponse {
     pub bridge: Option<BridgeContract>,
     #[serde(default)]
     pub export: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BridgeContextPublishResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub bridge: Option<BridgeContract>,
+    #[serde(default)]
+    pub context: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl BridgeContextPublishResponse {
+    pub fn error_message(&self) -> &str {
+        self.error
+            .as_deref()
+            .filter(|message| !message.is_empty())
+            .unwrap_or("ATRI dashboard returned a failed context publish response")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

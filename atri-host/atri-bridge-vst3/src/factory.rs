@@ -12,10 +12,13 @@ use vst3::{
     Steinberg::{Vst::*, *},
 };
 
-use crate::bridge_contract::{BridgeExportRequest, BridgeExportResponse, BridgeStatus};
+use crate::bridge_contract::{
+    BridgeContextPublishRequest, BridgeContextPublishResponse, BridgeExportRequest,
+    BridgeExportResponse, BridgeStatus,
+};
 use crate::dashboard_client::{
-    BridgeDashboardClient, DashboardClientError, DashboardEndpoint, DashboardExportWorker,
-    DashboardLatestExportWorker, DashboardStatusWorker,
+    BridgeDashboardClient, DashboardClientError, DashboardContextPublishWorker, DashboardEndpoint,
+    DashboardExportWorker, DashboardLatestExportWorker, DashboardStatusWorker,
 };
 use crate::daw_agent_surface::{DawAgentSurfaceOpener, NativeDawAgentSurfaceOpener};
 use crate::drag_drop::{
@@ -41,8 +44,10 @@ const EDITOR_WIDTH: i32 = 420;
 const EDITOR_HEIGHT: i32 = 220;
 const DASHBOARD_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const DASHBOARD_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
+const DASHBOARD_CONTEXT_TIMEOUT: Duration = Duration::from_secs(2);
 const BRIDGE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const LATEST_EXPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const CONTEXT_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
 static NEXT_DAW_AGENT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 const MEDIA_TYPE_AUDIO: MediaType = MediaTypes_::kAudio as MediaType;
@@ -566,6 +571,10 @@ struct BridgePlugView {
     latest_export_job:
         Mutex<Option<JoinHandle<Result<BridgeExportResponse, DashboardClientError>>>>,
     last_latest_export_poll: Mutex<Option<Instant>>,
+    context_publish_worker: DashboardContextPublishWorker,
+    context_publish_job:
+        Mutex<Option<JoinHandle<Result<BridgeContextPublishResponse, DashboardClientError>>>>,
+    last_context_publish: Mutex<Option<Instant>>,
     drag_service: Box<dyn BridgeDragService + Send>,
     surface_opener: Box<dyn DawAgentSurfaceOpener + Send>,
     instance_id: String,
@@ -599,6 +608,9 @@ impl Default for BridgePlugView {
             latest_export_worker: default_latest_export_worker(),
             latest_export_job: Mutex::new(None),
             last_latest_export_poll: Mutex::new(None),
+            context_publish_worker: default_context_publish_worker(),
+            context_publish_job: Mutex::new(None),
+            last_context_publish: Mutex::new(None),
             drag_service: Box::new(NativeBridgeDragService),
             surface_opener: Box::new(NativeDawAgentSurfaceOpener),
             instance_id: next_daw_agent_instance_id(),
@@ -621,6 +633,14 @@ impl BridgePlugView {
     fn with_latest_export_worker(latest_export_worker: DashboardLatestExportWorker) -> Self {
         Self {
             latest_export_worker,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn with_context_publish_worker(context_publish_worker: DashboardContextPublishWorker) -> Self {
+        Self {
+            context_publish_worker,
             ..Self::default()
         }
     }
@@ -753,8 +773,11 @@ impl BridgePlugView {
         let _ = self.poll_status_job();
         let _ = self.poll_export_job();
         let _ = self.poll_latest_export_job();
+        let _ = self.poll_context_publish_job();
+        self.refresh_host_context();
         self.start_status_job_if_due();
         self.start_latest_export_job_if_due();
+        self.start_context_publish_job_if_due();
     }
 
     fn start_status_job_if_due(&self) {
@@ -900,6 +923,97 @@ impl BridgePlugView {
             self.sync_native_surface();
         }
         changed
+    }
+
+    fn start_context_publish_job_if_due(&self) {
+        {
+            let context_publish_job = lock_recover(&self.context_publish_job);
+            if context_publish_job
+                .as_ref()
+                .map(|job| !job.is_finished())
+                .unwrap_or(false)
+            {
+                return;
+            }
+        }
+
+        let now = Instant::now();
+        {
+            let last_publish = lock_recover(&self.last_context_publish);
+            if last_publish
+                .map(|last_publish| now.duration_since(last_publish) < CONTEXT_PUBLISH_INTERVAL)
+                .unwrap_or(false)
+            {
+                return;
+            }
+        }
+
+        let Some(request) = self.context_publish_request() else {
+            return;
+        };
+        let mut context_publish_job = lock_recover(&self.context_publish_job);
+        if context_publish_job
+            .as_ref()
+            .map(|job| !job.is_finished())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        *context_publish_job = Some(self.context_publish_worker.publish_once(request));
+        drop(context_publish_job);
+        *lock_recover(&self.last_context_publish) = Some(now);
+    }
+
+    fn context_publish_request(&self) -> Option<BridgeContextPublishRequest> {
+        let host_context = lock_recover(&self.editor_state).host_context()?;
+        let mut request = BridgeContextPublishRequest::new(self.instance_id.clone(), host_context);
+        if let Some(host_name) = crate::host_context::latest_host_application_name() {
+            request = request.with_host_name(host_name);
+        }
+        Some(request)
+    }
+
+    fn poll_context_publish_job(&self) -> bool {
+        let finished_job = {
+            let mut context_publish_job = lock_recover(&self.context_publish_job);
+            if context_publish_job
+                .as_ref()
+                .map(JoinHandle::is_finished)
+                .unwrap_or(false)
+            {
+                context_publish_job.take()
+            } else {
+                None
+            }
+        };
+
+        let Some(finished_job) = finished_job else {
+            return false;
+        };
+
+        let changed = match finished_job.join() {
+            Ok(Ok(response)) => {
+                if response.ok {
+                    false
+                } else {
+                    self.mark_editor_error(response.error_message());
+                    true
+                }
+            }
+            Ok(Err(error)) => {
+                self.mark_editor_error(error.user_message());
+                true
+            }
+            Err(_) => {
+                self.mark_editor_error("ATRI bridge context publish worker panicked");
+                true
+            }
+        };
+        if changed {
+            self.refresh_view_model();
+            self.sync_native_surface();
+        }
+        true
     }
 
     #[cfg(test)]
@@ -1219,6 +1333,13 @@ fn default_latest_export_worker() -> DashboardLatestExportWorker {
     )
 }
 
+fn default_context_publish_worker() -> DashboardContextPublishWorker {
+    DashboardContextPublishWorker::new(
+        BridgeDashboardClient::new(DashboardEndpoint::default()),
+        DASHBOARD_CONTEXT_TIMEOUT,
+    )
+}
+
 fn clear_output_buses(data: &mut ProcessData) {
     if data.outputs.is_null() || data.numOutputs <= 0 || data.numSamples <= 0 {
         return;
@@ -1430,6 +1551,8 @@ mod tests {
 
     #[test]
     fn bridge_plug_view_open_atri_launches_daw_agent_surface_url() {
+        let _guard = crate::host_context::test_host_context_guard();
+        crate::host_context::clear_latest_host_application_name_for_test();
         let opener = RecordingDawAgentSurfaceOpener::default();
         let recordings = opener.recordings();
         let view = BridgePlugView::with_surface_opener(opener);
@@ -1448,10 +1571,13 @@ mod tests {
         );
         assert_eq!(view.export_state(), BridgeExportState::Idle);
         assert_eq!(view.pending_export_format(), None);
+        crate::host_context::clear_latest_host_application_name_for_test();
     }
 
     #[test]
     fn bridge_plug_view_surface_tick_applies_bridge_status_before_opening_daw_agent() {
+        let _guard = crate::host_context::test_host_context_guard();
+        crate::host_context::clear_latest_host_application_name_for_test();
         let endpoint = spawn_bridge_status_server(
             r#"{
                 "ok": true,
@@ -1492,6 +1618,7 @@ mod tests {
                 "http://127.0.0.1:6185/?surface=daw-agent&project_session_id=bridge-status-session&instance_id={instance_id}&workspace=atri_studio&host=Studio%20One"
             )]
         );
+        crate::host_context::clear_latest_host_application_name_for_test();
     }
 
     #[test]
@@ -1659,6 +1786,90 @@ mod tests {
     }
 
     #[test]
+    fn bridge_plug_view_surface_tick_publishes_host_context_to_dashboard() {
+        let _guard = crate::host_context::test_host_context_guard();
+        crate::host_context::clear_latest_host_context_for_test();
+        crate::host_context::clear_latest_host_application_name_for_test();
+        crate::host_context::publish_host_application_name("REAPER");
+        crate::host_context::publish_host_context(crate::bridge_contract::BridgeHostContext {
+            sample_rate: Some(48_000.0),
+            block_size: Some(256),
+            is_playing: Some(true),
+            tempo_bpm: Some(128.0),
+            time_signature: Some([3, 4]),
+        });
+        let endpoint = spawn_bridge_context_server(
+            r#"{
+                "ok": true,
+                "bridge": {
+                    "api_version": 1,
+                    "manifest_schema_version": 1,
+                    "local_only": true
+                },
+                "context": {
+                    "host": "REAPER",
+                    "tempo_bpm": 128
+                }
+            }"#,
+            200,
+        );
+        let view = BridgePlugView::with_context_publish_worker(DashboardContextPublishWorker::new(
+            BridgeDashboardClient::new(endpoint),
+            Duration::from_secs(1),
+        ));
+
+        unsafe {
+            bridge_surface_event_callback(
+                &view as *const BridgePlugView as *mut c_void,
+                NativeEditorSurfaceEvent::Tick,
+            );
+        }
+        assert!(view.context_publish_job.lock().unwrap().is_some());
+        wait_for_context_publish_tick(&view);
+
+        crate::host_context::clear_latest_host_context_for_test();
+        crate::host_context::clear_latest_host_application_name_for_test();
+    }
+
+    #[test]
+    fn bridge_plug_view_context_publish_error_is_visible_in_editor_state() {
+        let _guard = crate::host_context::test_host_context_guard();
+        crate::host_context::clear_latest_host_context_for_test();
+        crate::host_context::clear_latest_host_application_name_for_test();
+        crate::host_context::publish_host_context(crate::bridge_contract::BridgeHostContext {
+            sample_rate: Some(48_000.0),
+            block_size: Some(256),
+            is_playing: Some(false),
+            tempo_bpm: Some(96.0),
+            time_signature: Some([4, 4]),
+        });
+        let endpoint = spawn_bridge_context_server(
+            r#"{"ok": false, "error": "context publish rejected"}"#,
+            400,
+        );
+        let view = BridgePlugView::with_context_publish_worker(DashboardContextPublishWorker::new(
+            BridgeDashboardClient::new(endpoint),
+            Duration::from_secs(1),
+        ));
+
+        unsafe {
+            bridge_surface_event_callback(
+                &view as *const BridgePlugView as *mut c_void,
+                NativeEditorSurfaceEvent::Tick,
+            );
+        }
+        wait_for_context_publish_tick(&view);
+
+        assert!(
+            view.render_lines()
+                .iter()
+                .any(|line| line == "Dashboard error: context publish rejected")
+        );
+        crate::host_context::clear_latest_host_context_for_test();
+        crate::host_context::clear_latest_host_application_name_for_test();
+    }
+
+    #[test]
     fn bridge_component_process_publishes_host_context_snapshot() {
         let _guard = crate::host_context::test_host_context_guard();
         crate::host_context::clear_latest_host_context_for_test();
@@ -1808,6 +2019,20 @@ mod tests {
         }
     }
 
+    fn wait_for_context_publish_tick(view: &BridgePlugView) {
+        let started = Instant::now();
+        loop {
+            if view.poll_context_publish_job() {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "timed out waiting for context publish worker"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn wait_for_status_tick(view: &BridgePlugView) {
         let started = Instant::now();
         loop {
@@ -1864,6 +2089,27 @@ mod tests {
             assert!(request.contains("\"consumer\":\"bridge\""));
             assert!(request.contains("\"instance_id\":\"bridge-"));
 
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        DashboardEndpoint::new(format!("http://127.0.0.1:{port}")).unwrap()
+    }
+
+    fn spawn_bridge_context_server(body: &'static str, status: u16) -> DashboardEndpoint {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(request.starts_with("POST /api/music/studio/bridge/context "));
+            assert!(request.contains("\"instance_id\":\"bridge-"));
+            assert!(request.contains("\"tempo_bpm\":"));
             let response = format!(
                 "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),

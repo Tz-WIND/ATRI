@@ -9,6 +9,7 @@ from quart import jsonify, request
 
 from core import logger
 from core.platform.daw_agent import normalize_daw_host_context
+from dashboard import music as music_routes
 from dashboard.routes.chat import _normalize_chat_images, _serialize_response_chain
 
 if TYPE_CHECKING:
@@ -46,6 +47,12 @@ def register(dashboard: Dashboard) -> None:
 
         model = str(data.get("model") or "").strip()
         model_provider = str(data.get("model_provider") or data.get("provider") or "").strip()
+        published_host_context = music_routes.bridge_host_context_for_instance(instance_id)
+        if published_host_context:
+            host_context = normalize_daw_host_context(
+                {**published_host_context, **host_context},
+                strict=True,
+            )
 
         event, future = adapter.create_event(
             message,

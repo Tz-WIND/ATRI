@@ -33,6 +33,7 @@ LOCAL_BRIDGE_API_PATHS = {
     "/api/music/studio/bridge/status",
     "/api/music/studio/bridge/export",
     "/api/music/studio/bridge/export/latest",
+    "/api/music/studio/bridge/context",
 }
 
 DASHBOARD_CSP = (

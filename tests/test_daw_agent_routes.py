@@ -6,6 +6,7 @@ from quart import Quart
 
 from core.platform.daw_agent import normalize_daw_project_session_id
 from core.platform.message import MessageEvent, MessageType, Sender
+from dashboard import music as music_routes
 from dashboard.routes import daw_agent
 
 
@@ -168,6 +169,87 @@ async def test_daw_agent_chat_route_forwards_selected_model():
     assert response.status_code == 200
     assert adapter.calls[0]["model"] == "gpt-4.1"
     assert adapter.calls[0]["model_provider"] == "OpenAI"
+
+
+@pytest.mark.asyncio
+async def test_daw_agent_chat_route_merges_published_bridge_context_by_instance():
+    adapter = _FakeDawAgent()
+    dashboard = _FakeDashboard(adapter)
+    dashboard.app.register_blueprint(music_routes.bp)
+    _register_fake_dashboard(dashboard)
+    client = dashboard.app.test_client()
+
+    publish_response = await client.post(
+        "/api/music/studio/bridge/context",
+        json={
+            "instance_id": "bridge-2",
+            "host": "REAPER",
+            "host_context": {
+                "tempo_bpm": 128,
+                "time_signature": [7, 8],
+                "is_playing": True,
+                "sample_rate": 48000,
+                "block_size": 256,
+            },
+        },
+    )
+    response = await client.post(
+        "/api/daw-agent/chat",
+        json={
+            "message": "write against the current DAW tempo",
+            "project_session_id": "song-a",
+            "instance_id": "bridge-2",
+            "workspace": "atri_studio",
+            "host_context": {"workspace": "atri_studio"},
+        },
+    )
+
+    assert publish_response.status_code == 200
+    assert response.status_code == 200
+    assert adapter.calls[0]["host_context"] == {
+        "host": "REAPER",
+        "workspace": "atri_studio",
+        "tempo_bpm": 128,
+        "time_signature": [7, 8],
+        "is_playing": True,
+        "sample_rate": 48000,
+        "block_size": 256,
+    }
+
+
+@pytest.mark.asyncio
+async def test_daw_agent_chat_route_skips_expired_published_bridge_context(monkeypatch):
+    monkeypatch.setattr(music_routes, "BRIDGE_CONTEXT_TTL_SECONDS", 0.0, raising=False)
+    adapter = _FakeDawAgent()
+    dashboard = _FakeDashboard(adapter)
+    dashboard.app.register_blueprint(music_routes.bp)
+    _register_fake_dashboard(dashboard)
+    client = dashboard.app.test_client()
+
+    publish_response = await client.post(
+        "/api/music/studio/bridge/context",
+        json={
+            "instance_id": "bridge-expired",
+            "host": "REAPER",
+            "host_context": {
+                "tempo_bpm": 90,
+                "is_playing": True,
+            },
+        },
+    )
+    response = await client.post(
+        "/api/daw-agent/chat",
+        json={
+            "message": "use the current DAW state",
+            "instance_id": "bridge-expired",
+            "workspace": "atri_studio",
+            "host_context": {"workspace": "atri_studio"},
+        },
+    )
+
+    assert publish_response.status_code == 200
+    assert response.status_code == 200
+    assert adapter.calls[0]["host_context"] == {"workspace": "atri_studio"}
 
 
 @pytest.mark.asyncio

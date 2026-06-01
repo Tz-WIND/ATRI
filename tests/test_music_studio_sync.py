@@ -2312,8 +2312,32 @@ async def test_studio_bridge_status_reports_versions_project_and_host(
     assert body["project"]["title"] == "Bridge Status"
     assert body["project"]["revision"]
     assert body["host"]["running"] is False
+    assert body["formats"] == body["exports"]["formats"]
     assert set(body["exports"]["hostless_formats"]) >= {"midi", "dawproject"}
     assert set(body["exports"]["host_required_formats"]) >= {"wav", "flac", "mp3"}
+
+
+async def test_studio_bridge_context_records_host_context_by_instance(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/bridge/context",
+        json={
+            "instance_id": "bridge-sync",
+            "host": "REAPER",
+            "host_context": {"tempo_bpm": 128, "is_playing": True},
+        },
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True
+    assert body["context"] == {"host": "REAPER", "tempo_bpm": 128, "is_playing": True}
+    assert music.bridge_host_context_for_instance("bridge-sync") == body["context"]
+    assert music.bridge_host_context_for_instance("other-instance") == {}
 
 
 async def test_studio_bridge_export_forces_bridge_consumer_and_returns_contract(

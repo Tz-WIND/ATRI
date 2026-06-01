@@ -124,6 +124,45 @@ async def test_local_bridge_status_bypasses_dashboard_login(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_local_bridge_context_bypasses_dashboard_login(monkeypatch, tmp_path):
+    dashboard = _dashboard(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/bridge/context",
+        json={
+            "instance_id": "bridge-auth",
+            "host": "REAPER",
+            "host_context": {"tempo_bpm": 128},
+        },
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+
+    assert response.status_code == 200
+    payload = await response.get_json()
+    assert payload["ok"] is True
+    assert payload["context"] == {"host": "REAPER", "tempo_bpm": 128}
+
+
+@pytest.mark.asyncio
+async def test_bridge_context_rejects_empty_payload(monkeypatch, tmp_path):
+    dashboard = _dashboard(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/bridge/context",
+        json={"instance_id": "bridge-empty-context", "host": " ", "host_context": {}},
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+
+    assert response.status_code == 400
+    payload = await response.get_json()
+    assert payload["ok"] is False
+    assert payload["error"] == "bridge context must include at least one supported field"
+    assert music_routes.bridge_host_context_for_instance("bridge-empty-context") == {}
+
+
+@pytest.mark.asyncio
 async def test_local_daw_agent_chat_bypasses_dashboard_login(monkeypatch, tmp_path):
     dashboard = _dashboard(monkeypatch, tmp_path)
     client = dashboard.app.test_client()
@@ -254,6 +293,7 @@ async def test_local_daw_agent_music_export_bypasses_dashboard_login(monkeypatch
         ("get", "/api/music/studio/bridge/status", None),
         ("post", "/api/music/studio/bridge/export", {"format": "midi"}),
         ("get", "/api/music/studio/bridge/export/latest", None),
+        ("post", "/api/music/studio/bridge/context", {"host_context": {"tempo_bpm": 128}}),
     ],
 )
 async def test_non_loopback_local_bridge_routes_require_dashboard_login(

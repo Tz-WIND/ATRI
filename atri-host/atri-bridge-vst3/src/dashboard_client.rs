@@ -3,7 +3,10 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::bridge_contract::{BridgeExportRequest, BridgeExportResponse, BridgeStatus};
+use crate::bridge_contract::{
+    BridgeContextPublishRequest, BridgeContextPublishResponse, BridgeExportRequest,
+    BridgeExportResponse, BridgeStatus,
+};
 use crate::daw_agent_surface::{
     DawAgentSurfaceParams, daw_agent_surface_url, percent_encode_query,
 };
@@ -14,6 +17,7 @@ pub const DEFAULT_DASHBOARD_BASE_URL: &str = "http://127.0.0.1:6185";
 const BRIDGE_STATUS_PATH: &str = "/api/music/studio/bridge/status";
 const BRIDGE_EXPORT_PATH: &str = "/api/music/studio/bridge/export";
 const BRIDGE_LATEST_EXPORT_PATH: &str = "/api/music/studio/bridge/export/latest";
+const BRIDGE_CONTEXT_PATH: &str = "/api/music/studio/bridge/context";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashboardEndpoint {
@@ -50,6 +54,10 @@ impl DashboardEndpoint {
             return base;
         };
         format!("{base}?instance_id={}", percent_encode_query(instance_id))
+    }
+
+    pub fn bridge_context_url(&self) -> String {
+        format!("{}{}", self.base_url, BRIDGE_CONTEXT_PATH)
     }
 
     pub fn daw_agent_surface_url(&self, params: &DawAgentSurfaceParams) -> String {
@@ -144,6 +152,19 @@ impl BridgeDashboardClient {
         })
     }
 
+    pub fn context_publish_request(
+        &self,
+        request: &BridgeContextPublishRequest,
+    ) -> Result<DashboardRequest, DashboardClientError> {
+        let body = serde_json::to_string(request)
+            .map_err(|err| DashboardClientError::Json(err.to_string()))?;
+        Ok(DashboardRequest {
+            method: "POST",
+            url: self.endpoint.bridge_context_url(),
+            body: Some(body),
+        })
+    }
+
     pub fn fetch_status(&self, timeout: Duration) -> Result<BridgeStatus, DashboardClientError> {
         let request = self.status_request();
         let response = send_http_request(&request, timeout)?;
@@ -156,6 +177,16 @@ impl BridgeDashboardClient {
         timeout: Duration,
     ) -> Result<BridgeExportResponse, DashboardClientError> {
         let request = self.export_request(&request)?;
+        let response = send_http_request(&request, timeout)?;
+        parse_json_response(&response)
+    }
+
+    pub fn publish_context(
+        &self,
+        request: BridgeContextPublishRequest,
+        timeout: Duration,
+    ) -> Result<BridgeContextPublishResponse, DashboardClientError> {
+        let request = self.context_publish_request(&request)?;
         let response = send_http_request(&request, timeout)?;
         parse_json_response(&response)
     }
@@ -233,6 +264,27 @@ impl DashboardLatestExportWorker {
         let timeout = self.timeout;
         let instance_id = instance_id.into();
         thread::spawn(move || client.fetch_latest_export(Some(instance_id.as_str()), timeout))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DashboardContextPublishWorker {
+    client: BridgeDashboardClient,
+    timeout: Duration,
+}
+
+impl DashboardContextPublishWorker {
+    pub fn new(client: BridgeDashboardClient, timeout: Duration) -> Self {
+        Self { client, timeout }
+    }
+
+    pub fn publish_once(
+        &self,
+        request: BridgeContextPublishRequest,
+    ) -> JoinHandle<Result<BridgeContextPublishResponse, DashboardClientError>> {
+        let client = self.client.clone();
+        let timeout = self.timeout;
+        thread::spawn(move || client.publish_context(request, timeout))
     }
 }
 
