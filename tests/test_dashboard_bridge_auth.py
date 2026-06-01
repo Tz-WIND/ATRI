@@ -667,7 +667,7 @@ async def test_bridge_latest_export_ignores_missing_primary_file(monkeypatch, tm
     export_dir.mkdir()
     missing_path = export_dir / "missing.mid"
 
-    music_routes._write_latest_bridge_export(  # noqa: SLF001
+    music_routes._write_latest_bridge_export(
         {
             "format": "midi",
             "path": str(missing_path),
