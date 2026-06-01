@@ -2702,7 +2702,7 @@ async def test_studio_dawproject_snapshot_status_chooses_newest_file_by_mtime(
         ("older.dawproject", "Older Snapshot", 1_700_000_000),
         ("newer.dawproject", "Newer Snapshot", 1_700_000_100),
     ]:
-        archive_path = inbox / filename
+        archive_path: Path = inbox / filename
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(
                 "project.xml",
@@ -2735,7 +2735,7 @@ async def test_dawproject_snapshot_import_reuses_archive_for_related_export_file
     inbox.mkdir(parents=True)
 
     def write_snapshot(filename: str, title: str, pitch: int, mtime: int) -> Path:
-        archive_path = inbox / filename
+        archive_path: Path = inbox / filename
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(
                 "project.xml",
