@@ -380,6 +380,36 @@ async def test_process_stage_prepends_recent_group_messages_to_onebot_group_inpu
 
 
 @pytest.mark.asyncio
+async def test_process_stage_prepends_host_project_snapshot_guidance():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    event = MessageEvent(
+        message_str="analyze the current song",
+        message_chain=[Plain(text="analyze the current song")],
+        platform_name="daw_agent",
+        session_id="host-song",
+    )
+    event._extras["daw_agent_workspace"] = "host_project"
+    event._extras["daw_agent_host_context"] = {
+        "host": "Studio One",
+        "host_project_sync": {
+            "status": "imported",
+            "format": "dawproject",
+            "filename": "studio-one-latest.dawproject",
+            "note_count": 42,
+        },
+    }
+
+    content = await stage._event_content_for_agent(event)
+
+    assert "DAWproject snapshot import (point-in-time, not live DAW state):" in content
+    assert (
+        "Imported studio-one-latest.dawproject for this message (42 notes in summary)." in content
+    )
+    assert "Requesting a DAW export does not update this message" in content
+
+
+@pytest.mark.asyncio
 async def test_process_stage_prepends_daw_context_to_daw_agent_input():
     stage = ProcessStage()
     stage.image_transcription = {"enabled": False}

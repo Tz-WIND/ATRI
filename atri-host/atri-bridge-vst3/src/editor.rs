@@ -161,6 +161,7 @@ pub struct BridgeEditorState {
     export_state: BridgeExportState,
     pending_export_format: Option<BridgeExportFormat>,
     last_export_path: Option<String>,
+    last_export_payload: Option<serde_json::Value>,
     last_export_error: Option<String>,
     last_midi_preview: Option<BridgeMidiPreview>,
     midi_preview_scroll_offset: usize,
@@ -219,6 +220,10 @@ impl BridgeEditorState {
         self.last_export_path.as_deref()
     }
 
+    pub fn last_export_payload(&self) -> Option<&serde_json::Value> {
+        self.last_export_payload.as_ref()
+    }
+
     pub fn last_export_error(&self) -> Option<&str> {
         self.last_export_error.as_deref()
     }
@@ -249,7 +254,7 @@ impl BridgeEditorState {
     }
 
     pub fn host_context(&self) -> Option<BridgeHostContext> {
-        self.host_context
+        self.host_context.clone()
     }
 
     pub fn apply_host_context(&mut self, host_context: BridgeHostContext) {
@@ -286,8 +291,10 @@ impl BridgeEditorState {
     pub fn handle_action(&mut self, action: BridgeEditorAction) -> Option<BridgeExportRequest> {
         let format = action.export_format()?;
         self.begin_export(format);
-        let request = match self.host_context {
-            Some(host_context) => BridgeExportRequest::new(format).with_host_context(host_context),
+        let request = match self.host_context.as_ref() {
+            Some(host_context) => {
+                BridgeExportRequest::new(format).with_host_context(host_context.clone())
+            }
             None => BridgeExportRequest::new(format),
         };
         Some(request)
@@ -301,8 +308,10 @@ impl BridgeEditorState {
 
     pub fn apply_export_response(&mut self, response: BridgeExportResponse) {
         if response.ok {
+            let export_payload = response.export.clone();
             self.export_state = BridgeExportState::Completed;
             self.last_export_path = response.export_path().map(ToOwned::to_owned);
+            self.last_export_payload = export_payload;
             self.last_midi_preview = response.midi_preview();
             self.midi_preview_scroll_offset = 0;
             self.last_export_error = None;
@@ -326,6 +335,7 @@ impl BridgeEditorState {
 
         self.export_state = BridgeExportState::Completed;
         self.last_export_path = Some(path);
+        self.last_export_payload = response.export.clone();
         self.last_midi_preview = response.midi_preview();
         self.midi_preview_scroll_offset = 0;
         self.last_export_error = None;
@@ -336,6 +346,7 @@ impl BridgeEditorState {
     pub fn mark_export_error(&mut self, message: impl Into<String>) {
         self.export_state = BridgeExportState::Error;
         self.last_export_error = Some(message.into());
+        self.last_export_payload = None;
         self.last_midi_preview = None;
         self.midi_preview_scroll_offset = 0;
         self.pending_export_format = None;
@@ -360,6 +371,7 @@ impl Default for BridgeEditorState {
             export_state: BridgeExportState::Idle,
             pending_export_format: None,
             last_export_path: None,
+            last_export_payload: None,
             last_export_error: None,
             last_midi_preview: None,
             midi_preview_scroll_offset: 0,
@@ -428,12 +440,12 @@ fn render_state_lines(state: &BridgeEditorState) -> Vec<String> {
     }
 
     if let Some(host_context) = state.host_context() {
-        lines.push(render_host_context_line(host_context));
+        lines.push(render_host_context_line(&host_context));
     }
     lines
 }
 
-fn render_host_context_line(host_context: BridgeHostContext) -> String {
+fn render_host_context_line(host_context: &BridgeHostContext) -> String {
     let tempo = host_context
         .tempo_bpm
         .map(|tempo| format!("{tempo:.1} BPM"))

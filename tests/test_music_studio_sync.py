@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import threading
 import zipfile
@@ -2546,6 +2547,288 @@ async def test_studio_import_audio_file_rejects_paths_outside_workspace(tmp_path
 
     assert response.status_code == 403
     assert body["error"] == "path outside workspace"
+
+
+async def test_studio_import_dawproject_file_replaces_project_from_workspace(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    source_dir = workspace / "exports"
+    source_dir.mkdir(parents=True)
+    archive_path = source_dir / "host-session.dawproject"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "project.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Project version="1.0" application="Host DAW">
+  <Transport>
+    <Tempo value="132"/>
+    <TimeSignature numerator="3" denominator="4"/>
+  </Transport>
+  <Structure>
+    <Track id="track_lead" name="Host Lead" color="#4e79ff" type="instrument">
+      <Channel volume="0.7" pan="-0.25" solo="true"/>
+    </Track>
+  </Structure>
+  <Arrangement>
+    <Lane track="track_lead">
+      <Clip name="Lead Phrase" time="4" duration="2">
+        <Notes>
+          <Note time="0.5" duration="0.75" key="64" velocity="0.75"/>
+        </Notes>
+      </Clip>
+    </Lane>
+  </Arrangement>
+</Project>
+""",
+        )
+        archive.writestr("metadata.xml", "<MetaData><Title>Host Session</Title></MetaData>")
+
+    captured: dict[str, Any] = {}
+
+    def fake_save_project_as_archive(project, *, title="", activate=True):
+        captured["saved_project"] = project
+        return project
+
+    async def fake_sync(project, *, broadcast=True):
+        captured["sync_project"] = project
+        captured["sync_broadcast"] = broadcast
+        return {"host_running": False, "commands": [], "project": project}
+
+    monkeypatch.setattr(music, "_lifecycle", SimpleNamespace(config={"workspace": str(workspace)}))
+    monkeypatch.setattr(music, "save_project_as_archive", fake_save_project_as_archive)
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+    monkeypatch.setattr(music, "_host_snapshot", lambda: {"running": False})
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.post(
+        "/api/music/studio/import/dawproject-file",
+        json={"path": "exports/host-session.dawproject"},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert captured["saved_project"]["title"] == "Host Session"
+    assert captured["sync_broadcast"] is True
+    assert body["ok"] is True
+    assert body["summary"]["format"] == "dawproject"
+    assert body["summary"]["note_count"] == 1
+    assert body["project"]["tempo"] == 132.0
+    assert body["project"]["time_signature"] == [3, 4]
+    assert body["project"]["tracks"][0]["name"] == "Host Lead"
+    assert body["project"]["tracks"][0]["pan"] == -0.25
+    assert body["host"] == {"running": False}
+
+
+async def test_studio_dawproject_snapshot_status_and_export_request(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    status_response = await client.get("/api/music/studio/dawproject-snapshot/status")
+    request_response = await client.post(
+        "/api/music/studio/dawproject-snapshot/request-export",
+        json={"host": "Studio One", "source": "daw_agent", "instance_id": "bridge-7"},
+    )
+    status_after_request_response = await client.get("/api/music/studio/dawproject-snapshot/status")
+
+    status = await status_response.get_json()
+    request_body = await request_response.get_json()
+    status_after_request = await status_after_request_response.get_json()
+
+    assert status_response.status_code == 200
+    assert status["latest_snapshot"] is None
+    assert (
+        status["inbox_path"].replace("\\", "/").endswith("data/music_workstation/host_sync_inbox")
+    )
+    assert request_response.status_code == 200
+    assert request_body["request"]["host"] == "studio_one"
+    assert request_body["request"]["source"] == "daw_agent"
+    assert request_body["request"]["instance_id"] == "bridge-7"
+    assert request_body["request"]["output_path"].endswith("studio-one-latest.dawproject")
+    assert await AsyncPath(request_body["request"]["request_path"]).exists()
+    assert status_after_request["export_request"]["id"] == request_body["request"]["id"]
+
+
+async def test_studio_dawproject_snapshot_status_reports_latest_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    inbox = tmp_path / "data" / "music_workstation" / "host_sync_inbox"
+    inbox.mkdir(parents=True)
+    archive_path = inbox / "studio-one-latest.dawproject"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "project.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Project version="1.0" application="Studio One">
+  <Structure><Track id="track_lead" name="Lead" type="instrument"/></Structure>
+</Project>
+""",
+        )
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.get("/api/music/studio/dawproject-snapshot/status")
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["latest_snapshot"]["filename"] == "studio-one-latest.dawproject"
+    assert body["latest_snapshot"]["format"] == "dawproject"
+    assert body["latest_snapshot"]["ready"] is True
+    assert body["latest_snapshot"]["size"] > 0
+
+
+async def test_studio_dawproject_snapshot_status_chooses_newest_file_by_mtime(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    inbox = tmp_path / "data" / "music_workstation" / "host_sync_inbox"
+    inbox.mkdir(parents=True)
+
+    for filename, title, mtime in [
+        ("older.dawproject", "Older Snapshot", 1_700_000_000),
+        ("newer.dawproject", "Newer Snapshot", 1_700_000_100),
+    ]:
+        archive_path = inbox / filename
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "project.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+<Project version="1.0" application="Host DAW">
+  <Structure><Track id="track_lead" name="Lead" type="instrument"/></Structure>
+</Project>
+""",
+            )
+            archive.writestr("metadata.xml", f"<MetaData><Title>{title}</Title></MetaData>")
+        os.utime(archive_path, (mtime, mtime))
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.get("/api/music/studio/dawproject-snapshot/status")
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["latest_snapshot"]["filename"] == "newer.dawproject"
+
+
+async def test_dawproject_snapshot_import_reuses_archive_for_related_export_filenames(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    inbox = tmp_path / "data" / "music_workstation" / "host_sync_inbox"
+    inbox.mkdir(parents=True)
+
+    def write_snapshot(filename: str, title: str, pitch: int, mtime: int) -> Path:
+        archive_path = inbox / filename
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "project.xml",
+                f"""<?xml version="1.0" encoding="UTF-8"?>
+<Project version="1.0" application="Studio One">
+  <Structure><Track id="track_lead" name="Lead" type="instrument"/></Structure>
+  <Arrangement>
+    <Lane track="track_lead">
+      <Clip time="0" duration="1">
+        <Notes><Note time="0" duration="1" key="{pitch}" velocity="96"/></Notes>
+      </Clip>
+    </Lane>
+  </Arrangement>
+</Project>
+""",
+            )
+            archive.writestr("metadata.xml", f"<MetaData><Title>{title}</Title></MetaData>")
+        os.utime(archive_path, (mtime, mtime))
+        return archive_path
+
+    async def fake_sync(project, *, broadcast=True):
+        return {"host_running": False, "commands": [], "project": project}
+
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+    write_snapshot("Studio Cue.dawproject", "First Import", 60, 1_700_000_100)
+    first = await music.sync_latest_host_dawproject_for_daw_agent()
+    first_project_id = music.active_project_archive_id()
+    write_snapshot("Studio Cue (1).dawproject", "Second Import", 64, 1_700_000_200)
+    second = await music.sync_latest_host_dawproject_for_daw_agent()
+    second_project_id = music.active_project_archive_id()
+    write_snapshot("Studio Cue 2026-06-01 09-30-00.dawproject", "Third Import", 67, 1_700_000_300)
+    third = await music.sync_latest_host_dawproject_for_daw_agent()
+    third_project_id = music.active_project_archive_id()
+
+    assert first["status"] == "imported"
+    assert second["status"] == "imported"
+    assert third["status"] == "imported"
+    assert second_project_id == first_project_id
+    assert third_project_id == first_project_id
+    assert music.load_project()["title"] == "Third Import"
+    assert music.load_project()["tracks"][0]["notes"][0]["pitch"] == 67
+    assert [item["title"] for item in music.list_project_archives()] == ["Third Import"]
+
+
+async def test_studio_project_archive_routes_save_copy_and_open_projects(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_sync(project, *, broadcast=True):
+        return {"host_running": False, "commands": [], "project": project}
+
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+    monkeypatch.setattr(music, "_host_snapshot", lambda: {"running": False})
+
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    first_response = await client.put(
+        "/api/music/studio/project",
+        json={"project": {"title": "First Cue", "tracks": [{"id": 1, "name": "Lead"}]}},
+    )
+    first_body = await first_response.get_json()
+    copy_response = await client.post(
+        "/api/music/studio/projects/save-copy",
+        json={"title": "Second Cue", "sync": False},
+    )
+    copy_body = await copy_response.get_json()
+    list_response = await client.get("/api/music/studio/projects")
+    list_body = await list_response.get_json()
+
+    assert first_response.status_code == 200
+    assert copy_response.status_code == 200
+    assert list_response.status_code == 200
+    assert first_body["active_project_id"]
+    assert copy_body["active_project_id"] != first_body["active_project_id"]
+    assert copy_body["project"]["title"] == "Second Cue"
+    assert {item["title"] for item in list_body["projects"]} >= {"First Cue", "Second Cue"}
+    assert (
+        next(
+            item for item in list_body["projects"] if item["id"] == copy_body["active_project_id"]
+        )["active"]
+        is True
+    )
+
+    open_response = await client.post(
+        f"/api/music/studio/projects/{first_body['active_project_id']}/open",
+        json={"sync": False},
+    )
+    open_body = await open_response.get_json()
+
+    assert open_response.status_code == 200
+    assert open_body["active_project_id"] == first_body["active_project_id"]
+    assert open_body["project"]["title"] == "First Cue"
 
 
 async def test_studio_import_audio_returns_type_error_when_host_rejects_clip(tmp_path, monkeypatch):

@@ -107,7 +107,17 @@ pub enum BridgeExportFormat {
     Stems,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BridgeHostSelectionContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_beats: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_track_ids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_track_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct BridgeHostContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<f64>,
@@ -119,6 +129,16 @@ pub struct BridgeHostContext {
     pub tempo_bpm: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_signature: Option<[i32; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_time_beats: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bar_position_beats: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_range_beats: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<BridgeHostSelectionContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -226,6 +246,12 @@ pub struct BridgeMidiPreview {
     pub track_id: i64,
     pub track_name: String,
     pub beat_range: [f64; 2],
+    #[serde(default)]
+    pub range_source: String,
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub track_count: Option<u64>,
     pub note_count: u64,
     pub pitch_range: [i32; 2],
     #[serde(default)]
@@ -260,5 +286,17 @@ impl BridgeExportResponse {
             .as_ref()
             .and_then(|export| export.get("bridge_preview"))?;
         serde_json::from_value(preview.clone()).ok()
+    }
+
+    pub fn bridge_scope_instance_id(&self) -> Option<&str> {
+        self.export
+            .as_ref()
+            .and_then(|export| export.get("bridge_scope"))
+            .and_then(|scope| scope.get("instance_id"))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn export_value(&self) -> Option<&serde_json::Value> {
+        self.export.as_ref()
     }
 }

@@ -224,6 +224,27 @@ def test_music_studio_topbar_removes_manual_sync_and_demo_controls():
     assert "  resetDemo,\n" not in studio_text
 
 
+def test_music_studio_exposes_project_archive_library_controls():
+    studio_text = _read(STUDIO_COMPONENT)
+    host_text = _read(DAW_HOST)
+    api_text = _read(API)
+
+    assert 'class="project-library-trigger"' in studio_text
+    assert 'v-if="projectLibraryOpen"' in studio_text
+    assert 'class="project-library-popover"' in studio_text
+    assert 'v-for="archive in projectArchives"' in studio_text
+    assert '@click="saveCurrentProjectCopy"' in studio_text
+    assert '@click="openArchivedProject(archive.id)"' in studio_text
+    assert "projectArchives," in host_text
+    assert "activeProjectId," in host_text
+    assert "async function loadProjectArchives()" in host_text
+    assert "async function saveProjectCopy(title = '')" in host_text
+    assert "async function openProjectArchive(projectId)" in host_text
+    assert "studioProjects: ()" in api_text
+    assert "studioSaveProjectCopy: (payload = {})" in api_text
+    assert "studioOpenProject: (projectId, options = {})" in api_text
+
+
 def test_music_studio_timeline_toolbar_matches_piano_editor_tools():
     studio_text = _read(STUDIO_COMPONENT)
 

@@ -144,6 +144,8 @@ export function useApi() {
       instanceId = '',
       workspace = 'atri_studio',
       hostContext = {},
+      syncHostProject = false,
+      requestHostExport = false,
       images = [],
       model = '',
       modelProvider = '',
@@ -155,6 +157,8 @@ export function useApi() {
         instance_id: instanceId,
         workspace,
         host_context: hostContext,
+        sync_host_project: syncHostProject,
+        request_host_dawproject_export: requestHostExport,
         images,
         ...(model ? { model } : {}),
         ...(modelProvider ? { model_provider: modelProvider } : {}),
@@ -182,6 +186,20 @@ export function useApi() {
 
     // AI Music Workstation
     studioProject: () => request('/api/music/studio/project'),
+    studioDawprojectSnapshotStatus: () => request('/api/music/studio/dawproject-snapshot/status'),
+    studioDawprojectSnapshotRequestExport: (payload = {}) => request('/api/music/studio/dawproject-snapshot/request-export', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+    studioProjects: () => request('/api/music/studio/projects'),
+    studioSaveProjectCopy: (payload = {}) => request('/api/music/studio/projects/save-copy', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+    studioOpenProject: (projectId, options = {}) => request(`/api/music/studio/projects/${encodeURIComponent(projectId)}/open`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
     saveStudioProject: (project, options = {}) => request('/api/music/studio/project', {
       method: 'PUT',
       body: JSON.stringify({ project, ...options }),

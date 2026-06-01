@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from quart import jsonify, request
 
 from core import logger
-from core.platform.daw_agent import normalize_daw_host_context
+from core.platform.daw_agent import normalize_daw_host_context, normalize_daw_workspace
 from dashboard import music as music_routes
 from dashboard.routes.chat import _normalize_chat_images, _serialize_response_chain
 
@@ -36,7 +36,7 @@ def register(dashboard: Dashboard) -> None:
 
         project_session_id = str(data.get("project_session_id") or "").strip()
         instance_id = str(data.get("instance_id") or "").strip()
-        workspace = str(data.get("workspace") or "atri_studio").strip()
+        workspace = normalize_daw_workspace(str(data.get("workspace") or "atri_studio").strip())
         try:
             host_context = normalize_daw_host_context(
                 data.get("host_context"),
@@ -53,6 +53,33 @@ def register(dashboard: Dashboard) -> None:
                 {**published_host_context, **host_context},
                 strict=True,
             )
+
+        host_project_sync = None
+        if workspace == "host_project" and data.get("sync_host_project") is True:
+            export_request = None
+            if data.get("request_host_dawproject_export") is True:
+                host_name = str(host_context.get("host") or data.get("host") or "studio_one")
+                export_request = music_routes.request_host_dawproject_snapshot_export(
+                    host=host_name,
+                    source="daw_agent",
+                    instance_id=instance_id,
+                )
+            host_project_sync = await music_routes.sync_latest_host_dawproject_for_daw_agent()
+            if export_request:
+                host_project_sync["export_request"] = {
+                    "id": export_request["id"],
+                    "host": export_request["host"],
+                    "source": export_request["source"],
+                    "instance_id": export_request["instance_id"],
+                    "output_path": export_request["output_path"],
+                    "request_path": export_request["request_path"],
+                }
+            sync_context = music_routes.host_project_sync_prompt_context(host_project_sync)
+            if sync_context:
+                host_context = normalize_daw_host_context(
+                    {**host_context, "host_project_sync": sync_context},
+                    strict=True,
+                )
 
         event, future = adapter.create_event(
             message,
@@ -73,6 +100,7 @@ def register(dashboard: Dashboard) -> None:
                     "response": result.get("text", ""),
                     "chain": _serialize_response_chain(result.get("chain")),
                     "session_id": event.unified_msg_origin,
+                    **({"host_project_sync": host_project_sync} if host_project_sync else {}),
                 }
             )
         except TimeoutError:

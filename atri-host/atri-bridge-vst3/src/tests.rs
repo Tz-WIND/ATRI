@@ -177,6 +177,7 @@ fn bridge_export_request_serializes_host_context_when_available() {
             is_playing: Some(true),
             tempo_bpm: Some(93.5),
             time_signature: Some([7, 8]),
+            ..BridgeHostContext::default()
         },
     );
     let json = serde_json::to_value(&request).unwrap();
@@ -214,6 +215,7 @@ fn bridge_context_publish_request_serializes_instance_host_and_context() {
             is_playing: Some(true),
             tempo_bpm: Some(128.0),
             time_signature: Some([7, 8]),
+            ..BridgeHostContext::default()
         },
     )
     .with_host_name("REAPER");
@@ -377,6 +379,7 @@ fn dashboard_client_posts_bridge_context_update_to_local_dashboard() {
                     is_playing: Some(true),
                     tempo_bpm: Some(128.0),
                     time_signature: Some([7, 8]),
+                    ..BridgeHostContext::default()
                 },
             )
             .with_host_name("REAPER"),
@@ -429,6 +432,23 @@ fn bridge_export_response_parses_midi_preview_metadata() {
     assert_eq!(preview.tracks.len(), 2);
     assert_eq!(preview.tracks[0].track_name, "Edited Synth");
     assert_eq!(preview.tracks[1].track_name, "Bass");
+}
+
+#[test]
+fn bridge_export_response_reads_bridge_scope_instance_id() {
+    let response: BridgeExportResponse = serde_json::from_str(
+        r#"{
+            "ok": true,
+            "export": {
+                "format": "midi",
+                "path": "data/music_workstation/exports/region.mid",
+                "bridge_scope": {"instance_id": "bridge-expected"}
+            }
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(response.bridge_scope_instance_id(), Some("bridge-expected"));
 }
 
 #[test]
@@ -863,6 +883,7 @@ fn editor_action_includes_latest_host_context_in_export_request() {
         is_playing: Some(false),
         tempo_bpm: Some(101.0),
         time_signature: Some([5, 4]),
+        ..BridgeHostContext::default()
     };
 
     state.apply_host_context(host_context.clone());
@@ -918,6 +939,7 @@ fn editor_view_model_renders_host_context_when_available() {
         is_playing: Some(false),
         tempo_bpm: Some(101.0),
         time_signature: Some([5, 4]),
+        ..BridgeHostContext::default()
     });
 
     let view = BridgeEditorViewModel::from_state(&state, 420, 220);
@@ -1112,6 +1134,32 @@ fn drag_payload_uses_last_export_path_as_single_file() {
         payload.files()[0].to_string_lossy(),
         "data/music_workstation/exports/session.dawproject"
     );
+    assert!(payload.metadata_json().is_none());
+}
+
+#[test]
+fn drag_payload_from_export_carries_primary_file_and_compact_metadata() {
+    let export = serde_json::json!({
+        "id": "export123",
+        "format": "midi",
+        "path": "data/music_workstation/exports/session.mid",
+        "filename": "session.mid",
+        "bridge_scope": {"instance_id": "bridge-drag"},
+        "bridge_export": {"range_source": "selection"}
+    });
+
+    let payload = BridgeDragPayload::from_export(&export).unwrap();
+
+    assert_eq!(
+        payload.files()[0].to_string_lossy(),
+        "data/music_workstation/exports/session.mid"
+    );
+    assert_eq!(
+        payload.metadata_json(),
+        Some(
+            r#"{"bridge_export":{"range_source":"selection"},"bridge_scope":{"instance_id":"bridge-drag"},"filename":"session.mid","format":"midi","id":"export123","path":"data/music_workstation/exports/session.mid"}"#
+        )
+    );
 }
 
 #[test]
@@ -1168,8 +1216,16 @@ fn processor_state_captures_valid_vst3_host_context() {
         | ProcessContext_::StatesAndFlags_::kTimeSigValid) as u32;
     context.sampleRate = 48_000.0;
     context.tempo = 93.5;
+    context.projectTimeMusic = 12.5;
+    context.barPositionMusic = 8.0;
+    context.cycleStartMusic = 4.0;
+    context.cycleEndMusic = 8.0;
     context.timeSigNumerator = 7;
     context.timeSigDenominator = 8;
+    context.state |= (ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
+        | ProcessContext_::StatesAndFlags_::kBarPositionValid
+        | ProcessContext_::StatesAndFlags_::kCycleValid
+        | ProcessContext_::StatesAndFlags_::kCycleActive) as u32;
 
     processor.apply_process_context(&context);
 
@@ -1186,6 +1242,11 @@ fn processor_state_captures_valid_vst3_host_context() {
             is_playing: Some(true),
             tempo_bpm: Some(93.5),
             time_signature: Some([7, 8]),
+            project_time_beats: Some(12.5),
+            bar_position_beats: Some(8.0),
+            loop_active: Some(true),
+            loop_range_beats: Some([4.0, 8.0]),
+            selection: None,
         })
     );
 }

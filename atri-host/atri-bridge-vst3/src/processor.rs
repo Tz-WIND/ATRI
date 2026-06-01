@@ -63,6 +63,25 @@ impl BridgeProcessorState {
                 context.timeSigNumerator.max(1),
                 context.timeSigDenominator.max(1),
             ]);
+        let project_time_beats = has_context_flag(
+            context,
+            ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid,
+        )
+        .then_some(context.projectTimeMusic.max(0.0));
+        let bar_position_beats =
+            has_context_flag(context, ProcessContext_::StatesAndFlags_::kBarPositionValid)
+                .then_some(context.barPositionMusic.max(0.0));
+        let loop_range_beats =
+            has_context_flag(context, ProcessContext_::StatesAndFlags_::kCycleValid)
+                .then_some([
+                    context.cycleStartMusic.max(0.0),
+                    context.cycleEndMusic.max(0.0),
+                ])
+                .filter(|[start, end]| end > start);
+        let loop_active = has_context_flag(context, ProcessContext_::StatesAndFlags_::kCycleValid)
+            .then_some(
+                context.state & (ProcessContext_::StatesAndFlags_::kCycleActive as u32) != 0,
+            );
 
         self.transport = BridgeTransportState {
             is_playing,
@@ -80,6 +99,11 @@ impl BridgeProcessorState {
             is_playing: Some(is_playing),
             tempo_bpm,
             time_signature,
+            project_time_beats,
+            bar_position_beats,
+            loop_active,
+            loop_range_beats,
+            selection: None,
         });
     }
 
@@ -96,7 +120,7 @@ impl BridgeProcessorState {
     }
 
     pub fn host_context(&self) -> Option<BridgeHostContext> {
-        self.host_context
+        self.host_context.clone()
     }
 
     pub fn can_perform_dashboard_io(&self) -> bool {

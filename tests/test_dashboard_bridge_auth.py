@@ -371,6 +371,10 @@ async def test_bridge_latest_export_tracks_daw_agent_midi_export(monkeypatch, tm
         "track_id": 1,
         "track_name": "Lead",
         "beat_range": [0.0, 1.0],
+        "range_source": "explicit",
+        "filename": exported["export"]["filename"],
+        "track_count": 1,
+        "selection": {"project_track_ids": [1], "range_beats": [0.0, 1.0]},
         "note_count": 1,
         "pitch_range": [60, 60],
         "tracks": [
@@ -438,6 +442,10 @@ async def test_bridge_latest_export_preserves_preview_for_instance(monkeypatch, 
         "track_id": 1,
         "track_name": "Lead",
         "beat_range": [0.0, 1.0],
+        "range_source": "explicit",
+        "filename": latest["export"]["filename"],
+        "track_count": 1,
+        "selection": {"project_track_ids": [1], "range_beats": [0.0, 1.0]},
         "note_count": 2,
         "pitch_range": [60, 67],
         "tracks": [
@@ -513,6 +521,10 @@ async def test_bridge_latest_export_preview_includes_multiple_tracks(monkeypatch
         "track_id": 1,
         "track_name": "Lead",
         "beat_range": [0.0, 1.0],
+        "range_source": "explicit",
+        "filename": latest["export"]["filename"],
+        "track_count": 2,
+        "selection": {"project_track_ids": [1, 2], "range_beats": [0.0, 1.0]},
         "note_count": 3,
         "pitch_range": [36, 67],
         "tracks": [
@@ -530,3 +542,144 @@ async def test_bridge_latest_export_preview_includes_multiple_tracks(monkeypatch
             },
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_bridge_export_derives_midi_scope_from_published_selection(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        music_routes,
+        "load_project",
+        lambda: {
+            "title": "Bridge Selection",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "tracks": [
+                {
+                    "id": 1,
+                    "host_track_id": 0,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [
+                        {"pitch": 60, "start": 1, "duration": 0.5, "velocity": 96},
+                        {"pitch": 64, "start": 5, "duration": 1.0, "velocity": 96},
+                    ],
+                    "midi_events": [],
+                },
+                {
+                    "id": 2,
+                    "host_track_id": 8,
+                    "type": "instrument",
+                    "name": "Bass",
+                    "notes": [{"pitch": 36, "start": 5, "duration": 1.0, "velocity": 96}],
+                    "midi_events": [],
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(music_routes, "_audio_export_dir", lambda: tmp_path / "exports")
+    dashboard = _dashboard(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+
+    context_response = await client.post(
+        "/api/music/studio/bridge/context",
+        json={
+            "instance_id": "bridge-selection",
+            "host_context": {
+                "selection": {
+                    "range_beats": [4, 8],
+                    "host_track_ids": [0],
+                },
+                "loop_active": True,
+                "loop_range_beats": [0, 12],
+            },
+        },
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+    export_response = await client.post(
+        "/api/music/studio/bridge/export",
+        json={"format": "midi", "instance_id": "bridge-selection"},
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+
+    assert context_response.status_code == 200
+    assert export_response.status_code == 200
+    payload = await export_response.get_json()
+    assert payload["export"]["target"] == "selected_tracks"
+    assert payload["export"]["track_ids"] == [1]
+    assert payload["export"]["beat_range"] == [4.0, 8.0]
+    assert payload["export"]["bridge_export"]["range_source"] == "selection"
+    assert payload["export"]["bridge_preview"]["range_source"] == "selection"
+
+
+@pytest.mark.asyncio
+async def test_bridge_export_derives_midi_range_from_active_loop(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        music_routes,
+        "load_project",
+        lambda: {
+            "title": "Bridge Loop",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "tracks": [
+                {
+                    "id": 1,
+                    "type": "instrument",
+                    "name": "Lead",
+                    "notes": [
+                        {"pitch": 60, "start": 1, "duration": 0.5, "velocity": 96},
+                        {"pitch": 64, "start": 5, "duration": 1.0, "velocity": 96},
+                    ],
+                    "midi_events": [],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(music_routes, "_audio_export_dir", lambda: tmp_path / "exports")
+    dashboard = _dashboard(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+
+    await client.post(
+        "/api/music/studio/bridge/context",
+        json={
+            "instance_id": "bridge-loop",
+            "host_context": {"loop_active": True, "loop_range_beats": [4, 8]},
+        },
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+    export_response = await client.post(
+        "/api/music/studio/bridge/export",
+        json={"format": "midi", "instance_id": "bridge-loop"},
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+
+    assert export_response.status_code == 200
+    payload = await export_response.get_json()
+    assert payload["export"]["beat_range"] == [4.0, 8.0]
+    assert payload["export"]["bridge_export"]["range_source"] == "loop"
+
+
+@pytest.mark.asyncio
+async def test_bridge_latest_export_ignores_missing_primary_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(music_routes, "_audio_export_dir", lambda: tmp_path / "exports")
+    dashboard = _dashboard(monkeypatch, tmp_path)
+    client = dashboard.app.test_client()
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    missing_path = export_dir / "missing.mid"
+
+    music_routes._write_latest_bridge_export(  # noqa: SLF001
+        {
+            "format": "midi",
+            "path": str(missing_path),
+            "bridge_scope": {"instance_id": "bridge-missing"},
+        },
+        instance_id="bridge-missing",
+    )
+
+    response = await client.get(
+        "/api/music/studio/bridge/export/latest?instance_id=bridge-missing",
+        scope_base={"client": ("127.0.0.1", 54000)},
+    )
+
+    assert response.status_code == 200
+    assert (await response.get_json())["export"] is None

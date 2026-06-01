@@ -7,6 +7,8 @@ const api = useApi()
 
 const project = shallowRef(null)
 const projectRevision = ref('')
+const projectArchives = ref([])
+const activeProjectId = ref('')
 const host = ref({ running: false, sample_rate: 48000, buffer_size: 256, binary_path: '' })
 const engine = ref(null)
 const activeTrackId = ref(1)
@@ -69,6 +71,8 @@ function setProjectFromResponse(res) {
   const revision = responseRevision(res)
   if (res?.project) setProject(res.project, revision)
   if (res?.sync?.project) setProject(res.sync.project, responseRevision(res, revision))
+  if (res?.active_project_id) activeProjectId.value = String(res.active_project_id)
+  if (Array.isArray(res?.projects)) projectArchives.value = res.projects
 }
 
 async function loadProject() {
@@ -165,6 +169,61 @@ async function refreshHostStatus() {
       hostStreamingEnabled.value = false
     }
   } catch {}
+}
+
+async function loadProjectArchives() {
+  hostError.value = ''
+  try {
+    const res = await api.studioProjects()
+    if (Array.isArray(res.projects)) projectArchives.value = res.projects
+    if (res.active_project_id) activeProjectId.value = String(res.active_project_id)
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to load project archives'
+    return null
+  }
+}
+
+async function saveProjectCopy(title = '') {
+  loading.value = true
+  hostError.value = ''
+  try {
+    const res = await api.studioSaveProjectCopy({ title, sync: true })
+    setProjectFromResponse(res)
+    if (res.host) host.value = res.host
+    if (res.sync?.host_running || res.host?.running) {
+      host.value = { ...host.value, running: true }
+      startStatusPolling()
+    }
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to save project copy'
+    return null
+  } finally {
+    loading.value = false
+  }
+}
+
+async function openProjectArchive(projectId) {
+  const safeId = String(projectId || '').trim()
+  if (!safeId) return null
+  loading.value = true
+  hostError.value = ''
+  try {
+    const res = await api.studioOpenProject(safeId, { sync: true })
+    setProjectFromResponse(res)
+    if (res.host) host.value = res.host
+    if (res.sync?.host_running || res.host?.running) {
+      host.value = { ...host.value, running: true }
+      startStatusPolling()
+    }
+    return res
+  } catch (err) {
+    hostError.value = err.message || 'Failed to open project'
+    return null
+  } finally {
+    loading.value = false
+  }
 }
 
 async function syncProject(options = {}) {
@@ -764,6 +823,8 @@ export function useDawHost() {
   return {
     project,
     projectRevision,
+    projectArchives,
+    activeProjectId,
     host,
     engine,
     tracks,
@@ -788,6 +849,9 @@ export function useDawHost() {
     pluginParameters,
     learnedAutomationParameters,
     loadProject,
+    loadProjectArchives,
+    saveProjectCopy,
+    openProjectArchive,
     saveProject,
     refreshHostStatus,
     syncProject,

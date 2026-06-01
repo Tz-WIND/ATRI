@@ -67,6 +67,7 @@ import { useApi } from '@/composables/useApi.js'
 import { useDawHost } from '@/composables/useDawHost.js'
 import {
   bridgeAutoExportKeyForArtifact,
+  bridgeDragMetadataForExport,
   bridgeInstanceIdFromLocation,
   buildMidiArtifactPreview,
   exportPayloadForMidiArtifact,
@@ -265,10 +266,16 @@ function startMidiDrag(event) {
   const url = absoluteUrl(item?.download_url)
   if (!url || !event.dataTransfer) return
   const filename = item.filename || 'atri-midi-region.mid'
+  const metadata = bridgeDragMetadataForExport(item)
+  const metadataJson = metadata ? JSON.stringify(metadata) : ''
   event.dataTransfer.effectAllowed = 'copy'
   event.dataTransfer.setData('text/uri-list', url)
   event.dataTransfer.setData('text/plain', url)
   event.dataTransfer.setData('DownloadURL', `audio/midi:${filename}:${url}`)
+  if (metadataJson) {
+    event.dataTransfer.setData('application/json', metadataJson)
+    event.dataTransfer.setData('application/x-atri-export', metadataJson)
+  }
 }
 
 function stopPreview() {

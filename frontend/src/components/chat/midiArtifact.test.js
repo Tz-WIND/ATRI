@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   bridgeAutoExportKeyForArtifact,
+  bridgeDragMetadataForExport,
   bridgeInstanceIdFromLocation,
   buildMidiArtifactPreview,
   buildMidiArtifactView,
@@ -109,6 +110,31 @@ assert.deepEqual(payload, {
   instance_id: 'bridge 1/left',
   start_beat: 6,
   end_beat: 7.5,
+  selection_summary: {
+    range_beats: [6, 7.5],
+    project_track_ids: [3],
+  },
+})
+
+const dragMetadata = bridgeDragMetadataForExport({
+  id: 'export123',
+  format: 'midi',
+  path: 'data/music_workstation/exports/region.mid',
+  filename: 'region.mid',
+  download_url: '/api/music/studio/export/download/region.mid',
+  bridge_scope: { instance_id: 'bridge-a' },
+  bridge_export: { range_source: 'selection' },
+  bridge_preview: { kind: 'midi_region', track_count: 1 },
+})
+assert.deepEqual(dragMetadata, {
+  id: 'export123',
+  format: 'midi',
+  path: 'data/music_workstation/exports/region.mid',
+  filename: 'region.mid',
+  download_url: '/api/music/studio/export/download/region.mid',
+  bridge_scope: { instance_id: 'bridge-a' },
+  bridge_export: { range_source: 'selection' },
+  bridge_preview: { kind: 'midi_region', track_count: 1 },
 })
 
 const mutableLocation = { search: '?instance_id=bridge-a' }

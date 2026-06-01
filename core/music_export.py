@@ -124,6 +124,28 @@ def write_dawproject_archive(
     return _strip_binary_state(export)
 
 
+def read_dawproject_archive(path: Path | str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read MIDI tracks from a DAWproject archive into ATRI's project schema."""
+    from core.music_project import normalize_project
+
+    archive_path = Path(path)
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            project_xml = archive.read(_dawproject_archive_member(archive, "project.xml"))
+            metadata_xml = _dawproject_optional_member(archive, "metadata.xml")
+            metadata_bytes = archive.read(metadata_xml) if metadata_xml else b""
+    except KeyError as exc:
+        raise ValueError("DAWproject archive is missing project.xml") from exc
+    except zipfile.BadZipFile as exc:
+        raise ValueError("invalid DAWproject archive") from exc
+
+    root = _dawproject_xml_root(project_xml, "project.xml")
+    raw_project = _dawproject_raw_project(root, metadata_bytes, archive_path)
+    project = normalize_project(raw_project)
+    summary = _dawproject_import_summary(project, archive_path)
+    return project, summary
+
+
 def build_export_manifest(
     project: dict[str, Any],
     export: dict[str, Any],
@@ -132,7 +154,7 @@ def build_export_manifest(
 ) -> dict[str, Any]:
     """Build the versioned export manifest consumed by future bridge clients."""
     format_name = str(export.get("format") or "").strip().lower()
-    return {
+    manifest: dict[str, Any] = {
         "schema_version": MIDI_SCHEMA_VERSION,
         "consumer": _manifest_consumer(consumer),
         "export_id": str(export.get("id") or ""),
@@ -155,6 +177,16 @@ def build_export_manifest(
             "dawproject": format_name == "dawproject",
         },
     }
+    export_range = _manifest_range(export)
+    if export_range:
+        manifest["range"] = export_range
+    bridge = _manifest_bridge(export)
+    if bridge:
+        manifest["bridge"] = bridge
+    selection = export.get("selection_summary")
+    if isinstance(selection, dict) and selection:
+        manifest["selection"] = _manifest_public_dict(selection)
+    return manifest
 
 
 def write_export_manifest(path: Path | str, manifest: dict[str, Any]) -> None:
@@ -429,6 +461,326 @@ def _dawproject_metadata_xml(project: dict[str, Any]) -> bytes:
     return cast(bytes, ElementTree.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
+def _dawproject_archive_member(archive: zipfile.ZipFile, filename: str) -> str:
+    requested = filename.lower()
+    for name in archive.namelist():
+        if name.lower() == requested:
+            return name
+    raise KeyError(filename)
+
+
+def _dawproject_optional_member(archive: zipfile.ZipFile, filename: str) -> str | None:
+    try:
+        return _dawproject_archive_member(archive, filename)
+    except KeyError:
+        return None
+
+
+def _dawproject_raw_project(
+    root: ElementTree.Element,
+    metadata_xml: bytes,
+    archive_path: Path,
+) -> dict[str, Any]:
+    tracks_by_ref = _dawproject_structure_tracks(root)
+    ordered_refs = list(tracks_by_ref)
+
+    for lane_index, lane in enumerate(_xml_iter(root, "Lane"), start=1):
+        track_ref = _xml_attr(lane, "track", "trackId", "target", "id") or f"track_{lane_index}"
+        if track_ref not in tracks_by_ref:
+            tracks_by_ref[track_ref] = _dawproject_track_template(
+                None,
+                len(tracks_by_ref) + 1,
+                _track_ref=track_ref,
+            )
+            ordered_refs.append(track_ref)
+        tracks_by_ref[track_ref]["clips"].extend(_dawproject_midi_clips(lane, track_ref))
+
+    title = _dawproject_metadata_title(metadata_xml) or _xml_attr(root, "name", "title")
+    if not title:
+        title = archive_path.stem or "Imported DAWproject"
+
+    return {
+        "title": title,
+        "tempo": _dawproject_tempo(root),
+        "time_signature": _dawproject_time_signature(root),
+        "length_beats": _dawproject_length_beats(tracks_by_ref.values()),
+        "tracks": [tracks_by_ref[track_ref] for track_ref in ordered_refs],
+    }
+
+
+def _dawproject_structure_tracks(root: ElementTree.Element) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for index, track_element in enumerate(_xml_iter(root, "Track"), start=1):
+        track_ref = _xml_attr(track_element, "id", "track", "trackId") or f"track_{index}"
+        if track_ref in result:
+            continue
+        result[track_ref] = _dawproject_track_template(
+            track_element,
+            index,
+            _track_ref=track_ref,
+        )
+    return result
+
+
+def _dawproject_track_template(
+    track_element: ElementTree.Element | None,
+    index: int,
+    *,
+    _track_ref: str,
+) -> dict[str, Any]:
+    track_type = _dawproject_track_type(_xml_attr(track_element, "type", "role"))
+    channel = _xml_first_child(track_element, "Channel") if track_element is not None else None
+    return {
+        "id": index,
+        "host_track_id": None,
+        "type": track_type,
+        "channel_type": "multichannel",
+        "name": _xml_attr(track_element, "name", "label") or f"Track {index}",
+        "color": _xml_attr(track_element, "color") or "",
+        "volume": _xml_float_attr(channel, ("volume",), 0.8),
+        "pan": _xml_float_attr(channel, ("pan",), 0.0),
+        "mute": _xml_bool_attr(channel, ("mute",), False),
+        "solo": _xml_bool_attr(channel, ("solo",), False),
+        "instrument": "Audio Track" if track_type == "audio" else "ATRI Basic Synth",
+        "plugin_slots": [],
+        "output_bus_id": None,
+        "sends": [],
+        "clips": [],
+        "notes": [],
+        "midi_events": [],
+    }
+
+
+def _dawproject_track_type(raw_type: str) -> str:
+    value = raw_type.strip().lower()
+    if "audio" in value:
+        return "audio"
+    if "bus" in value or "group" in value or "master" in value:
+        return "bus"
+    return "instrument"
+
+
+def _dawproject_midi_clips(lane: ElementTree.Element, track_ref: str) -> list[dict[str, Any]]:
+    clips: list[dict[str, Any]] = []
+    safe_track_ref = _dawproject_safe_token(track_ref) or "track"
+    for clip_index, clip_element in enumerate(_xml_iter(lane, "Clip"), start=1):
+        notes = _dawproject_clip_notes(clip_element, safe_track_ref, clip_index)
+        if not notes:
+            continue
+        clip_start = _xml_float_attr(clip_element, ("time", "start"), 0.0)
+        clip_duration = _xml_float_attr(
+            clip_element,
+            ("duration", "length"),
+            _dawproject_notes_duration(notes),
+        )
+        clips.append(
+            {
+                "id": _xml_attr(clip_element, "id") or f"{safe_track_ref}_clip_{clip_index}",
+                "type": "midi",
+                "name": _xml_attr(clip_element, "name", "label") or "MIDI Clip",
+                "start": clip_start,
+                "duration": max(clip_duration, _dawproject_notes_duration(notes), 0.25),
+                "notes": notes,
+                "events": [],
+            }
+        )
+    return clips
+
+
+def _dawproject_clip_notes(
+    clip_element: ElementTree.Element,
+    safe_track_ref: str,
+    clip_index: int,
+) -> list[dict[str, Any]]:
+    notes: list[dict[str, Any]] = []
+    for note_index, note_element in enumerate(_xml_iter(clip_element, "Note"), start=1):
+        pitch = _xml_int_attr(note_element, ("key", "pitch", "note"), 60)
+        duration = _xml_float_attr(note_element, ("duration", "length"), 0.25)
+        notes.append(
+            {
+                "id": _xml_attr(note_element, "id")
+                or f"{safe_track_ref}_clip_{clip_index}_note_{note_index}",
+                "pitch": max(0, min(127, pitch)),
+                "start": _xml_float_attr(note_element, ("time", "start"), 0.0),
+                "duration": max(1.0 / MIDI_TICKS_PER_BEAT, duration),
+                "velocity": _dawproject_velocity(_xml_attr(note_element, "velocity", "vel")),
+            }
+        )
+    notes.sort(key=lambda note: (note["start"], note["pitch"], note["duration"]))
+    return notes
+
+
+def _dawproject_tempo(root: ElementTree.Element) -> float:
+    tempo = _xml_first(root, "Tempo")
+    return _xml_float_attr(tempo, ("value", "tempo", "bpm"), 120.0)
+
+
+def _dawproject_time_signature(root: ElementTree.Element) -> list[int]:
+    signature = _xml_first(root, "TimeSignature")
+    numerator = _xml_int_attr(signature, ("numerator", "num"), 4)
+    denominator = _xml_int_attr(signature, ("denominator", "den"), 4)
+    return [numerator, denominator]
+
+
+def _dawproject_metadata_title(metadata_xml: bytes) -> str:
+    if not metadata_xml:
+        return ""
+    try:
+        root = _dawproject_xml_root(metadata_xml, "metadata.xml")
+    except ValueError as exc:
+        if "unsafe XML" in str(exc):
+            raise
+        return ""
+    title = _xml_first(root, "Title")
+    return str(title.text or "").strip() if title is not None else ""
+
+
+def _dawproject_xml_root(data: bytes, filename: str) -> ElementTree.Element:
+    if _xml_contains_unsafe_markup(data):
+        raise ValueError(f"DAWproject {filename} contains unsafe XML markup")
+    try:
+        return ElementTree.fromstring(data)  # noqa: S314 - DTD/entity markup is rejected above.
+    except ElementTree.ParseError as exc:
+        raise ValueError(f"DAWproject {filename} is invalid") from exc
+
+
+def _xml_contains_unsafe_markup(data: bytes) -> bool:
+    lowered = data.lower()
+    return b"<!doctype" in lowered or b"<!entity" in lowered
+
+
+def _dawproject_length_beats(tracks: Any) -> float:
+    end = 0.0
+    for track in tracks:
+        for clip in track.get("clips", []):
+            if not isinstance(clip, dict):
+                continue
+            end = max(
+                end,
+                float(clip.get("start", 0.0) or 0.0) + float(clip.get("duration", 0.0) or 0.0),
+            )
+    return max(16.0, end)
+
+
+def _dawproject_import_summary(project: dict[str, Any], archive_path: Path) -> dict[str, Any]:
+    midi_clip_count = sum(
+        1
+        for track in project.get("tracks", [])
+        for clip in track.get("clips", [])
+        if isinstance(clip, dict) and clip.get("type") == "midi"
+    )
+    note_count = sum(len(track.get("notes", [])) for track in project.get("tracks", []))
+    return {
+        "source": str(archive_path),
+        "format": "dawproject",
+        "track_count": len(project.get("tracks", [])),
+        "midi_clip_count": midi_clip_count,
+        "note_count": note_count,
+        "tempo": _positive_float(project.get("tempo"), 120.0),
+        "time_signature": _project_meter(project),
+    }
+
+
+def _dawproject_notes_duration(notes: list[dict[str, Any]]) -> float:
+    return max(
+        (
+            float(note.get("start", 0.0) or 0.0) + float(note.get("duration", 0.0) or 0.0)
+            for note in notes
+        ),
+        default=0.25,
+    )
+
+
+def _dawproject_velocity(raw: str) -> int:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 96
+    if value <= 1.0:
+        value *= 127.0
+    return max(1, min(127, round(value)))
+
+
+def _dawproject_safe_token(value: str) -> str:
+    return "".join(char if char.isalnum() or char == "_" else "_" for char in value).strip("_")
+
+
+def _xml_name(element: ElementTree.Element) -> str:
+    return str(element.tag).rsplit("}", 1)[-1]
+
+
+def _xml_iter(element: ElementTree.Element, name: str):
+    for item in element.iter():
+        if _xml_name(item) == name:
+            yield item
+
+
+def _xml_first(element: ElementTree.Element, name: str) -> ElementTree.Element | None:
+    return next(_xml_iter(element, name), None)
+
+
+def _xml_first_child(
+    element: ElementTree.Element | None,
+    name: str,
+) -> ElementTree.Element | None:
+    if element is None:
+        return None
+    return next((child for child in list(element) if _xml_name(child) == name), None)
+
+
+def _xml_attr(element: ElementTree.Element | None, *names: str) -> str:
+    if element is None:
+        return ""
+    for name in names:
+        value = element.attrib.get(name)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _xml_float_attr(
+    element: ElementTree.Element | None,
+    names: tuple[str, ...],
+    default: float,
+) -> float:
+    for name in names:
+        raw = _xml_attr(element, name)
+        if not raw:
+            continue
+        try:
+            return float(raw)
+        except ValueError:
+            continue
+    return default
+
+
+def _xml_int_attr(
+    element: ElementTree.Element | None,
+    names: tuple[str, ...],
+    default: int,
+) -> int:
+    for name in names:
+        raw = _xml_attr(element, name)
+        if not raw:
+            continue
+        try:
+            return int(float(raw))
+        except ValueError:
+            continue
+    return default
+
+
+def _xml_bool_attr(
+    element: ElementTree.Element | None,
+    names: tuple[str, ...],
+    default: bool,
+) -> bool:
+    raw = _xml_attr(element, *names)
+    if not raw:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _append_track_xml(
     structure: ElementTree.Element,
     arrangement: ElementTree.Element,
@@ -683,6 +1035,50 @@ def _manifest_warnings(export: dict[str, Any]) -> list[str]:
     if not isinstance(warnings, list):
         return []
     return [str(warning) for warning in warnings if warning]
+
+
+def _manifest_range(export: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    beat_range = export.get("beat_range")
+    if isinstance(beat_range, list | tuple) and len(beat_range) >= 2:
+        result["beat_range"] = [float(beat_range[0]), float(beat_range[1])]
+    time_range = export.get("time_range_seconds")
+    if isinstance(time_range, list | tuple) and len(time_range) >= 2:
+        result["time_range_seconds"] = [float(time_range[0]), float(time_range[1])]
+    bridge_export = export.get("bridge_export")
+    if isinstance(bridge_export, dict) and bridge_export.get("range_source"):
+        result["source"] = str(bridge_export.get("range_source"))
+    return result
+
+
+def _manifest_bridge(export: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    scope = export.get("bridge_scope")
+    if isinstance(scope, dict) and scope:
+        result["scope"] = _manifest_public_dict(scope)
+    bridge_export = export.get("bridge_export")
+    if isinstance(bridge_export, dict) and bridge_export:
+        result["export"] = _manifest_public_dict(bridge_export)
+    preview = export.get("bridge_preview")
+    if isinstance(preview, dict) and preview:
+        result["preview"] = _manifest_public_dict(preview)
+    return result
+
+
+def _manifest_public_dict(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): _manifest_public_value(item) for key, item in value.items() if item is not None
+    }
+
+
+def _manifest_public_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _manifest_public_dict(value)
+    if isinstance(value, list | tuple):
+        return [_manifest_public_value(item) for item in value]
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    return str(value)
 
 
 def _archive_file_entry(path: Path) -> dict[str, str]:

@@ -1,6 +1,7 @@
 import pytest
 
 from core.music_project import (
+    active_project_archive_id,
     automation_diff,
     automation_learned_parameter_rename,
     automation_learned_parameter_upsert,
@@ -12,6 +13,7 @@ from core.music_project import (
     create_track,
     delete_track,
     import_audio_clip,
+    list_project_archives,
     load_project,
     midi_batch_edit,
     midi_diff,
@@ -22,6 +24,8 @@ from core.music_project import (
     piano_lane_write,
     project_summary,
     save_project,
+    save_project_as_archive,
+    set_active_project_archive,
     set_track_plugin,
     update_track,
 )
@@ -60,6 +64,37 @@ def test_create_track_supports_instrument_and_audio_track_types(tmp_path, monkey
     assert audio_track["type"] == "audio"
     assert audio_track["channel_type"] == "mono"
     assert audio_track["plugin_slots"] == []
+
+
+def test_project_archives_keep_multiple_host_projects(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    save_project({"title": "First Idea", "tracks": [{"id": 1, "name": "Lead"}]})
+    first_id = active_project_archive_id()
+    first_path = tmp_path / "data" / "music_workstation" / "projects" / f"{first_id}.json"
+
+    save_project_as_archive(
+        {"title": "Second Idea", "tracks": [{"id": 1, "name": "Bass"}]},
+        activate=True,
+    )
+    second_id = active_project_archive_id()
+    second_path = tmp_path / "data" / "music_workstation" / "projects" / f"{second_id}.json"
+
+    assert first_id
+    assert second_id
+    assert second_id != first_id
+    assert first_path.exists()
+    assert second_path.exists()
+
+    archives = list_project_archives()
+    assert {archive["title"] for archive in archives} >= {"First Idea", "Second Idea"}
+    assert next(archive for archive in archives if archive["id"] == second_id)["active"] is True
+    assert load_project()["title"] == "Second Idea"
+
+    restored = set_active_project_archive(first_id)
+
+    assert restored["title"] == "First Idea"
+    assert load_project()["title"] == "First Idea"
 
 
 def test_create_track_supports_bus_tracks_and_output_routing(tmp_path, monkeypatch):

@@ -2,7 +2,14 @@ import base64
 import json
 import zipfile
 
-from core.music_export import build_export_manifest, write_dawproject_archive, write_project_midi
+import pytest
+
+from core.music_export import (
+    build_export_manifest,
+    read_dawproject_archive,
+    write_dawproject_archive,
+    write_project_midi,
+)
 
 
 def test_write_project_midi_with_notes_should_create_type_one_file(tmp_path):
@@ -64,6 +71,40 @@ def test_build_export_manifest_should_include_bridge_contract_fields():
     assert manifest["project"]["tempo"] == 128.0
     assert manifest["files"][0]["filename"] == "export123.mid"
     assert manifest["capabilities"]["midi"] is True
+
+
+def test_build_export_manifest_should_include_bridge_preview_and_selection_summary():
+    project = {"title": "Bridge Selection", "tempo": 128, "time_signature": [4, 4]}
+    export = {
+        "id": "export456",
+        "format": "midi",
+        "beat_range": [4.0, 8.0],
+        "bridge_scope": {"instance_id": "bridge-selection"},
+        "bridge_export": {
+            "source": "bridge",
+            "range_source": "selection",
+            "primary_file": "selection.mid",
+        },
+        "bridge_preview": {
+            "kind": "midi_region",
+            "filename": "selection.mid",
+            "range_source": "selection",
+            "track_count": 1,
+        },
+        "selection_summary": {
+            "range_beats": [4.0, 8.0],
+            "project_track_ids": [3],
+        },
+        "files": [{"role": "midi", "filename": "selection.mid"}],
+    }
+
+    manifest = build_export_manifest(project, export, consumer="bridge")
+
+    assert manifest["range"] == {"beat_range": [4.0, 8.0], "source": "selection"}
+    assert manifest["bridge"]["scope"] == {"instance_id": "bridge-selection"}
+    assert manifest["bridge"]["export"]["range_source"] == "selection"
+    assert manifest["bridge"]["preview"]["track_count"] == 1
+    assert manifest["selection"] == {"range_beats": [4.0, 8.0], "project_track_ids": [3]}
 
 
 def test_write_project_midi_with_selected_track_ids_should_filter_tracks(tmp_path):
@@ -220,6 +261,97 @@ def test_write_dawproject_archive_should_preserve_plugin_state_files(tmp_path):
     assert manifest["consumer"] == "bridge"
     assert manifest["capabilities"]["dawproject"] is True
     assert manifest["plugin_states"][0]["state_sha256"]
+
+
+def test_read_dawproject_archive_should_import_midi_tracks(tmp_path):
+    archive_path = tmp_path / "host-session.dawproject"
+    project_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<Project version="1.0" application="Host DAW">
+  <Transport>
+    <Tempo value="132"/>
+    <TimeSignature numerator="3" denominator="4"/>
+  </Transport>
+  <Structure>
+    <Track id="track_lead" name="Host Lead" color="#4e79ff" type="instrument">
+      <Channel volume="0.7" pan="-0.25" mute="false" solo="true"/>
+    </Track>
+    <Track id="track_bass" name="Host Bass" type="instrument"/>
+  </Structure>
+  <Arrangement>
+    <Lane track="track_lead">
+      <Clip name="Lead Phrase" time="4" duration="2">
+        <Notes>
+          <Note time="0.5" duration="0.75" key="64" velocity="0.75" channel="1"/>
+          <Note time="1.0" duration="0.5" key="67" velocity="96"/>
+        </Notes>
+      </Clip>
+    </Lane>
+    <Lane track="track_bass">
+      <Clip time="0" duration="1">
+        <Notes>
+          <Note time="0" duration="1" key="36" velocity="0.5"/>
+        </Notes>
+      </Clip>
+    </Lane>
+  </Arrangement>
+</Project>
+"""
+    metadata_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<MetaData>
+  <Title>Host Session</Title>
+  <Application name="Host DAW"/>
+</MetaData>
+"""
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("project.xml", project_xml)
+        archive.writestr("metadata.xml", metadata_xml)
+
+    project, summary = read_dawproject_archive(archive_path)
+
+    assert project["title"] == "Host Session"
+    assert project["tempo"] == 132.0
+    assert project["time_signature"] == [3, 4]
+    assert summary == {
+        "source": str(archive_path),
+        "format": "dawproject",
+        "track_count": 2,
+        "midi_clip_count": 2,
+        "note_count": 3,
+        "tempo": 132.0,
+        "time_signature": [3, 4],
+    }
+    lead = project["tracks"][0]
+    assert lead["name"] == "Host Lead"
+    assert lead["color"] == "#4e79ff"
+    assert lead["volume"] == 0.7
+    assert lead["pan"] == -0.25
+    assert lead["solo"] is True
+    assert lead["clips"][0]["start"] == 4.0
+    assert lead["clips"][0]["notes"][0] == {
+        "id": "track_lead_clip_1_note_1",
+        "pitch": 64,
+        "start": 0.5,
+        "duration": 0.75,
+        "velocity": 95,
+    }
+    assert lead["notes"][0]["start"] == 4.5
+
+
+def test_read_dawproject_archive_should_reject_dtd_entities(tmp_path):
+    archive_path = tmp_path / "unsafe.dawproject"
+    project_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Project [
+  <!ENTITY unsafe "bad">
+]>
+<Project name="&unsafe;">
+  <Transport><Tempo value="120"/></Transport>
+</Project>
+"""
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("project.xml", project_xml)
+
+    with pytest.raises(ValueError, match="unsafe XML"):
+        read_dawproject_archive(archive_path)
 
 
 def test_write_dawproject_archive_should_only_embed_workspace_audio_files(tmp_path):

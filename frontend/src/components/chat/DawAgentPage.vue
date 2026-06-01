@@ -9,6 +9,52 @@
       class="daw-agent-messages"
     >
       <div
+        v-if="hostProjectSyncStatus"
+        class="host-sync-status"
+        role="status"
+      >
+        {{ hostProjectSyncStatus }}
+      </div>
+      <div
+        v-if="workspace === 'host_project'"
+        class="dawproject-snapshot-panel"
+      >
+        <div class="snapshot-main">
+          <span class="snapshot-label">DAWproject snapshot</span>
+          <span class="snapshot-value">{{ snapshotStatusLabel }}</span>
+        </div>
+        <label class="snapshot-toggle">
+          <input
+            v-model="autoImportOnSend"
+            type="checkbox"
+          >
+          <span>Import snapshot on send</span>
+        </label>
+        <div class="snapshot-actions">
+          <button
+            type="button"
+            class="snapshot-button"
+            @click="loadDawprojectSnapshotStatus"
+          >
+            Refresh
+          </button>
+          <button
+            type="button"
+            class="snapshot-button"
+            @click="copySnapshotFolderPath"
+          >
+            Copy folder path
+          </button>
+          <button
+            type="button"
+            class="snapshot-button"
+            @click="requestStudioOneSnapshotExport"
+          >
+            Request Studio One export
+          </button>
+        </div>
+      </div>
+      <div
         v-if="messages.length === 0"
         class="empty-state"
       >
@@ -106,6 +152,21 @@ const hostName = ref(params.get('host') || 'Studio One')
 const agentMode = ref('agent')
 const modePending = ref(false)
 const chatArea = ref(null)
+const AUTO_IMPORT_STORAGE_KEY = 'atri.daw-agent.host-project-auto-import'
+
+function readAutoImportPreference() {
+  try {
+    const stored = localStorage.getItem(AUTO_IMPORT_STORAGE_KEY)
+    if (stored === '0' || stored === 'false') return false
+    if (stored === '1' || stored === 'true') return true
+  } catch {}
+  return true
+}
+
+const hostProjectSyncStatus = ref('')
+const snapshotStatus = ref(null)
+const snapshotStatusPending = ref(false)
+const autoImportOnSend = ref(readAutoImportPreference())
 let handledEventCount = 0
 let processingEvents = false
 
@@ -122,6 +183,18 @@ const showThinkingIndicator = computed(() =>
   sending.value && !thinkingBlock.value && !hasExecutingTool.value,
 )
 
+const snapshotStatusLabel = computed(() => {
+  const snapshot = snapshotStatus.value?.latest_snapshot
+  if (snapshot?.filename) {
+    return `${snapshot.filename}${snapshot.ready ? '' : ' (not ready)'}`
+  }
+  const request = snapshotStatus.value?.export_request
+  if (request?.host) {
+    return `Awaiting ${request.host} export`
+  }
+  return 'Export DAWproject to this folder before sending'
+})
+
 function scrollToBottom() {
   nextTick(() => {
     if (chatArea.value) {
@@ -132,6 +205,11 @@ function scrollToBottom() {
 
 function setWorkspace(nextWorkspace) {
   workspace.value = nextWorkspace === 'host_project' ? 'host_project' : 'atri_studio'
+  if (workspace.value !== 'host_project') {
+    hostProjectSyncStatus.value = ''
+  } else {
+    loadDawprojectSnapshotStatus()
+  }
 }
 
 async function handleSend(payload) {
@@ -143,6 +221,10 @@ async function handleSend(payload) {
   clearToolCards()
   addMessage('user', text, false)
   sending.value = true
+  const hostAutoImport = workspace.value === 'host_project' && autoImportOnSend.value
+  hostProjectSyncStatus.value = hostAutoImport
+    ? 'Importing latest DAWproject snapshot...'
+    : ''
   scrollToBottom()
 
   try {
@@ -151,6 +233,8 @@ async function handleSend(payload) {
       projectSessionId: projectSessionId.value,
       instanceId: instanceId.value,
       workspace: workspace.value,
+      syncHostProject: hostAutoImport,
+      requestHostExport: false,
       hostContext: {
         host: hostName.value,
         workspace: workspace.value,
@@ -162,9 +246,14 @@ async function handleSend(payload) {
     if (result.error) {
       addMessage('assistant', `Error: ${result.error}`, false)
     } else {
+      hostProjectSyncStatus.value = formatHostProjectSyncStatus(result.host_project_sync)
+      await loadDawprojectSnapshotStatus()
       await addAssistantHttpResponse(result)
     }
   } catch (err) {
+    if (workspace.value === 'host_project') {
+      hostProjectSyncStatus.value = 'DAWproject snapshot import not completed'
+    }
     addMessage('assistant', `Connection error: ${err.message}`, false)
   } finally {
     sending.value = false
@@ -172,6 +261,63 @@ async function handleSend(payload) {
     clearToolCards()
     scrollToBottom()
   }
+}
+
+async function loadDawprojectSnapshotStatus() {
+  if (snapshotStatusPending.value) return
+  snapshotStatusPending.value = true
+  try {
+    snapshotStatus.value = await api.studioDawprojectSnapshotStatus()
+  } finally {
+    snapshotStatusPending.value = false
+  }
+}
+
+async function requestStudioOneSnapshotExport() {
+  const result = await api.studioDawprojectSnapshotRequestExport({
+    host: 'Studio One',
+    source: 'daw_agent',
+    instance_id: instanceId.value,
+  })
+  snapshotStatus.value = {
+    ...(snapshotStatus.value || {}),
+    export_request: result.request,
+  }
+  hostProjectSyncStatus.value = 'Studio One DAWproject export requested'
+}
+
+async function copySnapshotFolderPath() {
+  const path = snapshotStatus.value?.inbox_path || ''
+  if (!path) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(path)
+    } else {
+      throw new Error('clipboard unavailable')
+    }
+    hostProjectSyncStatus.value = 'DAWproject snapshot folder path copied'
+  } catch {
+    hostProjectSyncStatus.value = `Snapshot folder: ${path}`
+  }
+}
+
+function formatHostProjectSyncStatus(sync) {
+  if (!sync || typeof sync !== 'object') return ''
+  const filename = sync.filename || 'latest export'
+  const notes = Number(sync.note_count || 0)
+  if (sync.status === 'imported') {
+    return `Imported DAWproject snapshot: ${filename} (${notes} notes)`
+  }
+  if (sync.status === 'unchanged') {
+    return `DAWproject snapshot already imported: ${filename} (${notes} notes)`
+  }
+  if (sync.status === 'missing') {
+    return 'No DAWproject snapshot found'
+  }
+  if (sync.status === 'error') {
+    return `DAWproject snapshot import failed: ${sync.error || filename}`
+  }
+  return ''
 }
 
 async function handleCancel() {
@@ -226,8 +372,17 @@ watch(events, () => {
 
 watch(messages, () => scrollToBottom(), { deep: true })
 
+watch(autoImportOnSend, (enabled) => {
+  try {
+    localStorage.setItem(AUTO_IMPORT_STORAGE_KEY, enabled ? '1' : '0')
+  } catch {}
+})
+
 onMounted(async () => {
   await loadProjectTranscript()
+  if (workspace.value === 'host_project') {
+    await loadDawprojectSnapshotStatus().catch(() => null)
+  }
   await loadStatus().catch(() => null)
   try {
     const data = await api.getAgentMode()
@@ -270,6 +425,92 @@ onMounted(async () => {
   min-height: 0;
   overflow-y: auto;
   padding: 18px 18px 10px;
+}
+
+.host-sync-status {
+  width: fit-content;
+  max-width: min(900px, 100%);
+  margin: 0 auto 12px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--t3);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.dawproject-snapshot-panel {
+  max-width: 900px;
+  margin: 0 auto 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.snapshot-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.snapshot-label {
+  flex-shrink: 0;
+  color: var(--t2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.snapshot-value {
+  min-width: 0;
+  color: var(--t3);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.snapshot-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  color: var(--t3);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.snapshot-toggle input {
+  margin: 0;
+  accent-color: var(--acc2);
+}
+
+.snapshot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.snapshot-button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--t2);
+  font-size: 11px;
+}
+
+.snapshot-button:hover {
+  color: var(--t1);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .empty-state {

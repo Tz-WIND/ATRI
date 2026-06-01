@@ -11,7 +11,7 @@ pub(crate) fn publish_host_context(host_context: BridgeHostContext) {
 }
 
 pub(crate) fn latest_host_context() -> Option<BridgeHostContext> {
-    *lock_recover(latest_store())
+    (*lock_recover(latest_store())).clone()
 }
 
 fn latest_store() -> &'static Mutex<Option<BridgeHostContext>> {
@@ -86,10 +86,11 @@ mod tests {
             is_playing: Some(true),
             tempo_bpm: Some(120.0),
             time_signature: Some([4, 4]),
+            ..BridgeHostContext::default()
         };
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let mut latest = latest_store().lock().unwrap();
-            *latest = Some(host_context);
+            *latest = Some(host_context.clone());
             panic!("poison host context");
         }));
 

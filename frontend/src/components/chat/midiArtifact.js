@@ -121,6 +121,10 @@ export function exportPayloadForMidiArtifact(view, format, options = {}) {
       consumer: 'bridge',
       start_beat: start,
       end_beat: end,
+      selection_summary: {
+        range_beats: [start, end],
+        project_track_ids: [trackId],
+      },
     }
     const instanceId = String(options.instanceId || options.instance_id || '').trim()
     if (instanceId) payload.instance_id = instanceId
@@ -137,6 +141,24 @@ export function exportPayloadForMidiArtifact(view, format, options = {}) {
     start: beatsToSeconds(view.project, start),
     end: beatsToSeconds(view.project, end),
   }
+}
+
+export function bridgeDragMetadataForExport(exportItem) {
+  if (!exportItem || typeof exportItem !== 'object') return null
+  return copyKnownFields(exportItem, [
+    'id',
+    'format',
+    'path',
+    'filename',
+    'download_url',
+    'bridge_scope',
+    'bridge_export',
+    'bridge_preview',
+    'selection_summary',
+    'beat_range',
+    'track_ids',
+    'tracks',
+  ])
 }
 
 function editedRangeForTool(toolName, args, notes, events) {
@@ -318,6 +340,16 @@ function sortEvents(a, b) {
 
 function stableJson(value) {
   return JSON.stringify(sortStable(value))
+}
+
+function copyKnownFields(source, keys) {
+  const result = {}
+  for (const key of keys) {
+    if (source[key] !== undefined && source[key] !== null) {
+      result[key] = sortStable(source[key])
+    }
+  }
+  return Object.keys(result).length ? result : null
 }
 
 function sortStable(value) {

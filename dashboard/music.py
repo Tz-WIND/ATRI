@@ -14,6 +14,7 @@ import subprocess
 import time
 import zipfile
 from copy import deepcopy
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from itertools import pairwise
 from pathlib import Path
@@ -26,11 +27,13 @@ from quart import Blueprint, Response, jsonify, request, send_file
 from core.music_export import (
     MIDI_SCHEMA_VERSION,
     build_export_manifest,
+    read_dawproject_archive,
     write_dawproject_archive,
     write_export_manifest,
     write_project_midi,
 )
 from core.music_project import (
+    active_project_archive_id,
     automation_diff,
     automation_learned_parameter_rename,
     automation_learned_parameter_upsert,
@@ -41,6 +44,7 @@ from core.music_project import (
     default_project,
     find_track,
     import_audio_clip,
+    list_project_archives,
     load_project,
     midi_diff,
     midi_write,
@@ -48,6 +52,8 @@ from core.music_project import (
     normalize_project,
     project_summary,
     save_project,
+    save_project_as_archive,
+    set_active_project_archive,
     set_track_plugin,
 )
 from core.music_project import (
@@ -61,7 +67,18 @@ from core.music_project import (
 )
 from core.platform.daw_agent import normalize_daw_host_context
 from core.utils import atomic_write_text
+from dashboard import host_dawproject_sync
+from dashboard.host_dawproject_sync import (
+    dawproject_snapshot_status,
+    request_host_dawproject_snapshot_export,
+)
 from dashboard.routes._helpers import resolve_workspace_path
+
+# Re-exported for routes/tests that patch `dashboard.music`.
+host_project_sync_prompt_context = host_dawproject_sync.host_project_sync_prompt_context
+sync_latest_host_dawproject_for_daw_agent = (
+    host_dawproject_sync.sync_latest_host_dawproject_for_daw_agent
+)
 
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
@@ -326,6 +343,193 @@ def _export_midi_beat_range(payload: dict[str, Any]) -> tuple[float, float] | No
     if end <= start:
         raise StudioExportError("end_beat must be after start_beat")
     return start, end
+
+
+def _payload_has_explicit_midi_beat_range(payload: dict[str, Any]) -> bool:
+    return "beat_range" in payload or "start_beat" in payload or "end_beat" in payload
+
+
+def _payload_has_explicit_time_range(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in ("start", "end", "start_seconds", "end_seconds"))
+
+
+def _bridge_context_for_export_payload(payload: dict[str, Any], consumer: str) -> dict[str, Any]:
+    if consumer != "bridge":
+        return {}
+
+    context = bridge_host_context_for_instance(_bridge_export_instance_id(payload))
+    raw_context = payload.get("host_context")
+    if isinstance(raw_context, dict):
+        try:
+            explicit_context = normalize_daw_host_context(raw_context, strict=True)
+        except ValueError as exc:
+            raise StudioExportError(str(exc), 400) from exc
+        context = {**context, **explicit_context}
+    return context
+
+
+def _bridge_beat_range_for_context(
+    payload: dict[str, Any],
+    host_context: dict[str, Any],
+) -> tuple[tuple[float, float] | None, str]:
+    explicit = _export_midi_beat_range(payload)
+    if explicit is not None:
+        return explicit, "explicit"
+
+    selection = host_context.get("selection")
+    if isinstance(selection, dict):
+        selection_range = _bridge_range_from_value(selection.get("range_beats"))
+        if selection_range:
+            return selection_range, "selection"
+
+    if host_context.get("loop_active") is True:
+        loop_range = _bridge_range_from_value(host_context.get("loop_range_beats"))
+        if loop_range:
+            return loop_range, "loop"
+
+    return None, "project"
+
+
+def _bridge_range_from_value(value: Any) -> tuple[float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return None
+    try:
+        start = max(0.0, float(value[0]))
+        end = float(value[1])
+    except (TypeError, ValueError):
+        return None
+    if end <= start:
+        return None
+    return start, end
+
+
+def _bridge_midi_scope_for_payload(
+    project: dict[str, Any],
+    payload: dict[str, Any],
+    target: str,
+    consumer: str,
+    host_context: dict[str, Any],
+) -> tuple[str, list[int] | None]:
+    explicit_track_ids = isinstance(payload.get("track_ids"), list) and bool(
+        payload.get("track_ids")
+    )
+    target_was_explicit = "target" in payload or "scope" in payload
+    if consumer == "bridge" and not explicit_track_ids:
+        selection_track_ids = _bridge_selection_track_ids(project, host_context)
+        if selection_track_ids and (not target_was_explicit or target == "selected_tracks"):
+            return "selected_tracks", selection_track_ids
+    return target, _midi_track_ids_for_payload(project, payload, target)
+
+
+def _bridge_selection_track_ids(
+    project: dict[str, Any],
+    host_context: dict[str, Any],
+) -> list[int] | None:
+    selection = host_context.get("selection")
+    if not isinstance(selection, dict):
+        return None
+    project_track_ids = _bridge_project_track_ids(project, selection.get("project_track_ids"))
+    if project_track_ids:
+        return project_track_ids
+    return _bridge_project_track_ids_from_host_ids(project, selection.get("host_track_ids"))
+
+
+def _bridge_project_track_ids(project: dict[str, Any], raw_ids: Any) -> list[int] | None:
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return None
+    track_ids: list[int] = []
+    for raw_id in raw_ids:
+        try:
+            track = find_track(project, int(raw_id))
+        except (TypeError, ValueError):
+            continue
+        if _is_automation_track(track):
+            continue
+        track_ids.append(int(track["id"]))
+    return list(dict.fromkeys(track_ids)) or None
+
+
+def _bridge_project_track_ids_from_host_ids(
+    project: dict[str, Any],
+    raw_host_ids: Any,
+) -> list[int] | None:
+    if not isinstance(raw_host_ids, list) or not raw_host_ids:
+        return None
+    wanted = {str(item) for item in raw_host_ids}
+    track_ids: list[int] = []
+    for track in project.get("tracks", []):
+        if not isinstance(track, dict) or _is_automation_track(track):
+            continue
+        host_id = track.get("host_track_id")
+        if host_id is None:
+            continue
+        if str(host_id) in wanted:
+            try:
+                track_ids.append(int(track["id"]))
+            except (TypeError, ValueError):
+                continue
+    return list(dict.fromkeys(track_ids)) or None
+
+
+def _bridge_selection_summary(
+    payload: dict[str, Any],
+    host_context: dict[str, Any],
+    *,
+    track_ids: list[int] | None,
+    beat_range: tuple[float, float] | None,
+    range_source: str,
+) -> dict[str, Any] | None:
+    raw_summary = payload.get("selection_summary")
+    summary = deepcopy(raw_summary) if isinstance(raw_summary, dict) else {}
+    selection = host_context.get("selection")
+    if isinstance(selection, dict):
+        summary.update(deepcopy(selection))
+    if beat_range and range_source in {"selection", "explicit"}:
+        summary.setdefault("range_beats", [float(beat_range[0]), float(beat_range[1])])
+    if track_ids:
+        summary.setdefault("project_track_ids", [int(track_id) for track_id in track_ids])
+    return summary or None
+
+
+def _beat_to_seconds(
+    project: dict[str, Any],
+    beat: float,
+    host_context: dict[str, Any],
+) -> float:
+    """Convert musical beats to seconds using a single constant tempo."""
+    tempo = _bridge_context_tempo(host_context) or _project_tempo(project)
+    return max(0.0, float(beat)) * 60.0 / tempo
+
+
+def _bridge_seconds_range_from_beats(
+    project: dict[str, Any],
+    host_context: dict[str, Any],
+    beat_range: tuple[float, float],
+) -> tuple[float, float]:
+    return (
+        _beat_to_seconds(project, beat_range[0], host_context),
+        _beat_to_seconds(project, beat_range[1], host_context),
+    )
+
+
+def _bridge_context_tempo(host_context: dict[str, Any]) -> float | None:
+    try:
+        tempo = float(host_context.get("tempo_bpm") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return tempo if tempo > 0 else None
+
+
+def _project_tempo(project: dict[str, Any]) -> float:
+    try:
+        tempo = float(project.get("tempo", 120.0) or 120.0)
+    except (TypeError, ValueError):
+        tempo = 120.0
+    return max(1.0, tempo)
+
+
+def _bridge_created_at() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _non_automation_tracks(project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1682,7 +1886,11 @@ def _project_revision(project: dict[str, Any]) -> str:
 
 
 def _project_payload(project: dict[str, Any]) -> dict[str, Any]:
-    return {"project": project, "revision": _project_revision(project)}
+    return {
+        "project": project,
+        "revision": _project_revision(project),
+        "active_project_id": active_project_archive_id(),
+    }
 
 
 def _project_differs_from_saved_project(project: dict[str, Any]) -> bool:
@@ -2074,7 +2282,66 @@ async def studio_project():
         {
             "project": project,
             "revision": revision,
+            "active_project_id": active_project_archive_id(),
+            "projects": list_project_archives(),
             "summary": project_summary(project),
+            "host": _host_snapshot(),
+        }
+    )
+
+
+@bp.route("/studio/projects", methods=["GET"])
+async def studio_projects():
+    return jsonify(
+        {
+            "projects": list_project_archives(),
+            "active_project_id": active_project_archive_id(),
+        }
+    )
+
+
+@bp.route("/studio/projects/save-copy", methods=["POST"])
+async def studio_save_project_copy():
+    data = await _json_payload()
+    project = load_project()
+    title = str(data.get("title") or "").strip()
+    copied = save_project_as_archive(project, title=title, activate=True)
+    sync = None
+    if data.get("sync", True) is not False:
+        sync = await _sync_project_to_host(copied, broadcast=True)
+        copied = sync.get("project", copied)
+    else:
+        await _broadcast_project(copied)
+    return jsonify(
+        {
+            "ok": True,
+            **_project_payload(copied),
+            "projects": list_project_archives(),
+            "sync": sync,
+            "host": _host_snapshot(),
+        }
+    )
+
+
+@bp.route("/studio/projects/<project_id>/open", methods=["POST"])
+async def studio_open_project(project_id: str):
+    data = await _json_payload()
+    try:
+        project = set_active_project_archive(project_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    sync = None
+    if data.get("sync", True) is not False:
+        sync = await _sync_project_to_host(project, broadcast=True)
+        project = sync.get("project", project)
+    else:
+        await _broadcast_project(project)
+    return jsonify(
+        {
+            "ok": True,
+            **_project_payload(project),
+            "projects": list_project_archives(),
+            "sync": sync,
             "host": _host_snapshot(),
         }
     )
@@ -2089,7 +2356,15 @@ async def save_studio_project():
         project,
         broadcast=True,
     )
-    return jsonify({"ok": True, **_project_payload(project), "sync": sync, "state": state_capture})
+    return jsonify(
+        {
+            "ok": True,
+            **_project_payload(project),
+            "projects": list_project_archives(),
+            "sync": sync,
+            "state": state_capture,
+        }
+    )
 
 
 @bp.route("/studio/demo", methods=["POST"])
@@ -2100,7 +2375,14 @@ async def reset_studio_demo():
         project,
         broadcast=True,
     )
-    return jsonify({"ok": True, **_project_payload(project), "sync": sync})
+    return jsonify(
+        {
+            "ok": True,
+            **_project_payload(project),
+            "projects": list_project_archives(),
+            "sync": sync,
+        }
+    )
 
 
 @bp.route("/studio/host/start", methods=["POST"])
@@ -2682,12 +2964,35 @@ async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], 
             raise StudioExportError("host process not running", 409)
 
         project = load_project()
-        start, end = _export_time_range(project, data)
+        host_context = _bridge_context_for_export_payload(data, consumer)
+        bridge_beat_range, range_source = _bridge_beat_range_for_context(data, host_context)
+        if (
+            consumer == "bridge"
+            and bridge_beat_range
+            and not _payload_has_explicit_time_range(data)
+        ):
+            start, end = _bridge_seconds_range_from_beats(project, host_context, bridge_beat_range)
+        else:
+            start, end = _export_time_range(project, data)
         sync = await _sync_project_to_host(project, broadcast=False)
         if not sync.get("host_running"):
             raise StudioExportError("host process not running", 409)
         project = cast(dict[str, Any], sync.get("project") or project)
-        export_tracks = _export_tracks_for_payload(project, data, target)
+        export_payload = data
+        if consumer == "bridge":
+            resolved_target, resolved_track_ids = _bridge_midi_scope_for_payload(
+                project,
+                data,
+                target,
+                consumer,
+                host_context,
+            )
+            if resolved_target != target or resolved_track_ids is not None:
+                export_payload = {**data, "target": resolved_target}
+                if resolved_track_ids is not None:
+                    export_payload["track_ids"] = resolved_track_ids
+                target = resolved_target
+        export_tracks = _export_tracks_for_payload(project, export_payload, target)
 
         export_id = uuid4().hex[:10]
         export = await _perform_studio_export(
@@ -2704,6 +3009,27 @@ async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], 
             start=start,
             end=end,
         )
+        if consumer == "bridge":
+            export["time_range_seconds"] = [float(start), float(end)]
+            export["bridge_export"] = {
+                "source": "bridge",
+                "created_at": _bridge_created_at(),
+                "range_source": range_source,
+                "primary_file": export.get("path"),
+            }
+            selection_summary = _bridge_selection_summary(
+                data,
+                host_context,
+                track_ids=[
+                    int(track["project_track_id"])
+                    for track in export.get("tracks", [])
+                    if isinstance(track, dict) and track.get("project_track_id")
+                ],
+                beat_range=bridge_beat_range,
+                range_source=range_source,
+            )
+            if selection_summary:
+                export["selection_summary"] = selection_summary
     except StudioExportError as exc:
         return {"ok": False, "error": str(exc), "host": _host_snapshot()}, exc.status_code
 
@@ -2739,10 +3065,17 @@ def _remember_bridge_export(
         return
     instance_id = _bridge_export_instance_id(payload)
     scoped_export = deepcopy(export)
+    bridge_export = scoped_export.setdefault("bridge_export", {})
+    if isinstance(bridge_export, dict):
+        bridge_export.setdefault("source", "bridge")
+        bridge_export.setdefault("created_at", _bridge_created_at())
+        bridge_export.setdefault("range_source", "project")
+        bridge_export.setdefault("primary_file", scoped_export.get("path"))
     if instance_id:
         bridge_scope = {"instance_id": instance_id}
         scoped_export["bridge_scope"] = bridge_scope
         export["bridge_scope"] = bridge_scope
+        export.setdefault("bridge_export", deepcopy(bridge_export))
     _write_latest_bridge_export(scoped_export)
     if instance_id:
         _write_latest_bridge_export(scoped_export, instance_id=instance_id)
@@ -2854,7 +3187,21 @@ def _load_latest_bridge_export(*, instance_id: str | None = None) -> dict[str, A
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
     export = payload.get("export") if isinstance(payload, dict) else None
-    return deepcopy(export) if isinstance(export, dict) else None
+    if not isinstance(export, dict):
+        return None
+    if instance_id:
+        scope = export.get("bridge_scope")
+        scoped_instance_id = scope.get("instance_id") if isinstance(scope, dict) else None
+        if scoped_instance_id and str(scoped_instance_id) != str(instance_id):
+            return None
+    primary_path = export.get("path")
+    if not primary_path:
+        bridge_export = export.get("bridge_export")
+        if isinstance(bridge_export, dict):
+            primary_path = bridge_export.get("primary_file")
+    if not primary_path or not Path(str(primary_path)).exists():
+        return None
+    return deepcopy(export)
 
 
 def _write_latest_bridge_export(
@@ -2909,10 +3256,18 @@ def _perform_midi_export(
     export_dir = _audio_export_dir()
     project_stem = _safe_export_stem(project.get("title"), "ATRI Export")
     final_path = export_dir / f"{export_id}_{project_stem}.mid"
-    track_ids = _midi_track_ids_for_payload(project, payload, target)
+    manifest_path = export_dir / f"{export_id}_atri-export-manifest.json"
+    host_context = _bridge_context_for_export_payload(payload, consumer)
+    resolved_target, track_ids = _bridge_midi_scope_for_payload(
+        project,
+        payload,
+        target,
+        consumer,
+        host_context,
+    )
 
     try:
-        beat_range = _export_midi_beat_range(payload)
+        beat_range, range_source = _bridge_beat_range_for_context(payload, host_context)
         summary = write_project_midi(
             project,
             final_path,
@@ -2931,7 +3286,7 @@ def _perform_midi_export(
     export: dict[str, Any] = {
         "id": export_id,
         "mode": "project",
-        "target": target,
+        "target": resolved_target,
         "format": "midi",
         "path": str(final_path),
         "filename": final_path.name,
@@ -2943,12 +3298,34 @@ def _perform_midi_export(
     }
     if "beat_range" in summary:
         export["beat_range"] = summary["beat_range"]
+    selection_summary = _bridge_selection_summary(
+        payload,
+        host_context,
+        track_ids=summary["track_ids"],
+        beat_range=beat_range,
+        range_source=range_source,
+    )
+    if selection_summary:
+        export["selection_summary"] = selection_summary
     if consumer == "bridge":
-        preview = _bridge_preview_for_midi_export(project, track_ids, summary.get("beat_range"))
+        export["bridge_export"] = {
+            "source": "bridge",
+            "created_at": _bridge_created_at(),
+            "range_source": range_source,
+            "primary_file": str(final_path),
+            "manifest_path": str(manifest_path),
+        }
+        preview = _bridge_preview_for_midi_export(
+            project,
+            track_ids,
+            summary.get("beat_range"),
+            filename=final_path.name,
+            range_source=range_source,
+            selection_summary=selection_summary,
+        )
         if preview:
             export["bridge_preview"] = preview
     manifest = build_export_manifest(project, export, consumer=consumer)
-    manifest_path = export_dir / f"{export_id}_atri-export-manifest.json"
     try:
         write_export_manifest(manifest_path, manifest)
     except OSError as exc:
@@ -2963,6 +3340,10 @@ def _bridge_preview_for_midi_export(
     project: dict[str, Any],
     track_ids: list[int] | None,
     beat_range: Any,
+    *,
+    filename: str = "",
+    range_source: str = "project",
+    selection_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     selected_ids = set(track_ids or [])
     tracks: list[dict[str, Any]] = []
@@ -3012,9 +3393,13 @@ def _bridge_preview_for_midi_export(
         "track_id": int(first_track["track_id"]),
         "track_name": str(first_track["track_name"]),
         "beat_range": [float(start), float(end)],
+        "range_source": range_source,
+        "filename": filename,
+        "track_count": len(track_previews),
         "note_count": note_count,
         "pitch_range": [min(all_pitches), max(all_pitches)] if all_pitches else [60, 60],
         "tracks": track_previews,
+        **({"selection": selection_summary} if selection_summary else {}),
     }
 
 
@@ -3084,7 +3469,14 @@ def _perform_dawproject_export(
     export_dir = _audio_export_dir()
     project_stem = _safe_export_stem(project.get("title"), "ATRI Export")
     final_path = export_dir / f"{export_id}_{project_stem}.dawproject"
-    track_ids = _midi_track_ids_for_payload(project, payload, target)
+    host_context = _bridge_context_for_export_payload(payload, consumer)
+    _resolved_target, track_ids = _bridge_midi_scope_for_payload(
+        project,
+        payload,
+        target,
+        consumer,
+        host_context,
+    )
 
     try:
         export = write_dawproject_archive(
@@ -3102,6 +3494,22 @@ def _perform_dawproject_export(
     for file in export.get("files", []):
         if isinstance(file, dict) and file.get("role") == "dawproject":
             file["download_url"] = _export_download_url(final_path)
+    if consumer == "bridge":
+        export["bridge_export"] = {
+            "source": "bridge",
+            "created_at": _bridge_created_at(),
+            "range_source": "project",
+            "primary_file": str(final_path),
+        }
+        selection_summary = _bridge_selection_summary(
+            payload,
+            host_context,
+            track_ids=track_ids,
+            beat_range=None,
+            range_source="project",
+        )
+        if selection_summary:
+            export["selection_summary"] = selection_summary
     return export
 
 
@@ -3399,6 +3807,67 @@ async def studio_import_audio_file():
         duration_seconds=data.get("duration_seconds"),
         waveform=_audio_waveform_from_payload(data.get("waveform")),
     )
+
+
+@bp.route("/studio/import/dawproject-file", methods=["POST"])
+async def studio_import_dawproject_file():
+    data = await _json_payload()
+    raw_path = str(data.get("file_path") or data.get("path") or "").strip()
+    if not raw_path:
+        return jsonify({"error": "file_path is required"}), 400
+
+    mode = str(data.get("mode") or "replace").strip().lower()
+    if mode != "replace":
+        return jsonify({"error": "mode must be replace"}), 400
+
+    try:
+        _, source_path = resolve_workspace_path(str(_cfg().get("workspace") or "."), raw_path)
+    except PermissionError:
+        return jsonify({"error": "path outside workspace"}), 403
+
+    if not source_path.exists() or not source_path.is_file():
+        return jsonify({"error": f"DAWproject file not found: {raw_path}"}), 400
+    if source_path.suffix.lower() != ".dawproject":
+        return jsonify({"error": "unsupported DAWproject file type"}), 400
+
+    try:
+        project, import_summary = read_dawproject_archive(source_path)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    project = save_project_as_archive(project, activate=True)
+    sync = None
+    if data.get("sync", True) is not False:
+        sync = await _sync_project_to_host(project, broadcast=True)
+        project = sync.get("project", project)
+    else:
+        await _broadcast_project(project)
+
+    return jsonify(
+        {
+            "ok": True,
+            **_project_payload(project),
+            "summary": import_summary,
+            "sync": sync,
+            "host": _host_snapshot(),
+        }
+    )
+
+
+@bp.route("/studio/dawproject-snapshot/status", methods=["GET"])
+async def studio_dawproject_snapshot_status():
+    return jsonify(dawproject_snapshot_status())
+
+
+@bp.route("/studio/dawproject-snapshot/request-export", methods=["POST"])
+async def studio_dawproject_snapshot_request_export():
+    data = await _json_payload()
+    request_payload = request_host_dawproject_snapshot_export(
+        host=str(data.get("host") or "studio_one"),
+        source=str(data.get("source") or "manual"),
+        instance_id=str(data.get("instance_id") or ""),
+    )
+    return jsonify({"ok": True, "request": request_payload})
 
 
 async def _finish_audio_import(

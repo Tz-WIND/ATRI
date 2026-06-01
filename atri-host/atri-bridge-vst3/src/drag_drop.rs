@@ -5,6 +5,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeDragPayload {
     files: Vec<PathBuf>,
+    metadata_json: Option<String>,
 }
 
 impl BridgeDragPayload {
@@ -16,11 +17,29 @@ impl BridgeDragPayload {
 
         Ok(Self {
             files: vec![path.to_path_buf()],
+            metadata_json: None,
         })
+    }
+
+    pub fn from_export(export: &serde_json::Value) -> Result<Self, BridgeDragError> {
+        let path = export
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(BridgeDragError::EmptyExportPath)?;
+        let mut payload = Self::from_export_path(path)?;
+        payload.metadata_json = Some(
+            serde_json::to_string(export)
+                .map_err(|err| BridgeDragError::Native(err.to_string()))?,
+        );
+        Ok(payload)
     }
 
     pub fn files(&self) -> &[PathBuf] {
         &self.files
+    }
+
+    pub fn metadata_json(&self) -> Option<&str> {
+        self.metadata_json.as_deref()
     }
 }
 
@@ -76,6 +95,7 @@ mod windows_drag {
         DATADIR_GET, DVASPECT_CONTENT, FORMATETC, IAdviseSink, IDataObject, IDataObject_Impl,
         IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
     };
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
     use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
     use windows::Win32::System::Ole::{
         CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DoDragDrop, IDropSource, IDropSource_Impl,
@@ -83,12 +103,15 @@ mod windows_drag {
     };
     use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
     use windows::Win32::UI::Shell::SHCreateStdEnumFmtEtc;
-    use windows::core::{Error as WinError, HRESULT, Result as WinResult, implement};
+    use windows::core::{Error as WinError, HRESULT, PCWSTR, Result as WinResult, implement};
+
+    const ATRI_EXPORT_JSON_FORMAT: &str = "ATRI_BRIDGE_EXPORT_JSON";
 
     pub fn start_file_drag(payload: &BridgeDragPayload) -> Result<(), BridgeDragError> {
         let files = resolve_drag_files(payload.files())?;
         let ole_initialized = initialize_ole()?;
-        let data_object: IDataObject = FileDataObject::new(files).into();
+        let data_object: IDataObject =
+            FileDataObject::new(files, payload.metadata_json().map(ToOwned::to_owned)).into();
         let drop_source: IDropSource = FileDropSource.into();
         let mut effect = DROPEFFECT(0);
 
@@ -116,28 +139,43 @@ mod windows_drag {
     #[implement(IDataObject)]
     struct FileDataObject {
         files: Vec<PathBuf>,
+        metadata_json: Option<String>,
     }
 
     impl FileDataObject {
-        fn new(files: Vec<PathBuf>) -> Self {
-            Self { files }
+        fn new(files: Vec<PathBuf>, metadata_json: Option<String>) -> Self {
+            Self {
+                files,
+                metadata_json,
+            }
         }
     }
 
     #[allow(non_snake_case)]
     impl IDataObject_Impl for FileDataObject {
         fn GetData(&self, pformatetcin: *const FORMATETC) -> WinResult<STGMEDIUM> {
-            let result = query_hdrop_format(pformatetcin);
-            if result != S_OK {
-                return Err(WinError::from(result));
+            if query_hdrop_format(pformatetcin) == S_OK {
+                let hglobal = hdrop_hglobal(&self.files)?;
+                return Ok(STGMEDIUM {
+                    tymed: TYMED_HGLOBAL.0 as u32,
+                    u: STGMEDIUM_0 { hGlobal: hglobal },
+                    pUnkForRelease: ManuallyDrop::new(None),
+                });
             }
 
-            let hglobal = hdrop_hglobal(&self.files)?;
-            Ok(STGMEDIUM {
-                tymed: TYMED_HGLOBAL.0 as u32,
-                u: STGMEDIUM_0 { hGlobal: hglobal },
-                pUnkForRelease: ManuallyDrop::new(None),
-            })
+            if query_metadata_format(pformatetcin, self.metadata_json.as_deref()) == S_OK {
+                let metadata = self.metadata_json.as_deref().unwrap_or_default();
+                let mut bytes = metadata.as_bytes().to_vec();
+                bytes.push(0);
+                let hglobal = bytes_hglobal(&bytes)?;
+                return Ok(STGMEDIUM {
+                    tymed: TYMED_HGLOBAL.0 as u32,
+                    u: STGMEDIUM_0 { hGlobal: hglobal },
+                    pUnkForRelease: ManuallyDrop::new(None),
+                });
+            }
+
+            Err(WinError::from(DV_E_FORMATETC))
         }
 
         fn GetDataHere(
@@ -149,7 +187,11 @@ mod windows_drag {
         }
 
         fn QueryGetData(&self, pformatetc: *const FORMATETC) -> HRESULT {
-            query_hdrop_format(pformatetc)
+            let hdrop = query_hdrop_format(pformatetc);
+            if hdrop == S_OK {
+                return hdrop;
+            }
+            query_metadata_format(pformatetc, self.metadata_json.as_deref())
         }
 
         fn GetCanonicalFormatEtc(
@@ -173,7 +215,13 @@ mod windows_drag {
             if dwdirection != DATADIR_GET.0 as u32 {
                 return Err(WinError::from(E_NOTIMPL));
             }
-            unsafe { SHCreateStdEnumFmtEtc(&[hdrop_format()]) }
+            let mut formats = vec![hdrop_format()];
+            if self.metadata_json.is_some() {
+                if let Some(format) = metadata_format() {
+                    formats.push(format);
+                }
+            }
+            unsafe { SHCreateStdEnumFmtEtc(&formats) }
         }
 
         fn DAdvise(
@@ -251,6 +299,21 @@ mod windows_drag {
         }
     }
 
+    fn metadata_format() -> Option<FORMATETC> {
+        let wide = wide_null(ATRI_EXPORT_JSON_FORMAT);
+        let format = unsafe { RegisterClipboardFormatW(PCWSTR(wide.as_ptr())) };
+        if format == 0 {
+            return None;
+        }
+        Some(FORMATETC {
+            cfFormat: format as u16,
+            ptd: ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        })
+    }
+
     fn query_hdrop_format(format: *const FORMATETC) -> HRESULT {
         if format.is_null() {
             return E_POINTER;
@@ -272,8 +335,38 @@ mod windows_drag {
         S_OK
     }
 
+    fn query_metadata_format(format: *const FORMATETC, metadata_json: Option<&str>) -> HRESULT {
+        if metadata_json.is_none() {
+            return DV_E_FORMATETC;
+        }
+        if format.is_null() {
+            return E_POINTER;
+        }
+        let Some(metadata_format) = metadata_format() else {
+            return DV_E_FORMATETC;
+        };
+        let format = unsafe { &*format };
+        if format.cfFormat != metadata_format.cfFormat {
+            return DV_E_FORMATETC;
+        }
+        if format.dwAspect != DVASPECT_CONTENT.0 {
+            return DV_E_DVASPECT;
+        }
+        if format.lindex != -1 {
+            return DV_E_LINDEX;
+        }
+        if format.tymed & TYMED_HGLOBAL.0 as u32 == 0 {
+            return DV_E_TYMED;
+        }
+        S_OK
+    }
+
     fn hdrop_hglobal(files: &[PathBuf]) -> WinResult<windows::Win32::Foundation::HGLOBAL> {
         let bytes = hdrop_wide_bytes(files);
+        bytes_hglobal(&bytes)
+    }
+
+    fn bytes_hglobal(bytes: &[u8]) -> WinResult<windows::Win32::Foundation::HGLOBAL> {
         let hglobal = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes.len()) }?;
         let locked = unsafe { GlobalLock(hglobal) };
         if locked.is_null() {
@@ -318,6 +411,10 @@ mod windows_drag {
 
     fn path_as_wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().collect()
+    }
+
+    fn wide_null(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
     }
 }
 

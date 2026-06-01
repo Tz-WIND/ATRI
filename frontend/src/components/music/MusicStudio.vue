@@ -14,7 +14,61 @@
     <header class="studio-topbar">
       <div class="session-title">
         <span class="session-kicker">ATRI Studio</span>
-        <strong>{{ project?.title || 'Session' }}</strong>
+        <button
+          class="project-library-trigger"
+          type="button"
+          title="Project library"
+          @click.stop="toggleProjectLibrary"
+        >
+          <strong>{{ project?.title || 'Session' }}</strong>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          ><path d="m6 9 6 6 6-6" /></svg>
+        </button>
+        <div
+          v-if="projectLibraryOpen"
+          class="project-library-popover"
+          @click.stop
+        >
+          <div class="project-library-head">
+            <span>Project Library</span>
+            <button
+              class="mini-btn text"
+              type="button"
+              :disabled="loading"
+              @click="saveCurrentProjectCopy"
+            >
+              Save Copy
+            </button>
+          </div>
+          <input
+            v-model="projectCopyTitle"
+            class="project-copy-input"
+            type="text"
+            aria-label="Project copy title"
+            :placeholder="`${project?.title || 'ATRI Session'} Copy`"
+            @keydown.enter.prevent="saveCurrentProjectCopy"
+          >
+          <div class="project-library-list">
+            <button
+              v-for="archive in projectArchives"
+              :key="archive.id"
+              :class="['project-library-item', { active: archive.id === activeProjectId }]"
+              type="button"
+              :disabled="loading"
+              @click="openArchivedProject(archive.id)"
+            >
+              <span>
+                <strong>{{ archive.title || 'ATRI Session' }}</strong>
+                <small>{{ archiveTimeLabel(archive) }}</small>
+              </span>
+              <em>{{ archive.track_count || 0 }} tracks</em>
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="transport">
@@ -1198,6 +1252,8 @@ defineProps({
 
 const {
   project,
+  projectArchives,
+  activeProjectId,
   host,
   engine,
   tracks,
@@ -1217,6 +1273,9 @@ const {
   pluginParameters,
   learnedAutomationParameters,
   loadProject,
+  loadProjectArchives,
+  saveProjectCopy,
+  openProjectArchive,
   saveProject,
   diffMidi,
   diffClips,
@@ -1255,6 +1314,8 @@ const controllerWrap = ref(null)
 const timeSignatureRoot = ref(null)
 const pianoMeterEditorRoot = ref(null)
 const pianoHarmonyEditorRoot = ref(null)
+const projectLibraryOpen = ref(false)
+const projectCopyTitle = ref('')
 const controllerLaneCanvases = new Map()
 const automationMenu = ref({ open: false, x: 0, y: 0, target: null, label: '' })
 const trackContextMenu = ref({ open: false, x: 0, y: 0, trackId: null, name: '' })
@@ -1587,6 +1648,49 @@ const learnedAutomationTargets = computed(() => (
     },
   }))
 ))
+
+async function toggleProjectLibrary() {
+  projectLibraryOpen.value = !projectLibraryOpen.value
+  if (projectLibraryOpen.value) {
+    await loadProjectArchives()
+  }
+}
+
+function archiveTimeLabel(archive) {
+  const value = archive?.saved_at || archive?.updated_at || ''
+  if (!value) return 'Unsaved'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString([], {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+async function saveCurrentProjectCopy() {
+  const title = projectCopyTitle.value.trim()
+  const fallback = `${project.value?.title || 'ATRI Session'} Copy`
+  const res = await saveProjectCopy(title || fallback)
+  if (!res) return
+  projectCopyTitle.value = ''
+  projectLibraryOpen.value = false
+  syncTransportDisplayFields(project.value)
+  drawAll()
+}
+
+async function openArchivedProject(projectId) {
+  if (!projectId || projectId === activeProjectId.value) {
+    projectLibraryOpen.value = false
+    return
+  }
+  const res = await openProjectArchive(projectId)
+  if (!res) return
+  projectLibraryOpen.value = false
+  syncTransportDisplayFields(project.value)
+  drawAll()
+}
 
 function cloneProject() {
   return JSON.parse(JSON.stringify(project.value || {}))
@@ -6523,6 +6627,7 @@ watch(() => host.value.running, (running) => {
 }
 
 .session-title {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -6541,6 +6646,118 @@ watch(() => host.value.running, (running) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-library-trigger {
+  width: 100%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--t1);
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-library-trigger svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--t4);
+}
+
+.project-library-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 40;
+  width: min(360px, calc(100vw - 28px));
+  padding: 10px;
+  border: 1px solid rgba(229, 236, 245, 0.14);
+  border-radius: 8px;
+  background: #202428;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38);
+}
+
+.project-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  color: var(--t2);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.project-copy-input {
+  width: 100%;
+  height: 30px;
+  margin-bottom: 8px;
+  padding: 0 9px;
+  border: 1px solid rgba(229, 236, 245, 0.13);
+  border-radius: 6px;
+  background: #17191c;
+  color: var(--t1);
+  font-size: 12px;
+}
+
+.project-library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.project-library-item {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid rgba(229, 236, 245, 0.1);
+  border-radius: 6px;
+  background: #262b30;
+  color: var(--t2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-library-item:hover {
+  color: var(--t1);
+  border-color: rgba(229, 236, 245, 0.2);
+  background: #2f353b;
+}
+
+.project-library-item.active {
+  border-color: rgba(240, 209, 122, 0.42);
+  background: rgba(240, 209, 122, 0.1);
+}
+
+.project-library-item span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-library-item strong {
+  font-size: 12px;
+  color: var(--t1);
+}
+
+.project-library-item small,
+.project-library-item em {
+  color: var(--t4);
+  font-size: 11px;
+  font-style: normal;
 }
 
 .transport,

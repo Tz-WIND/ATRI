@@ -41,6 +41,47 @@ def test_use_api_exposes_daw_agent_chat_endpoint():
     assert "model_provider" in source
 
 
+def test_use_api_can_request_host_project_sync_for_daw_agent():
+    source = USE_API.read_text(encoding="utf-8")
+
+    assert "syncHostProject = false" in source
+    assert "sync_host_project: syncHostProject" in source
+    assert "requestHostExport = false" in source
+    assert "request_host_dawproject_export: requestHostExport" in source
+    assert "studioDawprojectSnapshotStatus" in source
+    assert "studioDawprojectSnapshotRequestExport" in source
+
+
+def test_daw_agent_page_imports_dawproject_snapshot_before_host_workspace_chat():
+    source = DAW_AGENT_PAGE.read_text(encoding="utf-8")
+
+    assert "hostProjectSyncStatus" in source
+    assert "host-sync-status" in source
+    assert "autoImportOnSend" in source
+    assert "hostAutoImport" in source
+    assert "syncHostProject: hostAutoImport" in source
+    assert "requestHostExport: false" in source
+    assert "formatHostProjectSyncStatus(result.host_project_sync)" in source
+    assert "Importing latest DAWproject snapshot..." in source
+    assert "Imported DAWproject snapshot:" in source
+    assert "No DAWproject snapshot found" in source
+
+
+def test_daw_agent_page_exposes_dawproject_snapshot_panel():
+    source = DAW_AGENT_PAGE.read_text(encoding="utf-8")
+
+    assert "dawproject-snapshot-panel" in source
+    assert "snapshot-toggle" in source
+    assert "Import snapshot on send" in source
+    assert "autoImportOnSend" in source
+    assert "AUTO_IMPORT_STORAGE_KEY" in source
+    assert "snapshotStatus" in source
+    assert "loadDawprojectSnapshotStatus" in source
+    assert "requestStudioOneSnapshotExport" in source
+    assert "Copy folder path" in source
+    assert "Request Studio One export" in source
+
+
 def test_daw_agent_page_passes_selected_model_to_chat_api():
     source = DAW_AGENT_PAGE.read_text(encoding="utf-8")
 

@@ -12,6 +12,7 @@ import binascii
 import hashlib
 import json
 import math
+import re
 from copy import deepcopy
 from datetime import UTC, datetime
 from itertools import pairwise
@@ -22,6 +23,8 @@ from uuid import uuid4
 from core.utils import atomic_write_text
 
 PROJECT_PATH = Path("data/music_workstation/project.json")
+PROJECTS_DIR = Path("data/music_workstation/projects")
+PROJECT_INDEX_PATH = Path("data/music_workstation/project_index.json")
 
 DEFAULT_TRACK_COLORS = ["#4e79ff", "#d95b55", "#5f916b", "#d7b66f", "#b489d6", "#58a7b8"]
 
@@ -139,9 +142,93 @@ def default_project() -> dict[str, Any]:
 
 def load_project(path: Path | str = PROJECT_PATH) -> dict[str, Any]:
     project_path = Path(path)
+    if project_path == PROJECT_PATH:
+        active_id = _read_project_index().get("active_project_id")
+        if isinstance(active_id, str) and _project_archive_path(active_id).exists():
+            return _load_project_archive(active_id)
+        if PROJECT_PATH.exists():
+            project_id = _ensure_active_project_archive_id()
+            return _load_project_archive(project_id)
+        project = default_project()
+        project_id = _new_project_archive_id()
+        _write_project_archive(project_id, project)
+        _write_project_index(project_id)
+        return project
+
+    return _load_project_file(project_path)
+
+
+def save_project(project: dict[str, Any], path: Path | str = PROJECT_PATH) -> dict[str, Any]:
+    project_path = Path(path)
+    if project_path != PROJECT_PATH:
+        return _save_project_file(project, project_path)
+
+    project_id = _active_project_archive_id_or_create(project)
+    return _write_project_archive(project_id, project)
+
+
+def save_project_as_archive(
+    project: dict[str, Any],
+    *,
+    title: str = "",
+    activate: bool = True,
+) -> dict[str, Any]:
+    next_project = deepcopy(project)
+    if title:
+        next_project["title"] = title
+    project_id = _new_project_archive_id()
+    saved = _write_project_archive(project_id, next_project)
+    if activate:
+        _write_project_index(project_id)
+    return saved
+
+
+def set_active_project_archive(project_id: str) -> dict[str, Any]:
+    safe_id = _safe_project_archive_id(project_id)
+    archive_path = _project_archive_path(safe_id)
+    if not archive_path.exists() or not archive_path.is_file():
+        raise ValueError("project archive not found")
+    project = _load_project_archive(safe_id)
+    _write_project_index(safe_id)
+    return project
+
+
+def active_project_archive_id() -> str:
+    return _ensure_active_project_archive_id()
+
+
+def list_project_archives(limit: int = 50) -> list[dict[str, Any]]:
+    active_id = _ensure_active_project_archive_id()
+    archives: list[dict[str, Any]] = []
+    for path in PROJECTS_DIR.glob("*.json"):
+        try:
+            record = _read_project_archive_record(path)
+        except (OSError, json.JSONDecodeError, ValueError, KeyError, UnicodeDecodeError):
+            continue
+        project = normalize_project(cast(dict[str, Any], record.get("project") or {}))
+        summary = project_summary(project)
+        project_id = str(record.get("id") or path.stem)
+        archives.append(
+            {
+                "id": project_id,
+                "title": str(record.get("title") or project.get("title") or "ATRI Session"),
+                "saved_at": str(record.get("saved_at") or project.get("updated_at") or ""),
+                "updated_at": str(project.get("updated_at") or ""),
+                "track_count": int(summary.get("track_count", 0)),
+                "note_count": int(summary.get("note_count", 0)),
+                "tempo": float(project.get("tempo", 120.0)),
+                "time_signature": project.get("time_signature", [4, 4]),
+                "active": project_id == active_id,
+            }
+        )
+    archives.sort(key=lambda item: str(item.get("saved_at") or ""), reverse=True)
+    return archives[: max(1, int(limit or 50))]
+
+
+def _load_project_file(project_path: Path) -> dict[str, Any]:
     if not project_path.exists():
         project = default_project()
-        save_project(project, project_path)
+        _save_project_file(project, project_path)
         return project
 
     try:
@@ -151,17 +238,120 @@ def load_project(path: Path | str = PROJECT_PATH) -> dict[str, Any]:
     return normalize_project(loaded)
 
 
-def save_project(project: dict[str, Any], path: Path | str = PROJECT_PATH) -> dict[str, Any]:
+def _save_project_file(project: dict[str, Any], path: Path) -> dict[str, Any]:
     normalized = normalize_project(project)
     normalized["updated_at"] = _now_iso()
-    project_path = Path(path)
-    project_path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(
-        project_path,
+        path,
         json.dumps(normalized, ensure_ascii=False, indent=2),
         prefix=".music_project_",
     )
     return normalized
+
+
+def _ensure_active_project_archive_id() -> str:
+    active_id = _read_project_index().get("active_project_id")
+    if isinstance(active_id, str) and _project_archive_path(active_id).exists():
+        return active_id
+
+    if PROJECT_PATH.exists():
+        project = _load_project_file(PROJECT_PATH)
+    else:
+        project = default_project()
+    project_id = _new_project_archive_id()
+    _write_project_archive(project_id, project)
+    _write_project_index(project_id)
+    return project_id
+
+
+def _active_project_archive_id_or_create(project: dict[str, Any]) -> str:
+    active_id = _read_project_index().get("active_project_id")
+    if isinstance(active_id, str) and _project_archive_path(active_id).exists():
+        return active_id
+    project_id = _new_project_archive_id()
+    _write_project_index(project_id)
+    return project_id
+
+
+def _load_project_archive(project_id: str) -> dict[str, Any]:
+    record = _read_project_archive_record(_project_archive_path(project_id))
+    return normalize_project(cast(dict[str, Any], record.get("project") or {}))
+
+
+def _write_project_archive(project_id: str, project: dict[str, Any]) -> dict[str, Any]:
+    safe_id = _safe_project_archive_id(project_id)
+    normalized = normalize_project(project)
+    normalized["updated_at"] = _now_iso()
+    record = {
+        "id": safe_id,
+        "title": normalized.get("title") or "ATRI Session",
+        "saved_at": normalized["updated_at"],
+        "project": normalized,
+    }
+    path = _project_archive_path(safe_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        path,
+        json.dumps(record, ensure_ascii=False, indent=2),
+        prefix=".music_project_",
+    )
+    return normalized
+
+
+def _read_project_archive_record(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("project archive must be an object")
+    project = data.get("project")
+    if isinstance(project, dict):
+        return data
+    return {
+        "id": path.stem,
+        "title": str(data.get("title") or path.stem),
+        "saved_at": str(data.get("updated_at") or ""),
+        "project": data,
+    }
+
+
+def _read_project_index() -> dict[str, Any]:
+    try:
+        data = json.loads(PROJECT_INDEX_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_project_index(project_id: str) -> None:
+    PROJECT_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        PROJECT_INDEX_PATH,
+        json.dumps(
+            {
+                "active_project_id": _safe_project_archive_id(project_id),
+                "updated_at": _now_iso(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        prefix=".music_project_index_",
+    )
+
+
+def _project_archive_path(project_id: str) -> Path:
+    return PROJECTS_DIR / f"{_safe_project_archive_id(project_id)}.json"
+
+
+def _new_project_archive_id() -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    return f"project_{stamp}_{uuid4().hex[:8]}"
+
+
+def _safe_project_archive_id(project_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(project_id or "").strip()).strip("._-")
+    if not safe or safe in {".", ".."} or ".." in safe:
+        raise ValueError("invalid project archive id")
+    return safe
 
 
 def normalize_project(project: dict[str, Any] | None) -> dict[str, Any]:
@@ -949,7 +1139,7 @@ def midi_write(
     if mode == "replace":
         kept = []
         for note in clip["notes"]:
-            overlaps = note["start"] < end and (note["start"] + note["duration"]) > start
+            overlaps = note["start"] <= end and (note["start"] + note["duration"]) > start
             if overlaps:
                 removed += 1
             else:

@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use vst3::{
     Class, ComRef, ComWrapper,
@@ -460,7 +460,9 @@ impl IProcessContextRequirementsTrait for BridgeComponent {
     unsafe fn getProcessContextRequirements(&self) -> uint32 {
         (ProcessContext_::StatesAndFlags_::kTempoValid
             | ProcessContext_::StatesAndFlags_::kTimeSigValid
-            | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid) as u32
+            | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
+            | ProcessContext_::StatesAndFlags_::kBarPositionValid
+            | ProcessContext_::StatesAndFlags_::kCycleValid) as u32
     }
 }
 
@@ -1053,6 +1055,12 @@ impl BridgePlugView {
     }
 
     fn apply_latest_export_response(&self, response: BridgeExportResponse) -> bool {
+        if response
+            .bridge_scope_instance_id()
+            .is_some_and(|instance_id| instance_id != self.instance_id)
+        {
+            return false;
+        }
         lock_recover(&self.editor_state).apply_external_export_response(response)
     }
 
@@ -1069,14 +1077,20 @@ impl BridgePlugView {
     }
 
     fn start_drag_from_last_export(&self) {
-        let export_path = {
+        let (export_path, export_payload) = {
             let state = lock_recover(&self.editor_state);
-            state.last_export_path().map(ToOwned::to_owned)
+            (
+                state.last_export_path().map(ToOwned::to_owned),
+                state.last_export_payload().cloned(),
+            )
         };
-        let result = export_path
-            .ok_or(BridgeDragError::MissingCompletedExport)
-            .and_then(BridgeDragPayload::from_export_path)
-            .and_then(|payload| self.drag_service.start_drag(payload));
+        let result = match export_payload.as_ref() {
+            Some(export) => BridgeDragPayload::from_export(export),
+            None => export_path
+                .ok_or(BridgeDragError::MissingCompletedExport)
+                .and_then(BridgeDragPayload::from_export_path),
+        }
+        .and_then(|payload| self.drag_service.start_drag(payload));
 
         if let Err(error) = result {
             self.mark_export_error(error.to_string());
@@ -1294,8 +1308,14 @@ fn rect_size(rect: ViewRect) -> (i32, i32) {
 }
 
 fn next_daw_agent_instance_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
     format!(
-        "bridge-{}",
+        "bridge-{}-{}-{}",
+        std::process::id(),
+        nanos,
         NEXT_DAW_AGENT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -1511,6 +1531,7 @@ mod tests {
             is_playing: Some(true),
             tempo_bpm: Some(128.0),
             time_signature: Some([4, 4]),
+            ..BridgeHostContext::default()
         });
         let view = BridgePlugView::default();
 
@@ -1765,6 +1786,24 @@ mod tests {
     }
 
     #[test]
+    fn bridge_plug_view_ignores_latest_export_for_different_instance() {
+        let view = BridgePlugView::default();
+
+        let changed = view.apply_latest_export_response(BridgeExportResponse {
+            ok: true,
+            bridge: None,
+            export: Some(serde_json::json!({
+                "format": "midi",
+                "path": "data/music_workstation/exports/other.mid",
+                "bridge_scope": {"instance_id": "bridge-other"}
+            })),
+        });
+
+        assert!(!changed);
+        assert_eq!(view.last_export_path(), None);
+    }
+
+    #[test]
     fn bridge_plug_view_starts_latest_export_poll_while_button_export_in_progress() {
         let endpoint = DashboardEndpoint::new("http://127.0.0.1:0").unwrap();
         let view = BridgePlugView::with_latest_export_worker(DashboardLatestExportWorker::new(
@@ -1797,6 +1836,7 @@ mod tests {
             is_playing: Some(true),
             tempo_bpm: Some(128.0),
             time_signature: Some([3, 4]),
+            ..crate::bridge_contract::BridgeHostContext::default()
         });
         let endpoint = spawn_bridge_context_server(
             r#"{
@@ -1842,6 +1882,7 @@ mod tests {
             is_playing: Some(false),
             tempo_bpm: Some(96.0),
             time_signature: Some([4, 4]),
+            ..crate::bridge_contract::BridgeHostContext::default()
         });
         let endpoint = spawn_bridge_context_server(
             r#"{"ok": false, "error": "context publish rejected"}"#,
@@ -1896,6 +1937,7 @@ mod tests {
                 is_playing: Some(true),
                 tempo_bpm: Some(128.0),
                 time_signature: Some([3, 4]),
+                ..BridgeHostContext::default()
             })
         );
         crate::host_context::clear_latest_host_context_for_test();

@@ -28,13 +28,24 @@ DAW_HOST_CONTEXT_ALLOWED_KEYS = frozenset(
         "sample_rate",
         "block_size",
         "time_signature",
+        "project_time_beats",
+        "bar_position_beats",
+        "loop_active",
+        "loop_range_beats",
+        "selection",
+        "host_project_sync",
         "track",
     }
 )
 _DAW_HOST_CONTEXT_STRING_KEYS = {"host", "workspace", "track"}
-_DAW_HOST_CONTEXT_NUMBER_KEYS = {"tempo_bpm", "sample_rate"}
-_MAX_DAW_HOST_CONTEXT_KEYS = 12
-_MAX_DAW_HOST_CONTEXT_DEPTH = 2
+_DAW_HOST_CONTEXT_NUMBER_KEYS = {
+    "tempo_bpm",
+    "sample_rate",
+    "project_time_beats",
+    "bar_position_beats",
+}
+_MAX_DAW_HOST_CONTEXT_KEYS = 14
+_MAX_DAW_HOST_CONTEXT_DEPTH = 3
 _MAX_DAW_HOST_CONTEXT_VALUES = 64
 _MAX_DAW_HOST_CONTEXT_STRING_CHARS = 128
 _MAX_DAW_HOST_CONTEXT_TOTAL_STRING_CHARS = 512
@@ -219,9 +230,9 @@ def _validate_daw_host_context_bounds(host_context: dict[str, Any]) -> None:
 
     value_count = 0
     total_string_chars = 0
-    stack: list[tuple[object, int]] = [(host_context, 0)]
+    stack: list[tuple[object, int, str]] = [(host_context, 0, "")]
     while stack:
-        value, depth = stack.pop()
+        value, depth, field = stack.pop()
         value_count += 1
         if value_count > _MAX_DAW_HOST_CONTEXT_VALUES:
             raise ValueError("host_context contains too many values")
@@ -229,19 +240,21 @@ def _validate_daw_host_context_bounds(host_context: dict[str, Any]) -> None:
         if isinstance(value, dict):
             if depth >= _MAX_DAW_HOST_CONTEXT_DEPTH:
                 raise ValueError("host_context is too deeply nested")
+            if depth > 0 and field not in {"selection", "host_project_sync"}:
+                raise ValueError("host_context is too deeply nested")
             for key, child in value.items():
                 if not isinstance(key, str):
                     raise ValueError("host_context keys must be strings")
                 if depth == 0 and key not in DAW_HOST_CONTEXT_ALLOWED_KEYS:
                     raise ValueError(f"unsupported host_context field: {key}")
                 total_string_chars += _checked_host_context_string_chars(key)
-                stack.append((child, depth + 1))
+                stack.append((child, depth + 1, key if depth == 0 else field))
             continue
 
         if isinstance(value, list):
             if depth >= _MAX_DAW_HOST_CONTEXT_DEPTH:
                 raise ValueError("host_context is too deeply nested")
-            stack.extend((child, depth + 1) for child in value)
+            stack.extend((child, depth + 1, field) for child in value)
             continue
 
         if isinstance(value, str):
@@ -274,8 +287,18 @@ def _normalize_daw_host_context_value(key: str, value: object) -> Any:
         if not isinstance(value, bool):
             raise ValueError("host_context is_playing must be a boolean")
         return value
+    if key == "loop_active":
+        if not isinstance(value, bool):
+            raise ValueError("host_context loop_active must be a boolean")
+        return value
     if key == "time_signature":
         return _normalize_daw_time_signature(value)
+    if key == "loop_range_beats":
+        return _normalize_daw_beat_range(value, "loop_range_beats")
+    if key == "selection":
+        return _normalize_daw_selection(value)
+    if key == "host_project_sync":
+        return _normalize_daw_host_project_sync(value)
     raise ValueError(f"unsupported host_context field: {key}")
 
 
@@ -318,3 +341,87 @@ def _normalize_daw_time_signature(value: object) -> list[int]:
     numerator = _normalize_daw_host_context_int(value[0], min_value=1, max_value=64)
     denominator = _normalize_daw_host_context_int(value[1], min_value=1, max_value=64)
     return [numerator, denominator]
+
+
+def _normalize_daw_beat_range(value: object, field: str) -> list[int | float]:
+    if not isinstance(value, list | tuple) or len(value) != 2:
+        raise ValueError(f"host_context {field} must be a two-item list")
+    start = _normalize_daw_host_context_number(value[0])
+    end = _normalize_daw_host_context_number(value[1])
+    if start < 0 or end <= start:
+        raise ValueError(f"host_context {field} must have non-negative start and end after start")
+    return [start, end]
+
+
+def _normalize_daw_selection(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        raise ValueError("host_context selection must be an object")
+    allowed = {"range_beats", "range", "project_track_ids", "host_track_ids"}
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in allowed:
+            raise ValueError(f"unsupported host_context selection field: {key}")
+        target_key = "range_beats" if key == "range" else key
+        if target_key == "range_beats":
+            normalized[target_key] = _normalize_daw_beat_range(item, "selection.range_beats")
+        elif target_key == "project_track_ids":
+            normalized[target_key] = _normalize_daw_host_context_int_list(
+                item,
+                f"selection.{target_key}",
+                min_value=1,
+            )
+        elif target_key == "host_track_ids":
+            normalized[target_key] = _normalize_daw_host_context_int_list(
+                item,
+                f"selection.{target_key}",
+                min_value=0,
+            )
+    return normalized or None
+
+
+def _normalize_daw_host_project_sync(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        raise ValueError("host_context host_project_sync must be an object")
+    allowed = {"status", "format", "filename", "track_count", "midi_clip_count", "note_count"}
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in allowed:
+            raise ValueError(f"unsupported host_context host_project_sync field: {key}")
+        if key == "status":
+            status = _normalize_daw_host_context_string(item)
+            if status not in {"missing", "pending", "unchanged", "imported", "error"}:
+                raise ValueError("host_context host_project_sync status is unsupported")
+            normalized[key] = status
+        elif key == "format":
+            format_name = _normalize_daw_host_context_string(item)
+            if format_name != "dawproject":
+                raise ValueError("host_context host_project_sync format is unsupported")
+            normalized[key] = format_name
+        elif key == "filename":
+            filename = _normalize_daw_host_context_string(item)
+            if filename:
+                normalized[key] = filename
+        else:
+            normalized[key] = _normalize_daw_host_context_int(
+                item,
+                min_value=0,
+                max_value=1_000_000,
+            )
+    return normalized or None
+
+
+def _normalize_daw_host_context_int_list(
+    value: object,
+    field: str,
+    *,
+    min_value: int,
+) -> list[int]:
+    if not isinstance(value, list | tuple):
+        raise ValueError(f"host_context {field} must be a list")
+    if len(value) > 128:
+        raise ValueError(f"host_context {field} has too many items")
+    result = [
+        _normalize_daw_host_context_int(item, min_value=min_value, max_value=1_000_000)
+        for item in value
+    ]
+    return list(dict.fromkeys(result))

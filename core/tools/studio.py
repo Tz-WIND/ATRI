@@ -23,6 +23,7 @@ NO_SYNC_NEEDED_HINT = (
 _dashboard_session_token = ""
 STUDIO_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 STUDIO_AUDIO_FORMATS = "AAC, FLAC, M4A, MP3, WAV"
+STUDIO_DAWPROJECT_EXT = ".dawproject"
 STUDIO_EXPORT_FORMATS = {"wav", "flac", "mp3", "midi", "dawproject"}
 STUDIO_EXPORT_SAMPLE_RATES = {44100, 48000, 88200, 96000, 192000}
 STUDIO_EXPORT_BIT_DEPTHS = {"i16", "i24", "f32"}
@@ -537,6 +538,80 @@ class StudioAudioImportTool(_StudioDashboardTool):
         return _dump(_with_agent_sync_hint(_dashboard_audio_import_file(metadata)))
 
 
+class StudioDawprojectImportTool(_StudioDashboardTool):
+    name = "studio_dawproject_import"
+    description = (
+        "Import a workspace .dawproject file exported from a DAW into ATRI Music Studio. "
+        "This replaces ATRI's current project snapshot and reads MIDI notes, clips, tempo, "
+        "meter, and stable track context from the archive. It does not write back to the "
+        "source DAW project. Successful imports already return a sync result; do not call "
+        "studio_sync again unless sync failed, is missing, or the user asks."
+    )
+    parameters: dict[str, Any] = {  # noqa: RUF012
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Workspace-relative .dawproject path."},
+            "path": {"type": "string", "description": "Alias for file_path."},
+            "mode": {
+                "type": "string",
+                "enum": ["replace"],
+                "default": "replace",
+                "description": "Replace the current ATRI project with the imported snapshot.",
+            },
+            "sync": {
+                "type": "boolean",
+                "default": True,
+                "description": "Sync the imported ATRI project to the ATRI host.",
+            },
+        },
+    }
+    capabilities = ToolCapabilities(
+        capability="music.studio.import",
+        writes_files=True,
+        network=True,
+    )
+
+    def execute(
+        self,
+        file_path: str = "",
+        path: str = "",
+        mode: str = "replace",
+        sync: bool | str = True,
+        **kwargs: Any,
+    ) -> str:
+        requested_path = str(file_path or path or "").strip()
+        if not requested_path:
+            return "Error: file_path or path is required"
+        try:
+            resolved_path = self.resolve_path(requested_path)
+        except PermissionError as e:
+            return f"Error: {e}"
+        if not resolved_path.exists() or not resolved_path.is_file():
+            return f"Error: DAWproject file not found: {requested_path}"
+        if resolved_path.suffix.lower() != STUDIO_DAWPROJECT_EXT:
+            return "Error: unsupported DAWproject file type. Supported format: DAWproject"
+
+        safe_mode = str(mode or "replace").strip().lower()
+        if safe_mode != "replace":
+            return "Error: mode must be replace"
+
+        payload = {
+            "file_path": requested_path,
+            "mode": safe_mode,
+            "sync": _truthy_sync(sync),
+        }
+        return _dump(
+            _with_agent_sync_hint(
+                _dashboard_json(
+                    "POST",
+                    "/api/music/studio/import/dawproject-file",
+                    payload,
+                    timeout=30,
+                )
+            )
+        )
+
+
 class StudioExportAudioTool(_StudioDashboardTool):
     name = "studio_export_audio"
     description = (
@@ -788,6 +863,12 @@ def _dashboard_audio_import(path: Path, metadata: dict[str, Any]) -> dict[str, A
 
 def _dashboard_audio_import_file(metadata: dict[str, Any]) -> dict[str, Any]:
     return _dashboard_json("POST", "/api/music/studio/audio/import-file", metadata, timeout=30)
+
+
+def _truthy_sync(value: bool | str) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
 
 
 def _compact_payload(payload: dict[str, Any]) -> dict[str, Any]:

@@ -8,6 +8,9 @@ import platform
 from datetime import UTC, datetime
 
 MUSIC_GENERATION_WORKFLOW_TOOLS = {
+    "studio_project_query",
+    "midi_query",
+    "midi_inspect",
     "studio_piano_lane_write",
     "studio_piano_lane_diff",
     "midi_write",
@@ -111,11 +114,17 @@ def _music_generation_workflow_block(tools) -> str:
 
 # Music Studio Generation Workflow
 When creating or substantially rewriting MIDI music in Music Studio:
-1. Sketch the harmony lane first with `studio_piano_lane_write` or
+1. Read the current ATRI project first. Use `studio_project_query` for the
+   project_summary-level view, then `midi_query` on the current track,
+   selection, loop, or target range to inspect existing notes, clips,
+   velocity, CC/controller lanes, and MIDI events.
+2. Use `midi_inspect` before precise edits when exact note ids, timings,
+   velocities, or event values are needed.
+3. Sketch the harmony lane with `studio_piano_lane_write` or
    `studio_piano_lane_diff`, placing chord/harmony labels across the target range.
-2. Write notes second with `midi_write`, using the harmony lane as the harmonic
+4. Write notes with `midi_write`, using the harmony lane as the harmonic
    plan for melodies, chord voicings, basslines, drums, and other parts.
-3. Shape expression last with `midi_batch_edit` or `midi_diff`: adjust velocity,
+5. Shape expression last with `midi_batch_edit` or `midi_diff`: adjust velocity,
    humanization, MIDI CC curves, expression, modulation, pitch bend, aftertouch,
    and other MIDI controller data after the notes exist.
 """
