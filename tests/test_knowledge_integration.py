@@ -128,6 +128,7 @@ async def test_process_stage_appends_graph_context_without_replacing_vector_cont
 
     content = await stage._event_content_for_agent(event)
 
+    assert isinstance(content, str)
     assert "[Knowledge context]" in content
     assert "[Graph context]" in content
     assert content.endswith("[Current request]\nHow does Alice use sqlite?")

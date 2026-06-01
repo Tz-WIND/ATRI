@@ -379,12 +379,11 @@ class GraphKnowledgeManager:
         if provider and isinstance(providers, dict):
             provider_entry = providers.get(provider)
             provider_cfg = provider_entry if isinstance(provider_entry, dict) else {}
-        model_cfg = {}
+        model_cfg: dict[str, Any] = {}
         if selected_model:
             entry = _find_active_chat_model_entry(cfg, provider, model)
-            model_cfg = entry.get("config", {}) if isinstance(entry, dict) else {}
-            if not isinstance(model_cfg, dict):
-                model_cfg = {}
+            raw_model_cfg = entry.get("config", {}) if isinstance(entry, dict) else {}
+            model_cfg = raw_model_cfg if isinstance(raw_model_cfg, dict) else {}
         return LLM(
             model=model,
             api_key=str(provider_cfg.get("api_key") or cfg.get("api_key") or ""),

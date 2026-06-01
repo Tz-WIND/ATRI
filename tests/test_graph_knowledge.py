@@ -1,5 +1,6 @@
 import asyncio
 import json
+from typing import Any, cast
 
 import pytest
 
@@ -482,8 +483,8 @@ async def test_graph_manager_skips_worker_when_graph_disabled(tmp_path):
                 }
             }
         },
-        graph_client=graph,
-        extractor=FakeExtractor(),
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
         task_store=store,
     )
     try:
@@ -512,8 +513,8 @@ async def test_graph_manager_update_config_starts_worker_after_graph_is_enabled(
                 }
             }
         },
-        graph_client=graph,
-        extractor=FakeExtractor(),
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
         task_store=store,
     )
     try:
@@ -566,8 +567,8 @@ async def test_graph_manager_processes_document_jobs_in_background(tmp_path):
                 }
             }
         },
-        graph_client=graph,
-        extractor=FakeExtractor(),
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
         task_store=store,
     )
     try:
@@ -580,6 +581,7 @@ async def test_graph_manager_processes_document_jobs_in_background(tmp_path):
         )
         await manager.drain(wait_seconds=2)
 
+        assert task_id is not None
         task = store.get_task(task_id)
         assert task is not None
         assert task["status"] == "completed"
@@ -605,8 +607,8 @@ async def test_graph_manager_batches_document_chunks_without_losing_source_ids(t
                 }
             }
         },
-        graph_client=graph,
-        extractor=extractor,
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, extractor),
         task_store=store,
     )
     try:
@@ -623,6 +625,7 @@ async def test_graph_manager_batches_document_chunks_without_losing_source_ids(t
         )
         await manager.drain(wait_seconds=2)
 
+        assert task_id is not None
         task = store.get_task(task_id)
         assert task is not None
         assert task["status"] == "completed"
@@ -659,8 +662,8 @@ async def test_graph_manager_chat_facts_use_stable_source_id_not_task_id(tmp_pat
                 }
             }
         },
-        graph_client=graph,
-        extractor=FakeExtractor(),
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
         task_store=store,
     )
     try:
@@ -674,6 +677,7 @@ async def test_graph_manager_chat_facts_use_stable_source_id_not_task_id(tmp_pat
         )
         await manager.drain(wait_seconds=2)
 
+        assert task_id is not None
         task = store.get_task(task_id)
         assert task is not None
         assert task["status"] == "completed"
@@ -701,8 +705,8 @@ async def test_graph_manager_retries_transient_extraction_failures(tmp_path):
                 }
             }
         },
-        graph_client=graph,
-        extractor=extractor,
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, extractor),
         task_store=store,
     )
     try:
@@ -716,6 +720,7 @@ async def test_graph_manager_retries_transient_extraction_failures(tmp_path):
         )
         await manager.drain(wait_seconds=2)
 
+        assert task_id is not None
         task = store.get_task(task_id)
         assert task is not None
         assert task["status"] == "completed"
@@ -743,8 +748,8 @@ async def test_graph_manager_skips_document_batches_after_retries_fail(tmp_path)
                 }
             }
         },
-        graph_client=graph,
-        extractor=extractor,
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, extractor),
         task_store=store,
     )
     try:
@@ -760,6 +765,7 @@ async def test_graph_manager_skips_document_batches_after_retries_fail(tmp_path)
         )
         await manager.drain(wait_seconds=2)
 
+        assert task_id is not None
         task = store.get_task(task_id)
         events = store.events(task_id)
         assert task is not None
@@ -787,8 +793,8 @@ def test_graph_manager_enqueue_is_safe_when_disabled_or_full(tmp_path):
                 }
             }
         },
-        graph_client=FakeGraphClient(),
-        extractor=FakeExtractor(),
+        graph_client=cast(Neo4jGraphClient, FakeGraphClient()),
+        extractor=cast(Any, FakeExtractor()),
         task_store=store,
     )
     try:
@@ -821,8 +827,8 @@ async def test_graph_manager_close_marks_running_extraction_interrupted(tmp_path
                 }
             }
         },
-        graph_client=FakeGraphClient(),
-        extractor=extractor,
+        graph_client=cast(Neo4jGraphClient, FakeGraphClient()),
+        extractor=cast(Any, extractor),
         task_store=store,
     )
     unrelated = store.create_task(kind="sub_agent", title="agent", input_text="work")
@@ -838,6 +844,7 @@ async def test_graph_manager_close_marks_running_extraction_interrupted(tmp_path
         )
         await asyncio.wait_for(extractor.started.wait(), timeout=2)
 
+        assert task_id is not None
         running_task = store.get_task(task_id)
         assert running_task is not None
         assert running_task["status"] == "running"
@@ -900,8 +907,8 @@ def test_graph_manager_uses_configured_extraction_model_from_chat_pool(monkeypat
                 }
             },
         },
-        graph_client=FakeGraphClient(),
-        extractor=FakeExtractor(),
+        graph_client=cast(Neo4jGraphClient, FakeGraphClient()),
+        extractor=cast(Any, FakeExtractor()),
         task_store=store,
     )
     try:
@@ -931,8 +938,8 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
                 }
             }
         },
-        graph_client=graph,
-        extractor=FakeExtractor(),
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
         task_store=store,
     )
     try:

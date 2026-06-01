@@ -13,7 +13,7 @@ import json
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from core import logger
 from core.agent.agent import Agent
@@ -684,11 +684,14 @@ class ProcessStage(Stage):
         if graph_manager is None:
             return ""
         try:
-            return await graph_manager.retrieve_context(
-                query=query,
-                source_ids=_retrieval_source_ids(retrieval_result or {}),
-                max_facts=int(graph_cfg.get("max_facts") or 8),
-                retrieval_depth=int(graph_cfg.get("retrieval_depth") or 1),
+            return cast(
+                str,
+                await graph_manager.retrieve_context(
+                    query=query,
+                    source_ids=_retrieval_source_ids(retrieval_result or {}),
+                    max_facts=int(graph_cfg.get("max_facts") or 8),
+                    retrieval_depth=int(graph_cfg.get("retrieval_depth") or 1),
+                ),
             )
         except Exception as e:
             logger.warning(f"Graph knowledge retrieval skipped: {e}")

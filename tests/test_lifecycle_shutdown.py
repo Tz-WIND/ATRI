@@ -77,10 +77,10 @@ async def test_lifecycle_stop_follows_graceful_shutdown_order(monkeypatch):
     event_bus = _RecordingEventBus()
     process_stage = _RecordingProcessStage()
 
-    lifecycle.dashboard = dashboard
-    lifecycle.event_bus = event_bus
+    lifecycle.dashboard = dashboard  # type: ignore[assignment]
+    lifecycle.event_bus = event_bus  # type: ignore[assignment]
     lifecycle.process_stage = process_stage
-    lifecycle.plugin_manager = _RecordingPluginManager()
+    lifecycle.plugin_manager = _RecordingPluginManager()  # type: ignore[assignment]
     lifecycle.graph_manager = _RecordingGraphManager()
     lifecycle.knowledge_manager = _RecordingKnowledgeManager()
 
@@ -131,11 +131,11 @@ async def test_lifecycle_stop_is_idempotent():
     lifecycle.onebot11 = None
     lifecycle.webchat = None
     lifecycle.daw_agent = None
-    lifecycle.plugin_manager = _RecordingPluginManager()
+    lifecycle.plugin_manager = _RecordingPluginManager()  # type: ignore[assignment]
     lifecycle.graph_manager = None
     lifecycle.knowledge_manager = None
     lifecycle.process_stage = None
-    lifecycle.event_bus = _RecordingEventBus()
+    lifecycle.event_bus = _RecordingEventBus()  # type: ignore[assignment]
 
     calls = {"count": 0}
     original_shutdown = lifecycle.event_bus.shutdown
