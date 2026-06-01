@@ -8,7 +8,7 @@ from core.tools.find_replace import FindReplaceTool
 from core.tools.glob_tool import GlobTool
 from core.tools.grep import GrepTool
 from core.tools.list_dir import ListDirTool
-from core.tools.read import ReadFileTool
+from core.tools.read import ReadFileTool, pop_read_images_from_result
 from core.tools.search import SearchTool
 from core.tools.write import WriteFileTool
 
@@ -42,6 +42,51 @@ def test_read_file_tool_supports_offsets_limits_and_errors(tmp_path):
     )
     assert tool.execute("missing.txt") == "Error: missing.txt not found"
     assert tool.execute("folder") == "Error: folder is a directory, not a file"
+
+
+def test_read_file_tool_image_mode_attaches_small_image(tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / "screen.png"
+    Image.new("RGB", (1, 1), (255, 0, 0)).save(image_path)
+    tool = ReadFileTool(str(tmp_path))
+
+    result = tool.execute("screen.png", mode="image")
+    images = pop_read_images_from_result(result)
+
+    assert "Loaded image from screen.png" in result
+    assert "ATRI_READ_IMAGE:" in result
+    assert images[0]["url"].startswith("data:image/png;base64,")
+    assert images[0]["mime_type"] == "image/png"
+
+
+def test_read_file_tool_image_mode_resizes_large_image_for_context(monkeypatch, tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / "large.png"
+    image = Image.effect_noise((640, 640), 100).convert("RGB")
+    image.save(image_path)
+    assert image_path.stat().st_size > 12_000
+
+    monkeypatch.setattr("core.tools.read._MAX_IMAGE_CONTEXT_BYTES", 12_000)
+    tool = ReadFileTool(str(tmp_path))
+
+    result = tool.execute("large.png", mode="image")
+    images = pop_read_images_from_result(result)
+
+    assert "Resized image for model context" in result
+    assert images[0]["mime_type"] == "image/jpeg"
+    assert images[0]["size"] <= 12_000
+
+
+def test_read_file_tool_image_mode_rejects_non_images(tmp_path):
+    (tmp_path / "notes.txt").write_text("not an image", encoding="utf-8")
+    tool = ReadFileTool(str(tmp_path))
+
+    result = tool.execute("notes.txt", mode="image")
+
+    assert result.startswith("Error:")
+    assert "not a supported image file" in result
 
 
 def test_write_file_tool_creates_parent_directories_and_reports_diff(tmp_path):

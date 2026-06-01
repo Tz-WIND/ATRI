@@ -1457,6 +1457,8 @@ def _strip_generated_image_markers(result: str) -> str:
         for line in str(result or "").splitlines()
         if not line.startswith("ATRI_GENERATED_IMAGE_BATCH:")
         and not line.startswith("ATRI_GENERATED_CHEM_IMAGE_BATCH:")
+        and not line.startswith("ATRI_SCREENSHOT_IMAGE:")
+        and not line.startswith("ATRI_READ_IMAGE:")
     )
 
 

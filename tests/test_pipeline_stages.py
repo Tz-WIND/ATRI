@@ -8,7 +8,11 @@ from core.agent.llm import LLM, LLMResponse
 from core.pipeline.scheduler import PipelineScheduler
 from core.pipeline.stage import Stage
 from core.pipeline.stages.preprocess import PreProcessStage
-from core.pipeline.stages.process import ProcessStage, _event_allows_high_privilege_tools
+from core.pipeline.stages.process import (
+    ProcessStage,
+    _event_allows_high_privilege_tools,
+    _strip_generated_image_markers,
+)
 from core.pipeline.stages.respond import _split_message
 from core.pipeline.stages.waking import WakingCheckStage
 from core.platform.message import At, Image, MessageEvent, MessageType, Plain, Sender
@@ -77,6 +81,25 @@ async def test_preprocess_stage_can_leave_message_unchanged():
 
     assert await _consume(stage, event) == [None]
     assert event.message_str == "@bot run tests"
+
+
+def test_tool_preview_strips_screenshot_internal_marker():
+    result = "\n".join(
+        [
+            "Captured screenshot to screenshots/current-screen.png",
+            "ATRI_SCREENSHOT_IMAGE: internal-batch-id",
+            "ATRI_READ_IMAGE: read-batch-id",
+            "MIME type: image/png",
+        ]
+    )
+
+    preview = _strip_generated_image_markers(result)
+
+    assert "ATRI_SCREENSHOT_IMAGE:" not in preview
+    assert "internal-batch-id" not in preview
+    assert "ATRI_READ_IMAGE:" not in preview
+    assert "read-batch-id" not in preview
+    assert "Captured screenshot to screenshots/current-screen.png" in preview
 
 
 def test_split_message_prefers_paragraph_then_line_boundaries():

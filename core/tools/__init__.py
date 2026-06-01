@@ -35,6 +35,7 @@ from .novelai_image import NovelAIImageTool
 from .piano_lane import StudioPianoLaneDiffTool, StudioPianoLaneWriteTool
 from .read import ReadFileTool
 from .retrieve_tool_result import RetrieveToolResultTool
+from .screenshot import ScreenshotTool
 from .search import SearchTool
 from .skill import LoadSkillTool
 from .studio import (
@@ -82,6 +83,7 @@ def create_tools(
         ListDirTool(workspace),
         TreeTool(workspace),
         ChemDrawTool(workspace),
+        ScreenshotTool(workspace),
         AgentTool(workspace, task_store=task_store),
         AgentResultTool(workspace, task_store=task_store),
         TaskResultTool(workspace, task_store=task_store),

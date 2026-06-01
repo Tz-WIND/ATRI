@@ -386,6 +386,52 @@ class Agent:
     def _append_tool_results(self, tool_calls, results: list[str]) -> None:
         for tc, result in zip(tool_calls, results, strict=False):
             self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        self._append_screenshot_context(results)
+
+    def _append_screenshot_context(self, results: list[str]) -> None:
+        try:
+            from core.tools.screenshot import pop_screenshot_images_from_result
+        except ImportError:
+            pop_screenshot_images_from_result = None
+        try:
+            from core.tools.read import pop_read_images_from_result
+        except ImportError:
+            pop_read_images_from_result = None
+
+        screenshot_images = []
+        read_images = []
+        for result in results:
+            if pop_screenshot_images_from_result is not None:
+                screenshot_images.extend(pop_screenshot_images_from_result(result))
+            if pop_read_images_from_result is not None:
+                read_images.extend(pop_read_images_from_result(result))
+        self._append_image_context_message(
+            screenshot_images,
+            (
+                "[Screenshot captured by the `screenshot` tool]\n"
+                "The next image is the current machine screen. Use it as visual context."
+            ),
+        )
+        self._append_image_context_message(
+            read_images,
+            "[Image loaded by a tool]\nThe next image is visual context from the workspace.",
+        )
+
+    def _append_image_context_message(self, images: list[dict], notice: str) -> None:
+        if not images:
+            return
+        content = [
+            {
+                "type": "text",
+                "text": notice,
+            }
+        ]
+        for image in images:
+            url = str(image.get("url") or "")
+            if url:
+                content.append({"type": "image_url", "image_url": {"url": url}})
+        if len(content) > 1:
+            self.messages.append({"role": "user", "content": content})
 
     def _notify_tool_started(self, tc, on_tool=None, on_tool_start=None) -> None:
         if on_tool:
