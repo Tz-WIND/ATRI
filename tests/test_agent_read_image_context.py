@@ -41,8 +41,7 @@ def test_agent_appends_read_image_as_next_model_input():
         {
             "type": "text",
             "text": (
-                "[Image loaded by a tool]\n"
-                "The next image is visual context from the workspace."
+                "[Image loaded by a tool]\nThe next image is visual context from the workspace."
             ),
         },
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},

@@ -12,6 +12,7 @@ import asyncio
 import concurrent.futures
 import threading
 from collections.abc import Callable
+from typing import Any
 
 from core import logger
 from core.agent.mode import AgentModeController
@@ -389,10 +390,12 @@ class Agent:
         self._append_screenshot_context(results)
 
     def _append_screenshot_context(self, results: list[str]) -> None:
+        pop_screenshot_images_from_result: Callable[[str], list[dict[str, Any]]] | None
         try:
             from core.tools.screenshot import pop_screenshot_images_from_result
         except ImportError:
             pop_screenshot_images_from_result = None
+        pop_read_images_from_result: Callable[[str], list[dict[str, Any]]] | None
         try:
             from core.tools.read import pop_read_images_from_result
         except ImportError:
@@ -420,7 +423,7 @@ class Agent:
     def _append_image_context_message(self, images: list[dict], notice: str) -> None:
         if not images:
             return
-        content = [
+        content: list[dict[str, Any]] = [
             {
                 "type": "text",
                 "text": notice,
