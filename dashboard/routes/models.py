@@ -70,6 +70,7 @@ _MODEL_POOL_DEFAULT_CONFIGS = {
     "active_embedding_models": EMBEDDING_MODEL_CONFIG_DEFAULT,
     "active_rerank_models": RERANK_MODEL_CONFIG_DEFAULT,
 }
+_MASKED_SECRET = "***"  # noqa: S105 - sentinel used for masked settings values
 _AUDIO_HOST_RESTART_MESSAGES = {
     "audio device and bit depth changes require restarting the audio host",
     "sample_rate and buffer_size changes require restarting the audio host",
@@ -84,6 +85,10 @@ def _positive_int(value: Any, field: str) -> int:
     if parsed <= 0:
         raise ValueError(f"{field} must be a positive integer")
     return parsed
+
+
+def _bounded_positive_int(value: Any, field: str, maximum: int) -> int:
+    return min(maximum, _positive_int(value, field))
 
 
 def _merge_audio_host_config(current: dict, incoming: dict) -> tuple[dict, bool]:
@@ -125,10 +130,98 @@ def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
         ]
     if "top_k" in incoming:
         merged["top_k"] = _positive_int(incoming["top_k"], "knowledge.top_k")
+    if "graph" in incoming:
+        merged["graph"] = _merge_graph_knowledge_config(
+            merged.get("graph", {}),
+            incoming["graph"],
+            reject_empty_extraction_sources=True,
+        )
     merged.setdefault("enabled", False)
     merged.setdefault("active_bases", [])
     merged.setdefault("top_k", 5)
+    merged.setdefault("graph", _merge_graph_knowledge_config({}, {}))
     return merged
+
+
+def _merge_graph_knowledge_config(
+    current: object,
+    incoming: object,
+    *,
+    reject_empty_extraction_sources: bool = False,
+) -> dict:
+    if not isinstance(incoming, dict):
+        raise ValueError("knowledge.graph must be an object")
+    merged = dict(current if isinstance(current, dict) else {})
+    for key in ("uri", "username", "database", "extraction_model", "extraction_provider"):
+        if key in incoming:
+            merged[key] = str(incoming.get(key) or "").strip()
+    if "password" in incoming and incoming["password"] != _MASKED_SECRET:
+        merged["password"] = str(incoming.get("password") or "")
+    for key in ("enabled", "extraction_enabled", "retrieval_enabled"):
+        if key in incoming:
+            merged[key] = bool(incoming[key])
+    if "extraction_sources" in incoming:
+        if not isinstance(incoming["extraction_sources"], list):
+            raise ValueError("knowledge.graph.extraction_sources must be an array")
+        allowed = {"documents", "chat"}
+        sources = []
+        for item in incoming["extraction_sources"]:
+            source = str(item or "").strip()
+            if source not in allowed:
+                raise ValueError(
+                    "knowledge.graph.extraction_sources must contain documents or chat"
+                )
+            if source not in sources:
+                sources.append(source)
+        merged["extraction_sources"] = sources
+    if "max_facts" in incoming:
+        merged["max_facts"] = _positive_int(incoming["max_facts"], "knowledge.graph.max_facts")
+    if "retrieval_depth" in incoming:
+        merged["retrieval_depth"] = _bounded_positive_int(
+            incoming["retrieval_depth"],
+            "knowledge.graph.retrieval_depth",
+            3,
+        )
+    if "queue_max_size" in incoming:
+        merged["queue_max_size"] = _positive_int(
+            incoming["queue_max_size"],
+            "knowledge.graph.queue_max_size",
+        )
+    merged.setdefault("enabled", False)
+    merged.setdefault("uri", "neo4j://localhost:7687")
+    merged.setdefault("username", "neo4j")
+    merged.setdefault("password", "")
+    merged.setdefault("database", "neo4j")
+    merged.setdefault("extraction_model", "")
+    merged.setdefault("extraction_provider", "")
+    merged.setdefault("extraction_enabled", True)
+    merged.setdefault("extraction_sources", ["documents", "chat"])
+    merged.setdefault("retrieval_enabled", True)
+    merged.setdefault("retrieval_depth", 1)
+    merged.setdefault("max_facts", 8)
+    merged.setdefault("queue_max_size", 1000)
+    if (
+        reject_empty_extraction_sources
+        and merged.get("extraction_enabled")
+        and not merged.get("extraction_sources")
+    ):
+        raise ValueError("knowledge.graph.extraction_sources must contain at least one source")
+    return merged
+
+
+def _mask_knowledge_config(cfg: dict | None) -> dict:
+    if not isinstance(cfg, dict):
+        cfg = {}
+    graph = _merge_graph_knowledge_config({}, cfg.get("graph", {}))
+    graph["password"] = _MASKED_SECRET if graph.get("password") else ""
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "active_bases": list(cfg.get("active_bases", []))
+        if isinstance(cfg.get("active_bases"), list)
+        else [],
+        "top_k": int(cfg.get("top_k") or 5),
+        "graph": graph,
+    }
 
 
 def _model_pool_config_key(pool: object) -> str:
@@ -613,7 +706,7 @@ def register(dashboard: Dashboard) -> None:
                 "rerank_provider": c.get("rerank_provider", ""),
                 "active_rerank_models": c.get("active_rerank_models", []),
                 "image_transcription": _mask_image_transcription(c.get("image_transcription", {})),
-                "knowledge": c.get("knowledge", {}),
+                "knowledge": _mask_knowledge_config(c.get("knowledge", {})),
                 "novelai": mask_novelai_config(c.get("novelai", {})),
                 "skills_root": c.get("skills_root", "skills"),
                 "skill_search_roots": c.get("skill_search_roots", []),
@@ -716,6 +809,21 @@ def register(dashboard: Dashboard) -> None:
             lc.process_stage.update_config(
                 **{k: v for k, v in data.items() if k in _PROCESS_STAGE_SETTING_KEYS}
             )
+        graph_manager = getattr(lc, "graph_manager", None)
+        if graph_manager is not None and any(
+            key in data
+            for key in (
+                "knowledge",
+                "model",
+                "model_provider",
+                "api_key",
+                "base_url",
+                "api_format",
+                "active_models",
+                "providers",
+            )
+        ):
+            graph_manager.update_config(lc.config)
         lc.save_config()
         if audio_host_restart_needed:
             try:

@@ -43,8 +43,11 @@ class Lifecycle:
         self.daw_agent: DawAgentAdapter | None = None
         self.process_stage: Any = None
         self.knowledge_manager: Any = None
+        self.graph_manager: Any = None
+        self.task_store: Any = None
         self._tasks: list[asyncio.Task] = []
         self._shutdown_event = asyncio.Event()
+        self._stopped = False
 
     def _load_config(self) -> dict:
         path = Path(self.config_path)
@@ -91,13 +94,26 @@ class Lifecycle:
 
         self.event_queue: Queue = Queue()
 
+        from core.runtime import TaskStore
+
+        self.task_store = TaskStore(self.config.get("runtime_dir"))
+
         plugins_dir = self.config.get("plugins_dir", "plugins")
         self.plugin_manager = PluginManager(plugins_dir)
         await self.plugin_manager.initialize(self.config)
 
-        from core.knowledge import KnowledgeBaseManager
+        from core.knowledge import GraphKnowledgeManager, KnowledgeBaseManager
 
-        self.knowledge_manager = KnowledgeBaseManager(config=self.config)
+        self.graph_manager = GraphKnowledgeManager(
+            config=self.config,
+            runtime_dir=self.config.get("runtime_dir"),
+            task_store=self.task_store,
+        )
+        await self.graph_manager.initialize()
+        self.knowledge_manager = KnowledgeBaseManager(
+            config=self.config,
+            graph_manager=self.graph_manager,
+        )
         await self.knowledge_manager.initialize()
 
         # Platform adapters
@@ -153,8 +169,10 @@ class Lifecycle:
             "mcp_servers": self.config.get("mcp_servers", {}),
             "knowledge": self.config.get("knowledge", {}),
             "knowledge_manager": self.knowledge_manager,
+            "graph_manager": self.graph_manager,
             "sessions_dir": self.config.get("sessions_dir"),
             "runtime_dir": self.config.get("runtime_dir"),
+            "task_store": self.task_store,
             "wake_words": self.config.get("wake_words", []),
             "self_id": "",
             "platforms": platforms,
@@ -278,12 +296,19 @@ class Lifecycle:
         return False
 
     async def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
         logger.info("Shutting down...")
 
         # 1. Signal all components to stop
         self._shutdown_event.set()
 
-        # 2. Notify platform adapters first so they stop accepting new events
+        # 2. Stop new agent work and in-flight LLM/tool calls
+        if self.process_stage:
+            self.process_stage.prepare_shutdown()
+
+        # 3. Notify platform adapters so they stop accepting new events
         if self.onebot11:
             await self.onebot11.terminate()
         if self.webchat:
@@ -291,12 +316,20 @@ class Lifecycle:
         if self.daw_agent:
             await self.daw_agent.terminate()
 
-        # 3. Cancel all running background tasks
+        # 4. Ask the dashboard to exit before cancelling its serve task
+        if hasattr(self, "dashboard"):
+            await self.dashboard.stop()
+
+        # 5. Stop the event bus and wait for pipeline work to finish
+        if hasattr(self, "event_bus"):
+            await self.event_bus.shutdown(SHUTDOWN_GRACE_PERIOD)
+
+        # 6. Cancel remaining lifecycle background tasks
         for task in self._tasks:
             if not task.done():
                 task.cancel()
 
-        # 4. Wait for tasks to finish with a grace period
+        # 7. Wait for background tasks with a grace period
         if self._tasks:
             _done, pending = await asyncio.wait(self._tasks, timeout=SHUTDOWN_GRACE_PERIOD)
             if pending:
@@ -307,21 +340,28 @@ class Lifecycle:
                 for task in pending:
                     task.cancel()
 
-        # 5. Terminate plugins and dashboard last
-        await self.plugin_manager.terminate()
-        if hasattr(self, "dashboard"):
-            await self.dashboard.stop()
+        # 8. Stop the audio host while the event loop is still responsive
         from core.host import get_host_manager
         from core.tools.mcp import get_mcp_registry
 
         host = get_host_manager()
-        if host.is_running:
+        if host.has_live_process:
             await host.stop()
+
+        # 9. Unload plugins
+        await self.plugin_manager.terminate()
 
         get_mcp_registry().close()
 
+        if self.graph_manager:
+            await self.graph_manager.close()
         if self.knowledge_manager:
             await self.knowledge_manager.close()
+        if self.process_stage:
+            await self.process_stage.shutdown()
+        task_store = getattr(self, "task_store", None)
+        if task_store:
+            task_store.close()
 
         logger.info("ATRI stopped.")
 

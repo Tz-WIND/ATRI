@@ -101,6 +101,8 @@ export function useApi() {
     deleteKnowledgeChunk: (chunkId) => request(`/api/knowledge/chunks/${encodeURIComponent(chunkId)}`, { method: 'DELETE' }),
     retrieveKnowledge: (data) => request('/api/knowledge/retrieve', { method: 'POST', body: JSON.stringify(data) }),
     getKnowledgeTask: (taskId) => request(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`),
+    testKnowledgeGraphConnection: (data) => request('/api/knowledge/graph/test-connection', { method: 'POST', body: JSON.stringify(data) }),
+    getLatestKnowledgeGraphTask: () => request('/api/knowledge/graph/tasks/latest'),
 
     // Skills
     getSkills: () => request('/api/skills'),

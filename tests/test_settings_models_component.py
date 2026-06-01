@@ -32,6 +32,27 @@ def test_settings_page_preserves_knowledge_config_when_saving():
     assert "form.value.knowledge" in source
 
 
+def test_settings_page_exposes_graph_knowledge_settings():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+    api_source = _read("frontend/src/composables/useApi.js")
+
+    assert "id: 'graph'" in source
+    assert "Graph Knowledge" in source
+    assert "form.value.knowledge.graph" in source
+    assert "testGraphConnection" in source
+    assert "testKnowledgeGraphConnection" in api_source
+    assert "Extraction Model" in source
+    assert "graphExtractionModelOptions" in source
+    assert "graph-extraction-model-field" in source
+    assert "Retrieval Depth" in source
+    assert "retrieval_depth" in source
+    assert "normalizeGraphSources" in source
+    assert "graphSourceLocked" in source
+    assert "sources.length <= 1" in source
+    assert "extraction_model" in source
+    assert "extraction_provider" in source
+
+
 def test_model_pool_section_uses_pool_activation_api():
     source = _read("frontend/src/components/settings/ModelPoolSection.vue")
 

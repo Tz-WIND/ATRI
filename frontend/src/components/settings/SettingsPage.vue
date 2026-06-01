@@ -364,6 +364,201 @@
           </section>
 
           <section
+            v-else-if="activeTab === 'graph'"
+            class="settings-section"
+          >
+            <div class="section-heading-row">
+              <div>
+                <h3>Graph Knowledge</h3>
+                <p class="section-desc">
+                  Neo4j connection and background tuple extraction settings.
+                </p>
+              </div>
+              <button
+                type="button"
+                class="switch-field"
+                :class="{ active: form.knowledge.graph.enabled }"
+                role="switch"
+                :aria-checked="form.knowledge.graph.enabled"
+                @click="form.knowledge.graph.enabled = !form.knowledge.graph.enabled"
+              >
+                <span class="switch-track">
+                  <span class="switch-thumb" />
+                </span>
+              </button>
+            </div>
+
+            <div class="settings-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
+                    Neo4j Connection
+                  </div>
+                  <p class="section-desc compact">
+                    Used by graph retrieval and background fact writes.
+                  </p>
+                </div>
+                <button
+                  class="btn btn-secondary"
+                  :disabled="graphConnectionTesting"
+                  @click="testGraphConnection"
+                >
+                  {{ graphConnectionTesting ? 'Testing' : 'Test Connection' }}
+                </button>
+              </div>
+
+              <div class="setting-grid">
+                <label class="setting-field graph-wide-field">
+                  <span>URI</span>
+                  <input
+                    v-model="form.knowledge.graph.uri"
+                    placeholder="neo4j://localhost:7687"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Database</span>
+                  <input
+                    v-model="form.knowledge.graph.database"
+                    placeholder="neo4j"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Username</span>
+                  <input
+                    v-model="form.knowledge.graph.username"
+                    placeholder="neo4j"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Password</span>
+                  <input
+                    v-model="form.knowledge.graph.password"
+                    type="password"
+                    :placeholder="form.knowledge.graph.password ? '******** (unchanged)' : 'Neo4j password'"
+                  >
+                </label>
+              </div>
+
+              <div
+                v-if="graphConnectionStatus"
+                :class="['graph-status', graphConnectionStatus.ok ? 'ok' : 'error']"
+              >
+                {{ graphConnectionStatus.message }}
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
+                    Extraction Pipeline
+                  </div>
+                  <p class="section-desc compact">
+                    Jobs are queued after document imports and chat turns.
+                  </p>
+                </div>
+              </div>
+
+              <div class="graph-toggle-row">
+                <button
+                  type="button"
+                  class="switch-line"
+                  :class="{ active: form.knowledge.graph.extraction_enabled }"
+                  @click="form.knowledge.graph.extraction_enabled = !form.knowledge.graph.extraction_enabled"
+                >
+                  <span class="switch-track">
+                    <span class="switch-thumb" />
+                  </span>
+                  <span>Extract tuples</span>
+                </button>
+                <button
+                  type="button"
+                  class="switch-line"
+                  :class="{ active: form.knowledge.graph.retrieval_enabled }"
+                  @click="form.knowledge.graph.retrieval_enabled = !form.knowledge.graph.retrieval_enabled"
+                >
+                  <span class="switch-track">
+                    <span class="switch-thumb" />
+                  </span>
+                  <span>Use graph context</span>
+                </button>
+              </div>
+
+              <div class="source-pills">
+                <button
+                  type="button"
+                  :class="['source-pill', { active: graphSourceEnabled('documents') }]"
+                  :disabled="graphSourceLocked('documents')"
+                  @click="toggleGraphSource('documents')"
+                >
+                  Documents
+                </button>
+                <button
+                  type="button"
+                  :class="['source-pill', { active: graphSourceEnabled('chat') }]"
+                  :disabled="graphSourceLocked('chat')"
+                  @click="toggleGraphSource('chat')"
+                >
+                  Chat
+                </button>
+              </div>
+
+              <div class="setting-grid">
+                <label class="setting-field graph-extraction-model-field">
+                  <span>Extraction Model</span>
+                  <select v-model="graphExtractionModelValue">
+                    <option
+                      v-for="option in graphExtractionModelOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="setting-field">
+                  <span>Max Facts</span>
+                  <input
+                    v-model.number="form.knowledge.graph.max_facts"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Queue Size</span>
+                  <input
+                    v-model.number="form.knowledge.graph.queue_max_size"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+                <label class="setting-field graph-retrieval-depth-field">
+                  <span>Retrieval Depth</span>
+                  <select v-model.number="form.knowledge.graph.retrieval_depth">
+                    <option :value="1">
+                      1 hop
+                    </option>
+                    <option :value="2">
+                      2 hops
+                    </option>
+                    <option :value="3">
+                      3 hops
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <div
+                v-if="latestGraphTask"
+                class="graph-task-row"
+              >
+                <span>{{ latestGraphTask.status }}</span>
+                <span>{{ latestGraphTask.input_summary || latestGraphTask.title }}</span>
+              </div>
+            </div>
+          </section>
+
+          <section
             v-else-if="activeTab === 'music'"
             class="settings-section"
           >
@@ -548,6 +743,7 @@ const icon = {
   image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
   agent: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2m16 0h2M9 13h.01M15 13h.01M9 17h6"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
+  graph: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="7" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.7 7.1 15.3 6.8M7.6 8.5 10.4 15.5M16.2 9.6 13.8 15.4"/></svg>',
   music: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
   audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z"/><path d="M12 9a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 0v7"/></svg>',
 }
@@ -572,6 +768,7 @@ const settingsGroups = [
   {
     label: 'Library',
     tabs: [
+      { id: 'graph', label: 'Graph', description: 'Neo4j graph knowledge and tuple extraction.', icon: icon.graph },
       { id: 'music', label: 'Music', description: 'Directories scanned by the music library.', icon: icon.music },
       { id: 'audio', label: 'Audio', description: 'Audio engine, sample rate, and bit depth settings.', icon: icon.audio },
     ],
@@ -606,6 +803,21 @@ const form = ref({
     enabled: false,
     active_bases: [],
     top_k: 5,
+    graph: {
+      enabled: false,
+      uri: 'neo4j://localhost:7687',
+      username: 'neo4j',
+      password: '',
+      database: 'neo4j',
+      extraction_model: '',
+      extraction_provider: '',
+      extraction_enabled: true,
+      extraction_sources: ['documents', 'chat'],
+      retrieval_enabled: true,
+      retrieval_depth: 1,
+      max_facts: 8,
+      queue_max_size: 1000,
+    },
   },
   audio_host: {
     sample_rate: 48000,
@@ -619,6 +831,9 @@ const saving = ref(false)
 const savingMusic = ref(false)
 const musicDirs = ref([''])
 const imageTranscriptionExpanded = ref(false)
+const graphConnectionTesting = ref(false)
+const graphConnectionStatus = ref(null)
+const latestGraphTask = ref(null)
 const audioDevices = ref([])
 const audioDeviceOptions = computed(() => (
   audioDevices.value.map(device => ({
@@ -659,6 +874,49 @@ const currentAudioDeviceOption = computed(() => {
   if (!selected || selected === 'default') return null
   if (audioDeviceOptions.value.some(option => option.value === selected)) return null
   return { value: selected, label: selected }
+})
+const graphExtractionModelOptions = computed(() => {
+  const options = [{
+    value: graphModelValue('', ''),
+    label: activeModel.value ? `Current chat model (${graphModelLabel(activeModelProvider.value, activeModel.value)})` : 'Current chat model',
+  }]
+  const seen = new Set(options.map(option => option.value))
+  for (const item of activeModels.value) {
+    if (!item || !item.model) continue
+    const provider = String(item.provider || '')
+    const model = String(item.model || '')
+    const value = graphModelValue(provider, model)
+    if (seen.has(value)) continue
+    seen.add(value)
+    options.push({ value, label: graphModelLabel(provider, model) })
+  }
+  const selected = graphModelValue(
+    form.value.knowledge.graph.extraction_provider,
+    form.value.knowledge.graph.extraction_model,
+  )
+  if (selected !== graphModelValue('', '') && !seen.has(selected)) {
+    options.push({
+      value: selected,
+      label: `Unavailable (${graphModelLabel(
+        form.value.knowledge.graph.extraction_provider,
+        form.value.knowledge.graph.extraction_model,
+      )})`,
+    })
+  }
+  return options
+})
+const graphExtractionModelValue = computed({
+  get() {
+    return graphModelValue(
+      form.value.knowledge.graph.extraction_provider,
+      form.value.knowledge.graph.extraction_model,
+    )
+  },
+  set(value) {
+    const selected = parseGraphModelValue(value)
+    form.value.knowledge.graph.extraction_provider = selected.provider
+    form.value.knowledge.graph.extraction_model = selected.model
+  },
 })
 
 async function loadSettings() {
@@ -719,7 +977,65 @@ function normalizeKnowledge(value = {}) {
     enabled: Boolean(value.enabled),
     active_bases: activeBases.map(item => String(item).trim()).filter(Boolean),
     top_k: Number(value.top_k || 5),
+    graph: normalizeGraphKnowledge(value.graph),
   }
+}
+
+function normalizeGraphSources(value) {
+  const rawSources = Array.isArray(value) ? value : ['documents', 'chat']
+  const sources = rawSources
+    .map(item => String(item).trim())
+    .filter((item, index, items) => (
+      ['documents', 'chat'].includes(item) && items.indexOf(item) === index
+    ))
+  return sources.length > 0 ? sources : ['documents']
+}
+
+function normalizeGraphKnowledge(value = {}) {
+  return {
+    enabled: Boolean(value.enabled),
+    uri: value.uri || 'neo4j://localhost:7687',
+    username: value.username || 'neo4j',
+    password: value.password || '',
+    database: value.database || 'neo4j',
+    extraction_model: value.extraction_model || '',
+    extraction_provider: value.extraction_provider || '',
+    extraction_enabled: value.extraction_enabled !== false,
+    extraction_sources: normalizeGraphSources(value.extraction_sources),
+    retrieval_enabled: value.retrieval_enabled !== false,
+    retrieval_depth: normalizeGraphRetrievalDepth(value.retrieval_depth),
+    max_facts: Number(value.max_facts || 8),
+    queue_max_size: Number(value.queue_max_size || 1000),
+  }
+}
+
+function normalizeGraphRetrievalDepth(value) {
+  const parsed = Number(value || 1)
+  if (!Number.isFinite(parsed)) return 1
+  return Math.min(3, Math.max(1, Math.trunc(parsed)))
+}
+
+function graphModelValue(provider, model) {
+  return JSON.stringify([String(provider || ''), String(model || '')])
+}
+
+function parseGraphModelValue(value) {
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed)) {
+      return {
+        provider: String(parsed[0] || ''),
+        model: String(parsed[1] || ''),
+      }
+    }
+  } catch {}
+  return { provider: '', model: '' }
+}
+
+function graphModelLabel(provider, model) {
+  const cleanModel = String(model || '').trim()
+  const cleanProvider = String(provider || '').trim()
+  return cleanProvider ? `${cleanProvider} / ${cleanModel}` : cleanModel
 }
 
 async function loadMusicDirs() {
@@ -741,12 +1057,71 @@ async function saveMusicDirs() {
   }
 }
 
+async function loadLatestGraphTask() {
+  try {
+    const data = await api.getLatestKnowledgeGraphTask()
+    latestGraphTask.value = data.task || null
+  } catch {
+    latestGraphTask.value = null
+  }
+}
+
+async function testGraphConnection() {
+  if (graphConnectionTesting.value) return
+  graphConnectionTesting.value = true
+  graphConnectionStatus.value = null
+  try {
+    const result = await api.testKnowledgeGraphConnection({
+      ...form.value.knowledge.graph,
+      uri: form.value.knowledge.graph.uri.trim(),
+      username: form.value.knowledge.graph.username.trim(),
+      password: form.value.knowledge.graph.password.trim(),
+      database: form.value.knowledge.graph.database.trim(),
+    })
+    graphConnectionStatus.value = {
+      ok: true,
+      message: `Connected to ${result.database || form.value.knowledge.graph.database || 'neo4j'}`,
+    }
+  } catch (err) {
+    graphConnectionStatus.value = {
+      ok: false,
+      message: err.message || 'Connection failed',
+    }
+  } finally {
+    graphConnectionTesting.value = false
+    await loadLatestGraphTask()
+  }
+}
+
+function graphSourceEnabled(source) {
+  return form.value.knowledge.graph.extraction_sources.includes(source)
+}
+
+function graphSourceLocked(source) {
+  const sources = form.value.knowledge.graph.extraction_sources
+  return sources.includes(source) && sources.length <= 1
+}
+
+function toggleGraphSource(source) {
+  const sources = form.value.knowledge.graph.extraction_sources
+  if (sources.includes(source)) {
+    if (sources.length <= 1) return
+    form.value.knowledge.graph.extraction_sources = sources.filter(item => item !== source)
+    return
+  }
+  form.value.knowledge.graph.extraction_sources = [...sources, source]
+}
+
 async function saveSettings() {
   if (saving.value) return
   saving.value = true
   try {
     const latest = await api.getSettings().catch(() => ({}))
-    form.value.knowledge = normalizeKnowledge(latest.knowledge || form.value.knowledge)
+    const graph = normalizeGraphKnowledge(form.value.knowledge.graph)
+    form.value.knowledge = {
+      ...normalizeKnowledge(latest.knowledge || form.value.knowledge),
+      graph,
+    }
     await api.saveSettings({
       wake_words: form.value.wake_words.split(',').map(s => s.trim()).filter(Boolean),
       persona: form.value.persona,
@@ -772,7 +1147,7 @@ async function saveSettings() {
         bit_depth: form.value.audio_host.bit_depth,
       },
     })
-    await Promise.all([loadStatus(), loadAudioDevices()])
+    await Promise.all([loadStatus(), loadAudioDevices(), loadLatestGraphTask()])
   } finally {
     saving.value = false
   }
@@ -790,7 +1165,14 @@ function handleSettingsShortcut(event) {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleSettingsShortcut)
-  await Promise.all([loadProviders(), loadStatus(), loadSettings(), loadMusicDirs(), loadAudioDevices()])
+  await Promise.all([
+    loadProviders(),
+    loadStatus(),
+    loadSettings(),
+    loadMusicDirs(),
+    loadAudioDevices(),
+    loadLatestGraphTask(),
+  ])
 })
 
 onBeforeUnmount(() => {
@@ -1043,6 +1425,12 @@ onBeforeUnmount(() => {
   margin-top: 0;
 }
 
+.graph-wide-field,
+.graph-extraction-model-field,
+.graph-retrieval-depth-field {
+  grid-column: 1 / -1;
+}
+
 .setting-field span {
   color: var(--t2);
   font-size: 12px;
@@ -1165,6 +1553,93 @@ onBeforeUnmount(() => {
 
 .switch-field.active .switch-thumb {
   transform: translateX(16px);
+}
+
+.graph-toggle-row,
+.source-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.switch-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--t2);
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.switch-line.active .switch-track {
+  border-color: rgba(158, 191, 255, 0.5);
+  background: var(--acc);
+}
+
+.switch-line.active .switch-thumb {
+  transform: translateX(16px);
+}
+
+.source-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--t3);
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.source-pill.active {
+  color: var(--acc2);
+  border-color: rgba(125,168,232,0.3);
+  background: var(--acc-bg);
+}
+
+.source-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.graph-status,
+.graph-task-row {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--t2);
+  font-size: 12px;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.graph-status {
+  margin-top: 10px;
+}
+
+.graph-status.ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: rgba(130,184,255,0.28);
+}
+
+.graph-status.error {
+  color: var(--red);
+  background: var(--red-bg);
+  border-color: rgba(255,141,127,0.28);
+}
+
+.graph-task-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  background: rgba(24, 24, 24, 0.42);
 }
 
 .music-dirs {

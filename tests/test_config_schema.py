@@ -18,6 +18,21 @@ EXPECTED_RERANK_MODEL_CONFIG_DEFAULT = {
     "score_threshold": 0.0,
     "max_input_tokens": 8192,
 }
+EXPECTED_GRAPH_KNOWLEDGE_DEFAULT = {
+    "enabled": False,
+    "uri": "neo4j://localhost:7687",
+    "username": "neo4j",
+    "password": "",
+    "database": "neo4j",
+    "extraction_model": "",
+    "extraction_provider": "",
+    "extraction_enabled": True,
+    "extraction_sources": ["documents", "chat"],
+    "retrieval_enabled": True,
+    "retrieval_depth": 1,
+    "max_facts": 8,
+    "queue_max_size": 1000,
+}
 
 
 def test_normalize_config_adds_defaults_and_coerces_scalar_values():
@@ -49,6 +64,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["active_rerank_models"] == []
     assert config["image_transcription"] == DEFAULT_CONFIG["image_transcription"]
     assert config["novelai"] == DEFAULT_CONFIG["novelai"]
+    assert config["knowledge"]["graph"] == EXPECTED_GRAPH_KNOWLEDGE_DEFAULT
     assert config["onebot11"]["enabled"] is False
     assert config["onebot11"]["ws_reverse_port"] == 6200
     assert config["onebot11"]["admin_user_ids"] == []
@@ -104,6 +120,47 @@ def test_normalize_config_adds_default_pool_config_to_model_entries():
     assert config["active_rerank_models"][0]["config"] == EXPECTED_RERANK_MODEL_CONFIG_DEFAULT
 
 
+def test_normalize_config_coerces_graph_knowledge_settings():
+    config, changed = normalize_config(
+        {
+            "knowledge": {
+                "graph": {
+                    "enabled": "true",
+                    "uri": "bolt://localhost:7687",
+                    "username": "neo4j",
+                    "password": "secret",
+                    "database": "atri",
+                    "extraction_model": "gpt-4o-mini",
+                    "extraction_provider": "OpenAI",
+                    "extraction_enabled": "false",
+                    "extraction_sources": ["documents"],
+                    "retrieval_enabled": "true",
+                    "retrieval_depth": "3",
+                    "max_facts": "12",
+                    "queue_max_size": "50",
+                }
+            }
+        }
+    )
+
+    assert changed is True
+    assert config["knowledge"]["graph"] == {
+        "enabled": True,
+        "uri": "bolt://localhost:7687",
+        "username": "neo4j",
+        "password": "secret",
+        "database": "atri",
+        "extraction_model": "gpt-4o-mini",
+        "extraction_provider": "OpenAI",
+        "extraction_enabled": False,
+        "extraction_sources": ["documents"],
+        "retrieval_enabled": True,
+        "retrieval_depth": 3,
+        "max_facts": 12,
+        "queue_max_size": 50,
+    }
+
+
 def test_normalize_config_preserves_model_entry_config_over_defaults():
     config, changed = normalize_config(
         {
@@ -153,6 +210,10 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         ({"active_rerank_models": "rerank-test"}, "active_rerank_models must be an array"),
         ({"vst3_plugin_paths": "D:/VST3"}, "vst3_plugin_paths must be an array"),
         ({"agent_mode": "execute"}, "agent_mode must be one of: plan, agent"),
+        (
+            {"knowledge": {"graph": {"retrieval_depth": 4}}},
+            "knowledge.graph.retrieval_depth must be <= 3",
+        ),
         ([], "config root must be an object"),
     ],
 )

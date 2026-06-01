@@ -65,6 +65,32 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "enabled": {"type": "boolean", "default": False},
                 "active_bases": {"type": "array", "default": []},
                 "top_k": {"type": "integer", "default": 5, "minimum": 1},
+                "graph": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": False},
+                        "uri": {"type": "string", "default": "neo4j://localhost:7687"},
+                        "username": {"type": "string", "default": "neo4j"},
+                        "password": {"type": "string", "default": ""},
+                        "database": {"type": "string", "default": "neo4j"},
+                        "extraction_model": {"type": "string", "default": ""},
+                        "extraction_provider": {"type": "string", "default": ""},
+                        "extraction_enabled": {"type": "boolean", "default": True},
+                        "extraction_sources": {
+                            "type": "array",
+                            "default": ["documents", "chat"],
+                        },
+                        "retrieval_enabled": {"type": "boolean", "default": True},
+                        "retrieval_depth": {
+                            "type": "integer",
+                            "default": 1,
+                            "minimum": 1,
+                            "maximum": 3,
+                        },
+                        "max_facts": {"type": "integer", "default": 8, "minimum": 1},
+                        "queue_max_size": {"type": "integer", "default": 1000, "minimum": 1},
+                    },
+                },
             },
         },
         "wake_words": {"type": "array", "default": ["atri"]},
@@ -242,6 +268,9 @@ def _coerce_value(value: Any, schema: dict[str, Any], path: str) -> tuple[Any, b
         minimum = schema.get("minimum")
         if minimum is not None and coerced < minimum:
             raise ConfigValidationError(f"{path} must be >= {minimum}")
+        maximum = schema.get("maximum")
+        if maximum is not None and coerced > maximum:
+            raise ConfigValidationError(f"{path} must be <= {maximum}")
         return coerced, coerced != value
 
     if "number" in allowed:

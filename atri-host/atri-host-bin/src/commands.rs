@@ -861,6 +861,9 @@ fn execute(
         Command::GetStatus => status(engine, streamer, host_config, editor_manager),
         Command::Shutdown => {
             let _ = cmd_tx.send(AppCommand::Shutdown);
+            if let Some(manager) = editor_manager {
+                manager.shutdown();
+            }
             CommandResponse::Shutdown {
                 status: "ok".to_string(),
             }

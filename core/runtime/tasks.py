@@ -550,12 +550,18 @@ class TaskStore:
             ).fetchall()
         return [self._event_from_row(row) for row in rows]
 
-    def mark_incomplete_as_interrupted(self, *, reason: str) -> int:
+    def mark_incomplete_as_interrupted(self, *, reason: str, kind: str | None = None) -> int:
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT id FROM tasks WHERE status NOT IN (?, ?, ?, ?)",
-                sorted(TERMINAL_TASK_STATUSES),
-            ).fetchall()
+            if kind:
+                rows = self._conn.execute(
+                    "SELECT id FROM tasks WHERE kind = ? AND status NOT IN (?, ?, ?, ?)",
+                    (kind, *sorted(TERMINAL_TASK_STATUSES)),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT id FROM tasks WHERE status NOT IN (?, ?, ?, ?)",
+                    sorted(TERMINAL_TASK_STATUSES),
+                ).fetchall()
         count = 0
         for row in rows:
             task_id = row["id"]

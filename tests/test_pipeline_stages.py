@@ -97,6 +97,51 @@ def test_process_stage_allows_high_privilege_tools_for_onebot_admin_only():
     assert _event_allows_high_privilege_tools(onebot_normal) is False
 
 
+class _SharedTaskStore:
+    def __init__(self):
+        self.interrupt_reasons = []
+        self.closed = False
+
+    def mark_incomplete_as_interrupted(self, *, reason: str, kind: str | None = None) -> int:
+        self.interrupt_reasons.append({"reason": reason, "kind": kind})
+        return 0
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_process_stage_uses_shared_task_store_without_closing_it(tmp_path):
+    shared_store = _SharedTaskStore()
+    stage = ProcessStage()
+
+    await stage.initialize(
+        {
+            "workspace": str(tmp_path / "workspace"),
+            "runtime_dir": str(tmp_path / "runtime"),
+            "sessions_dir": str(tmp_path / "sessions"),
+            "task_store": shared_store,
+            "model": "test-model",
+            "api_key": "test-key",
+            "onebot11": {"enabled": False},
+        }
+    )
+    await stage.shutdown()
+
+    assert stage.task_store is shared_store
+    assert shared_store.interrupt_reasons == [
+        {
+            "reason": "ATRI restarted before the background task finished",
+            "kind": None,
+        },
+        {
+            "reason": "ATRI shut down before the background task finished",
+            "kind": None,
+        },
+    ]
+    assert shared_store.closed is False
+
+
 def test_process_stage_resolves_per_model_chat_generation_config():
     stage = ProcessStage()
     stage._llm_template = {

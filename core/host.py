@@ -6,6 +6,7 @@ frontend via WebSocket broadcast.
 """
 
 import asyncio
+import atexit
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ class HostManager:
         self._running = False
         self._response_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._command_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
 
     @staticmethod
@@ -87,12 +89,36 @@ class HostManager:
         """
         self._audio_callback = callback
 
+    @property
+    def has_live_process(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def cleanup_orphaned_process(self) -> bool:
+        """Synchronously terminate a live child process during interpreter shutdown."""
+        process = self._process
+        if process is None or process.poll() is not None:
+            self._process = None
+            self._running = False
+            return False
+        pid = process.pid
+        logger.info("Cleaning up orphaned atri-host on interpreter exit (pid=%d)", pid)
+        try:
+            process.terminate()
+            process.wait(timeout=2)
+        except Exception:
+            try:
+                process.kill()
+                process.wait(timeout=2)
+            except Exception:
+                logger.warning("Failed to clean up orphaned atri-host (pid=%d)", pid)
+                return False
+        finally:
+            self._process = None
+            self._running = False
+        return True
+
     async def start(self) -> None:
         """Spawn the Rust host process and start reading its output."""
-        if self._process is not None:
-            logger.warning("Host process already running")
-            return
-
         binary_path = self._resolve_binary(self.binary_path)
         project_root = Path(__file__).parent.parent
         env = os.environ.copy()
@@ -100,71 +126,114 @@ class HostManager:
         if config_path.exists():
             env.setdefault("ATRI_CONFIG", str(config_path))
 
-        logger.info("Starting atri-host: %s", binary_path)
-        try:
-            self._process = subprocess.Popen(  # noqa: ASYNC220,S603
-                [binary_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(project_root),
-                env=env,
-            )
-        except FileNotFoundError:
-            logger.error("Host binary not found at %s", binary_path)
-            raise
-        except OSError as e:
-            logger.error("Failed to start host process: %s", e)
-            raise
+        async with self._lifecycle_lock:
+            if self.has_live_process:
+                logger.warning(
+                    "Host process already running (pid=%d)",
+                    self._process.pid if self._process else -1,
+                )
+                return
+            if self._process is not None:
+                await self._cleanup_reader_tasks()
+                self._process = None
+                self._running = False
 
-        self._running = True
-        self._tasks = {
-            asyncio.create_task(self._read_stdout()),
-            asyncio.create_task(self._read_stderr()),
-        }
-        for task in self._tasks:
-            task.add_done_callback(self._tasks.discard)
-        logger.info("atri-host started (pid=%d)", self._process.pid)
+            logger.info("Starting atri-host: %s", binary_path)
+            try:
+                self._process = subprocess.Popen(  # noqa: ASYNC220,S603
+                    [binary_path],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=str(project_root),
+                    env=env,
+                )
+            except FileNotFoundError:
+                logger.error("Host binary not found at %s", binary_path)
+                raise
+            except OSError as e:
+                logger.error("Failed to start host process: %s", e)
+                raise
+
+            self._running = True
+            self._tasks = {
+                asyncio.create_task(self._read_stdout()),
+                asyncio.create_task(self._read_stderr()),
+            }
+            for task in self._tasks:
+                task.add_done_callback(self._tasks.discard)
+            logger.info("atri-host started (pid=%d)", self._process.pid)
 
     async def stop(self) -> None:
         """Stop the Rust host process gracefully, with terminate/kill fallback."""
-        process = self._process
-        if process is None:
-            return
+        async with self._lifecycle_lock:
+            process = self._process
+            if process is None or process.poll() is not None:
+                self._process = None
+                self._running = False
+                await self._cleanup_reader_tasks()
+                return
 
-        logger.info("Stopping atri-host...")
-        try:
-            await self.send_command("shutdown")
-        except Exception as e:
-            logger.debug("Host shutdown command failed: %s", e)
+            pid = process.pid
+            logger.info("Stopping atri-host (pid=%d)...", pid)
+            try:
+                async with self._command_lock:
+                    self._write_command_line("shutdown")
+                    try:
+                        await asyncio.wait_for(self._response_queue.get(), timeout=2.0)
+                    except TimeoutError:
+                        logger.debug("Timed out waiting for atri-host shutdown ack (pid=%d)", pid)
+            except Exception as e:
+                logger.debug("Host shutdown command failed (pid=%d): %s", pid, e)
 
-        self._running = False
-        try:
-            if process.stdin:
-                process.stdin.close()
-        except Exception as e:
-            logger.debug("Host stdin close failed: %s", e)
+            self._running = False
+            try:
+                if process.stdin:
+                    process.stdin.close()
+            except Exception as e:
+                logger.debug("Host stdin close failed (pid=%d): %s", pid, e)
 
+            await self._wait_for_process_exit(process, pid=pid)
+            self._process = None
+            await self._cleanup_reader_tasks()
+            logger.info("atri-host stopped (pid=%d)", pid)
+
+    def _write_command_line(self, cmd: str, params: dict | None = None) -> None:
+        if self._process is None or self._process.stdin is None:
+            raise RuntimeError("Host process not running")
+
+        message: dict[str, Any] = {"cmd": cmd}
+        if params:
+            message.update(params)
+        line = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
+        self._process.stdin.write(line.encode())
+        self._process.stdin.flush()
+
+    async def _wait_for_process_exit(self, process: subprocess.Popen, *, pid: int) -> None:
         try:
             await asyncio.to_thread(process.wait, timeout=5)
         except subprocess.TimeoutExpired:
-            logger.warning("Host process did not exit after shutdown, terminating...")
+            logger.warning("atri-host (pid=%d) did not exit after shutdown, terminating...", pid)
             process.terminate()
             try:
                 await asyncio.to_thread(process.wait, timeout=2)
             except subprocess.TimeoutExpired:
-                logger.warning("Host process did not terminate, killing...")
+                logger.warning("atri-host (pid=%d) did not terminate, killing...", pid)
                 process.kill()
                 await asyncio.to_thread(process.wait)
 
-        self._process = None
+        if process.poll() is None:
+            logger.warning("atri-host (pid=%d) still alive after shutdown, forcing kill...", pid)
+            process.kill()
+            await asyncio.to_thread(process.wait)
+
+    async def _cleanup_reader_tasks(self) -> None:
         for task in list(self._tasks):
             if not task.done():
                 task.cancel()
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        logger.info("atri-host stopped")
 
     async def send_command(
         self,
@@ -178,13 +247,7 @@ class HostManager:
             if self._process is None or self._process.stdin is None or not self.is_running:
                 raise RuntimeError("Host process not running")
 
-            message: dict[str, Any] = {"cmd": cmd}
-            if params:
-                message.update(params)
-
-            line = json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
-            self._process.stdin.write(line.encode())
-            self._process.stdin.flush()
+            self._write_command_line(cmd, params)
 
             # Read response (non-audio JSON line)
             response = await self._read_response(response_timeout=response_timeout)
@@ -280,11 +343,19 @@ class HostManager:
 
     @property
     def is_running(self) -> bool:
-        return self._running and self._process is not None and self._process.poll() is None
+        return self._running and self.has_live_process
+
+
+def _atexit_cleanup_host() -> None:
+    manager = _host_manager
+    if manager is None:
+        return
+    manager.cleanup_orphaned_process()
 
 
 # Singleton
 _host_manager: HostManager | None = None
+atexit.register(_atexit_cleanup_host)
 
 
 def get_host_manager() -> HostManager:

@@ -272,6 +272,7 @@ class ProcessStage(Stage):
         self.image_transcription: dict = dict(ctx.get("image_transcription", {}) or {})
         self.knowledge: dict = dict(ctx.get("knowledge", {}) or {})
         self.knowledge_manager = ctx.get("knowledge_manager")
+        self.graph_manager = ctx.get("graph_manager")
         self.mode_controller = AgentModeController(
             ctx.get("agent_mode", "agent"),
             on_change=self._on_agent_mode_changed,
@@ -293,7 +294,8 @@ class ProcessStage(Stage):
 
         self.session_store = SessionStore(ctx.get("sessions_dir"))
         self.runtime_store = RuntimeTimelineStore(ctx.get("runtime_dir"))
-        self.task_store = TaskStore(ctx.get("runtime_dir"))
+        self.task_store = ctx.get("task_store") or TaskStore(ctx.get("runtime_dir"))
+        self._owns_task_store = ctx.get("task_store") is None
         self.todo_store = TodoStore(ctx.get("runtime_dir"))
         self.task_store.mark_incomplete_as_interrupted(
             reason="ATRI restarted before the background task finished"
@@ -605,6 +607,7 @@ class ProcessStage(Stage):
                 event.set_result(response_text)
             event._extras["tool_events"] = turn.tool_events
             await turn.finish_success(response_text)
+            self._enqueue_graph_chat_turn(event, response_text)
 
             self.session_store.save(
                 agent.messages,
@@ -658,9 +661,61 @@ class ProcessStage(Stage):
         except Exception as e:
             logger.warning(f"Knowledge retrieval skipped: {e}")
             return ""
-        if not result.get("results"):
+        parts = []
+        if result.get("results"):
+            parts.append(str(result.get("context_text") or ""))
+        graph_context = await self._graph_context_for_event(event, query, result)
+        if graph_context:
+            parts.append(graph_context)
+        return "\n\n".join(part for part in parts if part.strip())
+
+    async def _graph_context_for_event(
+        self,
+        event: MessageEvent,
+        query: str,
+        retrieval_result: dict | None = None,
+    ) -> str:
+        graph_cfg = self.knowledge.get("graph", {}) if isinstance(self.knowledge, dict) else {}
+        if not isinstance(graph_cfg, dict):
             return ""
-        return str(result.get("context_text") or "")
+        if not graph_cfg.get("enabled") or not graph_cfg.get("retrieval_enabled", True):
+            return ""
+        graph_manager = getattr(self, "graph_manager", None)
+        if graph_manager is None:
+            return ""
+        try:
+            return await graph_manager.retrieve_context(
+                query=query,
+                source_ids=_retrieval_source_ids(retrieval_result or {}),
+                max_facts=int(graph_cfg.get("max_facts") or 8),
+                retrieval_depth=int(graph_cfg.get("retrieval_depth") or 1),
+            )
+        except Exception as e:
+            logger.warning(f"Graph knowledge retrieval skipped: {e}")
+            return ""
+
+    def _enqueue_graph_chat_turn(self, event: MessageEvent, response_text: str) -> None:
+        graph_cfg = self.knowledge.get("graph", {}) if isinstance(self.knowledge, dict) else {}
+        if not isinstance(graph_cfg, dict):
+            return
+        if not graph_cfg.get("enabled") or not graph_cfg.get("extraction_enabled", True):
+            return
+        sources = graph_cfg.get("extraction_sources", ["documents", "chat"])
+        if "chat" not in sources:
+            return
+        graph_manager = getattr(self, "graph_manager", None)
+        if graph_manager is None:
+            return
+        try:
+            graph_manager.enqueue_chat_turn(
+                user_text=_event_plain_text(event) or event.message_str,
+                assistant_text=response_text,
+                session_id=event.unified_msg_origin,
+                platform=event.platform_name,
+                metadata={"message_type": event.message_type.value},
+            )
+        except Exception as e:
+            logger.warning(f"Graph chat extraction enqueue skipped: {e}")
 
     def _transcribe_event_images(self, event: MessageEvent, images: list[Image]) -> str:
         cfg = self.image_transcription
@@ -736,6 +791,22 @@ class ProcessStage(Stage):
                 logger.info(f"Cancelled agent for session {resolved}")
                 return True
         return self.cancel_current()
+
+    def prepare_shutdown(self) -> None:
+        """Cancel active agent work before the framework shuts down."""
+        if self.cancel_current():
+            logger.info("Cancelled active agent operation(s) for shutdown")
+
+    async def shutdown(self) -> None:
+        """Release runtime resources opened by this stage."""
+        self.prepare_shutdown()
+        self.task_store.mark_incomplete_as_interrupted(
+            reason="ATRI shut down before the background task finished"
+        )
+        self.runtime_store.close()
+        if self._owns_task_store:
+            self.task_store.close()
+        self.todo_store.close()
 
     def update_config(self, **kwargs):
         """Hot-reload configuration (called from WebUI/dashboard)."""
@@ -854,6 +925,8 @@ class ProcessStage(Stage):
             self.knowledge = dict(kwargs["knowledge"] or {})
         if "knowledge_manager" in kwargs:
             self.knowledge_manager = kwargs["knowledge_manager"]
+        if "graph_manager" in kwargs:
+            self.graph_manager = kwargs["graph_manager"]
         knowledge_manager = getattr(self, "knowledge_manager", None)
         if knowledge_manager is not None and any(
             key in kwargs
@@ -1382,6 +1455,17 @@ def _strip_generated_image_markers(result: str) -> str:
         if not line.startswith("ATRI_GENERATED_IMAGE_BATCH:")
         and not line.startswith("ATRI_GENERATED_CHEM_IMAGE_BATCH:")
     )
+
+
+def _retrieval_source_ids(result: dict) -> list[str]:
+    values = []
+    for item in result.get("results", []) if isinstance(result, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = str(item.get("chunk_id") or "").strip()
+        if chunk_id and chunk_id not in values:
+            values.append(chunk_id)
+    return values
 
 
 def _image_components_from_extras(raw_images: object) -> list[Image]:

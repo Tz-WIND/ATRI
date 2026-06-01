@@ -118,6 +118,10 @@ async def main():
         await _run_lifecycle_until_shutdown(lifecycle, shutdown_triggered, logger)
     except asyncio.CancelledError:
         logger.info("Main task cancelled, stopping...")
+        await lifecycle.stop()
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received, stopping...")
+        await lifecycle.stop()
 
     logger.info("Goodbye!")
 

@@ -26,11 +26,13 @@ class KnowledgeBaseManager:
         config: dict[str, Any] | None = None,
         embedding_client: EmbeddingClient | None = None,
         rerank_client: RerankClient | None = None,
+        graph_manager: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.config = config or {}
         self.embedding_client = embedding_client or OpenAIEmbeddingClient()
         self.rerank_client = rerank_client or OpenAIRerankClient()
+        self.graph_manager = graph_manager
         self.store = KnowledgeStore(self.db_path)
         self.retriever: HybridRetriever | None = None
 
@@ -192,6 +194,7 @@ class KnowledgeBaseManager:
                 source=source,
             )
             self.store.add_chunks(kb_id, doc["doc_id"], list(zip(chunks, vectors, strict=True)))
+            self._enqueue_graph_document(kb_id, doc["doc_id"], file_name, len(chunks))
             result = {
                 "uploaded": [self.store.get_document(doc["doc_id"])],
                 "failed": [],
@@ -342,6 +345,29 @@ class KnowledgeBaseManager:
         if not kb:
             raise ValueError("knowledge base not found")
         return kb
+
+    def _enqueue_graph_document(
+        self,
+        kb_id: str,
+        doc_id: str,
+        file_name: str,
+        chunk_count: int,
+    ) -> None:
+        graph_manager = getattr(self, "graph_manager", None)
+        if graph_manager is None:
+            return
+        try:
+            chunks = self.store.list_chunks(doc_id, offset=0, limit=max(1, chunk_count))
+            graph_manager.enqueue_document(
+                kb_id=kb_id,
+                doc_id=doc_id,
+                doc_name=file_name,
+                chunks=chunks,
+            )
+        except Exception as e:
+            from core import logger
+
+            logger.warning("Graph document extraction enqueue skipped: %s", e)
 
 
 def format_context(results: list[dict]) -> str:

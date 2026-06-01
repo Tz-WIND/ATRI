@@ -74,6 +74,32 @@ def test_runtime_task_store_marks_incomplete_tasks_interrupted(tmp_path):
         store.close()
 
 
+def test_runtime_task_store_marks_incomplete_tasks_interrupted_by_kind(tmp_path):
+    store = TaskStore(tmp_path / "runtime")
+    try:
+        graph = store.create_task(kind="graph_extraction", title="graph", input_text="extract")
+        other = store.create_task(kind="sub_agent", title="agent", input_text="work")
+        store.start_task(graph)
+        store.start_task(other)
+
+        assert (
+            store.mark_incomplete_as_interrupted(
+                reason="graph worker shut down before the task finished",
+                kind="graph_extraction",
+            )
+            == 1
+        )
+
+        graph_task = store.get_task(graph)
+        other_task = store.get_task(other)
+        assert graph_task is not None
+        assert other_task is not None
+        assert graph_task["status"] == "interrupted"
+        assert other_task["status"] == "running"
+    finally:
+        store.close()
+
+
 def test_runtime_task_store_rejects_newer_schema_version(tmp_path):
     db_path = tmp_path / "tasks.sqlite3"
     conn = sqlite3.connect(db_path)

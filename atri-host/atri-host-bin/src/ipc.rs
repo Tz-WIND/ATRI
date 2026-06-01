@@ -32,6 +32,9 @@ pub fn run_ipc_loop(
             Ok(0) => {
                 eprintln!("[atri-host] stdin closed, shutting down");
                 let _ = cmd_tx.send(AppCommand::Shutdown);
+                if let Some(manager) = &editor_manager {
+                    manager.shutdown();
+                }
                 break;
             }
             Ok(_) => {

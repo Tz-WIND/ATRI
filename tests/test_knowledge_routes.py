@@ -76,6 +76,7 @@ class _FakeLifecycle:
             embedding_client=FakeEmbeddingClient(),
             rerank_client=FakeRerankClient(),
         )
+        self.graph_manager = _FakeGraphManager()
 
     def save_config(self):
         self.saved += 1
@@ -87,6 +88,20 @@ class _FakeProcessStage:
 
     def update_config(self, **kwargs):
         self.updated.append(kwargs)
+
+
+class _FakeGraphManager:
+    def __init__(self):
+        self.test_result = {"ok": True, "database": "neo4j"}
+        self.updated = []
+
+    def update_config(self, config):
+        self.updated.append(config)
+
+    async def test_connection(self, config=None):
+        if isinstance(self.test_result, Exception):
+            raise self.test_result
+        return self.test_result
 
 
 async def _dashboard(monkeypatch, tmp_path) -> Dashboard:
@@ -291,7 +306,151 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
         "enabled": True,
         "active_bases": ["kb-1"],
         "top_k": 3,
+        "graph": {
+            "enabled": False,
+            "uri": "neo4j://localhost:7687",
+            "username": "neo4j",
+            "password": "",
+            "database": "neo4j",
+            "extraction_model": "",
+            "extraction_provider": "",
+            "extraction_enabled": True,
+            "extraction_sources": ["documents", "chat"],
+            "retrieval_enabled": True,
+            "retrieval_depth": 1,
+            "max_facts": 8,
+            "queue_max_size": 1000,
+        },
     }
     assert payload["knowledge"] == dashboard.lifecycle.config["knowledge"]
     assert process_stage.updated[-1]["knowledge"] == dashboard.lifecycle.config["knowledge"]
     assert cast(_FakeLifecycle, dashboard.lifecycle).saved == 1
+
+
+@pytest.mark.asyncio
+async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tmp_path):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    process_stage = _FakeProcessStage()
+    dashboard.lifecycle.process_stage = process_stage
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    update_response = await client.post(
+        "/api/settings",
+        json={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "uri": "bolt://localhost:7687",
+                    "username": "neo4j",
+                    "password": "secret",
+                    "database": "atri",
+                    "extraction_model": "graph-chat",
+                    "extraction_provider": "OpenAI",
+                    "extraction_enabled": True,
+                    "extraction_sources": ["documents", "chat"],
+                    "retrieval_enabled": True,
+                    "retrieval_depth": 2,
+                    "max_facts": 6,
+                    "queue_max_size": 25,
+                }
+            }
+        },
+        headers=headers,
+    )
+    get_response = await client.get("/api/settings", headers=headers)
+    payload = await get_response.get_json()
+
+    preserve_response = await client.post(
+        "/api/settings",
+        json={"knowledge": {"graph": {"password": "***", "max_facts": 4}}},
+        headers=headers,
+    )
+
+    assert update_response.status_code == 200
+    assert get_response.status_code == 200
+    assert preserve_response.status_code == 200
+    assert payload["knowledge"]["graph"]["password"] == "*" * 3
+    assert payload["knowledge"]["graph"]["extraction_model"] == "graph-chat"
+    assert payload["knowledge"]["graph"]["extraction_provider"] == "OpenAI"
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["password"] == "sec" + "ret"
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["retrieval_depth"] == 2
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["max_facts"] == 4
+    assert process_stage.updated[-1]["knowledge"] == dashboard.lifecycle.config["knowledge"]
+    assert dashboard.lifecycle.graph_manager.updated[-1] == dashboard.lifecycle.config
+
+
+@pytest.mark.asyncio
+async def test_settings_route_rejects_empty_graph_extraction_sources_when_enabled(
+    monkeypatch,
+    tmp_path,
+):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = await dashboard.app.test_client().post(
+        "/api/settings",
+        json={
+            "knowledge": {
+                "graph": {
+                    "extraction_enabled": True,
+                    "extraction_sources": [],
+                }
+            }
+        },
+        headers=headers,
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert "knowledge.graph.extraction_sources must contain at least one source" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_graph_test_connection_route(monkeypatch, tmp_path):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    ok_response = await client.post(
+        "/api/knowledge/graph/test-connection",
+        json={"uri": "bolt://localhost:7687", "username": "neo4j", "password": "secret"},
+        headers=headers,
+    )
+    alias_response = await client.post(
+        "/api/knowledge/graph/testconnection",
+        json={"uri": "bolt://localhost:7687", "username": "neo4j", "password": "secret"},
+        headers=headers,
+    )
+    dashboard.lifecycle.graph_manager.test_result = RuntimeError("neo4j offline")
+    failed_response = await client.post(
+        "/api/knowledge/graph/test-connection",
+        json={"uri": "bolt://localhost:7687", "username": "neo4j", "password": "secret"},
+        headers=headers,
+    )
+    dashboard.lifecycle.graph_manager.test_result = RuntimeError("database not found")
+    database_failed_response = await client.post(
+        "/api/knowledge/graph/test-connection",
+        json={
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        headers=headers,
+    )
+
+    assert ok_response.status_code == 200
+    assert await ok_response.get_json() == {"ok": True, "database": "neo4j"}
+    assert alias_response.status_code == 200
+    assert await alias_response.get_json() == {"ok": True, "database": "neo4j"}
+    assert failed_response.status_code == 400
+    assert "neo4j offline" in (await failed_response.get_json())["error"]
+    assert database_failed_response.status_code == 400
+    assert (
+        "Neo4j database 'atri' was not found"
+        in (await database_failed_response.get_json())["error"]
+    )

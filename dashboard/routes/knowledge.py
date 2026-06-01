@@ -160,6 +160,28 @@ def register(dashboard: Dashboard) -> None:
             return jsonify({"error": str(e)}), 400
         return jsonify(result)
 
+    @app.route("/api/knowledge/graph/test-connection", methods=["POST"])
+    @app.route("/api/knowledge/graph/testconnection", methods=["POST"])
+    async def test_graph_connection():
+        graph_manager = getattr(dashboard.lifecycle, "graph_manager", None)
+        if graph_manager is None:
+            return jsonify({"error": "graph knowledge manager is not available"}), 503
+        data = await request.get_json(silent=True) or {}
+        try:
+            result = await graph_manager.test_connection(data)
+        except Exception as e:
+            return jsonify({"error": _graph_connection_error(e, data)}), 400
+        return jsonify(result)
+
+    @app.route("/api/knowledge/graph/tasks/latest", methods=["GET"])
+    async def latest_graph_task():
+        graph_manager = getattr(dashboard.lifecycle, "graph_manager", None)
+        task_store = getattr(graph_manager, "task_store", None)
+        if task_store is None:
+            return jsonify({"task": None})
+        tasks = task_store.list_tasks(kind="graph_extraction", limit=1)
+        return jsonify({"task": tasks[0] if tasks else None})
+
     @app.route("/api/knowledge/tasks/<task_id>", methods=["GET"])
     async def get_task(task_id: str):
         manager = _knowledge_manager(dashboard)
@@ -206,3 +228,15 @@ def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _graph_connection_error(error: Exception, data: dict[str, Any]) -> str:
+    message = str(error).strip() or error.__class__.__name__
+    database = str(data.get("database") or "").strip()
+    if database and "not found" in message.lower():
+        return (
+            f"Neo4j database '{database}' was not found. "
+            "Set Database to an existing Neo4j database. "
+            f"Details: {message}"
+        )
+    return message
