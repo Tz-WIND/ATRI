@@ -94,6 +94,8 @@ class _FakeGraphManager:
     def __init__(self):
         self.test_result = {"ok": True, "database": "neo4j"}
         self.updated = []
+        self.retrieve_result = "[Graph context]\n- ATRI -[can_help_with]-> 写代码"
+        self.retrieve_calls = []
 
     def update_config(self, config):
         self.updated.append(config)
@@ -102,6 +104,26 @@ class _FakeGraphManager:
         if isinstance(self.test_result, Exception):
             raise self.test_result
         return self.test_result
+
+    async def retrieve_context(
+        self,
+        *,
+        query,
+        source_ids=None,
+        max_facts=8,
+        retrieval_depth=1,
+        ranking_policy="hybrid",
+    ):
+        self.retrieve_calls.append(
+            {
+                "query": query,
+                "source_ids": source_ids,
+                "max_facts": max_facts,
+                "retrieval_depth": retrieval_depth,
+                "ranking_policy": ranking_policy,
+            }
+        )
+        return self.retrieve_result
 
 
 async def _dashboard(monkeypatch, tmp_path) -> Dashboard:
@@ -454,3 +476,46 @@ async def test_knowledge_graph_test_connection_route(monkeypatch, tmp_path):
         "Neo4j database 'atri' was not found"
         in (await database_failed_response.get_json())["error"]
     )
+
+
+@pytest.mark.asyncio
+async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    response = await client.post(
+        "/api/knowledge/graph/retrieve",
+        json={
+            "query": "ATRI",
+            "max_facts": 4,
+            "retrieval_depth": 2,
+            "ranking_policy": "relevance",
+        },
+        headers=headers,
+    )
+    payload = await response.get_json()
+    empty_response = await client.post(
+        "/api/knowledge/graph/retrieve",
+        json={"query": ""},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert payload == {
+        "query": "ATRI",
+        "context_text": "[Graph context]\n- ATRI -[can_help_with]-> 写代码",
+        "has_context": True,
+    }
+    assert dashboard.lifecycle.graph_manager.retrieve_calls == [
+        {
+            "query": "ATRI",
+            "source_ids": [],
+            "max_facts": 4,
+            "retrieval_depth": 2,
+            "ranking_policy": "relevance",
+        }
+    ]
+    assert empty_response.status_code == 400
+    assert "query is required" in (await empty_response.get_json())["error"]

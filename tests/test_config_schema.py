@@ -31,6 +31,7 @@ EXPECTED_GRAPH_KNOWLEDGE_DEFAULT = {
     "retrieval_enabled": True,
     "retrieval_depth": 1,
     "max_facts": 8,
+    "ranking_policy": "hybrid",
     "queue_max_size": 1000,
 }
 
@@ -137,6 +138,7 @@ def test_normalize_config_coerces_graph_knowledge_settings():
                     "retrieval_enabled": "true",
                     "retrieval_depth": "3",
                     "max_facts": "12",
+                    "ranking_policy": "RELEVANCE",
                     "queue_max_size": "50",
                 }
             }
@@ -157,6 +159,7 @@ def test_normalize_config_coerces_graph_knowledge_settings():
         "retrieval_enabled": True,
         "retrieval_depth": 3,
         "max_facts": 12,
+        "ranking_policy": "relevance",
         "queue_max_size": 50,
     }
 
@@ -213,6 +216,10 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         (
             {"knowledge": {"graph": {"retrieval_depth": 4}}},
             "knowledge.graph.retrieval_depth must be <= 3",
+        ),
+        (
+            {"knowledge": {"graph": {"ranking_policy": "random"}}},
+            "knowledge.graph.ranking_policy must be one of: hybrid, relevance, latest",
         ),
         ([], "config root must be an object"),
     ],

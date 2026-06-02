@@ -371,6 +371,7 @@ async def test_process_stage_prepends_recent_group_messages_to_onebot_group_inpu
     content = await stage._event_content_for_agent(event)
 
     assert content == (
+        "[ATRI internal context]\n"
         "[Recent group messages before this request]\n"
         "- Alice (1001): build failed at asio\n"
         "- Bob (1002): maybe enable the feature flag\n\n"
@@ -430,6 +431,7 @@ async def test_process_stage_prepends_daw_context_to_daw_agent_input():
     content = await stage._event_content_for_agent(event)
 
     assert content == (
+        "[ATRI internal context]\n"
         "[DAW agent context]\n"
         "Workspace target: ATRI Studio "
         "(write to the ATRI Studio project first; sync or export to the DAW host "
@@ -465,6 +467,7 @@ async def test_process_stage_prepends_daw_context_to_multimodal_input():
         {
             "type": "text",
             "text": (
+                "[ATRI internal context]\n"
                 "[DAW agent context]\n"
                 "Workspace target: ATRI Studio "
                 "(write to the ATRI Studio project first; sync or export to the DAW host "

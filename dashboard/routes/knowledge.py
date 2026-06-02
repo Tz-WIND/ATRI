@@ -173,6 +173,41 @@ def register(dashboard: Dashboard) -> None:
             return jsonify({"error": _graph_connection_error(e, data)}), 400
         return jsonify(result)
 
+    @app.route("/api/knowledge/graph/retrieve", methods=["POST"])
+    async def retrieve_graph_context():
+        graph_manager = getattr(dashboard.lifecycle, "graph_manager", None)
+        if graph_manager is None:
+            return jsonify({"error": "graph knowledge manager is not available"}), 503
+        data = await request.get_json(silent=True) or {}
+        query = str(data.get("query") or "").strip()
+        if not query:
+            return jsonify({"error": "query is required"}), 400
+        try:
+            context_text = await graph_manager.retrieve_context(
+                query=query,
+                source_ids=_str_list(data.get("source_ids")),
+                max_facts=_int_at_least(data.get("max_facts"), 8, "max_facts", 1),
+                retrieval_depth=_int_at_least(
+                    data.get("retrieval_depth"),
+                    1,
+                    "retrieval_depth",
+                    1,
+                    maximum=3,
+                ),
+                ranking_policy=_ranking_policy(data.get("ranking_policy")),
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify(
+            {
+                "query": query,
+                "context_text": context_text,
+                "has_context": bool(str(context_text or "").strip()),
+            }
+        )
+
     @app.route("/api/knowledge/graph/tasks/latest", methods=["GET"])
     async def latest_graph_task():
         graph_manager = getattr(dashboard.lifecycle, "graph_manager", None)
@@ -228,6 +263,13 @@ def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _ranking_policy(value: object) -> str:
+    policy = str(value or "hybrid").strip().lower()
+    if policy not in {"hybrid", "relevance", "latest"}:
+        raise ValueError("ranking_policy must be one of: hybrid, relevance, latest")
+    return policy
 
 
 def _graph_connection_error(error: Exception, data: dict[str, Any]) -> str:

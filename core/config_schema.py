@@ -88,6 +88,11 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "maximum": 3,
                         },
                         "max_facts": {"type": "integer", "default": 8, "minimum": 1},
+                        "ranking_policy": {
+                            "type": "string",
+                            "default": "hybrid",
+                            "enum": ["hybrid", "relevance", "latest"],
+                        },
                         "queue_max_size": {"type": "integer", "default": 1000, "minimum": 1},
                     },
                 },

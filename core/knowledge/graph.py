@@ -10,6 +10,8 @@ from typing import Any
 from core import logger
 
 DriverFactory = Callable[[str, tuple[str, str]], Any]
+_MAX_QUERY_TERMS = 32
+_VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
 
 
 class Neo4jGraphClient:
@@ -158,6 +160,7 @@ class Neo4jGraphClient:
         source_ids: list[str] | None = None,
         max_facts: int = 8,
         retrieval_depth: int = 1,
+        ranking_policy: str = "hybrid",
     ) -> str:
         if not self.enabled:
             return ""
@@ -168,8 +171,19 @@ class Neo4jGraphClient:
         if not terms and not source_ids:
             return ""
         depth = _retrieval_depth(retrieval_depth)
+        policy = _ranking_policy(ranking_policy)
+        single_hop_order_by = (
+            "ORDER BY r.updated_at DESC"
+            if policy == "latest"
+            else "ORDER BY graph_score DESC, r.updated_at DESC"
+        )
+        multi_hop_order_by = (
+            "ORDER BY hop ASC, r.updated_at DESC"
+            if policy == "latest"
+            else "ORDER BY graph_score DESC, hop ASC, r.updated_at DESC"
+        )
         if depth <= 1:
-            cypher = """
+            cypher = f"""
         MATCH (s:Entity)-[r:FACT]->(o:Entity)
         WHERE
           (
@@ -183,12 +197,53 @@ class Neo4jGraphClient:
               toLower(s.name) CONTAINS term
               OR toLower(o.name) CONTAINS term
               OR toLower(r.predicate) CONTAINS term)
+        WITH s, r, o,
+             CASE WHEN (
+               size($source_ids) > 0
+               AND (
+                 r.source_id IN $source_ids
+                 OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
+               )
+             ) THEN 3.0 ELSE 0.0 END AS source_match_score,
+             reduce(term_score = 0.0, term IN $terms |
+               term_score
+               + CASE WHEN toLower(coalesce(s.name, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(o.name, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
+             ) AS term_match_score,
+             coalesce(toFloat(r.confidence), 0.0) AS confidence_score,
+             CASE
+               WHEN coalesce(
+                 toFloat(r.source_count),
+                 toFloat(size(coalesce(r.source_ids, []))),
+                 0.0
+               ) > 5.0 THEN 1.0
+               ELSE coalesce(
+                 toFloat(r.source_count),
+                 toFloat(size(coalesce(r.source_ids, []))),
+                 0.0
+               ) / 5.0
+             END AS source_count_score,
+             coalesce(toFloat(r.updated_at), 0.0) / 2000000000.0 AS recency_score
+        WITH s, r, o, confidence_score, source_count_score, recency_score,
+             source_match_score + term_match_score + confidence_score + source_count_score
+             AS relevance_score
+        WITH s, r, o,
+             CASE $ranking_policy
+               WHEN 'relevance' THEN relevance_score
+               WHEN 'latest' THEN recency_score
+               ELSE relevance_score * 0.65
+                    + recency_score * 0.20
+                    + confidence_score * 0.10
+                    + source_count_score * 0.05
+             END AS graph_score
         RETURN s.name AS subject,
                r.predicate AS predicate,
                o.name AS object,
                r.evidence AS evidence,
                r.confidence AS confidence
-        ORDER BY r.updated_at DESC
+        {single_hop_order_by}
         LIMIT $limit
         """
         else:
@@ -206,13 +261,63 @@ class Neo4jGraphClient:
               OR any(rel IN relationships(path) WHERE toLower(rel.predicate) CONTAINS term))
         WITH relationships(path) AS rels, length(path) AS hop
         WITH rels[size(rels) - 1] AS r, hop
+        WITH startNode(r) AS s, r, endNode(r) AS o, hop,
+             CASE WHEN (
+               size($source_ids) > 0
+               AND (
+                 r.source_id IN $source_ids
+                 OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
+               )
+             ) THEN 3.0 ELSE 0.0 END AS source_match_score,
+             reduce(term_score = 0.0, term IN $terms |
+               term_score
+               + CASE
+                   WHEN toLower(coalesce(startNode(r).name, '')) CONTAINS term THEN 2.0
+                   ELSE 0.0
+                 END
+               + CASE
+                   WHEN toLower(coalesce(endNode(r).name, '')) CONTAINS term THEN 2.0
+                   ELSE 0.0
+                 END
+               + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
+             ) AS term_match_score,
+             coalesce(toFloat(r.confidence), 0.0) AS confidence_score,
+             CASE
+               WHEN coalesce(
+                 toFloat(r.source_count),
+                 toFloat(size(coalesce(r.source_ids, []))),
+                 0.0
+               ) > 5.0 THEN 1.0
+               ELSE coalesce(
+                 toFloat(r.source_count),
+                 toFloat(size(coalesce(r.source_ids, []))),
+                 0.0
+               ) / 5.0
+             END AS source_count_score,
+             coalesce(toFloat(r.updated_at), 0.0) / 2000000000.0 AS recency_score,
+             1.0 / toFloat(hop) AS hop_score
+        WITH s, r, o, hop, confidence_score, source_count_score, recency_score, hop_score,
+             source_match_score + term_match_score + confidence_score
+             + source_count_score + hop_score
+             AS relevance_score
+        WITH s, r, o, hop,
+             CASE $ranking_policy
+               WHEN 'relevance' THEN relevance_score
+               WHEN 'latest' THEN recency_score
+               ELSE relevance_score * 0.65
+                    + recency_score * 0.20
+                    + confidence_score * 0.10
+                    + source_count_score * 0.05
+                    + hop_score * 0.10
+             END AS graph_score
         RETURN startNode(r).name AS subject,
                r.predicate AS predicate,
                endNode(r).name AS object,
                r.evidence AS evidence,
                r.confidence AS confidence,
                hop AS hop
-        ORDER BY hop ASC, r.updated_at DESC
+        {multi_hop_order_by}
         LIMIT $limit
         """
         with self._session() as session:
@@ -222,6 +327,7 @@ class Neo4jGraphClient:
                     source_ids=source_ids or [],
                     terms=terms,
                     limit=max(1, int(max_facts or 8)),
+                    ranking_policy=policy,
                     timeout=3,
                 )
             )
@@ -263,14 +369,45 @@ def _default_driver_factory(uri: str, auth: tuple[str, str]):
 
 
 def _query_terms(query: str) -> list[str]:
-    terms = []
+    terms: list[str] = []
     for raw in str(query or "").lower().replace("_", " ").split():
         term = "".join(char for char in raw if char.isalnum() or "\u4e00" <= char <= "\u9fff")
-        if len(term) > 1 and term not in terms:
-            terms.append(term)
-        if len(terms) >= 12:
+        _append_query_term(terms, term)
+        for run in _cjk_runs(term):
+            for size in (2, 3, 4):
+                if len(run) < size:
+                    continue
+                for index in range(0, len(run) - size + 1):
+                    _append_query_term(terms, run[index : index + size])
+                    if len(terms) >= _MAX_QUERY_TERMS:
+                        break
+                if len(terms) >= _MAX_QUERY_TERMS:
+                    break
+            if len(terms) >= _MAX_QUERY_TERMS:
+                break
+        if len(terms) >= _MAX_QUERY_TERMS:
             break
     return terms
+
+
+def _append_query_term(terms: list[str], term: str) -> None:
+    if len(term) > 1 and term not in terms and len(terms) < _MAX_QUERY_TERMS:
+        terms.append(term)
+
+
+def _cjk_runs(value: str) -> list[str]:
+    runs = []
+    current = []
+    for char in value:
+        if "\u4e00" <= char <= "\u9fff":
+            current.append(char)
+            continue
+        if current:
+            runs.append("".join(current))
+            current = []
+    if current:
+        runs.append("".join(current))
+    return runs
 
 
 def _retrieval_depth(value: Any) -> int:
@@ -279,6 +416,11 @@ def _retrieval_depth(value: Any) -> int:
     except (TypeError, ValueError):
         parsed = 1
     return max(1, min(3, parsed))
+
+
+def _ranking_policy(value: Any) -> str:
+    policy = str(value or "hybrid").strip().lower()
+    return policy if policy in _VALID_RANKING_POLICIES else "hybrid"
 
 
 def _fact_source_ids(fact: dict[str, Any]) -> list[str]:

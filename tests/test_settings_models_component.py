@@ -41,11 +41,21 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "form.value.knowledge.graph" in source
     assert "testGraphConnection" in source
     assert "testKnowledgeGraphConnection" in api_source
+    assert "Graph Query" in source
+    assert "graphQueryForm" in source
+    assert "runGraphQuery" in source
+    assert "retrieveKnowledgeGraph" in api_source
+    assert "/api/knowledge/graph/retrieve" in api_source
+    assert "graph-query-result" in source
     assert "Extraction Model" in source
     assert "graphExtractionModelOptions" in source
     assert "graph-extraction-model-field" in source
     assert "Retrieval Depth" in source
     assert "retrieval_depth" in source
+    assert "Ranking Policy" in source
+    assert "ranking_policy" in source
+    assert "normalizeGraphRankingPolicy" in source
+    assert "ranking_policy: normalizeGraphRankingPolicy" in source
     assert "normalizeGraphSources" in source
     assert "graphSourceLocked" in source
     assert "sources.length <= 1" in source

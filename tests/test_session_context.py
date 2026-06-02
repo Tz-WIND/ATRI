@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from core.agent.agent import _llm_safe_message
+from core.agent.agent import Agent, _llm_safe_message
 from core.agent.context import (
     TOOL_OUTPUT_COMPRESSED_MARKER,
     ContextManager,
@@ -10,6 +10,8 @@ from core.agent.context import (
     content_to_text,
     estimate_tokens,
 )
+from core.agent.display_context import prepend_internal_context, strip_internal_context_text
+from core.agent.llm import LLMResponse
 from core.agent.session import SessionStore
 from core.pipeline.stages.process import _attach_generated_images_to_assistant_message
 from core.tools.retrieve_tool_result import RetrieveToolResultTool
@@ -59,6 +61,58 @@ def test_session_store_lists_multimodal_user_content_preview(tmp_path):
     assert store.list_sessions()[0]["preview"] == "check this\n[Image attachment]\n"
 
 
+def test_session_store_preview_prefers_display_content_metadata(tmp_path):
+    store = SessionStore(tmp_path)
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "[Graph context]\n- 用户 -[请求]-> 截图\n\n[Current request]\n截图失败是什么原因"
+            ),
+            "_atri_display_content": "截图失败是什么原因",
+        }
+    ]
+
+    store.save(messages, "gpt-test", "webchat:friend:graph-preview")
+
+    assert store.list_sessions()[0]["preview"] == "截图失败是什么原因"
+
+
+def test_session_store_preview_strips_legacy_internal_context(tmp_path):
+    store = SessionStore(tmp_path)
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "[Graph context]\n- 用户 -[请求]-> 截图\n\n[Current request]\n截图失败是什么原因"
+            ),
+        }
+    ]
+
+    store.save(messages, "gpt-test", "webchat:friend:legacy-graph-preview")
+
+    assert store.list_sessions()[0]["preview"] == "截图失败是什么原因"
+
+
+def test_internal_context_helpers_do_not_depend_on_known_context_prefixes():
+    wrapped = prepend_internal_context("[Brand new context]\nnew fact", "original request")
+
+    assert wrapped == (
+        "[ATRI internal context]\n"
+        "[Brand new context]\n"
+        "new fact\n\n"
+        "[Current request]\n"
+        "original request"
+    )
+    assert strip_internal_context_text(wrapped) == "original request"
+    assert (
+        strip_internal_context_text(
+            "[Brand new context]\nnew fact\n\n[Current request]\nlegacy request"
+        )
+        == "legacy request"
+    )
+
+
 def test_session_store_preserves_generated_assistant_image_attachments(tmp_path):
     store = SessionStore(tmp_path)
     messages: list[dict] = [
@@ -88,6 +142,7 @@ def test_llm_safe_message_strips_atri_attachment_metadata():
         "content": "Done.",
         "tool_calls": [{"id": "call_1"}],
         "_atri_attachments": [{"src": "data:image/png;base64,aGVsbG8="}],
+        "_atri_display_content": "Done.",
     }
 
     assert _llm_safe_message(message) == {
@@ -95,6 +150,32 @@ def test_llm_safe_message_strips_atri_attachment_metadata():
         "content": "Done.",
         "tool_calls": [{"id": "call_1"}],
     }
+
+
+def test_agent_chat_stores_display_content_metadata_without_sending_it_to_llm():
+    class FakeLLM:
+        model = "gpt-test"
+
+        def __init__(self):
+            self.messages = None
+
+        def chat(self, *, messages, **kwargs):
+            self.messages = messages
+            return LLMResponse(content="ok")
+
+    llm = FakeLLM()
+    agent = Agent(llm=llm, workspace=".", tools=[])
+    augmented = "[Graph context]\n- Alice -[works_at]-> Acme\n\n[Current request]\nhello"
+
+    assert agent.chat(augmented, display_user_input="hello") == "ok"
+
+    assert agent.messages[0] == {
+        "role": "user",
+        "content": augmented,
+        "_atri_display_content": "hello",
+    }
+    assert llm.messages is not None
+    assert llm.messages[1] == {"role": "user", "content": augmented}
 
 
 def test_generated_images_attach_to_last_assistant_message():

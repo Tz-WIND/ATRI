@@ -46,6 +46,16 @@ def _prepend_user_notice(user_input: str | list[dict], notice: str) -> str | lis
     return notice + "\n\n" + str(user_input)
 
 
+def _user_message(
+    content: str | list[dict],
+    display_content: str | list[dict] | None = None,
+) -> dict:
+    message: dict = {"role": "user", "content": content}
+    if display_content is not None:
+        message["_atri_display_content"] = display_content
+    return message
+
+
 class Agent:
     def __init__(
         self,
@@ -225,6 +235,8 @@ class Agent:
         on_thinking_done: Callable | None = None,
         on_tool_start: Callable | None = None,
         on_tool_end: Callable | None = None,
+        *,
+        display_user_input: str | list[dict] | None = None,
     ) -> str:
         """Process one user message. May involve multiple LLM/tool rounds.
 
@@ -240,9 +252,8 @@ class Agent:
 
         if was_interrupted:
             self.messages.append(
-                {
-                    "role": "user",
-                    "content": _prepend_user_notice(
+                _user_message(
+                    _prepend_user_notice(
                         user_input,
                         (
                             "[System notice: Your previous task was interrupted by the user "
@@ -251,10 +262,11 @@ class Agent:
                             "directly.]"
                         ),
                     ),
-                }
+                    display_user_input if display_user_input is not None else user_input,
+                )
             )
         else:
-            self.messages.append({"role": "user", "content": user_input})
+            self.messages.append(_user_message(user_input, display_user_input))
 
         self.context.maybe_compress(self.messages, self.llm, self._build_system())
 
@@ -333,6 +345,8 @@ class Agent:
         on_thinking_done: Callable | None = None,
         on_tool_start: Callable | None = None,
         on_tool_end: Callable | None = None,
+        *,
+        display_user_input: str | list[dict] | None = None,
     ) -> str:
         """Async wrapper: runs the synchronous chat in a thread executor."""
         loop = asyncio.get_running_loop()
@@ -340,12 +354,13 @@ class Agent:
             None,
             lambda: self.chat(
                 user_input,
-                on_token,
-                on_tool,
-                on_thinking,
-                on_thinking_done,
-                on_tool_start,
-                on_tool_end,
+                on_token=on_token,
+                on_tool=on_tool,
+                on_thinking=on_thinking,
+                on_thinking_done=on_thinking_done,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
+                display_user_input=display_user_input,
             ),
         )
 

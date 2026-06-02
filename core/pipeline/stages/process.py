@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 from core import logger
 from core.agent.agent import Agent
 from core.agent.context import TOOL_OUTPUT_COMPRESSED_MARKER
+from core.agent.display_context import prepend_internal_context
 from core.agent.llm import LLM
 from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
@@ -97,30 +98,6 @@ def _recent_group_context_text(event: MessageEvent) -> str:
     if not lines:
         return ""
     return "[Recent group messages before this request]\n" + "\n".join(lines)
-
-
-def _prepend_recent_group_context(
-    event: MessageEvent,
-    content: str | list[dict],
-) -> str | list[dict]:
-    context = _recent_group_context_text(event)
-    if not context:
-        return content
-    if isinstance(content, list):
-        return [{"type": "text", "text": context + "\n\n[Current request]\n"}, *content]
-    return f"{context}\n\n[Current request]\n{content}"
-
-
-def _prepend_knowledge_context(
-    content: str | list[dict],
-    context_text: str,
-) -> str | list[dict]:
-    if not context_text.strip():
-        return content
-    prefix = context_text.strip() + "\n\n[Current request]\n"
-    if isinstance(content, list):
-        return [{"type": "text", "text": prefix}, *content]
-    return prefix + content
 
 
 _DAW_WORKSPACE_DETAILS = {
@@ -237,19 +214,6 @@ def _daw_host_project_sync_lines(host_context: dict) -> list[str]:
         "the inbox snapshot file changes."
     )
     return lines
-
-
-def _prepend_daw_context(
-    event: MessageEvent,
-    content: str | list[dict],
-) -> str | list[dict]:
-    context = _daw_context_text(event)
-    if not context:
-        return content
-    prefix = context + "\n\n[Current request]\n"
-    if isinstance(content, list):
-        return [{"type": "text", "text": prefix}, *content]
-    return prefix + content
 
 
 def _event_runtime_metadata(event: MessageEvent) -> dict:
@@ -624,6 +588,7 @@ class ProcessStage(Stage):
             with self._active_lock:
                 self._active_session_ids.add(session_id)
             agent.high_privilege_tools_allowed = _event_allows_high_privilege_tools(event)
+            display_user_content = _event_user_content(event)
             user_content = await self._event_content_for_agent(event)
             response = await agent.chat_async(
                 user_content,
@@ -633,6 +598,7 @@ class ProcessStage(Stage):
                 on_thinking_done=turn.on_thinking_done,
                 on_tool_start=turn.on_tool_start,
                 on_tool_end=turn.on_tool_end,
+                display_user_input=display_user_content,
             )
             response_text = response or ""
             turn.mark_thinking_done()
@@ -676,38 +642,40 @@ class ProcessStage(Stage):
             content = _event_user_content_with_transcription(event, transcription)
         else:
             content = _event_user_content(event)
-        content = _prepend_recent_group_context(event, content)
-        context_text = await self._knowledge_context_for_event(event)
-        content = _prepend_knowledge_context(content, context_text)
-        return _prepend_daw_context(event, content)
+        context_parts = [
+            _daw_context_text(event),
+            await self._knowledge_context_for_event(event),
+            _recent_group_context_text(event),
+        ]
+        context_text = "\n\n".join(part for part in context_parts if part.strip())
+        return prepend_internal_context(context_text, content)
 
     async def _knowledge_context_for_event(self, event: MessageEvent) -> str:
         knowledge = getattr(self, "knowledge", {})
-        if not knowledge.get("enabled"):
-            return ""
-        manager = getattr(self, "knowledge_manager", None)
-        if manager is None:
-            return ""
-        active_bases = knowledge.get("active_bases", [])
-        if not isinstance(active_bases, list) or not active_bases:
-            return ""
         query = _event_plain_text(event) or event.message_str
         if not query.strip():
             return ""
-        try:
-            result = await manager.retrieve(
-                query=query,
-                kb_ids=[str(item) for item in active_bases if str(item or "").strip()],
-                kb_names=[],
-                top_k=int(knowledge.get("top_k") or 5),
-            )
-        except Exception as e:
-            logger.warning(f"Knowledge retrieval skipped: {e}")
-            return ""
-        parts = []
-        if result.get("results"):
-            parts.append(str(result.get("context_text") or ""))
-        graph_context = await self._graph_context_for_event(event, query, result)
+
+        retrieval_result: dict | None = None
+        parts: list[str] = []
+        if isinstance(knowledge, dict) and knowledge.get("enabled"):
+            manager = getattr(self, "knowledge_manager", None)
+            active_bases = knowledge.get("active_bases", [])
+            if manager is not None and isinstance(active_bases, list) and active_bases:
+                try:
+                    retrieval_result = await manager.retrieve(
+                        query=query,
+                        kb_ids=[str(item) for item in active_bases if str(item or "").strip()],
+                        kb_names=[],
+                        top_k=int(knowledge.get("top_k") or 5),
+                    )
+                except Exception as e:
+                    logger.warning(f"Knowledge retrieval skipped: {e}")
+                else:
+                    if retrieval_result.get("results"):
+                        parts.append(str(retrieval_result.get("context_text") or ""))
+
+        graph_context = await self._graph_context_for_event(event, query, retrieval_result)
         if graph_context:
             parts.append(graph_context)
         return "\n\n".join(part for part in parts if part.strip())
@@ -718,7 +686,8 @@ class ProcessStage(Stage):
         query: str,
         retrieval_result: dict | None = None,
     ) -> str:
-        graph_cfg = self.knowledge.get("graph", {}) if isinstance(self.knowledge, dict) else {}
+        knowledge = getattr(self, "knowledge", {})
+        graph_cfg = knowledge.get("graph", {}) if isinstance(knowledge, dict) else {}
         if not isinstance(graph_cfg, dict):
             return ""
         if not graph_cfg.get("enabled") or not graph_cfg.get("retrieval_enabled", True):
@@ -734,6 +703,7 @@ class ProcessStage(Stage):
                     source_ids=_retrieval_source_ids(retrieval_result or {}),
                     max_facts=int(graph_cfg.get("max_facts") or 8),
                     retrieval_depth=int(graph_cfg.get("retrieval_depth") or 1),
+                    ranking_policy=str(graph_cfg.get("ranking_policy") or "hybrid"),
                 ),
             )
         except Exception as e:

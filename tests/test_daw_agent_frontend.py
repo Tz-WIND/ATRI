@@ -156,6 +156,15 @@ def test_use_chat_exposes_shared_http_assistant_response_handler():
     assert "addAssistantHttpResponse" in source
 
 
+def test_use_chat_restores_display_content_for_augmented_user_messages():
+    source = (ROOT / "frontend" / "src" / "composables" / "useChat.js").read_text(encoding="utf-8")
+
+    assert "m._atri_display_content || m.content" in source
+    assert "stripInternalUserContext(m._atri_display_content || m.content)" in source
+    assert "'[Graph context]'" not in source
+    assert "'[Knowledge context]'" not in source
+
+
 def test_daw_agent_page_has_no_persistent_workspace_status_row():
     source = DAW_AGENT_PAGE.read_text(encoding="utf-8")
 

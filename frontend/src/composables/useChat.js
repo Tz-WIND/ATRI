@@ -365,7 +365,8 @@ export function useChat() {
       }
 
       if (m.role === 'user' && m.content) {
-        const parsed = parseUserContent(m.content)
+        const userContent = stripInternalUserContext(m._atri_display_content || m.content)
+        const parsed = parseUserContent(userContent)
         addMessage('user', parsed.text, false, { attachments: parsed.attachments })
         // Tool-result user messages are continuations of the current turn,
         // not new user requests -- skip inserting runtime thinking here.
@@ -475,6 +476,44 @@ export function useChat() {
     })
 
     return { text: textParts.join('').trim(), attachments }
+  }
+
+  function stripInternalUserContext(content) {
+    if (typeof content === 'string') {
+      return stripInternalContextText(content)
+    }
+    if (!Array.isArray(content)) return content
+
+    const index = content.findIndex((part) => part?.type === 'text' && typeof part.text === 'string')
+    if (index < 0) return content
+
+    const stripped = stripInternalContextText(content[index].text)
+    if (stripped === content[index].text) return content
+
+    const next = [...content]
+    next[index] = { ...content[index], text: stripped }
+    return next
+  }
+
+  function stripInternalContextText(text) {
+    const source = String(text || '')
+    const trimmed = source.trimStart()
+    const internalHeader = '[ATRI internal context]'
+    const marker = '[Current request]\n'
+    const markerIndex = trimmed.lastIndexOf(marker)
+    if (markerIndex < 0) return source
+    const prefix = trimmed.slice(0, markerIndex)
+    if (!trimmed.startsWith(internalHeader) && !looksLikeLegacyInternalContext(prefix)) {
+      return source
+    }
+    return trimmed.slice(markerIndex + marker.length)
+  }
+
+  function looksLikeLegacyInternalContext(prefix) {
+    const firstLine = String(prefix || '').trimStart().split(/\r?\n/, 1)[0].trim().toLowerCase()
+    return firstLine.startsWith('[')
+      && firstLine.endsWith(']')
+      && (firstLine.includes('context') || firstLine.includes('before this request'))
   }
 
   function mimeFromDataUrl(src) {

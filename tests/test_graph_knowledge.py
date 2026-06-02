@@ -5,7 +5,7 @@ from typing import Any, cast
 import pytest
 
 from core.knowledge.extraction import normalize_extracted_facts
-from core.knowledge.graph import Neo4jGraphClient
+from core.knowledge.graph import Neo4jGraphClient, _query_terms
 from core.knowledge.graph_worker import GraphKnowledgeManager, _chat_turn_text
 from core.runtime.tasks import TaskStore
 
@@ -290,6 +290,69 @@ def test_neo4j_graph_client_retrieves_limited_multihop_context():
     )
 
 
+def test_neo4j_graph_client_uses_hybrid_ranking_score_before_limit():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice",
+        source_ids=["chunk-1"],
+        max_facts=4,
+        ranking_policy="hybrid",
+    )
+
+    query = driver.session_obj.calls[-1]["query"]
+    assert "graph_score" in query
+    assert "source_match_score" in query
+    assert "term_match_score" in query
+    assert "ORDER BY graph_score DESC, r.updated_at DESC" in query
+    assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "hybrid"
+
+
+def test_neo4j_graph_client_latest_ranking_preserves_recency_order():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice",
+        source_ids=[],
+        max_facts=4,
+        ranking_policy="latest",
+        retrieval_depth=2,
+    )
+
+    query = driver.session_obj.calls[-1]["query"]
+    assert "ORDER BY hop ASC, r.updated_at DESC" in query
+    assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "latest"
+
+
+def test_graph_query_terms_include_cjk_ngrams_for_unsegmented_queries():
+    terms = _query_terms("我之前请求截图的时候失败过是什么原因")
+
+    assert "截图" in terms
+    assert "失败" in terms
+    assert "原因" in terms
+    assert _query_terms("Alice Acme")[:2] == ["alice", "acme"]
+
+
 def test_neo4j_graph_client_reconnects_when_connection_config_changes():
     drivers = [FakeNeo4jDriver(), FakeNeo4jDriver()]
     calls = []
@@ -453,13 +516,22 @@ class FakeGraphClient:
         self.facts.extend(facts)
         return len(facts)
 
-    def retrieve_context(self, *, query, source_ids=None, max_facts=8, retrieval_depth=1):
+    def retrieve_context(
+        self,
+        *,
+        query,
+        source_ids=None,
+        max_facts=8,
+        retrieval_depth=1,
+        ranking_policy="hybrid",
+    ):
         self.retrieve_calls.append(
             {
                 "query": query,
                 "source_ids": source_ids,
                 "max_facts": max_facts,
                 "retrieval_depth": retrieval_depth,
+                "ranking_policy": ranking_policy,
             }
         )
         return "[Graph context]\n- Alice -[works_at]-> Acme"
@@ -952,6 +1024,42 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
                 "source_ids": [],
                 "max_facts": 5,
                 "retrieval_depth": 3,
+                "ranking_policy": "hybrid",
+            }
+        ]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_passes_configured_ranking_policy_to_graph_client(tmp_path):
+    store = TaskStore(tmp_path / "runtime")
+    graph = FakeGraphClient()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                    "ranking_policy": "relevance",
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
+        task_store=store,
+    )
+    try:
+        context = await manager.retrieve_context(query="Alice", source_ids=[], max_facts=5)
+
+        assert context == "[Graph context]\n- Alice -[works_at]-> Acme"
+        assert graph.retrieve_calls == [
+            {
+                "query": "Alice",
+                "source_ids": [],
+                "max_facts": 5,
+                "retrieval_depth": 1,
+                "ranking_policy": "relevance",
             }
         ]
     finally:

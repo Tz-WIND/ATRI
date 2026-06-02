@@ -525,6 +525,20 @@
                   >
                 </label>
                 <label class="setting-field">
+                  <span>Ranking Policy</span>
+                  <select v-model="form.knowledge.graph.ranking_policy">
+                    <option value="hybrid">
+                      Hybrid
+                    </option>
+                    <option value="relevance">
+                      Most Relevant
+                    </option>
+                    <option value="latest">
+                      Latest
+                    </option>
+                  </select>
+                </label>
+                <label class="setting-field">
                   <span>Queue Size</span>
                   <input
                     v-model.number="form.knowledge.graph.queue_max_size"
@@ -555,6 +569,45 @@
                 <span>{{ latestGraphTask.status }}</span>
                 <span>{{ latestGraphTask.input_summary || latestGraphTask.title }}</span>
               </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
+                    Graph Query
+                  </div>
+                </div>
+                <button
+                  class="btn btn-secondary"
+                  :disabled="graphQueryRunning || !graphQueryForm.query.trim()"
+                  @click="runGraphQuery"
+                >
+                  {{ graphQueryRunning ? 'Querying' : 'Run Query' }}
+                </button>
+              </div>
+
+              <label class="setting-field">
+                <span>Query</span>
+                <textarea
+                  v-model="graphQueryForm.query"
+                  rows="3"
+                  spellcheck="false"
+                  @keydown.ctrl.enter.prevent="runGraphQuery"
+                  @keydown.meta.enter.prevent="runGraphQuery"
+                />
+              </label>
+
+              <div
+                v-if="graphQueryError"
+                class="graph-status error"
+              >
+                {{ graphQueryError }}
+              </div>
+              <pre
+                v-if="graphQueryResult"
+                class="graph-query-result"
+              >{{ graphQueryResult }}</pre>
             </div>
           </section>
 
@@ -816,6 +869,7 @@ const form = ref({
       retrieval_enabled: true,
       retrieval_depth: 1,
       max_facts: 8,
+      ranking_policy: 'hybrid',
       queue_max_size: 1000,
     },
   },
@@ -833,6 +887,10 @@ const musicDirs = ref([''])
 const imageTranscriptionExpanded = ref(false)
 const graphConnectionTesting = ref(false)
 const graphConnectionStatus = ref(null)
+const graphQueryRunning = ref(false)
+const graphQueryError = ref('')
+const graphQueryResult = ref('')
+const graphQueryForm = ref({ query: '' })
 const latestGraphTask = ref(null)
 const audioDevices = ref([])
 const audioDeviceOptions = computed(() => (
@@ -1005,6 +1063,7 @@ function normalizeGraphKnowledge(value = {}) {
     retrieval_enabled: value.retrieval_enabled !== false,
     retrieval_depth: normalizeGraphRetrievalDepth(value.retrieval_depth),
     max_facts: Number(value.max_facts || 8),
+    ranking_policy: normalizeGraphRankingPolicy(value.ranking_policy),
     queue_max_size: Number(value.queue_max_size || 1000),
   }
 }
@@ -1013,6 +1072,11 @@ function normalizeGraphRetrievalDepth(value) {
   const parsed = Number(value || 1)
   if (!Number.isFinite(parsed)) return 1
   return Math.min(3, Math.max(1, Math.trunc(parsed)))
+}
+
+function normalizeGraphRankingPolicy(value) {
+  const policy = String(value || 'hybrid').trim().toLowerCase()
+  return ['hybrid', 'relevance', 'latest'].includes(policy) ? policy : 'hybrid'
 }
 
 function graphModelValue(provider, model) {
@@ -1090,6 +1154,31 @@ async function testGraphConnection() {
   } finally {
     graphConnectionTesting.value = false
     await loadLatestGraphTask()
+  }
+}
+
+async function runGraphQuery() {
+  const query = graphQueryForm.value.query.trim()
+  if (graphQueryRunning.value || !query) return
+  graphQueryRunning.value = true
+  graphQueryError.value = ''
+  graphQueryResult.value = ''
+  try {
+    const result = await api.retrieveKnowledgeGraph({
+      query,
+      max_facts: Number(form.value.knowledge.graph.max_facts || 8),
+      retrieval_depth: normalizeGraphRetrievalDepth(
+        form.value.knowledge.graph.retrieval_depth,
+      ),
+      ranking_policy: normalizeGraphRankingPolicy(
+        form.value.knowledge.graph.ranking_policy,
+      ),
+    })
+    graphQueryResult.value = result.context_text || '(no graph context)'
+  } catch (err) {
+    graphQueryError.value = err.message || 'Graph query failed'
+  } finally {
+    graphQueryRunning.value = false
   }
 }
 
@@ -1640,6 +1729,22 @@ onBeforeUnmount(() => {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   background: rgba(24, 24, 24, 0.42);
+}
+
+.graph-query-result {
+  margin: 10px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(24, 24, 24, 0.55);
+  color: var(--t2);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .music-dirs {

@@ -173,6 +173,7 @@ class GraphKnowledgeManager:
         source_ids: list[str] | None = None,
         max_facts: int = 8,
         retrieval_depth: int | None = None,
+        ranking_policy: str | None = None,
     ) -> str:
         if not self.graph_config.get("enabled") or not self.graph_config.get("retrieval_enabled"):
             return ""
@@ -181,6 +182,7 @@ class GraphKnowledgeManager:
             if retrieval_depth is not None
             else self.graph_config.get("retrieval_depth", 1)
         )
+        policy = _ranking_policy(ranking_policy or self.graph_config.get("ranking_policy"))
         try:
             return await asyncio.to_thread(
                 self.graph_client.retrieve_context,
@@ -188,6 +190,7 @@ class GraphKnowledgeManager:
                 source_ids=source_ids or [],
                 max_facts=max_facts,
                 retrieval_depth=depth,
+                ranking_policy=policy,
             )
         except Exception as e:
             logger.warning("Graph knowledge retrieval skipped: %s", e)
@@ -414,6 +417,7 @@ def _graph_config_from_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "retrieval_enabled": bool(graph.get("retrieval_enabled", True)),
         "retrieval_depth": _retrieval_depth(graph.get("retrieval_depth", 1)),
         "max_facts": max(1, int(graph.get("max_facts") or 8)),
+        "ranking_policy": _ranking_policy(graph.get("ranking_policy")),
         "queue_max_size": int(graph.get("queue_max_size") or 1000),
     }
 
@@ -424,6 +428,13 @@ def _retrieval_depth(value: Any) -> int:
     except (TypeError, ValueError):
         parsed = 1
     return max(1, min(3, parsed))
+
+
+def _ranking_policy(value: Any) -> str:
+    policy = str(value or "hybrid").strip().lower()
+    if policy not in {"hybrid", "relevance", "latest"}:
+        return "hybrid"
+    return policy
 
 
 def _document_extraction_batches(
