@@ -34,6 +34,14 @@ CHAT_METADATA_ENTITY_KEYS = {
     "消息",
     "记录",
 }
+CHAT_ACTOR_ENTITY_KEYS = {
+    "assistant",
+    "bot",
+    "human",
+    "user",
+    "用户",
+    "助手",
+}
 CHAT_METADATA_PREDICATES = {
     "recorded_at",
     "recorded",
@@ -42,6 +50,34 @@ CHAT_METADATA_PREDICATES = {
     "created_at",
     "发生时间",
     "记录时间",
+}
+CHAT_ACTION_PREDICATES = {
+    "ask",
+    "asked",
+    "asks",
+    "mention",
+    "mentioned",
+    "mentions",
+    "message",
+    "reply",
+    "replied",
+    "replies",
+    "request",
+    "requested",
+    "requests",
+    "respond",
+    "responded",
+    "responds",
+    "said",
+    "say",
+    "says",
+    "sent",
+    "tell",
+    "told",
+    "请求",
+    "询问",
+    "说",
+    "回复",
 }
 
 
@@ -66,12 +102,7 @@ class GraphTupleExtractor:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "Extract knowledge graph tuples from the user text. "
-                    "Return only JSON with a top-level key 'tuples'. Each tuple must include "
-                    "subject, subject_type, predicate, object, object_type, and may include "
-                    "evidence and confidence. Do not include commentary."
-                ),
+                "content": build_extraction_prompt(source_kind),
             },
             {"role": "user", "content": cleaned[:12000]},
         ]
@@ -166,6 +197,66 @@ def normalize_extracted_facts(
     return facts
 
 
+def build_extraction_prompt(source_kind: str) -> str:
+    prompt = [
+        "You are an information extraction engine for a long-term knowledge graph.",
+        "",
+        "Extract only durable, useful, explicitly supported facts from the text.",
+        "Return ONLY valid JSON with this shape:",
+        (
+            '{"tuples":[{"subject":"canonical entity name",'
+            '"subject_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
+            '"predicate":"lower_snake_case_relation",'
+            '"object":"canonical entity name or concise value",'
+            '"object_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
+            '"evidence":"short quote or close paraphrase from the text",'
+            '"confidence":0.0}]}'
+        ),
+        "",
+        "Rules:",
+        "- Extract facts, not conversation mechanics.",
+        (
+            "- Do NOT extract tuples like user asked/requested/said unless the content is a "
+            "stable preference, decision, constraint, or reusable project fact."
+        ),
+        "- Do NOT invent facts not directly supported by the text.",
+        (
+            "- Prefer specific technical facts: tools, errors, causes, configs, file paths, "
+            "decisions, dependencies."
+        ),
+        (
+            '- Use stable canonical entity names. Avoid vague subjects like "user", "this", '
+            '"it", or "message" unless unavoidable.'
+        ),
+        (
+            "- Use concise lower_snake_case predicates, e.g. uses, depends_on, "
+            "configured_with, failed_because, prefers, located_at."
+        ),
+        "- Merge duplicates. Keep the most specific version.",
+        (
+            "- Skip timestamps, chat metadata, IDs, and numeric-only entities unless they are "
+            "essential."
+        ),
+        '- If no useful durable facts exist, return {"tuples":[]}.',
+        "- Limit output to the 12 most useful tuples.",
+    ]
+    if str(source_kind or "").lower() == "chat":
+        prompt.extend(
+            [
+                "",
+                "For chat text:",
+                (
+                    "- Keep stable user preferences, project decisions, recurring errors, "
+                    "tool behavior, and environment facts."
+                ),
+                "- Skip one-off requests, greetings, task wording, and emotional filler.",
+                "- Example skip: User -[requested]-> screenshot.",
+                "- Example keep: ATRI screenshot tool -[failed_because]-> permission_denied.",
+            ]
+        )
+    return "\n".join(prompt)
+
+
 def normalize_entity_key(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
@@ -232,6 +323,10 @@ def _is_noise_tuple(
         return True
     if str(source_kind or "").lower() != "chat":
         return False
+    if predicate_key in CHAT_ACTION_PREDICATES and (
+        subject_key in CHAT_ACTOR_ENTITY_KEYS or object_key in CHAT_ACTOR_ENTITY_KEYS
+    ):
+        return True
     if subject_key in CHAT_METADATA_ENTITY_KEYS or object_key in CHAT_METADATA_ENTITY_KEYS:
         return True
     return predicate_key in CHAT_METADATA_PREDICATES and (

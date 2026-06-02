@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from core.knowledge.extraction import normalize_extracted_facts
+from core.knowledge.extraction import GraphTupleExtractor, normalize_extracted_facts
 from core.knowledge.graph import Neo4jGraphClient, _query_terms
 from core.knowledge.graph_worker import GraphKnowledgeManager, _chat_turn_text
 from core.runtime.tasks import TaskStore
@@ -89,6 +89,66 @@ def test_normalize_extracted_facts_filters_chat_metadata_and_numeric_entities():
     assert len(facts) == 1
     assert facts[0]["subject"] == "Alice"
     assert facts[0]["object"] == "Acme"
+
+
+def test_normalize_extracted_facts_filters_chat_request_actions():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "User",
+                    "subject_type": "Person",
+                    "predicate": "requested",
+                    "object": "screenshot",
+                    "object_type": "Task",
+                },
+                {
+                    "subject": "ATRI screenshot tool",
+                    "subject_type": "Tool",
+                    "predicate": "failed_because",
+                    "object": "permission denied",
+                    "object_type": "Error",
+                    "evidence": "screenshot failed because permission denied",
+                    "confidence": 0.8,
+                },
+            ]
+        },
+        source_id="chat-task-1",
+        source_kind="chat",
+        default_evidence="User asked why screenshot failed.",
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["subject"] == "ATRI screenshot tool"
+    assert facts[0]["predicate"] == "failed_because"
+
+
+@pytest.mark.asyncio
+async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
+    captured = {}
+
+    class FakeLLM:
+        def chat(self, messages, stream=False):
+            captured["messages"] = messages
+            captured["stream"] = stream
+            return type("Response", (), {"content": '{"tuples":[]}'})()
+
+    extractor = GraphTupleExtractor(lambda: FakeLLM())
+
+    facts = await extractor.extract_facts(
+        "User: why did screenshot fail?",
+        source_id="chat-task-1",
+        source_kind="chat",
+    )
+
+    system_prompt = captured["messages"][0]["content"]
+    assert facts == []
+    assert captured["stream"] is False
+    assert "durable, useful, explicitly supported facts" in system_prompt
+    assert "Do NOT extract tuples like user asked/requested/said" in system_prompt
+    assert "For chat text:" in system_prompt
+    assert "Example skip: User -[requested]-> screenshot" in system_prompt
+    assert "Limit output to the 12 most useful tuples" in system_prompt
 
 
 def test_chat_turn_text_does_not_include_runtime_timestamp():
