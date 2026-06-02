@@ -42,6 +42,12 @@ ATRI 的设计反过来：
 - **面向音乐制作的 Agent 工具链**
   除了常规文件、终端、搜索、MCP、Skills 等 coding-agent 能力，ATRI 还提供音乐专用工具：MIDI 查询、分页 inspect、精确 diff、批量 controller 编辑、音乐库播放控制、钢琴可演奏性检查、piano lane 写入等。
 
+- **VST3 Bridge：把 Agent 嵌进宿主 DAW**
+  `atri-bridge-vst3` 以 VST3 插件形式加载到 Studio One 等宿主中，向 Dashboard 上报 transport、拍号、循环区间、选区等 host context，并在插件内提供精简的 DAW Agent 对话面。支持 `atri_studio` 与 `host_project` 两种 workspace，后者可通过 DAWproject 快照与外部 DAW 工程同步。
+
+- **可选 Neo4j 知识图谱**
+  除向量检索外，Knowledge 还可把文档与聊天中的结构化事实写入 Neo4j，按 hybrid / relevance / latest 策略检索，并注入 Agent 上下文。
+
 - **可扩展的本地工作台**
   Dashboard 包含 Chat、Studio、Music、Workspace、Knowledge、MCP、Skills、Adapters、Settings。它既是 AI 对话入口，也是 DAW、音乐库、知识库和工具管理界面。
 
@@ -73,8 +79,9 @@ ATRI 可以生成完整段落，但它更重要的价值是嵌入细碎的制作
 - **AI DAW / Studio**：支持轨道、MIDI clip、audio clip 占位、piano roll、tempo / meter、controller lane、automation、mixer、插件 rack、transport 和工程持久化。
 - **Rust Audio Host**：基于 CPAL 的本地实时音频 Host，支持内置 Basic Synth、VST3 扫描 / 加载、VST2 扫描信息、插件 state、原生插件编辑器窗口和音频设备配置。
 - **音乐库与播放器**：扫描本地音乐目录，读取元数据、封面、歌词，支持搜索、队列、播放控制和全屏播放器。
-- **Knowledge**：本地知识库导入、切分、embedding、rerank、检索和 Chat 上下文注入。
-- **平台接入**：内置 WebChat 和 OneBot11 适配，可用于 Dashboard 对话或 QQ / Napcat 等反向 WebSocket 场景。
+- **Knowledge**：本地知识库导入、切分、embedding、rerank、检索和 Chat 上下文注入；可选 Neo4j 图谱抽取与检索。
+- **工程导入 / 导出**：Studio 支持导出 WAV / FLAC / MP3 / MIDI / DAWproject，也可从 `.dawproject` 导入外部 DAW 工程；Host Project 工作区通过快照目录与宿主 DAW 协作。
+- **平台接入**：内置 WebChat、OneBot11 和 DAW Agent（VST3 Bridge）适配，可用于 Dashboard 对话、QQ / Napcat 反向 WebSocket，或宿主 DAW 内嵌 Agent。
 
 ## Agent 与音乐工程
 
@@ -87,6 +94,8 @@ ATRI 的 Agent 可以通过工具直接操作本地工程：
 - `midi_batch_edit`：批量编辑 velocity、CC、expression、modulation、pitch bend、aftertouch 等曲线。
 - `piano_playability_check`：检查钢琴 MIDI 的跨度、密度、跳进、手位交叉和可演奏性风险。
 - `music_player`：搜索音乐、播放、暂停、切歌和调整音量。
+- `studio_dawproject_import`：把 workspace 内的 `.dawproject` 导入 Music Studio。
+- `studio_export_audio`：导出当前 Studio 工程为 WAV / FLAC / MP3 / MIDI / DAWproject。
 - 文件与代码工具：读取、写入、编辑、搜索、终端命令、任务调度和 Web 搜索。
 
 典型工作流不是「生成一首歌然后结束」，而是连续迭代：
@@ -111,12 +120,14 @@ MIDI 工具默认使用工程时间线上的 absolute beat。只有显式传入 
 | Chat | Agent 对话、工具卡片、thinking block、会话切换、文件上下文 |
 | Studio | DAW 工程编辑、MIDI / audio clip、插件、自动化和 Rust Host 控制 |
 | Music | 本地音乐库、搜索、播放队列、歌词、封面和播放器 |
-| Knowledge | 知识库、文档导入、切分、检索和上下文注入 |
+| Knowledge | 知识库、文档导入、切分、向量检索、可选 Neo4j 图谱与上下文注入 |
 | Workspace | Agent 文件工作区浏览和编辑 |
 | Adapters | WebChat / OneBot11 接入配置 |
 | MCP | MCP server 管理、校验和热加载 |
 | Skills | 本地 `SKILL.md` 查看、编辑、导入和下载 |
-| Settings | Provider、模型池、生成参数、音频、音乐目录和 Agent 行为 |
+| Settings | Provider、模型池、生成参数、音频、音乐目录、Knowledge 图谱和 Agent 行为 |
+
+除 Dashboard 导航页外，**ATRI Bridge** VST3 插件会打开独立的 `daw-agent` 对话面（`/daw-agent`），用于在宿主 DAW 内直接与 Agent 协作。
 
 ## 快速开始
 
@@ -171,6 +182,7 @@ http://localhost:6185
 | --- | --- |
 | `providers` / `active_models` | 聊天模型 Provider 与可用模型池 |
 | `embedding_model` / `rerank_model` | Knowledge 检索使用的 embedding 和 rerank 模型 |
+| `knowledge.graph` | Neo4j 连接、事实抽取、图谱检索与 ranking policy（`hybrid` / `relevance` / `latest`） |
 | `image_transcription` | 图片输入转录模型，用于把截图、谱面、错误图等转成文本上下文 |
 | `novelai` | NovelAI 图片生成工具配置 |
 | `dashboard` | Web UI 开关、监听地址、端口和账号 |
@@ -221,29 +233,69 @@ setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"
 
 `audio_host.bit_depth` 支持 `f32`、`i16`、`i24`。其中 `i24` 会优先匹配 CPAL 暴露的 `I32` / `U32` 等设备格式，实际可用性取决于声卡驱动。
 
+## ATRI Bridge VST3
+
+Bridge 插件把 Agent 嵌进宿主 DAW，并与 Dashboard 共享同一 Runtime。
+
+### 构建与打包
+
+```powershell
+Push-Location atri-host
+.\scripts\package-atri-bridge-vst3.ps1 -Release
+Pop-Location
+```
+
+产物为 `atri-host/target/release/ATRI Bridge.vst3`（debug 构建在 `target/debug/`）。将 bundle 复制到系统或 `config.yaml` 中配置的 `vst3_plugin_paths` 后，在宿主 DAW 中扫描并加载即可。
+
+手动构建时也可分两步：
+
+```powershell
+Push-Location atri-host
+cargo build -p atri-bridge-vst3 --release
+cargo run -p atri-bridge-vst3 --bin package_bridge -- --release
+Pop-Location
+```
+
+### 工作区
+
+| Workspace | 说明 |
+| --- | --- |
+| `atri_studio` | 操作 `data/music_workstation/project.json` 中的 ATRI Music Studio 工程 |
+| `host_project` | 通过 DAWproject 快照与外部宿主工程同步，适合 Studio One 等支持 DAWproject 的 DAW |
+
+`host_project` 使用快照目录协作，而不是直接 headless 控制 DAW：
+
+1. ATRI 把导出请求写到 `data/music_workstation/host_sync_requests/`。
+2. DAW 宏或辅助脚本把 `.dawproject` 导出到 `data/music_workstation/host_sync_inbox/`。
+3. 发送消息前，Bridge 可自动导入最新快照再回复。
+
+Windows 下可参考 `tools/host_dawproject/` 中的 Studio One 辅助脚本。更完整的说明见该目录下的 README。
+
 ## 架构概览
 
 ```text
-Vue Dashboard
-  Chat / Studio / Music / Knowledge / Settings
-        |
-        | REST + WebSocket
-        v
-Quart Dashboard
+Vue Dashboard                    ATRI Bridge.vst3 (宿主 DAW)
+  Chat / Studio / Music / ...      DawAgent 对话面 + host context
+        |                                    |
+        | REST + WebSocket                   | /api/daw-agent/*
+        v                                    v
+Quart Dashboard  <───────────────────────────┘
   routes / auth / settings / music / knowledge / mcp / skills
         |
         v
 Python Runtime
-  Agent / tools / pipeline / platform adapters / persistence
+  Agent / tools / pipeline / WebChat / OneBot11 / DawAgent
         |
         | JSON IPC + process management
         v
 Rust Audio Host
-  CPAL / MIDI / VST / DSP / plugin editors
+  CPAL / MIDI / VST3 / DSP / plugin editors
         |
         v
 Audio devices
 ```
+
+可选的 Neo4j 知识图谱与向量 Knowledge 并行：抽取与检索在 `core/knowledge/graph*` 中完成，通过 Settings 配置连接与 ranking policy。
 
 核心数据默认写入 `data/`：
 
@@ -251,6 +303,7 @@ Audio devices
 - `data/runtime/`：运行时事件、timeline 和任务状态。
 - `data/tool_outputs/`：压缩溢出的工具输出。
 - `data/music_workstation/project.json`：Studio / Agent / Host 共享的 DAW 工程。
+- `data/music_workstation/host_sync_requests/`、`host_sync_inbox/`：Host Project 的 DAWproject 导出请求与快照收件箱。
 - `data/music_cache/`：音乐库扫描缓存。
 
 ## 开发命令
@@ -281,6 +334,7 @@ Push-Location atri-host
 cargo fmt
 cargo test --workspace
 cargo build -p atri-host
+cargo build -p atri-bridge-vst3
 Pop-Location
 ```
 
@@ -305,22 +359,23 @@ ATRI/
 ├── config.yaml.example        # 配置示例
 ├── core/
 │   ├── agent/                 # Agent 主循环、LLM、上下文和模式
-│   ├── tools/                 # 文件、终端、MIDI、音乐、MCP、Skills 等工具
+│   ├── tools/                 # 文件、终端、MIDI、Studio、音乐、MCP、Skills 等工具
 │   ├── pipeline/              # 平台消息处理流水线
-│   ├── platform/              # WebChat / OneBot11 适配
-│   ├── knowledge/             # 文档切分、embedding、rerank、检索和存储
+│   ├── platform/              # WebChat / OneBot11 / DawAgent 适配
+│   ├── knowledge/             # 文档切分、embedding、rerank、图谱与检索
 │   ├── runtime/               # timeline、task store、todos
 │   ├── plugin/                # Python 插件系统
 │   ├── host.py                # Rust Audio Host 进程管理
-│   └── music_project.py       # DAW 工程 JSON 模型
+│   ├── music_project.py       # DAW 工程 JSON 模型
+│   └── music_export.py        # Studio 导出（MIDI、音频、DAWproject）
 ├── dashboard/
 │   ├── server.py              # Quart Dashboard
-│   ├── music.py               # Music / Studio / Host API
-│   └── routes/                # Auth、Chat、Settings、MCP、Skills、Knowledge 等路由
+│   ├── music.py               # Music / Studio / Host / Bridge API
+│   └── routes/                # Auth、Chat、DawAgent、Settings、MCP、Skills、Knowledge 等
 ├── frontend/
 │   └── src/
-│       ├── components/chat/   # Chat UI
-│       ├── components/music/  # Music、Player、Studio
+│       ├── components/chat/   # Chat UI、DawAgentPage
+│       ├── components/music/  # Music、Player、Studio、Mixer
 │       ├── components/pages/  # Workspace、Knowledge、Adapters、MCP、Skills
 │       ├── components/settings/
 │       └── composables/       # API、Auth、Chat、Music、DawHost、WebSocket
@@ -328,7 +383,10 @@ ATRI/
 │   ├── atri-core/             # 音频 buffer、MIDI、tempo / time 类型
 │   ├── atri-engine/           # Session、route、transport、synth、processor
 │   ├── atri-host-bin/         # CPAL driver、IPC commands、editor host
-│   └── atri-vst3/             # VST scanner、factory、plugin wrapper
+│   ├── atri-vst3/             # VST scanner、factory、plugin wrapper
+│   ├── atri-bridge-vst3/      # 宿主 DAW 内嵌 Agent 的 VST3 Bridge
+│   └── scripts/               # Bridge 打包脚本等
+├── tools/host_dawproject/     # Host Project 快照导出辅助（如 Studio One）
 ├── tests/                     # Python 测试
 ├── plugins/                   # 用户插件目录
 ├── skills/                    # Skills 根目录
