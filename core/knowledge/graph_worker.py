@@ -15,6 +15,7 @@ from core.runtime import TaskStore
 
 _DOCUMENT_EXTRACTION_BATCH_CHARS = 10_000
 _EXTRACTION_MAX_ATTEMPTS = 3
+_GRAPH_EXTRACTION_DEFAULT_MAX_TOKENS = 4096
 
 
 @dataclass
@@ -382,18 +383,24 @@ class GraphKnowledgeManager:
         if provider and isinstance(providers, dict):
             provider_entry = providers.get(provider)
             provider_cfg = provider_entry if isinstance(provider_entry, dict) else {}
-        model_cfg: dict[str, Any] = {}
-        if selected_model:
-            entry = _find_active_chat_model_entry(cfg, provider, model)
-            raw_model_cfg = entry.get("config", {}) if isinstance(entry, dict) else {}
-            model_cfg = raw_model_cfg if isinstance(raw_model_cfg, dict) else {}
+        entry = _find_active_chat_model_entry(cfg, provider, model)
+        raw_model_cfg = entry.get("config", {}) if isinstance(entry, dict) else {}
+        model_cfg = raw_model_cfg if isinstance(raw_model_cfg, dict) else {}
+        configured_max_tokens = int(
+            model_cfg.get("max_tokens") or _GRAPH_EXTRACTION_DEFAULT_MAX_TOKENS
+        )
+        max_tokens = (
+            max(1, configured_max_tokens)
+            if selected_model
+            else _GRAPH_EXTRACTION_DEFAULT_MAX_TOKENS
+        )
         return LLM(
             model=model,
             api_key=str(provider_cfg.get("api_key") or cfg.get("api_key") or ""),
             base_url=provider_cfg.get("base_url") or cfg.get("base_url"),
             api_format=str(provider_cfg.get("api_format") or cfg.get("api_format") or "openai"),
-            temperature=float(model_cfg.get("temperature", 0.0)),
-            max_tokens=max(1, int(model_cfg.get("max_tokens") or 1024)),
+            temperature=float(model_cfg.get("temperature", 0.0)) if selected_model else 0.0,
+            max_tokens=max_tokens,
         )
 
 

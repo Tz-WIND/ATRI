@@ -8,7 +8,12 @@ from collections.abc import Callable
 from typing import Any
 
 from core import logger
-from core.knowledge.graph_constants import CHAIN_ORDER_KEY_SEPARATOR, HYPER_ROLE_PREDICATE
+from core.knowledge.graph_constants import (
+    ASSISTANT_CANONICAL_NAME,
+    ASSISTANT_ENTITY_ALIAS_KEYS,
+    CHAIN_ORDER_KEY_SEPARATOR,
+    HYPER_ROLE_PREDICATE,
+)
 
 DriverFactory = Callable[[str, tuple[str, str]], Any]
 _MAX_QUERY_TERMS = 32
@@ -197,14 +202,15 @@ class Neo4jGraphClient:
               r.source_count = size(source_ids)
         RETURN count(r) AS count
         """
-        with self._session() as session:
-            result = list(
+        result = self._run_with_reconnect(
+            lambda session: list(
                 session.run(
                     query,
                     facts=rows,
                     chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
                 )
             )
+        )
         return _result_count(result, len(rows))
 
     def retrieve_context(
@@ -252,10 +258,10 @@ class Neo4jGraphClient:
               OR toLower(o.name) CONTAINS term
               OR toLower(r.predicate) CONTAINS term
               OR toLower(coalesce(r.evidence, '')) CONTAINS term
-              OR toLower(coalesce(r.hyper_event, '')) CONTAINS term
-              OR toLower(coalesce(r.hyper_role, '')) CONTAINS term
-              OR toLower(coalesce(r.chain_id, '')) CONTAINS term
-              OR any(chain_id IN coalesce(r.chain_ids, [])
+              OR toLower(coalesce(r[$hyper_event_property], '')) CONTAINS term
+              OR toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term
+              OR toLower(coalesce(r[$chain_id_property], '')) CONTAINS term
+              OR any(chain_id IN coalesce(r[$chain_ids_property], [])
                      WHERE toLower(toString(chain_id)) CONTAINS term))
         WITH s, r, o,
              CASE WHEN (
@@ -271,10 +277,13 @@ class Neo4jGraphClient:
                + CASE WHEN toLower(coalesce(o.name, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
                + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
                + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.hyper_event, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.hyper_role, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.chain_id, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
-               + CASE WHEN any(chain_id IN coalesce(r.chain_ids, [])
+               + CASE WHEN toLower(coalesce(r[$hyper_event_property], '')) CONTAINS term
+                      THEN 2.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term
+                      THEN 1.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$chain_id_property], '')) CONTAINS term
+                      THEN 0.5 ELSE 0.0 END
+               + CASE WHEN any(chain_id IN coalesce(r[$chain_ids_property], [])
                          WHERE toLower(toString(chain_id)) CONTAINS term)
                       THEN 0.5
                       ELSE 0.0
@@ -295,12 +304,12 @@ class Neo4jGraphClient:
              END AS source_count_score,
              coalesce(toFloat(r.updated_at), 0.0) / 2000000000.0 AS recency_score,
              CASE
-               WHEN coalesce(r.structural, false) OR r.predicate = $hyper_role_predicate
+               WHEN coalesce(r[$structural_property], false) OR r.predicate = $hyper_role_predicate
                  THEN 1
                ELSE 0
              END AS structural_role,
              CASE
-               WHEN coalesce(r.structural, false) OR r.predicate = $hyper_role_predicate
+               WHEN coalesce(r[$structural_property], false) OR r.predicate = $hyper_role_predicate
                  THEN -2.0
                ELSE 0.0
              END AS structural_role_score
@@ -322,9 +331,9 @@ class Neo4jGraphClient:
                r.predicate AS predicate,
                o.name AS object,
                r.evidence AS evidence,
-               r.hyper_event AS hyper_event,
-               r.hyper_role AS hyper_role,
-               r.chain_order AS chain_order,
+               r[$hyper_event_property] AS hyper_event,
+               r[$hyper_role_property] AS hyper_role,
+               r[$chain_order_property] AS chain_order,
                r.confidence AS confidence
         {single_hop_order_by}
         LIMIT $limit
@@ -344,24 +353,28 @@ class Neo4jGraphClient:
               OR any(rel IN relationships(path) WHERE
                 toLower(rel.predicate) CONTAINS term
                 OR toLower(coalesce(rel.evidence, '')) CONTAINS term
-                OR toLower(coalesce(rel.hyper_event, '')) CONTAINS term
-                OR toLower(coalesce(rel.hyper_role, '')) CONTAINS term
-                OR toLower(coalesce(rel.chain_id, '')) CONTAINS term
-                OR any(chain_id IN coalesce(rel.chain_ids, [])
+                OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term
+                OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term
+                OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term
+                OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
                        WHERE toLower(toString(chain_id)) CONTAINS term)))
         WITH relationships(path) AS rels, length(path) AS hop
         WITH rels, hop,
              CASE
                WHEN size(rels) = 1 THEN false
                ELSE all(index IN range(0, size(rels) - 2) WHERE
-                 any(left_chain_id IN coalesce(rels[index].chain_ids, []) WHERE
-                   left_chain_id IN coalesce(rels[index + 1].chain_ids, [])))
+                 any(left_chain_id IN coalesce(rels[index][$chain_ids_property], []) WHERE
+                   left_chain_id IN coalesce(rels[index + 1][$chain_ids_property], [])))
              END AS chain_path,
              CASE
-               WHEN size(rels) = 1 THEN size(coalesce(rels[0].chain_order_keys, [])) > 0
+               WHEN size(rels) = 1
+                 THEN size(coalesce(rels[0][$chain_order_keys_property], [])) > 0
                ELSE all(index IN range(0, size(rels) - 2) WHERE
-                 any(left_key IN coalesce(rels[index].chain_order_keys, []) WHERE
-                   any(right_key IN coalesce(rels[index + 1].chain_order_keys, []) WHERE
+                 any(left_key IN coalesce(rels[index][$chain_order_keys_property], []) WHERE
+                   any(right_key IN coalesce(
+                     rels[index + 1][$chain_order_keys_property],
+                     []
+                   ) WHERE
                      split(right_key, $chain_order_separator)[0]
                          = split(left_key, $chain_order_separator)[0]
                      AND toInteger(split(right_key, $chain_order_separator)[1])
@@ -388,10 +401,13 @@ class Neo4jGraphClient:
                  END
                + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
                + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.hyper_event, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.hyper_role, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.chain_id, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
-               + CASE WHEN any(chain_id IN coalesce(r.chain_ids, [])
+               + CASE WHEN toLower(coalesce(r[$hyper_event_property], '')) CONTAINS term
+                      THEN 2.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term
+                      THEN 1.0 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$chain_id_property], '')) CONTAINS term
+                      THEN 0.5 ELSE 0.0 END
+               + CASE WHEN any(chain_id IN coalesce(r[$chain_ids_property], [])
                          WHERE toLower(toString(chain_id)) CONTAINS term)
                       THEN 0.5
                       ELSE 0.0
@@ -415,12 +431,12 @@ class Neo4jGraphClient:
              CASE WHEN chain_path THEN 1.5 ELSE 0.0 END AS chain_path_score,
              CASE WHEN chain_order_path THEN 1.0 ELSE 0.0 END AS chain_order_score,
              CASE
-               WHEN coalesce(r.structural, false) OR r.predicate = $hyper_role_predicate
+               WHEN coalesce(r[$structural_property], false) OR r.predicate = $hyper_role_predicate
                  THEN 1
                ELSE 0
              END AS structural_role,
              CASE
-               WHEN coalesce(r.structural, false) OR r.predicate = $hyper_role_predicate
+               WHEN coalesce(r[$structural_property], false) OR r.predicate = $hyper_role_predicate
                  THEN -2.0
                ELSE 0.0
              END AS structural_role_score
@@ -446,16 +462,16 @@ class Neo4jGraphClient:
                r.predicate AS predicate,
                endNode(r).name AS object,
                r.evidence AS evidence,
-               r.hyper_event AS hyper_event,
-               r.hyper_role AS hyper_role,
-               r.chain_order AS chain_order,
+               r[$hyper_event_property] AS hyper_event,
+               r[$hyper_role_property] AS hyper_role,
+               r[$chain_order_property] AS chain_order,
                r.confidence AS confidence,
                hop AS hop
         {multi_hop_order_by}
         LIMIT $limit
         """
-        with self._session() as session:
-            rows = list(
+        rows = self._run_with_reconnect(
+            lambda session: list(
                 session.run(
                     cypher,
                     source_ids=source_ids or [],
@@ -464,15 +480,23 @@ class Neo4jGraphClient:
                     ranking_policy=policy,
                     chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
                     hyper_role_predicate=HYPER_ROLE_PREDICATE,
+                    chain_id_property="chain_id",
+                    chain_ids_property="chain_ids",
+                    chain_order_property="chain_order",
+                    chain_order_keys_property="chain_order_keys",
+                    hyper_event_property="hyper_event",
+                    hyper_role_property="hyper_role",
+                    structural_property="structural",
                     timeout=3,
                 )
             )
+        )
         lines = []
         seen = set()
         for row in rows:
-            subject = str(row.get("subject") or "").strip()
+            subject = _canonical_retrieved_entity_name(row.get("subject"))
             predicate = str(row.get("predicate") or "").strip()
-            obj = str(row.get("object") or "").strip()
+            obj = _canonical_retrieved_entity_name(row.get("object"))
             if not subject or not predicate or not obj:
                 continue
             key = (subject.lower(), predicate.lower(), obj.lower())
@@ -507,6 +531,19 @@ class Neo4jGraphClient:
         database = str(self.config.get("database") or "neo4j")
         return self.driver.session(database=database)
 
+    def _run_with_reconnect(self, operation):
+        try:
+            with self._session() as session:
+                return operation(session)
+        except Exception as e:
+            if not _is_retryable_neo4j_connection_error(e):
+                raise
+            logger.warning("Neo4j graph connection lost; reconnecting and retrying once: %s", e)
+            self.close()
+            self.initialize()
+            with self._session() as session:
+                return operation(session)
+
 
 def _default_driver_factory(uri: str, auth: tuple[str, str]):
     try:
@@ -516,11 +553,39 @@ def _default_driver_factory(uri: str, auth: tuple[str, str]):
     return GraphDatabase.driver(uri, auth=auth)
 
 
+def _is_retryable_neo4j_connection_error(exc: Exception) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        name = current.__class__.__name__.lower()
+        text = str(current).lower()
+        if name in {"serviceunavailable", "sessionexpired"}:
+            return True
+        if any(
+            marker in text
+            for marker in (
+                "defunct connection",
+                "failed to read",
+                "failed to write",
+                "connectionabortederror",
+                "connection aborted",
+                "connection reset",
+                "closed connection",
+                "broken pipe",
+            )
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _query_terms(query: str) -> list[str]:
     terms: list[str] = []
     for raw in str(query or "").lower().replace("_", " ").split():
         term = "".join(char for char in raw if char.isalnum() or "\u4e00" <= char <= "\u9fff")
         _append_query_term(terms, term)
+        if term in ASSISTANT_ENTITY_ALIAS_KEYS:
+            for alias in ASSISTANT_ENTITY_ALIAS_KEYS:
+                _append_query_term(terms, alias)
         for run in _cjk_runs(term):
             for size in (2, 3, 4):
                 if len(run) < size:
@@ -536,6 +601,17 @@ def _query_terms(query: str) -> list[str]:
         if len(terms) >= _MAX_QUERY_TERMS:
             break
     return terms
+
+
+def _canonical_retrieved_entity_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if _entity_alias_key(text) in ASSISTANT_ENTITY_ALIAS_KEYS:
+        return ASSISTANT_CANONICAL_NAME
+    return text
+
+
+def _entity_alias_key(value: str) -> str:
+    return " ".join(str(value or "").strip().lower().split())
 
 
 def _append_query_term(terms: list[str], term: str) -> None:

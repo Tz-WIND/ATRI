@@ -1,4 +1,4 @@
-from core.agent.llm import LLM, _messages_to_anthropic
+from core.agent.llm import LLM, _anthropic_message_to_response, _messages_to_anthropic
 
 
 def test_messages_to_anthropic_converts_openai_image_url_data_url():
@@ -83,3 +83,30 @@ def test_openai_non_stream_chat_parses_response(monkeypatch):
     assert response.completion_tokens == 5
     assert response.tool_calls[0].name == "read_file"
     assert response.tool_calls[0].arguments == {"path": "README.md"}
+
+
+def test_anthropic_non_stream_parser_accepts_string_content():
+    response = _anthropic_message_to_response(
+        {
+            "content": '{"tuples":[]}',
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+        }
+    )
+
+    assert response.content == '{"tuples":[]}'
+    assert response.prompt_tokens == 7
+    assert response.completion_tokens == 3
+    assert response.anthropic_content == [{"type": "text", "text": '{"tuples":[]}'}]
+
+
+def test_anthropic_non_stream_parser_accepts_openai_shaped_response():
+    response = _anthropic_message_to_response(
+        {
+            "choices": [{"message": {"content": '{"tuples":[]}'}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+    )
+
+    assert response.content == '{"tuples":[]}'
+    assert response.prompt_tokens == 5
+    assert response.completion_tokens == 2

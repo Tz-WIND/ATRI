@@ -732,6 +732,9 @@ def _openai_tool_call_to_tool_call(raw, idx: int) -> ToolCall:
 
 
 def _anthropic_message_to_response(data: dict, on_token=None, on_thinking=None) -> LLMResponse:
+    if isinstance(data.get("choices"), list):
+        return _openai_completion_to_response(data, on_token=on_token, on_thinking=on_thinking)
+
     usage = data.get("usage") or {}
     prompt_tok = int(usage.get("input_tokens") or 0)
     completion_tok = int(usage.get("output_tokens") or 0)
@@ -740,8 +743,21 @@ def _anthropic_message_to_response(data: dict, on_token=None, on_thinking=None) 
     reasoning_parts: list[str] = []
     content_blocks: dict[int, dict] = {}
     tool_calls: list[ToolCall] = []
+    raw_content = data.get("content")
 
-    for idx, block in enumerate(data.get("content") or []):
+    if isinstance(raw_content, str):
+        content_parts.append(raw_content)
+        content_blocks[0] = {"type": "text", "text": raw_content}
+        if on_token:
+            on_token(raw_content)
+        return LLMResponse(
+            content=raw_content,
+            anthropic_content=_finalize_anthropic_content(content_blocks),
+            prompt_tokens=prompt_tok,
+            completion_tokens=completion_tok,
+        )
+
+    for idx, block in enumerate(raw_content or []):
         if not isinstance(block, dict):
             continue
         block_type = block.get("type")

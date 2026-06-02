@@ -298,7 +298,8 @@ async def test_process_stage_passes_original_user_content_as_display_content(mon
     stage.graph_manager = FakeGraphManager()
     stage._active_lock = process_stage_module.threading.Lock()
     stage._active_session_ids = set()
-    stage.session_store = FakeSessionStore()
+    fake_session_store = FakeSessionStore()
+    stage.session_store = fake_session_store  # type: ignore[assignment]
     fake_agent = FakeAgent()
     monkeypatch.setattr(stage, "_get_or_create_agent", lambda session_id: fake_agent)
     monkeypatch.setattr(stage, "_apply_event_llm_override", lambda agent, event: None)
@@ -316,8 +317,10 @@ async def test_process_stage_passes_original_user_content_as_display_content(mon
         "[Current request]\n"
         "How does Alice use sqlite?"
     )
+    assert fake_agent.chat_kwargs is not None
     assert fake_agent.chat_kwargs["display_user_input"] == "How does Alice use sqlite?"
-    assert stage.session_store.saved_messages[0]["_atri_display_content"] == (
+    assert fake_session_store.saved_messages is not None
+    assert fake_session_store.saved_messages[0]["_atri_display_content"] == (
         "How does Alice use sqlite?"
     )
 

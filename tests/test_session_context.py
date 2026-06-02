@@ -1,4 +1,5 @@
 import json
+from typing import cast
 
 import pytest
 
@@ -11,7 +12,7 @@ from core.agent.context import (
     estimate_tokens,
 )
 from core.agent.display_context import prepend_internal_context, strip_internal_context_text
-from core.agent.llm import LLMResponse
+from core.agent.llm import LLM, LLMResponse
 from core.agent.session import SessionStore
 from core.pipeline.stages.process import _attach_generated_images_to_assistant_message
 from core.tools.retrieve_tool_result import RetrieveToolResultTool
@@ -164,7 +165,7 @@ def test_agent_chat_stores_display_content_metadata_without_sending_it_to_llm():
             return LLMResponse(content="ok")
 
     llm = FakeLLM()
-    agent = Agent(llm=llm, workspace=".", tools=[])
+    agent = Agent(llm=cast(LLM, llm), workspace=".", tools=[])
     augmented = "[Graph context]\n- Alice -[works_at]-> Acme\n\n[Current request]\nhello"
 
     assert agent.chat(augmented, display_user_input="hello") == "ok"

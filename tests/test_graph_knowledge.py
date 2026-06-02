@@ -11,6 +11,7 @@ from core.knowledge.extraction import (
     MAX_HYPER_TUPLES,
     GraphTupleExtractor,
     normalize_extracted_facts,
+    parse_extraction_json,
 )
 from core.knowledge.graph import Neo4jGraphClient, _query_terms
 from core.knowledge.graph_constants import CHAIN_ORDER_KEY_SEPARATOR
@@ -145,6 +146,76 @@ def test_normalize_extracted_facts_filters_chat_request_actions():
     assert len(facts) == 1
     assert facts[0]["subject"] == "ATRI screenshot tool"
     assert facts[0]["predicate"] == "failed_because"
+
+
+def test_normalize_extracted_facts_canonicalizes_assistant_aliases_to_atri():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "助手",
+                    "subject_type": "Person",
+                    "predicate": "can_help_with",
+                    "object": "写代码",
+                    "object_type": "Concept",
+                },
+                {
+                    "subject": "ATRI",
+                    "subject_type": "System",
+                    "predicate": "can_help_with",
+                    "object": "写代码",
+                    "object_type": "Concept",
+                },
+                {
+                    "subject": "User",
+                    "subject_type": "Person",
+                    "predicate": "uses",
+                    "object": "Assistant",
+                    "object_type": "Person",
+                },
+            ]
+        },
+        source_id="chat-aliases",
+        source_kind="chat",
+    )
+
+    by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
+
+    assert len(facts) == 2
+    assert ("ATRI", "can_help_with", "写代码") in by_edge
+    assert ("User", "uses", "ATRI") in by_edge
+    assert by_edge[("ATRI", "can_help_with", "写代码")]["subject_type"] == "System"
+    assert by_edge[("User", "uses", "ATRI")]["object_type"] == "System"
+    assert all(fact["subject"] != "助手" for fact in facts)
+    assert all(fact["object"] != "Assistant" for fact in facts)
+
+
+def test_normalize_extracted_facts_filters_assistant_action_before_aliasing():
+    facts = normalize_extracted_facts(
+        [
+            {
+                "subject": "Assistant",
+                "subject_type": "Person",
+                "predicate": "replied",
+                "object": "User",
+                "object_type": "Person",
+            }
+        ],
+        source_id="chat-noise-alias",
+        source_kind="chat",
+    )
+
+    assert facts == []
+
+
+def test_parse_extraction_json_skips_bracketed_non_json_preamble():
+    payload = parse_extraction_json(
+        "[analysis]\n"
+        '{"tuples":[{"subject":"User","subject_type":"Person",'
+        '"predicate":"commutes_by","object":"bike","object_type":"Preference"}]}'
+    )
+
+    assert payload["tuples"][0]["predicate"] == "commutes_by"
 
 
 def test_normalize_extracted_facts_expands_hyper_tuples_into_event_and_chain_facts():
@@ -516,6 +587,8 @@ async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
     assert captured["stream"] is False
     assert "durable, useful, explicitly supported facts" in system_prompt
     assert "Do NOT extract tuples like user asked/requested/said" in system_prompt
+    assert "Use ATRI as the canonical entity name for this assistant" in system_prompt
+    assert "Do not explain, analyze, or include prose outside the JSON." in system_prompt
     assert "For chat text:" in system_prompt
     assert "Example skip: User -[requested]-> screenshot" in system_prompt
     assert "hyper_tuples" in system_prompt
@@ -524,6 +597,38 @@ async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
     assert f"at most {MAX_HYPER_ROLES} roles" in system_prompt
     assert f"at most {MAX_HYPER_CHAIN_EDGES} chain edges" in system_prompt
     assert "Limit output to the 12 most useful tuples" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_graph_tuple_extractor_parses_reasoning_json_when_content_is_empty():
+    class FakeLLM:
+        def chat(self, messages, stream=False):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": "",
+                    "reasoning_content": (
+                        '{"tuples":[{"subject":"User","subject_type":"Person",'
+                        '"predicate":"commutes_by","object":"bike",'
+                        '"object_type":"Preference","evidence":"用户改骑车去公司",'
+                        '"confidence":0.8}]}'
+                    ),
+                },
+            )()
+
+    extractor = GraphTupleExtractor(lambda: FakeLLM())
+
+    facts = await extractor.extract_facts(
+        "User: 我这段时间上班都改骑车去公司了。",
+        source_id="chat-task-commute",
+        source_kind="chat",
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["subject"] == "User"
+    assert facts[0]["predicate"] == "commutes_by"
+    assert facts[0]["object"] == "bike"
 
 
 def test_chat_turn_text_does_not_include_runtime_timestamp():
@@ -593,6 +698,23 @@ class FakeNeo4jDriver:
 
     def close(self):
         self.closed = True
+
+
+class FailingOnceRetrieveSession(FakeNeo4jSession):
+    def __init__(self, error: Exception):
+        super().__init__()
+        self.error = error
+        self.failed = False
+
+    def run(self, query, **params):
+        self.calls.append({"query": query, "params": params})
+        is_retrieve_query = (
+            "RETURN s.name AS subject" in query or "RETURN startNode(r).name AS subject" in query
+        )
+        if not self.failed and is_retrieve_query:
+            self.failed = True
+            raise self.error
+        return super().run(query, **params)
 
 
 def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
@@ -806,8 +928,13 @@ def test_neo4j_graph_client_uses_hybrid_ranking_score_before_limit():
     assert "source_match_score" in query
     assert "term_match_score" in query
     assert "structural_role_score" in query
+    assert "r[$hyper_role_property]" in query
+    assert "r[$chain_id_property]" in query
+    assert "r.hyper_role" not in query
+    assert "r.chain_id" not in query
     assert "ORDER BY structural_role ASC, graph_score DESC, r.updated_at DESC" in query
     assert driver.session_obj.calls[-1]["params"]["hyper_role_predicate"] == "has_role"
+    assert driver.session_obj.calls[-1]["params"]["hyper_role_property"] == "hyper_role"
     assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "hybrid"
 
 
@@ -859,26 +986,29 @@ def test_neo4j_graph_client_multihop_retrieval_uses_hyper_chain_metadata():
     )
 
     query = driver.session_obj.calls[-1]["query"]
-    assert "rel.hyper_event" in query
-    assert "rel.hyper_role" in query
-    assert "rel.chain_id" in query
-    assert "rel.chain_ids" in query
+    assert "rel[$hyper_event_property]" in query
+    assert "rel[$hyper_role_property]" in query
+    assert "rel[$chain_id_property]" in query
+    assert "rel[$chain_ids_property]" in query
     assert "chain_path_score" in query
     assert "WHEN size(rels) = 1 THEN false" in query
     assert "chain_order_score" in query
     assert "structural_role_score" in query
     assert "structural_role ASC" in query
-    assert "left_chain_id IN coalesce(rels[index].chain_ids, [])" in query
-    assert "left_key IN coalesce(rels[index].chain_order_keys, [])" in query
-    assert "right_key IN coalesce(rels[index + 1].chain_order_keys, [])" in query
+    assert "left_chain_id IN coalesce(rels[index][$chain_ids_property], [])" in query
+    assert "left_key IN coalesce(rels[index][$chain_order_keys_property], [])" in query
+    assert "right_key IN coalesce(" in query
+    assert "rels[index + 1][$chain_order_keys_property]" in query
     assert "split(right_key, $chain_order_separator)[0]" in query
     assert "split(left_key, $chain_order_separator)[0]" in query
     assert "toInteger(split(right_key, $chain_order_separator)[1])" in query
     assert (
         driver.session_obj.calls[-1]["params"]["chain_order_separator"] == CHAIN_ORDER_KEY_SEPARATOR
     )
-    assert "toLower(coalesce(r.hyper_role, '')) CONTAINS term" in query
-    assert "r.hyper_role AS hyper_role" in query
+    assert "toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term" in query
+    assert "r[$hyper_role_property] AS hyper_role" in query
+    assert "rel.hyper_role" not in query
+    assert "r.hyper_role" not in query
 
 
 def test_graph_query_terms_include_cjk_ngrams_for_unsegmented_queries():
@@ -888,6 +1018,15 @@ def test_graph_query_terms_include_cjk_ngrams_for_unsegmented_queries():
     assert "失败" in terms
     assert "原因" in terms
     assert _query_terms("Alice Acme")[:2] == ["alice", "acme"]
+
+
+def test_graph_query_terms_expand_assistant_aliases():
+    atri_terms = _query_terms("ATRI")
+    assistant_terms = _query_terms("助手")
+
+    assert "助手" in atri_terms
+    assert "assistant" in atri_terms
+    assert "atri" in assistant_terms
 
 
 def test_neo4j_graph_client_reconnects_when_connection_config_changes():
@@ -928,6 +1067,77 @@ def test_neo4j_graph_client_reconnects_when_connection_config_changes():
         {"uri": "bolt://old:7687", "auth": ("neo4j", "old-secret")},
         {"uri": "bolt://new:7687", "auth": ("neo4j", "new-secret")},
     ]
+    assert context == "[Graph context]\n- Alice -[works_at]-> Acme (Alice works at Acme.)"
+
+
+def test_neo4j_graph_client_canonicalizes_assistant_aliases_in_retrieved_context():
+    class AliasRetrieveSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "助手",
+                        "predicate": "can_help_with",
+                        "object": "写代码",
+                        "evidence": "助手可以写代码。",
+                    },
+                    {
+                        "subject": "ATRI",
+                        "predicate": "can_help_with",
+                        "object": "写代码",
+                        "evidence": "ATRI can help with coding.",
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = AliasRetrieveSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(query="助手", source_ids=[], max_facts=2)
+
+    assert context == "[Graph context]\n- ATRI -[can_help_with]-> 写代码 (助手可以写代码。)"
+
+
+def test_neo4j_graph_client_retries_retrieve_after_defunct_connection():
+    first_driver = FakeNeo4jDriver()
+    first_driver.session_obj = FailingOnceRetrieveSession(
+        RuntimeError("Failed to read from defunct connection")
+    )
+    second_driver = FakeNeo4jDriver()
+    drivers = [first_driver, second_driver]
+    calls = []
+
+    def driver_factory(uri, auth):
+        calls.append({"uri": uri, "auth": auth})
+        return drivers[len(calls) - 1]
+
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=driver_factory,
+    )
+
+    context = client.retrieve_context(query="Alice", source_ids=[], max_facts=1)
+
+    assert first_driver.closed is True
+    assert second_driver.verified is True
+    assert len(calls) == 2
     assert context == "[Graph context]\n- Alice -[works_at]-> Acme (Alice works at Acme.)"
 
 
@@ -1529,6 +1739,56 @@ def test_graph_manager_uses_configured_extraction_model_from_chat_pool(monkeypat
         assert captured["api_format"] == "openai"
         assert captured["temperature"] == 0.2
         assert captured["max_tokens"] == 2048
+    finally:
+        store.close()
+
+
+def test_graph_manager_uses_larger_default_token_budget_for_inherited_extraction_model(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("core.knowledge.graph_worker.LLM", FakeLLM)
+    store = TaskStore(tmp_path / "runtime")
+    manager = GraphKnowledgeManager(
+        config={
+            "model": "deepseek-v4-pro",
+            "model_provider": "DS_A",
+            "api_key": "root-key",
+            "base_url": "https://root.test/anthropic",
+            "api_format": "anthropic",
+            "providers": {
+                "DS_A": {
+                    "api_key": "provider-key",
+                    "base_url": "https://provider.test/anthropic",
+                    "api_format": "anthropic",
+                },
+            },
+            "active_models": [
+                {
+                    "model": "deepseek-v4-pro",
+                    "provider": "DS_A",
+                    "config": {"temperature": 0.5, "max_tokens": 20000},
+                }
+            ],
+            "knowledge": {"graph": {"enabled": True}},
+        },
+        graph_client=cast(Neo4jGraphClient, FakeGraphClient()),
+        extractor=cast(Any, FakeExtractor()),
+        task_store=store,
+    )
+    try:
+        manager._create_llm()
+
+        assert captured["model"] == "deepseek-v4-pro"
+        assert captured["api_format"] == "anthropic"
+        assert captured["temperature"] == 0.0
+        assert captured["max_tokens"] == 4096
     finally:
         store.close()
 

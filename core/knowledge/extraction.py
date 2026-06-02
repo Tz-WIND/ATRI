@@ -8,7 +8,13 @@ import re
 from hashlib import sha256
 from typing import Any, Protocol
 
-from core.knowledge.graph_constants import CHAIN_ORDER_KEY_SEPARATOR, HYPER_ROLE_PREDICATE
+from core.knowledge.graph_constants import (
+    ASSISTANT_CANONICAL_NAME,
+    ASSISTANT_CANONICAL_TYPE,
+    ASSISTANT_ENTITY_ALIAS_KEYS,
+    CHAIN_ORDER_KEY_SEPARATOR,
+    HYPER_ROLE_PREDICATE,
+)
 
 
 class ChatLLM(Protocol):
@@ -156,8 +162,8 @@ class GraphTupleExtractor:
             {"role": "user", "content": cleaned[:12000]},
         ]
         response = await asyncio.to_thread(lambda: llm.chat(messages, stream=False))
-        content = getattr(response, "content", response)
-        payload = parse_extraction_json(str(content or ""))
+        content = _extraction_response_text(response)
+        payload = parse_extraction_json(content)
         return normalize_extracted_facts(
             payload,
             source_id=source_id,
@@ -165,6 +171,16 @@ class GraphTupleExtractor:
             default_evidence=cleaned[:500],
             metadata=metadata,
         )
+
+
+def _extraction_response_text(response: Any) -> str:
+    content = str(getattr(response, "content", response) or "").strip()
+    if content:
+        return content
+    reasoning_content = str(getattr(response, "reasoning_content", "") or "").strip()
+    if reasoning_content:
+        return reasoning_content
+    return ""
 
 
 def parse_extraction_json(text: str) -> Any:
@@ -177,12 +193,26 @@ def parse_extraction_json(text: str) -> Any:
         cleaned = re.sub(r"\s*```$", "", cleaned)
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = min((idx for idx in (cleaned.find("{"), cleaned.find("[")) if idx >= 0), default=-1)
-        end = max(cleaned.rfind("}"), cleaned.rfind("]"))
-        if start < 0 or end <= start:
-            raise
-        return json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError as e:
+        embedded = _parse_embedded_json(cleaned)
+        if embedded is not None:
+            return embedded
+        preview = cleaned[:240].replace("\n", "\\n")
+        raise ValueError(
+            f"invalid graph extraction JSON response: {e.msg}; preview={preview!r}"
+        ) from e
+
+
+def _parse_embedded_json(text: str) -> Any:
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"[\{\[]", text):
+        try:
+            payload, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, (dict, list)):
+            return payload
+    return None
 
 
 def normalize_extracted_facts(
@@ -204,22 +234,41 @@ def normalize_extracted_facts(
     for item in raw_items:
         if not isinstance(item, dict):
             continue
-        values = {field: _clean_text(item.get(field)) for field in REQUIRED_TUPLE_FIELDS}
-        if any(not values[field] for field in REQUIRED_TUPLE_FIELDS):
+        raw_values = {field: _clean_text(item.get(field)) for field in REQUIRED_TUPLE_FIELDS}
+        if any(not raw_values[field] for field in REQUIRED_TUPLE_FIELDS):
             continue
+        raw_subject_key = normalize_entity_key(raw_values["subject"])
+        raw_object_key = normalize_entity_key(raw_values["object"])
+        predicate_key = normalize_predicate(raw_values["predicate"])
+        if not raw_subject_key or not raw_object_key or not predicate_key:
+            continue
+        if _is_noise_tuple(
+            subject_key=raw_subject_key,
+            object_key=raw_object_key,
+            predicate_key=predicate_key,
+            source_kind=source_kind,
+        ):
+            continue
+        subject, subject_type = _canonical_entity(
+            raw_values["subject"],
+            raw_values["subject_type"],
+        )
+        obj, object_type = _canonical_entity(
+            raw_values["object"],
+            raw_values["object_type"],
+        )
+        values = {
+            **raw_values,
+            "subject": subject,
+            "subject_type": subject_type,
+            "object": obj,
+            "object_type": object_type,
+        }
         subject_key = normalize_entity_key(values["subject"])
         object_key = normalize_entity_key(values["object"])
         subject_type_key = normalize_entity_key(values["subject_type"])
         object_type_key = normalize_entity_key(values["object_type"])
-        predicate_key = normalize_predicate(values["predicate"])
         if not subject_key or not object_key or not predicate_key:
-            continue
-        if _is_noise_tuple(
-            subject_key=subject_key,
-            object_key=object_key,
-            predicate_key=predicate_key,
-            source_kind=source_kind,
-        ):
             continue
         fact_key = (
             f"{subject_type_key}:{subject_key}|{predicate_key}|{object_type_key}:{object_key}"
@@ -260,6 +309,7 @@ def build_extraction_prompt(source_kind: str) -> str:
         "",
         "Extract only durable, useful, explicitly supported facts from the text.",
         "Return ONLY valid JSON with this shape:",
+        "Do not explain, analyze, or include prose outside the JSON.",
         (
             '{"tuples":[{"subject":"canonical entity name",'
             '"subject_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
@@ -297,6 +347,10 @@ def build_extraction_prompt(source_kind: str) -> str:
         (
             '- Use stable canonical entity names. Avoid vague subjects like "user", "this", '
             '"it", or "message" unless unavoidable.'
+        ),
+        (
+            "- Use ATRI as the canonical entity name for this assistant; do not create "
+            'separate "Assistant", "Bot", or "助手" entities.'
         ),
         (
             "- Use concise lower_snake_case predicates, e.g. uses, depends_on, "
@@ -344,11 +398,17 @@ def normalize_entity_key(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
-def normalize_predicate(value: str) -> str:
+def normalize_predicate(value: object | None) -> str:
     cleaned = "_".join(str(value or "").strip().lower().split())
     cleaned = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]+", "_", cleaned)
     cleaned = re.sub(r"_+", "_", cleaned).strip("_")
     return cleaned
+
+
+def _canonical_entity(name: str, entity_type: str) -> tuple[str, str]:
+    if normalize_entity_key(name) in ASSISTANT_ENTITY_ALIAS_KEYS:
+        return ASSISTANT_CANONICAL_NAME, ASSISTANT_CANONICAL_TYPE
+    return name, entity_type
 
 
 def fallback_fact_key(*parts: str) -> str:
