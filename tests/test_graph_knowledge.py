@@ -1,13 +1,37 @@
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from core.knowledge.extraction import GraphTupleExtractor, normalize_extracted_facts
+from core.knowledge.extraction import (
+    MAX_HYPER_CHAIN_EDGES,
+    MAX_HYPER_ROLES,
+    MAX_HYPER_TUPLES,
+    GraphTupleExtractor,
+    normalize_extracted_facts,
+)
 from core.knowledge.graph import Neo4jGraphClient, _query_terms
+from core.knowledge.graph_constants import CHAIN_ORDER_KEY_SEPARATOR
 from core.knowledge.graph_worker import GraphKnowledgeManager, _chat_turn_text
 from core.runtime.tasks import TaskStore
+
+
+def test_chain_order_separator_is_shared_and_parameterized_in_cypher():
+    root = Path(__file__).resolve().parents[1]
+    constants_path = root / "core" / "knowledge" / "graph_constants.py"
+    extraction_source = (root / "core" / "knowledge" / "extraction.py").read_text(encoding="utf-8")
+    graph_source = (root / "core" / "knowledge" / "graph.py").read_text(encoding="utf-8")
+
+    assert constants_path.exists()
+    constants_source = constants_path.read_text(encoding="utf-8")
+    assert constants_source.count('CHAIN_ORDER_KEY_SEPARATOR = "::order::"') == 1
+    assert 'CHAIN_ORDER_KEY_SEPARATOR = "::order::"' not in extraction_source
+    assert '_CHAIN_ORDER_KEY_SEPARATOR = "::order::"' not in graph_source
+    assert "'::order::'" not in graph_source
+    assert "split(chain_order_keys[0], $chain_order_separator)" in graph_source
+    assert "split(right_key, $chain_order_separator)" in graph_source
 
 
 def test_normalize_extracted_facts_filters_and_deduplicates_graph_tuples():
@@ -123,6 +147,352 @@ def test_normalize_extracted_facts_filters_chat_request_actions():
     assert facts[0]["predicate"] == "failed_because"
 
 
+def test_normalize_extracted_facts_expands_hyper_tuples_into_event_and_chain_facts():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "ATRI graph RAG Neo4j adoption",
+                    "event_type": "Decision",
+                    "predicate": "adopted_for",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                        {"role": "project", "entity": "ATRI", "entity_type": "Project"},
+                        {"role": "purpose", "entity": "Graph RAG", "entity_type": "Concept"},
+                    ],
+                    "chain": [
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                        {"from_role": "tool", "predicate": "used_in", "to_role": "project"},
+                        {
+                            "from_role": "project",
+                            "predicate": "supports",
+                            "to_role": "purpose",
+                        },
+                    ],
+                    "evidence": "Alice uses Neo4j in ATRI for Graph RAG.",
+                    "confidence": 0.9,
+                }
+            ]
+        },
+        source_id="chunk-hyper-1",
+        source_kind="document",
+    )
+
+    by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
+    chain_ids = {fact.get("chain_id") for fact in facts}
+
+    assert len(chain_ids) == 1
+    assert None not in chain_ids
+    assert by_edge[("ATRI graph RAG Neo4j adoption", "has_role", "Alice")]["hyper_role"] == "actor"
+    assert by_edge[("ATRI graph RAG Neo4j adoption", "has_role", "Alice")]["structural"] is True
+    assert by_edge[("ATRI graph RAG Neo4j adoption", "has_role", "Neo4j")]["hyper_role"] == "tool"
+    assert by_edge[("ATRI graph RAG Neo4j adoption", "has_role", "ATRI")]["hyper_role"] == "project"
+    assert (
+        by_edge[("ATRI graph RAG Neo4j adoption", "has_role", "Graph RAG")]["hyper_role"]
+        == "purpose"
+    )
+    assert by_edge[("Alice", "uses", "Neo4j")]["chain_order"] == 1
+    assert by_edge[("Alice", "uses", "Neo4j")].get("structural") is not True
+    assert by_edge[("Neo4j", "used_in", "ATRI")]["chain_order"] == 2
+    assert by_edge[("ATRI", "supports", "Graph RAG")]["chain_order"] == 3
+    assert all(fact["hyper_event"] == "ATRI graph RAG Neo4j adoption" for fact in facts)
+    assert all(fact["derived_from_hyper_tuple"] is True for fact in facts)
+
+
+def test_normalize_extracted_facts_auto_chains_hyper_roles_when_chain_is_missing():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "ATRI graph RAG Neo4j adoption",
+                    "event_type": "Decision",
+                    "predicate": "adopted_for",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                        {"role": "project", "entity": "ATRI", "entity_type": "Project"},
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-hyper-2",
+        source_kind="document",
+        default_evidence="Alice adopted Neo4j for ATRI.",
+    )
+
+    by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
+
+    assert by_edge[("Alice", "uses", "Neo4j")]["chain_order"] == 1
+    assert by_edge[("Neo4j", "used_in", "ATRI")]["chain_order"] == 2
+    assert by_edge[("Alice", "uses", "Neo4j")]["evidence"] == "Alice adopted Neo4j for ATRI."
+
+
+def test_normalize_extracted_facts_auto_chains_roles_by_semantic_order():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "ATRI graph RAG Neo4j adoption",
+                    "event_type": "Decision",
+                    "roles": [
+                        {"role": "purpose", "entity": "Graph RAG", "entity_type": "Concept"},
+                        {"role": "project", "entity": "ATRI", "entity_type": "Project"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-hyper-sorted",
+        source_kind="document",
+    )
+
+    by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
+
+    assert ("Graph RAG", "related_to", "ATRI") not in by_edge
+    assert by_edge[("Alice", "uses", "Neo4j")]["chain_order"] == 1
+    assert by_edge[("Neo4j", "used_in", "ATRI")]["chain_order"] == 2
+    assert by_edge[("ATRI", "supports", "Graph RAG")]["chain_order"] == 3
+
+
+def test_normalize_extracted_facts_caps_hyper_tuple_count():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": f"event {index}",
+                    "event_type": "Event",
+                    "roles": [
+                        {
+                            "role": "actor",
+                            "entity": f"Person {index}",
+                            "entity_type": "Person",
+                        },
+                        {
+                            "role": "tool",
+                            "entity": f"Tool {index}",
+                            "entity_type": "Tool",
+                        },
+                    ],
+                    "chain": [
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                    ],
+                }
+                for index in range(MAX_HYPER_TUPLES + 2)
+            ]
+        },
+        source_id="chunk-hyper-capped",
+        source_kind="document",
+    )
+
+    assert {fact["hyper_event"] for fact in facts} == {
+        f"event {index}" for index in range(MAX_HYPER_TUPLES)
+    }
+
+
+def test_normalize_extracted_facts_caps_hyper_roles_and_chain_edges():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "oversized event",
+                    "event_type": "Event",
+                    "roles": [
+                        {
+                            "role": f"role_{index}",
+                            "entity": f"Entity {index}",
+                            "entity_type": "Other",
+                        }
+                        for index in range(MAX_HYPER_ROLES + 3)
+                    ],
+                    "chain": [
+                        {
+                            "from_role": f"role_{index}",
+                            "predicate": "related_to",
+                            "to_role": f"role_{index + 1}",
+                        }
+                        for index in range(MAX_HYPER_CHAIN_EDGES + 3)
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-hyper-capped-roles",
+        source_kind="document",
+    )
+
+    role_facts = [fact for fact in facts if fact["predicate"] == "has_role"]
+    chain_facts = [fact for fact in facts if fact["predicate"] == "related_to"]
+
+    assert len(role_facts) == MAX_HYPER_ROLES
+    assert len(chain_facts) == MAX_HYPER_CHAIN_EDGES
+    assert "Entity 0" in {fact["object"] for fact in role_facts}
+    assert f"Entity {MAX_HYPER_ROLES}" not in {fact["object"] for fact in role_facts}
+
+
+def test_normalize_extracted_facts_preserves_hyper_metadata_on_duplicate_chain_fact():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Alice",
+                    "subject_type": "Person",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "plain evidence",
+                    "confidence": 0.4,
+                }
+            ],
+            "hyper_tuples": [
+                {
+                    "event": "ATRI graph RAG Neo4j adoption",
+                    "event_type": "Decision",
+                    "predicate": "adopted_for",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "chain": [
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                    ],
+                    "evidence": "hyper evidence",
+                    "confidence": 0.8,
+                }
+            ],
+        },
+        source_id="chunk-hyper-3",
+        source_kind="document",
+    )
+
+    chain_fact = next(
+        fact
+        for fact in facts
+        if fact["subject"] == "Alice" and fact["predicate"] == "uses" and fact["object"] == "Neo4j"
+    )
+
+    assert chain_fact["chain_id"]
+    assert chain_fact["chain_ids"] == [chain_fact["chain_id"]]
+    assert chain_fact["chain_order"] == 1
+    assert chain_fact["derived_from_hyper_tuple"] is True
+    assert chain_fact["evidence"] == "hyper evidence"
+    assert chain_fact["confidence"] == 0.8
+
+
+def test_normalize_extracted_facts_preserves_multiple_chain_order_memberships():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "first adoption",
+                    "event_type": "Decision",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "chain": [
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                    ],
+                },
+                {
+                    "event": "second adoption",
+                    "event_type": "Decision",
+                    "roles": [
+                        {"role": "project", "entity": "ATRI", "entity_type": "Project"},
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "chain": [
+                        {"from_role": "project", "predicate": "has_owner", "to_role": "actor"},
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                    ],
+                },
+            ]
+        },
+        source_id="chunk-hyper-4",
+        source_kind="document",
+    )
+
+    chain_fact = next(
+        fact
+        for fact in facts
+        if fact["subject"] == "Alice" and fact["predicate"] == "uses" and fact["object"] == "Neo4j"
+    )
+
+    assert len(chain_fact["chain_ids"]) == 2
+    assert len(chain_fact["chain_order_keys"]) == 2
+    assert any(
+        key.endswith(f"{CHAIN_ORDER_KEY_SEPARATOR}1") for key in chain_fact["chain_order_keys"]
+    )
+    assert any(
+        key.endswith(f"{CHAIN_ORDER_KEY_SEPARATOR}2") for key in chain_fact["chain_order_keys"]
+    )
+    assert "chain_order" not in chain_fact
+
+
+def test_normalize_extracted_facts_expands_explicit_chain_for_duplicate_roles():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "pair programming with Neo4j",
+                    "event_type": "Event",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "actor", "entity": "Bob", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "chain": [
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-hyper-5",
+        source_kind="document",
+    )
+
+    by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
+
+    assert ("Alice", "uses", "Neo4j") in by_edge
+    assert ("Bob", "uses", "Neo4j") in by_edge
+    assert by_edge[("Alice", "uses", "Neo4j")]["chain_order"] == 1
+    assert by_edge[("Bob", "uses", "Neo4j")]["chain_order"] == 1
+
+
+def test_normalize_extracted_facts_can_disambiguate_duplicate_roles_by_entity():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "Bob configured Neo4j",
+                    "event_type": "Event",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "actor", "entity": "Bob", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "chain": [
+                        {
+                            "from_role": "actor",
+                            "from_entity": "Bob",
+                            "predicate": "configured",
+                            "to_role": "tool",
+                        },
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-hyper-6",
+        source_kind="document",
+    )
+
+    by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
+
+    assert ("Bob", "configured", "Neo4j") in by_edge
+    assert ("Alice", "configured", "Neo4j") not in by_edge
+
+
 @pytest.mark.asyncio
 async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
     captured = {}
@@ -148,6 +518,11 @@ async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
     assert "Do NOT extract tuples like user asked/requested/said" in system_prompt
     assert "For chat text:" in system_prompt
     assert "Example skip: User -[requested]-> screenshot" in system_prompt
+    assert "hyper_tuples" in system_prompt
+    assert "chain" in system_prompt
+    assert f"At most {MAX_HYPER_TUPLES} hyper_tuples" in system_prompt
+    assert f"at most {MAX_HYPER_ROLES} roles" in system_prompt
+    assert f"at most {MAX_HYPER_CHAIN_EDGES} chain edges" in system_prompt
     assert "Limit output to the 12 most useful tuples" in system_prompt
 
 
@@ -321,6 +696,62 @@ def test_neo4j_graph_client_keeps_same_name_different_types_separate():
     assert rows[0]["fact_key"] != rows[1]["fact_key"]
 
 
+def test_neo4j_graph_client_persists_hyper_chain_metadata_on_facts():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "ATRI graph RAG Neo4j adoption",
+                    "event_type": "Decision",
+                    "predicate": "adopted_for",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "chain": [
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-hyper-1",
+        source_kind="document",
+    )
+
+    client.upsert_facts(facts)
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    chain_row = next(row for row in upsert_call["params"]["facts"] if row["predicate"] == "uses")
+    role_row = next(row for row in upsert_call["params"]["facts"] if row["predicate"] == "has_role")
+    assert chain_row["chain_id"]
+    assert chain_row["chain_ids"] == [chain_row["chain_id"]]
+    assert chain_row["chain_order"] == 1
+    assert chain_row["chain_order_keys"] == [f"{chain_row['chain_id']}{CHAIN_ORDER_KEY_SEPARATOR}1"]
+    assert chain_row["hyper_event"] == "ATRI graph RAG Neo4j adoption"
+    assert chain_row["derived_from_hyper_tuple"] is True
+    assert role_row["hyper_role"] == "actor"
+    assert "r.chain_id = coalesce(fact.chain_id, r.chain_id)" in queries
+    assert "r.chain_ids = chain_ids" in queries
+    assert "r.chain_order_keys = chain_order_keys" in queries
+    assert "WHEN size(chain_order_keys) = 1" in queries
+    assert "WHEN size(chain_order_keys) > 1 THEN NULL" in queries
+    assert upsert_call["params"]["chain_order_separator"] == CHAIN_ORDER_KEY_SEPARATOR
+    assert "r.hyper_event = coalesce(fact.hyper_event, r.hyper_event)" in queries
+    assert "r.hyper_role = coalesce(fact.hyper_role, r.hyper_role)" in queries
+
+
 def test_neo4j_graph_client_retrieves_limited_multihop_context():
     driver = FakeNeo4jDriver()
     client = Neo4jGraphClient(
@@ -374,7 +805,9 @@ def test_neo4j_graph_client_uses_hybrid_ranking_score_before_limit():
     assert "graph_score" in query
     assert "source_match_score" in query
     assert "term_match_score" in query
-    assert "ORDER BY graph_score DESC, r.updated_at DESC" in query
+    assert "structural_role_score" in query
+    assert "ORDER BY structural_role ASC, graph_score DESC, r.updated_at DESC" in query
+    assert driver.session_obj.calls[-1]["params"]["hyper_role_predicate"] == "has_role"
     assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "hybrid"
 
 
@@ -400,8 +833,52 @@ def test_neo4j_graph_client_latest_ranking_preserves_recency_order():
     )
 
     query = driver.session_obj.calls[-1]["query"]
-    assert "ORDER BY hop ASC, r.updated_at DESC" in query
+    assert "ORDER BY structural_role ASC, hop ASC, r.updated_at DESC" in query
     assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "latest"
+
+
+def test_neo4j_graph_client_multihop_retrieval_uses_hyper_chain_metadata():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="ATRI graph RAG Neo4j adoption",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=3,
+        ranking_policy="hybrid",
+    )
+
+    query = driver.session_obj.calls[-1]["query"]
+    assert "rel.hyper_event" in query
+    assert "rel.hyper_role" in query
+    assert "rel.chain_id" in query
+    assert "rel.chain_ids" in query
+    assert "chain_path_score" in query
+    assert "WHEN size(rels) = 1 THEN false" in query
+    assert "chain_order_score" in query
+    assert "structural_role_score" in query
+    assert "structural_role ASC" in query
+    assert "left_chain_id IN coalesce(rels[index].chain_ids, [])" in query
+    assert "left_key IN coalesce(rels[index].chain_order_keys, [])" in query
+    assert "right_key IN coalesce(rels[index + 1].chain_order_keys, [])" in query
+    assert "split(right_key, $chain_order_separator)[0]" in query
+    assert "split(left_key, $chain_order_separator)[0]" in query
+    assert "toInteger(split(right_key, $chain_order_separator)[1])" in query
+    assert (
+        driver.session_obj.calls[-1]["params"]["chain_order_separator"] == CHAIN_ORDER_KEY_SEPARATOR
+    )
+    assert "toLower(coalesce(r.hyper_role, '')) CONTAINS term" in query
+    assert "r.hyper_role AS hyper_role" in query
 
 
 def test_graph_query_terms_include_cjk_ngrams_for_unsegmented_queries():
