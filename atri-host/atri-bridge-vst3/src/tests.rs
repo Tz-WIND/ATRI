@@ -1230,7 +1230,7 @@ fn processor_state_captures_valid_vst3_host_context() {
     processor.apply_process_context(&context);
 
     assert_eq!(processor.sample_rate(), 48_000.0);
-    assert_eq!(processor.transport().is_playing, true);
+    assert!(processor.transport().is_playing);
     assert_eq!(processor.transport().tempo_bpm, 93.5);
     assert_eq!(processor.transport().meter_numerator, 7);
     assert_eq!(processor.transport().meter_denominator, 8);

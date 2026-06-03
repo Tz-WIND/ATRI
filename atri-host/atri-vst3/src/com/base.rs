@@ -17,13 +17,22 @@ impl<T> ComPtr<T> {
         self.ptr.is_null()
     }
 
-    /// Convert to a reference. Unsafe: caller must ensure ptr is valid and lifetime is correct.
+    /// Convert to a reference.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `ptr` is valid for shared access and the returned lifetime.
     pub unsafe fn as_ref(&self) -> &T {
         unsafe { &*self.ptr }
     }
 
-    /// Convert to a mutable reference. Unsafe: caller must ensure exclusive access.
-    pub unsafe fn as_mut(&self) -> &mut T {
+    /// Convert to a mutable reference.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `ptr` is valid and that this `ComPtr` has exclusive access to it
+    /// for the returned lifetime.
+    pub unsafe fn as_mut(&mut self) -> &mut T {
         unsafe { &mut *self.ptr }
     }
 }
@@ -83,7 +92,7 @@ mod tests {
     #[test]
     fn as_mut_works() {
         let mut val = 10u32;
-        let ptr = ComPtr::new(&mut val as *mut u32);
+        let mut ptr = ComPtr::new(&mut val as *mut u32);
         unsafe {
             *ptr.as_mut() = 20;
         }

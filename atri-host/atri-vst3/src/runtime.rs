@@ -419,11 +419,11 @@ impl IPlugFrameTrait for AtriPlugFrame {
 
         log::info!("VST3 plug frame resizeView requested: width={width}, height={height}");
         self.context.request_resize(width as u32, height as u32);
-        if let Ok(mut state) = self.state.lock() {
-            if !state.attached {
-                state.pending_size = Some(rect);
-                log::info!("VST3 plug frame resizeView deferred until editor attached");
-            }
+        if let Ok(mut state) = self.state.lock()
+            && !state.attached
+        {
+            state.pending_size = Some(rect);
+            log::info!("VST3 plug frame resizeView deferred until editor attached");
         }
         kResultOk
     }

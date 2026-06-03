@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(default)]
 pub struct HostConfig {
     pub vst3_plugin_paths: Vec<PathBuf>,
@@ -40,16 +40,6 @@ impl Default for AudioHostConfig {
             auto_start: true,
             audio_engine: default_audio_engine(),
             bit_depth: default_bit_depth(),
-        }
-    }
-}
-
-impl Default for HostConfig {
-    fn default() -> Self {
-        Self {
-            vst3_plugin_paths: Vec::new(),
-            vst2_plugin_paths: Vec::new(),
-            audio_host: AudioHostConfig::default(),
         }
     }
 }
@@ -120,10 +110,10 @@ fn find_config_path() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            roots.push(parent.to_path_buf());
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        roots.push(parent.to_path_buf());
     }
 
     for root in roots {

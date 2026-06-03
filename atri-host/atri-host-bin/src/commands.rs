@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -801,18 +803,9 @@ fn execute(
             audio_engine,
             bit_depth,
         } => {
-            let audio_engine = match audio_engine {
-                Some(value) => Some(normalize_audio_engine_choice(value)),
-                None => None,
-            };
-            let bit_depth = match bit_depth {
-                Some(value) => Some(normalize_audio_config_choice(
-                    "bit_depth",
-                    value,
-                    VALID_BIT_DEPTHS,
-                )),
-                None => None,
-            };
+            let audio_engine = audio_engine.map(normalize_audio_engine_choice);
+            let bit_depth = bit_depth
+                .map(|value| normalize_audio_config_choice("bit_depth", value, VALID_BIT_DEPTHS));
             let audio_engine = match audio_engine {
                 Some(Ok(value)) => Some(value),
                 Some(Err(err)) => return CommandResponse::error(Some("set_audio_config"), &err),
@@ -1845,6 +1838,7 @@ fn render_session_to_wav(
 mod tests {
     use super::*;
 
+    #[allow(clippy::type_complexity)]
     fn command_context() -> (
         Arc<Mutex<AudioEngine>>,
         Sender<AppCommand>,

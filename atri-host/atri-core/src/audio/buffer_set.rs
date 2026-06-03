@@ -20,6 +20,10 @@ impl BufferSet {
         self.buffers.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.buffers.is_empty()
+    }
+
     pub fn get(&self, index: usize) -> Option<&AudioBuffer> {
         self.buffers.get(index)
     }

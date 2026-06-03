@@ -1,4 +1,4 @@
-.PHONY: help install lint format typecheck test ci frontend-lint frontend-test frontend-build rust-fmt rust-test rust-build pre-commit
+.PHONY: help install lint format typecheck test ci frontend-lint frontend-test frontend-build rust-fmt rust-clippy rust-test rust-build pre-commit
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -32,6 +32,9 @@ frontend-build: ## Build frontend
 rust-fmt: ## Check Rust formatting
 	cd atri-host && cargo fmt --all -- --check
 
+rust-clippy: ## Run Rust Clippy lints
+	cd atri-host && cargo clippy --workspace --all-targets -- -D warnings
+
 rust-test: ## Run Rust workspace tests
 	cd atri-host && cargo test --workspace
 
@@ -41,4 +44,4 @@ rust-build: ## Build atri-host binary
 pre-commit: ## Run all pre-commit hooks
 	uv run pre-commit run --all-files
 
-ci: lint typecheck test frontend-lint frontend-test frontend-build rust-fmt rust-test rust-build ## Run full CI pipeline locally
+ci: lint typecheck test frontend-lint frontend-test frontend-build rust-fmt rust-clippy rust-test rust-build ## Run full CI pipeline locally

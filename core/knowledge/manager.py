@@ -73,14 +73,7 @@ class KnowledgeBaseManager:
         top_m_final = _int_at_least(top_m_final, "top_m_final", 1)
         embedding = self._resolve_embedding(embedding_provider, embedding_model)
         rerank = self._resolve_rerank(rerank_provider, rerank_model)
-        dimensions = embedding.dimensions or len(
-            (
-                await self.embedding_client.embed_texts(
-                    embedding,
-                    ["dimension probe"],
-                )
-            )[0]
-        )
+        dimensions, embedding_config = await self._resolve_embedding_dimensions(embedding)
         RecursiveTextChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         return self.store.create_kb(
             {
@@ -88,7 +81,7 @@ class KnowledgeBaseManager:
                 "description": description,
                 "embedding_provider": embedding.provider,
                 "embedding_model": embedding.model,
-                "embedding_config": embedding.config,
+                "embedding_config": embedding_config,
                 "embedding_dimensions": dimensions,
                 "rerank_provider": rerank.provider if rerank else "",
                 "rerank_model": rerank.model if rerank else "",
@@ -130,12 +123,13 @@ class KnowledgeBaseManager:
             if kb["chunk_count"] > 0:
                 raise ValueError("cannot change embedding model after documents have been indexed")
             embedding = self._resolve_embedding(embedding_provider, embedding_model)
+            dimensions, embedding_config = await self._resolve_embedding_dimensions(embedding)
             update.update(
                 {
                     "embedding_provider": embedding.provider,
                     "embedding_model": embedding.model,
-                    "embedding_config": embedding.config,
-                    "embedding_dimensions": embedding.dimensions,
+                    "embedding_config": embedding_config,
+                    "embedding_dimensions": dimensions,
                 }
             )
 
@@ -183,9 +177,18 @@ class KnowledgeBaseManager:
             vectors = await self.embedding_client.embed_texts(selection, chunks)
             if len(vectors) != len(chunks):
                 raise ValueError("embedding result count does not match chunk count")
+            kb = self._ensure_kb_embedding_dimensions(kb_id, kb, vectors[0])
             for vector in vectors:
                 if len(vector) != int(kb["embedding_dimensions"]):
-                    raise ValueError("embedding vector dimension does not match knowledge base")
+                    expected = int(kb["embedding_dimensions"])
+                    actual = len(vector)
+                    raise ValueError(
+                        "embedding vector dimension does not match knowledge base "
+                        f"(expected {expected}, got {actual} from "
+                        f"{kb['embedding_provider']}/{kb['embedding_model']}; "
+                        "recreate the knowledge base with matching embedding dimensions "
+                        "or align the model pool dimensions setting)"
+                    )
             doc = self.store.create_document(
                 kb_id=kb_id,
                 file_name=file_name,
@@ -305,15 +308,60 @@ class KnowledgeBaseManager:
             missing_message="rerank model is not enabled in the rerank model pool",
         )
 
+    async def _resolve_embedding_dimensions(
+        self, embedding: ModelSelection
+    ) -> tuple[int, dict[str, Any]]:
+        vectors = await self.embedding_client.embed_texts(embedding, ["dimension probe"])
+        probed = len(vectors[0])
+        configured = embedding.dimensions
+        if configured and configured != probed:
+            from core import logger
+
+            logger.warning(
+                "Embedding model %s/%s config dimensions=%s but API returned %s; "
+                "using probed dimensions",
+                embedding.provider,
+                embedding.model,
+                configured,
+                probed,
+            )
+        config = dict(embedding.config)
+        config["dimensions"] = probed
+        return probed, config
+
+    def _ensure_kb_embedding_dimensions(
+        self, kb_id: str, kb: dict, sample_vector: list[float]
+    ) -> dict:
+        probed = len(sample_vector)
+        stored = int(kb.get("embedding_dimensions") or 0)
+        if probed == stored:
+            return kb
+        if int(kb.get("chunk_count") or 0) > 0:
+            return kb
+        config = dict(kb.get("embedding_config") or {})
+        config["dimensions"] = probed
+        updated = self.store.update_kb(
+            kb_id,
+            {
+                "embedding_dimensions": probed,
+                "embedding_config": config,
+            },
+        )
+        return updated or kb
+
     def _selection_from_kb(self, kb: dict) -> ModelSelection:
         providers = self.config.get("providers", {})
         provider_config = (
             providers.get(kb["embedding_provider"], {}) if isinstance(providers, dict) else {}
         )
+        config = dict(kb.get("embedding_config") or {})
+        stored_dims = int(kb.get("embedding_dimensions") or 0)
+        if stored_dims and int(config.get("dimensions") or 0) != stored_dims:
+            config["dimensions"] = stored_dims
         return ModelSelection(
             provider=kb["embedding_provider"],
             model=kb["embedding_model"],
-            config=dict(kb.get("embedding_config") or {}),
+            config=config,
             provider_config=dict(provider_config if isinstance(provider_config, dict) else {}),
         )
 

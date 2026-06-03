@@ -216,10 +216,10 @@ mod windows_drag {
                 return Err(WinError::from(E_NOTIMPL));
             }
             let mut formats = vec![hdrop_format()];
-            if self.metadata_json.is_some() {
-                if let Some(format) = metadata_format() {
-                    formats.push(format);
-                }
+            if self.metadata_json.is_some()
+                && let Some(format) = metadata_format()
+            {
+                formats.push(format);
             }
             unsafe { SHCreateStdEnumFmtEtc(&formats) }
         }

@@ -59,6 +59,8 @@ def test_format_graph_context_includes_usage_guidance():
 
 
 def test_chain_order_separator_is_shared_and_parameterized_in_cypher():
+    from core.knowledge.graph_constants import GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS
+
     root = Path(__file__).resolve().parents[1]
     constants_path = root / "core" / "knowledge" / "graph_constants.py"
     extraction_source = (root / "core" / "knowledge" / "extraction.py").read_text(encoding="utf-8")
@@ -72,6 +74,8 @@ def test_chain_order_separator_is_shared_and_parameterized_in_cypher():
     assert "'::order::'" not in graph_source
     assert "split(chain_order_keys[0], $chain_order_separator)" in graph_source
     assert "split(right_key, $chain_order_separator)" in graph_source
+    assert 8 <= GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS <= 10
+    assert f"timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS" in graph_source
 
 
 def test_normalize_extracted_facts_filters_and_deduplicates_graph_tuples():

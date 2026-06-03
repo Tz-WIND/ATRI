@@ -241,7 +241,7 @@ fn parse_flac(path: &Path) -> Result<AudioSource, String> {
     if channels == 0 {
         return Err("FLAC channel count must be positive".to_string());
     }
-    let bits_per_sample = u32::from(info.bits_per_sample);
+    let bits_per_sample = info.bits_per_sample;
     if bits_per_sample == 0 || bits_per_sample > 32 {
         return Err(format!(
             "unsupported FLAC bit depth: {}",
@@ -397,7 +397,7 @@ fn parse_wav_format(chunk: &[u8]) -> Result<WavFormat, String> {
 
 fn decode_wav_samples(format: &WavFormat, data: &[u8]) -> Result<AudioSource, String> {
     let bytes_per_sample = usize::from(format.bits_per_sample / 8);
-    if bytes_per_sample == 0 || format.bits_per_sample % 8 != 0 {
+    if bytes_per_sample == 0 || !format.bits_per_sample.is_multiple_of(8) {
         return Err("WAV bit depth must be byte-aligned".to_string());
     }
     if format.format != 1 && format.format != 3 {

@@ -22,7 +22,7 @@ impl AudioBlock {
     const CHANNELS: usize = 2;
 
     pub fn from_stereo(data: Vec<f32>) -> Option<Self> {
-        if data.len() % Self::CHANNELS == 0 {
+        if data.len().is_multiple_of(Self::CHANNELS) {
             Some(Self { data })
         } else {
             None
@@ -150,6 +150,7 @@ pub struct DriverConfig {
 }
 
 impl AudioDriver {
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         engine: Arc<Mutex<AudioEngine>>,
         cmd_rx: Receiver<AppCommand>,
@@ -232,6 +233,7 @@ impl AudioDriver {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_cpal_driver(
     engine: Arc<Mutex<AudioEngine>>,
     cmd_rx: Receiver<AppCommand>,
@@ -454,6 +456,7 @@ fn sample_format_bit_depth(format: cpal::SampleFormat) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_output_stream_for_format(
     sample_format: cpal::SampleFormat,
     device: &cpal::Device,
@@ -581,6 +584,7 @@ fn build_output_stream_for_format(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_output_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -635,6 +639,7 @@ where
         .map_err(|err| format!("build output stream failed: {err}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_null_driver(
     engine: Arc<Mutex<AudioEngine>>,
     cmd_rx: Receiver<AppCommand>,
@@ -758,7 +763,9 @@ fn enqueue_audio_block_if_streaming(
     streaming_enabled: &AtomicBool,
     audio_block_pool: &AudioBlockPool,
 ) {
-    if !streaming_enabled.load(Ordering::Relaxed) || stereo.len() % AudioBlock::CHANNELS != 0 {
+    if !streaming_enabled.load(Ordering::Relaxed)
+        || !stereo.len().is_multiple_of(AudioBlock::CHANNELS)
+    {
         return;
     }
 

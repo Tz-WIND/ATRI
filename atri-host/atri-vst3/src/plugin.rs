@@ -39,13 +39,13 @@ const MIN_REALTIME_PROCESSING_MAX_SAMPLES: usize = 4096;
 const STATE_MAGIC: &[u8; 8] = b"ATRI3ST\0";
 const STATE_VERSION: u32 = 1;
 const STATE_HEADER_LEN: usize = 8 + 4 + 8 + 8;
-const MEDIA_TYPE_AUDIO: i32 = MediaTypes_::kAudio as i32;
-const MEDIA_TYPE_EVENT: i32 = MediaTypes_::kEvent as i32;
-const BUS_DIRECTION_INPUT: i32 = BusDirections_::kInput as i32;
-const BUS_DIRECTION_OUTPUT: i32 = BusDirections_::kOutput as i32;
-const IO_MODE_SIMPLE: i32 = IoModes_::kSimple as i32;
-const PROCESS_MODE_REALTIME: i32 = ProcessModes_::kRealtime as i32;
-const SAMPLE_SIZE_32: i32 = SymbolicSampleSizes_::kSample32 as i32;
+const MEDIA_TYPE_AUDIO: i32 = MediaTypes_::kAudio;
+const MEDIA_TYPE_EVENT: i32 = MediaTypes_::kEvent;
+const BUS_DIRECTION_INPUT: i32 = BusDirections_::kInput;
+const BUS_DIRECTION_OUTPUT: i32 = BusDirections_::kOutput;
+const IO_MODE_SIMPLE: i32 = IoModes_::kSimple;
+const PROCESS_MODE_REALTIME: i32 = ProcessModes_::kRealtime;
+const SAMPLE_SIZE_32: i32 = SymbolicSampleSizes_::kSample32;
 
 /// A VST3 plugin instance wrapping the component, edit controller, and editor view factory path.
 pub struct Vst3Plugin {
@@ -134,50 +134,50 @@ impl Plugin for Vst3Plugin {
 
     fn activate(&mut self) {
         self.active = true;
-        if let Some(instance) = &mut self.instance {
-            if let Err(err) = instance.set_active(true) {
-                log::warn!("failed to activate VST3 plugin '{}': {err}", self.name);
-            }
+        if let Some(instance) = &mut self.instance
+            && let Err(err) = instance.set_active(true)
+        {
+            log::warn!("failed to activate VST3 plugin '{}': {err}", self.name);
         }
         log::info!("VST3 plugin '{}' activated", self.name);
     }
 
     fn deactivate(&mut self) {
         self.active = false;
-        if let Some(instance) = &mut self.instance {
-            if let Err(err) = instance.set_active(false) {
-                log::warn!("failed to deactivate VST3 plugin '{}': {err}", self.name);
-            }
+        if let Some(instance) = &mut self.instance
+            && let Err(err) = instance.set_active(false)
+        {
+            log::warn!("failed to deactivate VST3 plugin '{}': {err}", self.name);
         }
         log::info!("VST3 plugin '{}' deactivated", self.name);
     }
 
     fn set_block_size(&mut self, nframes: usize) {
         self.block_size = nframes;
-        if let Some(instance) = &mut self.instance {
-            if instance.processing_active {
-                let max_samples = processing_max_samples_for_block_size(self.block_size);
-                if let Err(err) = instance.ensure_processing(self.sample_rate, max_samples) {
-                    log::warn!(
-                        "failed to update VST3 block size for '{}': {err}",
-                        self.name
-                    );
-                }
+        if let Some(instance) = &mut self.instance
+            && instance.processing_active
+        {
+            let max_samples = processing_max_samples_for_block_size(self.block_size);
+            if let Err(err) = instance.ensure_processing(self.sample_rate, max_samples) {
+                log::warn!(
+                    "failed to update VST3 block size for '{}': {err}",
+                    self.name
+                );
             }
         }
     }
 
     fn set_sample_rate(&mut self, sample_rate: f64) {
         self.sample_rate = sample_rate.max(1.0);
-        if let Some(instance) = &mut self.instance {
-            if instance.processing_active {
-                let max_samples = processing_max_samples_for_block_size(self.block_size);
-                if let Err(err) = instance.ensure_processing(self.sample_rate, max_samples) {
-                    log::warn!(
-                        "failed to update VST3 sample rate for '{}': {err}",
-                        self.name
-                    );
-                }
+        if let Some(instance) = &mut self.instance
+            && instance.processing_active
+        {
+            let max_samples = processing_max_samples_for_block_size(self.block_size);
+            if let Err(err) = instance.ensure_processing(self.sample_rate, max_samples) {
+                log::warn!(
+                    "failed to update VST3 sample rate for '{}': {err}",
+                    self.name
+                );
             }
         }
     }
@@ -203,10 +203,8 @@ impl Plugin for Vst3Plugin {
         let factory = self.factory.as_ref();
         if let Some(instance) = &mut self.instance {
             let created_controller = instance.ensure_controller(factory)?;
-            if created_controller {
-                if let Some(parts) = pending_state.as_ref() {
-                    instance.apply_controller_state(parts);
-                }
+            if created_controller && let Some(parts) = pending_state.as_ref() {
+                instance.apply_controller_state(parts);
             }
             let max_samples = processing_max_samples_for_block_size(self.block_size);
             instance.ensure_processing(self.sample_rate, max_samples)?;
@@ -490,6 +488,7 @@ struct Vst3Instance {
     process_scratch: ProcessScratch,
 }
 
+#[derive(Default)]
 struct ProcessScratch {
     input_channel_ptrs: Vec<*mut f32>,
     output_channel_ptrs: Vec<*mut f32>,
@@ -504,20 +503,6 @@ struct ProcessScratch {
 // only dereferenced by the VST3 processor during that call.
 unsafe impl Send for ProcessScratch {}
 unsafe impl Sync for ProcessScratch {}
-
-impl Default for ProcessScratch {
-    fn default() -> Self {
-        Self {
-            input_channel_ptrs: Vec::new(),
-            output_channel_ptrs: Vec::new(),
-            input_events: Vst3EventListHandle::empty(),
-            output_events: Vst3EventListHandle::empty(),
-            input_params: ParameterChangesHandle::empty(),
-            output_params: ParameterChangesHandle::empty(),
-            parameter_changes: Vec::new(),
-        }
-    }
-}
 
 impl ProcessScratch {
     fn reserve_audio_buffers(&mut self, input_channels: usize, output_channels: usize) {
@@ -562,7 +547,9 @@ impl Vst3Instance {
         let host_context = host_app
             .to_com_ptr::<FUnknown>()
             .expect("AtriHostApplication exposes FUnknown");
-        factory.set_host_context(host_context.as_ptr());
+        unsafe {
+            factory.set_host_context(host_context.as_ptr());
+        }
 
         let component = factory.create_instance::<IComponent>(
             &component_class.cid,
@@ -762,10 +749,8 @@ impl Vst3Instance {
         pending_state: Option<&StateParts>,
     ) -> Result<Vst3EditorHandle, String> {
         let created_controller = self.ensure_controller(Some(factory))?;
-        if created_controller {
-            if let Some(parts) = pending_state {
-                self.apply_controller_state(parts);
-            }
+        if created_controller && let Some(parts) = pending_state {
+            self.apply_controller_state(parts);
         }
         let controller = self
             .controller
@@ -841,6 +826,7 @@ impl Vst3Instance {
         Ok(Vst3EditorHandle::new(view, frame))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_audio(
         &mut self,
         bufs: &mut BufferSet,

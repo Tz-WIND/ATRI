@@ -196,15 +196,15 @@ impl PluginScanner {
                     return;
                 }
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "vst3") {
+                if path.extension().is_some_and(|ext| ext == "vst3") {
                     if path.is_dir() {
                         if let Some(info) = Self::parse_bundle_dir(&path) {
                             plugins.push(info);
                         }
-                    } else if path.is_file() {
-                        if let Some(info) = Self::parse_single_file(&path) {
-                            plugins.push(info);
-                        }
+                    } else if path.is_file()
+                        && let Some(info) = Self::parse_single_file(&path)
+                    {
+                        plugins.push(info);
                     }
                 } else if path.is_dir() {
                     Self::scan_vst3_dir(&path, depth + 1, state, plugins);
@@ -237,9 +237,10 @@ impl PluginScanner {
                 continue;
             }
 
-            if path.extension().map_or(false, |ext| {
-                ext.to_string_lossy().eq_ignore_ascii_case("dll")
-            }) {
+            if path
+                .extension()
+                .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("dll"))
+            {
                 if !is_vst2_dll(&path) {
                     continue;
                 }
@@ -391,10 +392,10 @@ where
         else {
             continue;
         };
-        if let Some(name) = read_c_string_at(reader, file_len, name_offset) {
-            if symbols.iter().any(|symbol| *symbol == name.as_str()) {
-                return true;
-            }
+        if let Some(name) = read_c_string_at(reader, file_len, name_offset)
+            && symbols.contains(&name.as_str())
+        {
+            return true;
         }
     }
 

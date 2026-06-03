@@ -99,10 +99,10 @@ impl Route {
             self.processors.resize_with(slot_index + 1, || None);
         }
 
-        if let Some(old_proc) = self.processors[slot_index].take() {
-            if let Ok(mut old_proc) = old_proc.lock() {
-                old_proc.deactivate();
-            }
+        if let Some(old_proc) = self.processors[slot_index].take()
+            && let Ok(mut old_proc) = old_proc.lock()
+        {
+            old_proc.deactivate();
         }
 
         self.processors[slot_index] = proc;
@@ -160,6 +160,7 @@ impl Route {
     }
 
     /// Process this route's chain into the given BufferSet.
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
         bufs: &mut BufferSet,

@@ -234,9 +234,7 @@ impl RouteDelayLine {
             let channel = buffer.channel_mut(channel_index as u16);
             let delay_channel = &mut self.samples[channel_index];
             for sample in channel.iter_mut().take(nframes) {
-                let delayed = delay_channel[pos];
-                delay_channel[pos] = *sample;
-                *sample = delayed;
+                std::mem::swap(&mut delay_channel[pos], sample);
                 pos += 1;
                 if pos == self.delay_samples {
                     pos = 0;
@@ -384,11 +382,11 @@ impl Session {
         slot_index: usize,
         processor: Option<Arc<Mutex<dyn Processor>>>,
     ) -> bool {
-        if let Some(processor) = &processor {
-            if let Ok(mut processor) = processor.lock() {
-                processor.set_block_size(self.buffer_size);
-                processor.set_sample_rate(f64::from(self.sample_rate));
-            }
+        if let Some(processor) = &processor
+            && let Ok(mut processor) = processor.lock()
+        {
+            processor.set_block_size(self.buffer_size);
+            processor.set_sample_rate(f64::from(self.sample_rate));
         }
         self.with_route(track_id, |route| {
             route.set_processor_slot(slot_index, processor);
@@ -1179,6 +1177,7 @@ impl Session {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_route_buffer(
         &mut self,
         idx: usize,
@@ -1201,10 +1200,10 @@ impl Session {
             nframes,
             tempo_metric,
         );
-        if let Some(buf) = self.route_bufs[idx].get_mut(0) {
-            if let Some(delay_line) = self.route_delay_lines.get_mut(idx) {
-                delay_line.process(buf, nframes, compensation);
-            }
+        if let Some(buf) = self.route_bufs[idx].get_mut(0)
+            && let Some(delay_line) = self.route_delay_lines.get_mut(idx)
+        {
+            delay_line.process(buf, nframes, compensation);
         }
     }
 
@@ -1519,17 +1518,18 @@ fn automation_events_in_block(
         }
     }
 
-    if emit_segment_value && !has_point_at_start {
-        if let Some((point, _point_sample)) = previous_point {
-            events.push(AutomationEvent {
-                sample_offset: 0,
-                value: automation_value_at_sample(point, next_point, start_sample, tempo_map),
-                beat: tempo_map
-                    .beats_at_sample(start_sample.max(0))
-                    .to_beats_f64()
-                    .max(0.0),
-            });
-        }
+    if emit_segment_value
+        && !has_point_at_start
+        && let Some((point, _point_sample)) = previous_point
+    {
+        events.push(AutomationEvent {
+            sample_offset: 0,
+            value: automation_value_at_sample(point, next_point, start_sample, tempo_map),
+            beat: tempo_map
+                .beats_at_sample(start_sample.max(0))
+                .to_beats_f64()
+                .max(0.0),
+        });
     }
 
     for point in &lane.points {
@@ -2707,7 +2707,7 @@ mod tests {
         ] {
             let zc = count_zero_crossings(segment);
             assert!(
-                zc >= 160 && zc <= 280,
+                (160..=280).contains(&zc),
                 "{label} zero-crossings {zc} out of range with variable block sizes"
             );
         }

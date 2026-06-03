@@ -120,10 +120,10 @@ impl EditorSurfaceSpec {
     }
 
     pub fn drag_export_hit_test(&self, x: i32, y: i32) -> bool {
-        if let Some(preview) = &self.preview {
-            if preview.contains(x, y) {
-                return self.hit_test(x, y).is_none();
-            }
+        if let Some(preview) = &self.preview
+            && preview.contains(x, y)
+        {
+            return self.hit_test(x, y).is_none();
         }
         let has_completed_export = self
             .lines
@@ -185,6 +185,10 @@ pub struct NativeEditorSurface {
 }
 
 impl NativeEditorSurface {
+    /// # Safety
+    ///
+    /// `callback_context` must remain valid for the lifetime of the native editor surface, and
+    /// `callback` must be safe to call from the platform UI callback thread with that context.
     pub unsafe fn attach(
         spec: &EditorSurfaceSpec,
         callback_context: *mut c_void,
@@ -195,9 +199,9 @@ impl NativeEditorSurface {
             let inner = unsafe {
                 windows_editor::WindowsEditorSurface::attach(spec, callback_context, callback)
             }?;
-            return Ok(Self {
+            Ok(Self {
                 inner: NativeEditorSurfaceInner::Windows(inner),
-            });
+            })
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -468,15 +472,15 @@ mod windows_editor {
                 unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
             WM_TIMER => {
-                if wparam == EXPORT_POLL_TIMER_ID {
-                    if let Some(state) = window_state(hwnd) {
-                        let (context, callback) =
-                            unsafe { ((*state).callback_context, (*state).callback) };
-                        unsafe {
-                            callback(context, NativeEditorSurfaceEvent::Tick);
-                        }
-                        return 0;
+                if wparam == EXPORT_POLL_TIMER_ID
+                    && let Some(state) = window_state(hwnd)
+                {
+                    let (context, callback) =
+                        unsafe { ((*state).callback_context, (*state).callback) };
+                    unsafe {
+                        callback(context, NativeEditorSurfaceEvent::Tick);
                     }
+                    return 0;
                 }
                 unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }

@@ -25,6 +25,7 @@ pub trait Processor: Send + Sync {
     /// internal state as if the block ran, but may skip expensive audio writes.
     /// Current call sites pass true; this flag exists for future pre-roll,
     /// offline analysis, or side-chain/state-only processing.
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &mut self,
         bufs: &mut BufferSet,
@@ -190,10 +191,10 @@ impl Processor for Gain {
             let buf = bufs.get_mut(buf_idx).unwrap();
             for ch in 0..buf.channels() {
                 let channel = buf.channel_mut(ch);
-                for i in 0..nframes {
+                for (i, sample) in channel.iter_mut().enumerate().take(nframes) {
                     let t = i as f32 / nframes as f32;
                     self.current = self.target * t + self.value * (1.0 - t);
-                    channel[i] *= self.current;
+                    *sample *= self.current;
                 }
             }
         }

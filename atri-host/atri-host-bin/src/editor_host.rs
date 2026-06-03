@@ -365,10 +365,10 @@ impl EditorWindowApp {
     }
 
     fn close_editor(&self, key: EditorKey) {
-        if let Ok(mut editors) = self.editors.lock() {
-            if let Some(mut editor) = editors.remove(&key) {
-                editor.close();
-            }
+        if let Ok(mut editors) = self.editors.lock()
+            && let Some(mut editor) = editors.remove(&key)
+        {
+            editor.close();
         }
     }
 

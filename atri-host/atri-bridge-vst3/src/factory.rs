@@ -439,12 +439,12 @@ impl IAudioProcessorTrait for BridgeComponent {
         // The bridge plug-in is a controller surface. The real-time callback
         // intentionally performs no dashboard, filesystem, or allocation work.
         let data = unsafe { &mut *data };
-        if !data.processContext.is_null() {
-            if let Some(mut state) = try_lock_recover(&self.state) {
-                state.apply_process_context(unsafe { &*data.processContext });
-                if let Some(host_context) = state.host_context() {
-                    crate::host_context::publish_host_context(host_context);
-                }
+        if !data.processContext.is_null()
+            && let Some(mut state) = try_lock_recover(&self.state)
+        {
+            state.apply_process_context(unsafe { &*data.processContext });
+            if let Some(host_context) = state.host_context() {
+                crate::host_context::publish_host_context(host_context);
             }
         }
         clear_output_buses(data);
@@ -1395,10 +1395,10 @@ fn copy_cstring(src: &str, dst: &mut [c_char]) {
     for (src, dst) in bytes.iter().zip(dst.iter_mut()) {
         *dst = *src as c_char;
     }
-    if bytes.len() > dst.len() {
-        if let Some(last) = dst.last_mut() {
-            *last = 0;
-        }
+    if bytes.len() > dst.len()
+        && let Some(last) = dst.last_mut()
+    {
+        *last = 0;
     }
 }
 
@@ -1434,12 +1434,7 @@ fn read_wstring(units: &[TChar]) -> String {
         .iter()
         .position(|unit| *unit == 0)
         .unwrap_or(units.len());
-    String::from_utf16_lossy(
-        &units[..len]
-            .iter()
-            .map(|unit| *unit as u16)
-            .collect::<Vec<_>>(),
-    )
+    String::from_utf16_lossy(&units[..len])
 }
 
 #[cfg(test)]

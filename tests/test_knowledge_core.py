@@ -34,6 +34,14 @@ class FailingRerankClient:
         raise RuntimeError("rerank offline")
 
 
+class MismatchedConfigEmbeddingClient:
+    def __init__(self, *, actual: int) -> None:
+        self.actual = actual
+
+    async def embed_texts(self, selection, texts):
+        return [[float(index)] * self.actual for index, _ in enumerate(texts)]
+
+
 def _config():
     return {
         "providers": {
@@ -232,6 +240,66 @@ async def test_openai_rerank_client_preserves_openai_compatible_base_url(monkeyp
     assert result == [{"index": 0, "score": 0.9}]
     assert calls[0]["url"] == "https://provider.example/v1/rerank"
     assert calls[0]["headers"]["Authorization"] == "Bearer sk-test"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_manager_probes_embedding_dimensions_on_create(tmp_path, caplog):
+    config = _config()
+    config["active_embedding_models"][0]["config"]["dimensions"] = 1536
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config=config,
+        embedding_client=MismatchedConfigEmbeddingClient(actual=1024),
+    )
+    await manager.initialize()
+
+    with caplog.at_level("WARNING", logger="atri"):
+        kb = await manager.create_knowledge_base(
+            name="Probed",
+            embedding_provider="OpenAI",
+            embedding_model="embed-a",
+        )
+
+    assert kb["embedding_dimensions"] == 1024
+    assert kb["embedding_config"]["dimensions"] == 1024
+    assert "using probed dimensions" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_knowledge_manager_repairs_empty_kb_dimensions_on_import(tmp_path):
+    config = _config()
+    config["active_embedding_models"][0]["config"]["dimensions"] = 1536
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config=config,
+        embedding_client=MismatchedConfigEmbeddingClient(actual=1024),
+    )
+    await manager.initialize()
+    kb = manager.store.create_kb(
+        {
+            "name": "Legacy",
+            "description": "",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 1536, "batch_size": 16, "encoding_format": "float"},
+            "embedding_dimensions": 1536,
+            "rerank_provider": "",
+            "rerank_model": "",
+            "rerank_config": {},
+            "chunk_size": 80,
+            "chunk_overlap": 10,
+            "top_k_dense": 30,
+            "top_k_sparse": 30,
+            "top_m_final": 5,
+        }
+    )
+
+    task = await manager.import_document(kb["kb_id"], file_name="notes.txt", content="sqlite python")
+    refreshed = await manager.get_knowledge_base(kb["kb_id"])
+
+    assert task["status"] == "completed"
+    assert refreshed["embedding_dimensions"] == 1024
+    assert refreshed["embedding_config"]["dimensions"] == 1024
 
 
 @pytest.mark.asyncio

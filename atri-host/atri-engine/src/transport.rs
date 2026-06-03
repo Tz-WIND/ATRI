@@ -54,10 +54,10 @@ impl Transport {
         if self.is_rolling() {
             self.position += (nframes as f64 * self.speed) as i64;
             // Loop handling
-            if let (Some(start), Some(end)) = (self.loop_start, self.loop_end) {
-                if self.position >= end {
-                    self.position = start + (self.position - end);
-                }
+            if let (Some(start), Some(end)) = (self.loop_start, self.loop_end)
+                && self.position >= end
+            {
+                self.position = start + (self.position - end);
             }
         }
         self.position

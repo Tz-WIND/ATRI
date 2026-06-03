@@ -167,7 +167,11 @@ impl PluginFactory {
         self.initialized && self.factory.is_some()
     }
 
-    pub fn set_host_context(&self, host_context: *mut FUnknown) {
+    /// # Safety
+    ///
+    /// `host_context` must either be null or point to a valid VST3 host context object for the
+    /// duration of the call.
+    pub unsafe fn set_host_context(&self, host_context: *mut FUnknown) {
         let Some(factory) = self
             .factory
             .as_ref()

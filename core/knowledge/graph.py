@@ -12,6 +12,7 @@ from core.knowledge.graph_constants import (
     ASSISTANT_CANONICAL_NAME,
     ASSISTANT_ENTITY_ALIAS_KEYS,
     CHAIN_ORDER_KEY_SEPARATOR,
+    GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
     GRAPH_RETRIEVAL_MAX_DEPTH,
     HYPER_ROLE_PREDICATE,
     format_graph_context,
@@ -503,7 +504,7 @@ class Neo4jGraphClient:
                         hyper_event_property="hyper_event",
                         hyper_role_property="hyper_role",
                         structural_property="structural",
-                        timeout=3,
+                        timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
                     )
                 )
             )
