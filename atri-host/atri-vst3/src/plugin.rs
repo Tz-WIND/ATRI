@@ -16,14 +16,15 @@ use vst3::{
     Steinberg::{
         FUnknown, IPlugFrame, IPlugView, IPlugViewTrait, IPluginBaseTrait, TUID, ViewRect,
         Vst::{
-            AudioBusBuffers, AudioBusBuffers__type0, BusDirections_, BusInfo, IAudioProcessor,
-            IAudioProcessorTrait, IComponent, IComponent_iid, IComponentHandler, IComponentTrait,
-            IConnectionPoint, IConnectionPointTrait, IEditController, IEditController_iid,
-            IEditControllerTrait, IoModes_, MediaTypes_, ParamID, ParamValue, ParameterInfo,
-            ParameterInfo_, ProcessContext, ProcessContext_, ProcessData, ProcessModes_,
-            ProcessSetup, SpeakerArr, SpeakerArrangement, SymbolicSampleSizes_, ViewType,
+            AudioBusBuffers, AudioBusBuffers__type0, BusDirection, BusDirections_, BusInfo,
+            IAudioProcessor, IAudioProcessorTrait, IComponent, IComponent_iid, IComponentHandler,
+            IComponentTrait, IConnectionPoint, IConnectionPointTrait, IEditController,
+            IEditController_iid, IEditControllerTrait, IoMode, IoModes_, MediaType, MediaTypes_,
+            ParamID, ParamValue, ParameterInfo, ParameterInfo_, ProcessContext, ProcessContext_,
+            ProcessData, ProcessModes_, ProcessSetup, SpeakerArr, SpeakerArrangement,
+            SymbolicSampleSizes_, ViewType,
         },
-        kResultFalse, kResultOk,
+        int32, kResultFalse, kResultOk,
     },
 };
 
@@ -39,13 +40,13 @@ const MIN_REALTIME_PROCESSING_MAX_SAMPLES: usize = 4096;
 const STATE_MAGIC: &[u8; 8] = b"ATRI3ST\0";
 const STATE_VERSION: u32 = 1;
 const STATE_HEADER_LEN: usize = 8 + 4 + 8 + 8;
-const MEDIA_TYPE_AUDIO: i32 = MediaTypes_::kAudio;
-const MEDIA_TYPE_EVENT: i32 = MediaTypes_::kEvent;
-const BUS_DIRECTION_INPUT: i32 = BusDirections_::kInput;
-const BUS_DIRECTION_OUTPUT: i32 = BusDirections_::kOutput;
-const IO_MODE_SIMPLE: i32 = IoModes_::kSimple;
-const PROCESS_MODE_REALTIME: i32 = ProcessModes_::kRealtime;
-const SAMPLE_SIZE_32: i32 = SymbolicSampleSizes_::kSample32;
+const MEDIA_TYPE_AUDIO: MediaType = MediaTypes_::kAudio as MediaType;
+const MEDIA_TYPE_EVENT: MediaType = MediaTypes_::kEvent as MediaType;
+const BUS_DIRECTION_INPUT: BusDirection = BusDirections_::kInput as BusDirection;
+const BUS_DIRECTION_OUTPUT: BusDirection = BusDirections_::kOutput as BusDirection;
+const IO_MODE_SIMPLE: IoMode = IoModes_::kSimple as IoMode;
+const PROCESS_MODE_REALTIME: int32 = ProcessModes_::kRealtime as int32;
+const SAMPLE_SIZE_32: int32 = SymbolicSampleSizes_::kSample32 as int32;
 
 /// A VST3 plugin instance wrapping the component, edit controller, and editor view factory path.
 pub struct Vst3Plugin {

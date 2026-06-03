@@ -212,14 +212,16 @@ impl NativeEditorSurface {
     }
 
     pub fn update(&mut self, spec: &EditorSurfaceSpec) -> Result<(), EditorSurfaceError> {
-        match &mut self.inner {
-            #[cfg(target_os = "windows")]
-            NativeEditorSurfaceInner::Windows(surface) => surface.update(spec),
-            #[cfg(not(target_os = "windows"))]
-            NativeEditorSurfaceInner::Unsupported => {
-                let _ = spec;
-                Err(EditorSurfaceError::UnsupportedPlatform)
-            }
+        #[cfg(target_os = "windows")]
+        {
+            let NativeEditorSurfaceInner::Windows(surface) = &mut self.inner;
+            surface.update(spec)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = spec;
+            Err(EditorSurfaceError::UnsupportedPlatform)
         }
     }
 }
@@ -227,8 +229,6 @@ impl NativeEditorSurface {
 enum NativeEditorSurfaceInner {
     #[cfg(target_os = "windows")]
     Windows(windows_editor::WindowsEditorSurface),
-    #[cfg(not(target_os = "windows"))]
-    Unsupported,
 }
 
 fn fid_string_matches(platform_type: FIDString, expected: &[u8]) -> bool {
