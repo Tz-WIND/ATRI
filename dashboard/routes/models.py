@@ -13,6 +13,7 @@ from core.config_schema import (
     EMBEDDING_MODEL_CONFIG_DEFAULT,
     RERANK_MODEL_CONFIG_DEFAULT,
 )
+from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
 from core.tools.novelai_image import mask_novelai_config, merge_novelai_config, set_novelai_config
 
 if TYPE_CHECKING:
@@ -186,7 +187,7 @@ def _merge_graph_knowledge_config(
         merged["retrieval_depth"] = _bounded_positive_int(
             incoming["retrieval_depth"],
             "knowledge.graph.retrieval_depth",
-            3,
+            GRAPH_RETRIEVAL_MAX_DEPTH,
         )
     if "ranking_policy" in incoming:
         ranking_policy = str(incoming.get("ranking_policy") or "hybrid").strip().lower()

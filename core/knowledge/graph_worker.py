@@ -11,6 +11,7 @@ from core import logger
 from core.agent.llm import LLM
 from core.knowledge.extraction import GraphTupleExtractor
 from core.knowledge.graph import Neo4jGraphClient
+from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
 from core.runtime import TaskStore
 
 _DOCUMENT_EXTRACTION_BATCH_CHARS = 10_000
@@ -444,7 +445,7 @@ def _retrieval_depth(value: Any) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = 1
-    return max(1, min(3, parsed))
+    return max(1, min(GRAPH_RETRIEVAL_MAX_DEPTH, parsed))
 
 
 def _ranking_policy(value: Any) -> str:

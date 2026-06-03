@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 from core.knowledge.extraction import (
+    MAX_EXTRACTION_TUPLES,
     MAX_HYPER_CHAIN_EDGES,
     MAX_HYPER_ROLES,
     MAX_HYPER_TUPLES,
@@ -23,11 +24,29 @@ from core.runtime.tasks import TaskStore
 def test_build_extraction_prompt_prefers_person_tool_links_for_chat():
     prompt = build_extraction_prompt("chat")
 
-    assert "Person-[uses/works_on]->Tool/Project" in prompt
+    assert "Person 为 subject 的边" in prompt
     assert "不要用 User、用户" in prompt
     assert "林晚 -[uses]-> Ableton Live" in prompt
     assert "孤立 Concept" in prompt
     assert "专有名词保持英文" in prompt
+    assert "事件类内容" in prompt
+    assert "双中心" in prompt or "同为图谱中心" in prompt
+
+
+def test_build_extraction_prompt_event_dual_hub_for_documents():
+    prompt = build_extraction_prompt("document")
+
+    assert "针对 document 文本" in prompt
+    assert "不要把整段只压缩成一个 Event" in prompt
+    assert "事件本身与主要参与人员" in prompt
+    assert "同一事件只用 ONE 个 canonical 事件名" in prompt
+    assert "事件 hub" in prompt
+    assert "禁止用子步骤" in prompt or "禁止用子动作" in prompt
+    assert "involves_person" in prompt
+    assert "hyper 的 event 字段" in prompt
+    assert "Q3 Product Launch" in prompt
+    assert "勿另建" in prompt
+    assert f"最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples" in prompt
 
 
 def test_format_graph_context_includes_usage_guidance():
@@ -703,7 +722,7 @@ async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
     assert f"hyper_tuples 最多 {MAX_HYPER_TUPLES} 条" in system_prompt
     assert f"每条最多 {MAX_HYPER_ROLES} 个 role" in system_prompt
     assert f"最多 {MAX_HYPER_CHAIN_EDGES} 条 chain 边" in system_prompt
-    assert "最多输出 12 条最有用的 tuples" in system_prompt
+    assert f"最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples" in system_prompt
 
 
 @pytest.mark.asyncio
@@ -1210,6 +1229,180 @@ def test_neo4j_graph_client_nests_three_hop_context_as_one_fact_line():
             (
                 "- [3-hop] Detached -[mentions]-> orphan fact "
                 "(Detached fact was retrieved separately.)"
+            ),
+        ]
+    )
+
+
+def test_neo4j_graph_client_nests_seven_hop_context_as_one_fact_line():
+    class SevenHopSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..7" in query:
+                return [
+                    {
+                        "subject": "Project",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Project uses Neo4j.",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "Neo4j",
+                        "predicate": "runs_on",
+                        "object": "Graph Database",
+                        "evidence": "Neo4j runs as a graph database.",
+                        "hop": 3,
+                    },
+                    {
+                        "subject": "Graph Database",
+                        "predicate": "stores",
+                        "object": "Facts",
+                        "evidence": "Graph databases store facts.",
+                        "hop": 4,
+                    },
+                    {
+                        "subject": "Facts",
+                        "predicate": "support",
+                        "object": "Retrieval",
+                        "evidence": "Facts support retrieval.",
+                        "hop": 5,
+                    },
+                    {
+                        "subject": "Retrieval",
+                        "predicate": "uses",
+                        "object": "Context",
+                        "evidence": "Retrieval uses context.",
+                        "hop": 6,
+                    },
+                    {
+                        "subject": "Context",
+                        "predicate": "answers",
+                        "object": "Question",
+                        "evidence": "Context answers questions.",
+                        "hop": 7,
+                    },
+                    {
+                        "subject": "Detached",
+                        "predicate": "mentions",
+                        "object": "orphan fact",
+                        "evidence": "Detached 7-hop fact was retrieved separately.",
+                        "hop": 7,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "works_on",
+                        "object": "Project",
+                        "evidence": "Lin Wan works on Project.",
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = SevenHopSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Lin Wan Project Neo4j Graph Database Facts Retrieval Context Question",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=7,
+    )
+
+    assert any("FACT*1..7" in call["query"] for call in driver.session_obj.calls)
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Lin Wan -[works_on]-> Project (Lin Wan works on Project.) "
+                "| linked: [2-hop] Project -[uses]-> Neo4j (Project uses Neo4j.) "
+                "| linked: [3-hop] Neo4j -[runs_on]-> Graph Database "
+                "(Neo4j runs as a graph database.) | linked: [4-hop] Graph Database "
+                "-[stores]-> Facts (Graph databases store facts.) | linked: [5-hop] Facts "
+                "-[support]-> Retrieval (Facts support retrieval.) | linked: [6-hop] Retrieval "
+                "-[uses]-> Context (Retrieval uses context.) | linked: [7-hop] Context "
+                "-[answers]-> Question (Context answers questions.)"
+            ),
+            (
+                "- [7-hop] Detached -[mentions]-> orphan fact "
+                "(Detached 7-hop fact was retrieved separately.)"
+            ),
+        ]
+    )
+
+
+def test_neo4j_graph_client_chooses_most_specific_parent_for_multihop_child():
+    class MultiParentSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..2" in query:
+                return [
+                    {
+                        "subject": "Shared Topic",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Shared Topic uses Neo4j.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alpha",
+                        "predicate": "mentions",
+                        "object": "Shared Topic",
+                        "evidence": "Alpha mentions it.",
+                    },
+                    {
+                        "subject": "Beta",
+                        "predicate": "documents",
+                        "object": "Shared Topic",
+                        "evidence": (
+                            "Beta documents Shared Topic with explicit Graph RAG context."
+                        ),
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = MultiParentSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Shared Topic Neo4j",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+
+    assert context == format_graph_context(
+        [
+            "- [1-hop] Alpha -[mentions]-> Shared Topic (Alpha mentions it.)",
+            (
+                "- [1-hop] Beta -[documents]-> Shared Topic "
+                "(Beta documents Shared Topic with explicit Graph RAG context.) "
+                "| linked: [2-hop] Shared Topic -[uses]-> Neo4j "
+                "(Shared Topic uses Neo4j.)"
             ),
         ]
     )
@@ -2414,7 +2607,7 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
                 "graph": {
                     "enabled": True,
                     "retrieval_enabled": True,
-                    "retrieval_depth": 3,
+                    "retrieval_depth": 7,
                 }
             }
         },
@@ -2431,7 +2624,7 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
                 "query": "Alice",
                 "source_ids": [],
                 "max_facts": 5,
-                "retrieval_depth": 3,
+                "retrieval_depth": 7,
                 "ranking_policy": "hybrid",
                 "expansion_candidate_limit": 40,
             }

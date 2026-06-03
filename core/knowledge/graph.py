@@ -12,6 +12,7 @@ from core.knowledge.graph_constants import (
     ASSISTANT_CANONICAL_NAME,
     ASSISTANT_ENTITY_ALIAS_KEYS,
     CHAIN_ORDER_KEY_SEPARATOR,
+    GRAPH_RETRIEVAL_MAX_DEPTH,
     HYPER_ROLE_PREDICATE,
     format_graph_context,
 )
@@ -550,6 +551,7 @@ class Neo4jGraphClient:
                 {
                     "detail": detail,
                     "hop": hop,
+                    "evidence_length": len(evidence),
                     "subject_key": _entity_alias_key(subject),
                     "object_key": _entity_alias_key(obj),
                 }
@@ -656,54 +658,80 @@ def _format_retrieved_fact_lines(
     if depth <= 1:
         return ["- " + str(entry["detail"]) for entry in entries[:line_limit]]
 
-    parent_indexes_by_object: dict[tuple[int, str], list[int]] = {}
-    for index, entry in enumerate(entries):
-        hop = _retrieval_depth(entry.get("hop", 1))
-        object_key = str(entry.get("object_key") or "")
-        parent_indexes_by_object.setdefault((hop, object_key), []).append(index)
+    tree = _retrieved_fact_tree(entries)
 
-    linked_by_parent: dict[int, list[int]] = {}
-    for index, entry in enumerate(entries):
-        hop = _retrieval_depth(entry.get("hop", 1))
-        if hop <= 1:
-            continue
-        subject_key = str(entry.get("subject_key") or "")
-        parents = parent_indexes_by_object.get((hop - 1, subject_key), [])
-        if not parents:
-            continue
-        parent_index = parents[0]
-        linked_by_parent.setdefault(parent_index, []).append(index)
-
-    def render_entry(index: int) -> str:
+    def render_node(index: int, path: set[int]) -> str:
+        if index in path:
+            return str(entries[index]["detail"])
+        node = tree["nodes"][index]
         detail = str(entries[index]["detail"])
-        linked = linked_by_parent.get(index, [])
-        if linked:
-            linked_details = "; ".join(render_entry(child_index) for child_index in linked)
+        children = node["children"]
+        if children:
+            child_path = {*path, index}
+            linked_details = "; ".join(
+                render_node(child_index, child_path) for child_index in children
+            )
             detail = f"{detail} | linked: {linked_details}"
         return detail
 
     lines: list[str] = []
-    rendered_descendants: set[int] = set()
-    for index in range(len(entries)):
-        if index in rendered_descendants:
-            continue
-        lines.append("- " + render_entry(index))
-        rendered_descendants.update(_descendant_entry_indexes(index, linked_by_parent))
+    for index in tree["roots"]:
+        lines.append("- " + render_node(index, set()))
         if len(lines) >= line_limit:
             break
     return lines
 
 
-def _descendant_entry_indexes(index: int, linked_by_parent: dict[int, list[int]]) -> set[int]:
-    descendants: set[int] = set()
-    pending = list(linked_by_parent.get(index, []))
-    while pending:
-        child_index = pending.pop()
-        if child_index in descendants:
+def _retrieved_fact_tree(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    nodes = [{"children": []} for _ in entries]
+    parent_indexes_by_object: dict[tuple[int, str], list[int]] = {}
+    for index, entry in enumerate(entries):
+        hop = _retrieval_depth(entry.get("hop", 1))
+        object_key = str(entry.get("object_key") or "")
+        if object_key:
+            parent_indexes_by_object.setdefault((hop, object_key), []).append(index)
+
+    attached: set[int] = set()
+    for index, entry in enumerate(entries):
+        hop = _retrieval_depth(entry.get("hop", 1))
+        if hop <= 1:
             continue
-        descendants.add(child_index)
-        pending.extend(linked_by_parent.get(child_index, []))
-    return descendants
+        subject_key = str(entry.get("subject_key") or "")
+        if not subject_key:
+            continue
+        parent_indexes = parent_indexes_by_object.get((hop - 1, subject_key), [])
+        if not parent_indexes:
+            continue
+        parent_index = _best_retrieved_fact_parent_index(entries, parent_indexes)
+        if parent_index == index:
+            continue
+        nodes[parent_index]["children"].append(index)
+        attached.add(index)
+    roots = [index for index in range(len(entries)) if index not in attached]
+    return {"nodes": nodes, "roots": roots}
+
+
+def _best_retrieved_fact_parent_index(
+    entries: list[dict[str, Any]],
+    parent_indexes: list[int],
+) -> int:
+    return min(
+        parent_indexes,
+        key=lambda index: _retrieved_fact_parent_sort_key(entries[index], index),
+    )
+
+
+def _retrieved_fact_parent_sort_key(entry: dict[str, Any], index: int) -> tuple[Any, ...]:
+    detail = str(entry.get("detail") or "")
+    return (
+        -_retrieval_depth(entry.get("hop", 1)),
+        -int(entry.get("evidence_length") or 0),
+        -len(detail),
+        str(entry.get("subject_key") or ""),
+        str(entry.get("object_key") or ""),
+        detail,
+        index,
+    )
 
 
 def _append_query_term(terms: list[str], term: str) -> None:
@@ -731,7 +759,7 @@ def _retrieval_depth(value: Any) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = 1
-    return max(1, min(3, parsed))
+    return max(1, min(GRAPH_RETRIEVAL_MAX_DEPTH, parsed))
 
 
 def _ranking_policy(value: Any) -> str:

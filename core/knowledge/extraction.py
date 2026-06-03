@@ -24,16 +24,16 @@ class ChatLLM(Protocol):
 
 REQUIRED_TUPLE_FIELDS = ("subject", "subject_type", "predicate", "object", "object_type")
 HYPER_TUPLE_KEYS = ("hyper_tuples", "hyper_facts", "events")
-MAX_HYPER_TUPLES = 2
+MAX_HYPER_TUPLES = 4
 MAX_HYPER_ROLES = 6
 MAX_HYPER_CHAIN_EDGES = 5
+MAX_EXTRACTION_TUPLES = 18
 ROLE_CHAIN_PREDICATES = {
     ("actor", "tool"): "uses",
     ("actor", "model"): "uses",
     ("actor", "config"): "configures",
     ("actor", "environment"): "uses",
     ("actor", "project"): "works_on",
-    ("actor", "target"): "acts_on",
     ("provider", "model"): "provides",
     ("model", "version"): "has_version",
     ("model", "config"): "configured_with",
@@ -54,6 +54,8 @@ ROLE_CHAIN_PREDICATES = {
     ("project", "purpose"): "supports",
     ("project", "target"): "targets",
     ("project", "result"): "produces",
+    ("actor", "target"): "transferred_to",
+    ("source", "target"): "transferred_to",
     ("error", "cause"): "failed_because",
     ("cause", "error"): "causes",
     ("tool", "error"): "failed_with",
@@ -199,6 +201,50 @@ PREDICATE_ALIASES = {
     "run_on": "runs_on",
     "运行于": "runs_on",
     "运行环境": "runs_on",
+    "holds": "holds",
+    "held": "holds",
+    "持有": "holds",
+    "拥有": "holds",
+    "在手里": "holds",
+    "purchased": "purchased",
+    "bought": "purchased",
+    "购买": "purchased",
+    "买过": "purchased",
+    "transferred_to": "transferred_to",
+    "transferred": "transferred_to",
+    "handed_to": "transferred_to",
+    "转交": "transferred_to",
+    "交给": "transferred_to",
+    "pawned_at": "pawned_at",
+    "pawned": "pawned_at",
+    "sold_at": "pawned_at",
+    "典当": "pawned_at",
+    "变卖": "pawned_at",
+    "can_access": "can_access",
+    "accesses": "can_access",
+    "进出": "can_access",
+    "可进出": "can_access",
+    "involves_item": "involves_item",
+    "involves_object": "involves_item",
+    "涉及物品": "involves_item",
+    "涉及对象": "involves_item",
+    "involves_stolen_item": "involves_stolen_item",
+    "stolen_item": "involves_stolen_item",
+    "失窃物品": "involves_stolen_item",
+    "entry_method": "entry_method",
+    "入室方式": "entry_method",
+    "作案方式": "entry_method",
+    "can_cut": "can_cut",
+    "cuts": "can_cut",
+    "切开": "can_cut",
+    "可切开": "can_cut",
+    "可切": "can_cut",
+    "involves_person": "involves_person",
+    "involves_people": "involves_person",
+    "mentions_person": "involves_person",
+    "涉及人物": "involves_person",
+    "涉案人员": "involves_person",
+    "相关人员": "involves_person",
 }
 ROLE_ALIASES = {
     "actor": "actor",
@@ -506,7 +552,7 @@ def build_extraction_prompt(source_kind: str) -> str:
     prompt = [
         "你是长期知识图谱（Neo4j Graph RAG）的信息抽取引擎。",
         "",
-        "只抽取文本中明确支持、可长期复用的有用事实。",
+        "只抽取文本中明确支持、可长期复用的有用事实；不要推断、不要补全未写明的因果。",
         "只返回合法 JSON，结构如下（字段名保持英文）：",
         "不要输出 JSON 以外的说明或分析。",
         (
@@ -542,8 +588,30 @@ def build_extraction_prompt(source_kind: str) -> str:
         ),
         "- 不要编造文本未直接支持的事实。",
         (
-            "- 优先具体技术事实：Tool、Model、Provider、版本、Error、原因、"
-            "config、文件路径、决策、依赖。"
+            "- 保留细节：一句里有多个人名、物品、地点、动作时，"
+            "尽量拆成多条可检索的边，不要只压成一条事件摘要。"
+        ),
+        (
+            "- 事件类内容（Event/Process：事故、会议、发布、部署、交易、调查等）："
+            "事件本身与主要参与人员（Person/组织）应同为图谱中心——既要写事件属性，"
+            "也要写参与者的动作边，并用事件↔参与者的连边把两侧连起来。"
+        ),
+        (
+            "- 同一事件只用 ONE 个 canonical 事件名，不要用近义重复实体"
+            "（如「X」与「X案」「X事件」）；该名称为本篇的事件 hub。"
+        ),
+        (
+            "- 禁止用子步骤/子动作短语另建 Event 实体；分步流程用 hyper_tuples 的 chain 表达，"
+            "且所有相关 hyper 的 event 字段必须填同一 canonical 事件名，不要用子动作当 event 名。"
+        ),
+        (
+            "- 主要参与人员：除以其为 subject 的动作边外，"
+            "为每位写 {事件} -[involves_person]-> {Person}（evidence 引用原文；"
+            "「主要」指文中明确承担动作/职责/出现频率高的人，不推断未写明的关系）。"
+        ),
+        (
+            "- 技术事实与事件事实同等重要：Tool/Model/Error/config 要写；"
+            "事件、Person、Tool、地点、组织等也要写。"
         ),
         ("- 使用稳定的 canonical 实体名；避免模糊主语 user/this/it/message，除非无法避免。"),
         ("- 助手统一用实体名 ATRI；不要另建 Assistant、Bot、助手 等实体。"),
@@ -551,23 +619,32 @@ def build_extraction_prompt(source_kind: str) -> str:
             "- predicate 尽量用 lower_snake_case 英文：uses, depends_on, "
             "configured_with, failed_because, caused_by, causes, fixed_by, prefers, "
             "avoids, requires, constrained_by, has_trait, has_identity, has_style, "
-            "located_at, belongs_to, supports, works_on, produces, has_version, runs_on。"
+            "located_at, belongs_to, supports, works_on, produces, has_version, runs_on, "
+            "involves_person, involves_item, has_participant；"
+            "也可用其它贴合原文的 lower_snake_case。"
         ),
-        "- 合并重复项，保留最具体版本。",
         (
-            "- 面向检索的连边：文本把 Person 与 Tool/Project 绑在一起时，"
-            "必须输出 Person-[uses/works_on]->Tool/Project，不能只有 Project->Tool。"
+            "- 合并重复项，保留最具体版本；evidence 用原文短引或贴近原文的 "
+            "paraphrase，带上关键动词与时间/阶段状语。"
         ),
-        ("- 把原文中的活动词写入 evidence（如 配乐、剪辑、podcast editing），便于后续查询匹配。"),
         (
-            "- 有 Person/Project/Tool 时，避免孤立 Concept（如 Music scoring、配乐工作）；"
-            "若文本说明了谁在用 Tool，不要把 Tool 只挂在 Project 上。"
+            "- 面向检索的连边：文本把 Person 与 Tool/Project/地点/另一 Person 绑在一起时，"
+            "必须输出 Person 为 subject 的边，不能只有 Event/Concept->Object。"
+        ),
+        ("- 把原文中的活动词、人名、物名写入 evidence，便于后续关键词检索。"),
+        (
+            "- 有 Person/Project/Tool 时，避免孤立 Concept；"
+            "若文本说明了谁对某物执行动作，不要只写 Event/Concept 属性而缺少 Person 边。"
         ),
         ("- 说话人自报姓名（如 我叫林晚）时，用该 Person 名；不要用 User、用户 等泛称。"),
-        ("- 同一事件绑定多角色时用 hyper_tuples，并写 chain 保留可检索路径。"),
+        (
+            "- 多步骤流程：写多条 hyper_tuples，每条 event 均为同一 canonical 事件名，"
+            "用不同 chain 区分步骤；每条写全 chain（如 actor->tool、actor->target），"
+            "便于从事件节点与参与人节点双向检索。"
+        ),
         (
             "- Person、Project、Tool 同句出现时，优先 hyper_tuple 链 "
-            "actor->project->tool（以及 actor->tool），避免断开的 tuples。"
+            "actor->tool->target（以及 actor->tool、actor->project），避免断开的 tuples。"
         ),
         (
             "- hyper_tuple 无明显 chain 时，按 actor/cause/source → "
@@ -579,10 +656,22 @@ def build_extraction_prompt(source_kind: str) -> str:
         ),
         "- 跳过时间戳、聊天元数据、ID、纯数字实体（除非必不可少）。",
         '- 若无有用事实，返回 {"tuples":[]}。',
-        "- 最多输出 12 条最有用的 tuples。",
+        f"- 最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples（含 hyper 展开前的条目）；"
+        "事件类文本优先完整覆盖事件属性、involves_person 与参与者动作，避免只留少量摘要边。",
         "- Tool/Model/Library/File 等专有名词保持英文原文（如 Ableton Live、Neo4j、config.yaml）。",
+        "",
+        "事件类双中心示例（占位名，勿照抄未出现的实体）：",
+        "- Q3 Product Launch -[located_at]-> Singapore (evidence: …)",
+        "- Q3 Product Launch -[involves_person]-> Alice (evidence: Alice led …)",
+        "- Alice -[works_on]-> Q3 Product Launch (evidence: …)",
+        (
+            "- hyper_tuple：event 均为 Q3 Product Launch；roles=Alice(actor)、CI(tool)；"
+            "chain actor-[uses]->tool；另可写 Bob(target) 等分步 chain。"
+            "勿另建「Alice 配置 CI」类 Event 节点。"
+        ),
     ]
-    if str(source_kind or "").lower() == "chat":
+    source = str(source_kind or "").lower()
+    if source == "chat":
         prompt.extend(
             [
                 "",
@@ -596,6 +685,19 @@ def build_extraction_prompt(source_kind: str) -> str:
                 "- 跳过一次性请求、问候、任务措辞与情绪填充。",
                 "- 示例跳过：User -[requested]-> screenshot。",
                 "- 示例保留：ATRI screenshot tool -[failed_because]-> permission_denied。",
+            ]
+        )
+    elif source == "document":
+        prompt.extend(
+            [
+                "",
+                "针对 document 文本：",
+                "- 长段落按句拆事实；同一文档内实体名保持同一 canonical 拼写。",
+                "- 事件叙述与工程技术事实同等优先；事件与主要参与人应形成可互通的子图。",
+                (
+                    "- 不要把整段只压缩成一个 Event 节点加少量属性边；"
+                    "子步骤 hyper 的 event 必须与该段 canonical 事件名相同。"
+                ),
             ]
         )
     return "\n".join(prompt)

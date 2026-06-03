@@ -377,7 +377,7 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
                     "extraction_enabled": True,
                     "extraction_sources": ["documents", "chat"],
                     "retrieval_enabled": True,
-                    "retrieval_depth": 2,
+                    "retrieval_depth": 7,
                     "max_facts": 6,
                     "expansion_candidate_limit": 64,
                     "queue_max_size": 25,
@@ -402,7 +402,7 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
     assert payload["knowledge"]["graph"]["extraction_model"] == "graph-chat"
     assert payload["knowledge"]["graph"]["extraction_provider"] == "OpenAI"
     assert dashboard.lifecycle.config["knowledge"]["graph"]["password"] == "sec" + "ret"
-    assert dashboard.lifecycle.config["knowledge"]["graph"]["retrieval_depth"] == 2
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["retrieval_depth"] == 7
     assert dashboard.lifecycle.config["knowledge"]["graph"]["max_facts"] == 4
     assert dashboard.lifecycle.config["knowledge"]["graph"]["expansion_candidate_limit"] == 64
     assert process_stage.updated[-1]["knowledge"] == dashboard.lifecycle.config["knowledge"]
@@ -496,7 +496,7 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
         json={
             "query": "ATRI",
             "max_facts": 4,
-            "retrieval_depth": 2,
+            "retrieval_depth": 7,
             "ranking_policy": "relevance",
             "expansion_candidate_limit": 72,
         },
@@ -520,7 +520,7 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
             "query": "ATRI",
             "source_ids": [],
             "max_facts": 4,
-            "retrieval_depth": 2,
+            "retrieval_depth": 7,
             "ranking_policy": "relevance",
             "expansion_candidate_limit": 72,
         }

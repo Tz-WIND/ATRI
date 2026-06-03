@@ -137,7 +137,7 @@ def test_normalize_config_coerces_graph_knowledge_settings():
                     "extraction_enabled": "false",
                     "extraction_sources": ["documents"],
                     "retrieval_enabled": "true",
-                    "retrieval_depth": "3",
+                    "retrieval_depth": "7",
                     "max_facts": "12",
                     "expansion_candidate_limit": "64",
                     "ranking_policy": "RELEVANCE",
@@ -159,7 +159,7 @@ def test_normalize_config_coerces_graph_knowledge_settings():
         "extraction_enabled": False,
         "extraction_sources": ["documents"],
         "retrieval_enabled": True,
-        "retrieval_depth": 3,
+        "retrieval_depth": 7,
         "max_facts": 12,
         "expansion_candidate_limit": 64,
         "ranking_policy": "relevance",
@@ -217,8 +217,8 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         ({"vst3_plugin_paths": "D:/VST3"}, "vst3_plugin_paths must be an array"),
         ({"agent_mode": "execute"}, "agent_mode must be one of: plan, agent"),
         (
-            {"knowledge": {"graph": {"retrieval_depth": 4}}},
-            "knowledge.graph.retrieval_depth must be <= 3",
+            {"knowledge": {"graph": {"retrieval_depth": 8}}},
+            "knowledge.graph.retrieval_depth must be <= 7",
         ),
         (
             {"knowledge": {"graph": {"ranking_policy": "random"}}},

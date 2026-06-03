@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from quart import jsonify, request
 
+from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
+
 if TYPE_CHECKING:
     from core.knowledge.manager import KnowledgeBaseManager
     from dashboard.server import Dashboard
@@ -192,7 +194,7 @@ def register(dashboard: Dashboard) -> None:
                     1,
                     "retrieval_depth",
                     1,
-                    maximum=3,
+                    maximum=GRAPH_RETRIEVAL_MAX_DEPTH,
                 ),
                 ranking_policy=_ranking_policy(data.get("ranking_policy")),
                 expansion_candidate_limit=_int_at_least(

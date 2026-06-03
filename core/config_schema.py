@@ -6,6 +6,8 @@ from copy import deepcopy
 from ipaddress import ip_address
 from typing import Any
 
+from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
+
 DEFAULT_IMAGE_TRANSCRIPTION_PROMPT = (
     "Transcribe and describe the attached image for a downstream coding agent. "
     "Include visible text, UI state, errors, file paths, code snippets, diagrams, "
@@ -85,7 +87,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "type": "integer",
                             "default": 1,
                             "minimum": 1,
-                            "maximum": 3,
+                            "maximum": GRAPH_RETRIEVAL_MAX_DEPTH,
                         },
                         "max_facts": {"type": "integer", "default": 8, "minimum": 1},
                         "expansion_candidate_limit": {

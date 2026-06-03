@@ -567,6 +567,18 @@
                     <option :value="3">
                       3 hops
                     </option>
+                    <option :value="4">
+                      4 hops
+                    </option>
+                    <option :value="5">
+                      5 hops
+                    </option>
+                    <option :value="6">
+                      6 hops
+                    </option>
+                    <option :value="7">
+                      7 hops
+                    </option>
                   </select>
                 </label>
               </div>
@@ -1084,7 +1096,7 @@ function normalizeGraphKnowledge(value = {}) {
 function normalizeGraphRetrievalDepth(value) {
   const parsed = Number(value || 1)
   if (!Number.isFinite(parsed)) return 1
-  return Math.min(3, Math.max(1, Math.trunc(parsed)))
+  return Math.min(7, Math.max(1, Math.trunc(parsed)))
 }
 
 function normalizeGraphExpansionCandidateLimit(value) {
