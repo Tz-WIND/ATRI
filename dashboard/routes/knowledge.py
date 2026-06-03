@@ -195,6 +195,13 @@ def register(dashboard: Dashboard) -> None:
                     maximum=3,
                 ),
                 ranking_policy=_ranking_policy(data.get("ranking_policy")),
+                expansion_candidate_limit=_int_at_least(
+                    data.get("expansion_candidate_limit"),
+                    40,
+                    "expansion_candidate_limit",
+                    1,
+                    maximum=200,
+                ),
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400

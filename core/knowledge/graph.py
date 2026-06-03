@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
 
 from core import logger
 from core.knowledge.graph_constants import (
@@ -13,11 +13,15 @@ from core.knowledge.graph_constants import (
     ASSISTANT_ENTITY_ALIAS_KEYS,
     CHAIN_ORDER_KEY_SEPARATOR,
     HYPER_ROLE_PREDICATE,
+    format_graph_context,
 )
 
 DriverFactory = Callable[[str, tuple[str, str]], Any]
 _MAX_QUERY_TERMS = 32
+_DEFAULT_MULTIHOP_EXPANSION_LIMIT = 40
+_MAX_MULTIHOP_EXPANSION_LIMIT = 200
 _VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
+T = TypeVar("T")
 
 
 class Neo4jGraphClient:
@@ -221,6 +225,7 @@ class Neo4jGraphClient:
         max_facts: int = 8,
         retrieval_depth: int = 1,
         ranking_policy: str = "hybrid",
+        expansion_candidate_limit: int | None = None,
     ) -> str:
         if not self.enabled:
             return ""
@@ -242,8 +247,7 @@ class Neo4jGraphClient:
             if policy == "latest"
             else "ORDER BY structural_role ASC, graph_score DESC, hop ASC, r.updated_at DESC"
         )
-        if depth <= 1:
-            cypher = f"""
+        single_hop_cypher = f"""
         MATCH (s:Entity)-[r:FACT]->(o:Entity)
         WHERE
           (
@@ -338,6 +342,8 @@ class Neo4jGraphClient:
         {single_hop_order_by}
         LIMIT $limit
         """
+        if depth <= 1:
+            cypher = single_hop_cypher
         else:
             cypher = f"""
         MATCH path = (s:Entity)-[:FACT*1..{depth}]->(o:Entity)
@@ -359,6 +365,7 @@ class Neo4jGraphClient:
                 OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
                        WHERE toLower(toString(chain_id)) CONTAINS term)))
         WITH relationships(path) AS rels, length(path) AS hop
+        WHERE hop > 1
         WITH rels, hop,
              CASE
                WHEN size(rels) = 1 THEN false
@@ -470,28 +477,44 @@ class Neo4jGraphClient:
         {multi_hop_order_by}
         LIMIT $limit
         """
-        rows = self._run_with_reconnect(
-            lambda session: list(
-                session.run(
-                    cypher,
-                    source_ids=source_ids or [],
-                    terms=terms,
-                    limit=max(1, int(max_facts or 8)),
-                    ranking_policy=policy,
-                    chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
-                    hyper_role_predicate=HYPER_ROLE_PREDICATE,
-                    chain_id_property="chain_id",
-                    chain_ids_property="chain_ids",
-                    chain_order_property="chain_order",
-                    chain_order_keys_property="chain_order_keys",
-                    hyper_event_property="hyper_event",
-                    hyper_role_property="hyper_role",
-                    structural_property="structural",
-                    timeout=3,
+        query_limit = max(1, int(max_facts or 8))
+        expansion_query_limit = _expansion_candidate_limit(
+            expansion_candidate_limit
+            if expansion_candidate_limit is not None
+            else self.config.get("expansion_candidate_limit")
+        )
+
+        def run_context_query(query: str, *, limit: int) -> list[Any]:
+            return self._run_with_reconnect(
+                lambda session: list(
+                    session.run(
+                        query,
+                        source_ids=source_ids or [],
+                        terms=terms,
+                        limit=limit,
+                        ranking_policy=policy,
+                        chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
+                        hyper_role_predicate=HYPER_ROLE_PREDICATE,
+                        chain_id_property="chain_id",
+                        chain_ids_property="chain_ids",
+                        chain_order_property="chain_order",
+                        chain_order_keys_property="chain_order_keys",
+                        hyper_event_property="hyper_event",
+                        hyper_role_property="hyper_role",
+                        structural_property="structural",
+                        timeout=3,
+                    )
                 )
             )
-        )
-        lines = []
+
+        if depth > 1:
+            rows = [
+                *run_context_query(single_hop_cypher, limit=query_limit),
+                *run_context_query(cypher, limit=expansion_query_limit),
+            ]
+        else:
+            rows = run_context_query(cypher, limit=query_limit)
+        entries: list[dict[str, Any]] = []
         seen = set()
         for row in rows:
             subject = _canonical_retrieved_entity_name(row.get("subject"))
@@ -505,6 +528,7 @@ class Neo4jGraphClient:
             seen.add(key)
             evidence = str(row.get("evidence") or "").strip()
             detail = f"{subject} -[{predicate}]-> {obj}"
+            hop = 1
             if depth > 1:
                 hop = _retrieval_depth(row.get("hop", 1))
                 detail = f"[{hop}-hop] {detail}"
@@ -522,8 +546,16 @@ class Neo4jGraphClient:
                 notes.append(evidence)
             if notes:
                 detail += f" ({'; '.join(notes)})"
-            lines.append("- " + detail)
-        return "[Graph context]\n" + "\n".join(lines) if lines else ""
+            entries.append(
+                {
+                    "detail": detail,
+                    "hop": hop,
+                    "subject_key": _entity_alias_key(subject),
+                    "object_key": _entity_alias_key(obj),
+                }
+            )
+        lines = _format_retrieved_fact_lines(entries, depth=depth, limit=query_limit)
+        return format_graph_context(lines)
 
     def _session(self):
         if self.driver is None:
@@ -531,7 +563,7 @@ class Neo4jGraphClient:
         database = str(self.config.get("database") or "neo4j")
         return self.driver.session(database=database)
 
-    def _run_with_reconnect(self, operation):
+    def _run_with_reconnect(self, operation: Callable[..., T]) -> T:
         try:
             with self._session() as session:
                 return operation(session)
@@ -614,6 +646,66 @@ def _entity_alias_key(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _format_retrieved_fact_lines(
+    entries: list[dict[str, Any]],
+    *,
+    depth: int,
+    limit: int,
+) -> list[str]:
+    line_limit = max(1, int(limit or 1))
+    if depth <= 1:
+        return ["- " + str(entry["detail"]) for entry in entries[:line_limit]]
+
+    parent_indexes_by_object: dict[tuple[int, str], list[int]] = {}
+    for index, entry in enumerate(entries):
+        hop = _retrieval_depth(entry.get("hop", 1))
+        object_key = str(entry.get("object_key") or "")
+        parent_indexes_by_object.setdefault((hop, object_key), []).append(index)
+
+    linked_by_parent: dict[int, list[int]] = {}
+    for index, entry in enumerate(entries):
+        hop = _retrieval_depth(entry.get("hop", 1))
+        if hop <= 1:
+            continue
+        subject_key = str(entry.get("subject_key") or "")
+        parents = parent_indexes_by_object.get((hop - 1, subject_key), [])
+        if not parents:
+            continue
+        parent_index = parents[0]
+        linked_by_parent.setdefault(parent_index, []).append(index)
+
+    def render_entry(index: int) -> str:
+        detail = str(entries[index]["detail"])
+        linked = linked_by_parent.get(index, [])
+        if linked:
+            linked_details = "; ".join(render_entry(child_index) for child_index in linked)
+            detail = f"{detail} | linked: {linked_details}"
+        return detail
+
+    lines: list[str] = []
+    rendered_descendants: set[int] = set()
+    for index in range(len(entries)):
+        if index in rendered_descendants:
+            continue
+        lines.append("- " + render_entry(index))
+        rendered_descendants.update(_descendant_entry_indexes(index, linked_by_parent))
+        if len(lines) >= line_limit:
+            break
+    return lines
+
+
+def _descendant_entry_indexes(index: int, linked_by_parent: dict[int, list[int]]) -> set[int]:
+    descendants: set[int] = set()
+    pending = list(linked_by_parent.get(index, []))
+    while pending:
+        child_index = pending.pop()
+        if child_index in descendants:
+            continue
+        descendants.add(child_index)
+        pending.extend(linked_by_parent.get(child_index, []))
+    return descendants
+
+
 def _append_query_term(terms: list[str], term: str) -> None:
     if len(term) > 1 and term not in terms and len(terms) < _MAX_QUERY_TERMS:
         terms.append(term)
@@ -645,6 +737,14 @@ def _retrieval_depth(value: Any) -> int:
 def _ranking_policy(value: Any) -> str:
     policy = str(value or "hybrid").strip().lower()
     return policy if policy in _VALID_RANKING_POLICIES else "hybrid"
+
+
+def _expansion_candidate_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = _DEFAULT_MULTIHOP_EXPANSION_LIMIT
+    return max(1, min(_MAX_MULTIHOP_EXPANSION_LIMIT, parsed))
 
 
 def _fact_source_ids(fact: dict[str, Any]) -> list[str]:

@@ -29,26 +29,54 @@ MAX_HYPER_ROLES = 6
 MAX_HYPER_CHAIN_EDGES = 5
 ROLE_CHAIN_PREDICATES = {
     ("actor", "tool"): "uses",
+    ("actor", "model"): "uses",
+    ("actor", "config"): "configures",
+    ("actor", "environment"): "uses",
     ("actor", "project"): "works_on",
     ("actor", "target"): "acts_on",
+    ("provider", "model"): "provides",
+    ("model", "version"): "has_version",
+    ("model", "config"): "configured_with",
+    ("model", "project"): "used_in",
+    ("model", "purpose"): "supports",
+    ("model", "target"): "targets",
     ("tool", "project"): "used_in",
     ("tool", "purpose"): "supports",
     ("tool", "target"): "targets",
+    ("tool", "config"): "configured_with",
+    ("environment", "tool"): "runs",
+    ("environment", "system"): "hosts",
+    ("system", "config"): "configured_with",
+    ("config", "project"): "configured_for",
+    ("config", "purpose"): "supports",
+    ("config", "target"): "targets",
+    ("config", "result"): "produces",
     ("project", "purpose"): "supports",
     ("project", "target"): "targets",
+    ("project", "result"): "produces",
     ("error", "cause"): "failed_because",
+    ("cause", "error"): "causes",
     ("tool", "error"): "failed_with",
     ("system", "error"): "has_error",
+    ("file", "config"): "defines",
     ("cause", "effect"): "causes",
     ("cause", "result"): "causes",
+    ("effect", "result"): "produces",
     ("file", "project"): "belongs_to",
+    ("library", "project"): "used_in",
+    ("library", "version"): "has_version",
 }
 AUTO_CHAIN_ROLE_ORDER = {
     "actor": 10,
     "cause": 20,
     "source": 30,
+    "provider": 35,
     "tool": 40,
+    "model": 42,
+    "version": 43,
+    "environment": 44,
     "system": 45,
+    "config": 47,
     "file": 50,
     "library": 55,
     "project": 60,
@@ -56,6 +84,177 @@ AUTO_CHAIN_ROLE_ORDER = {
     "purpose": 80,
     "effect": 90,
     "result": 100,
+}
+PREDICATE_ALIASES = {
+    "prefer": "prefers",
+    "prefers": "prefers",
+    "like": "prefers",
+    "likes": "prefers",
+    "喜欢": "prefers",
+    "偏好": "prefers",
+    "喜好": "prefers",
+    "倾向": "prefers",
+    "avoid": "avoids",
+    "avoids": "avoids",
+    "dislike": "avoids",
+    "dislikes": "avoids",
+    "不喜欢": "avoids",
+    "避免": "avoids",
+    "不要": "avoids",
+    "讨厌": "avoids",
+    "require": "requires",
+    "requires": "requires",
+    "need": "requires",
+    "needs": "requires",
+    "需要": "requires",
+    "必须": "requires",
+    "要求": "requires",
+    "constrained_by": "constrained_by",
+    "limited_by": "constrained_by",
+    "限制": "constrained_by",
+    "约束": "constrained_by",
+    "边界": "constrained_by",
+    "禁忌": "constrained_by",
+    "受限于": "constrained_by",
+    "has_trait": "has_trait",
+    "trait": "has_trait",
+    "特点": "has_trait",
+    "特征": "has_trait",
+    "性格": "has_trait",
+    "气质": "has_trait",
+    "口头禅": "has_trait",
+    "has_identity": "has_identity",
+    "identity": "has_identity",
+    "身份": "has_identity",
+    "has_style": "has_style",
+    "style": "has_style",
+    "风格": "has_style",
+    "语气": "has_style",
+    "表达方式": "has_style",
+    "use": "uses",
+    "uses": "uses",
+    "using": "uses",
+    "使用": "uses",
+    "采用": "uses",
+    "用": "uses",
+    "depends": "depends_on",
+    "depends_on": "depends_on",
+    "dependent_on": "depends_on",
+    "依赖": "depends_on",
+    "依赖于": "depends_on",
+    "configured_with": "configured_with",
+    "configured": "configured_with",
+    "set_to": "configured_with",
+    "配置": "configured_with",
+    "配置为": "configured_with",
+    "设置": "configured_with",
+    "设置为": "configured_with",
+    "参数为": "configured_with",
+    "located_at": "located_at",
+    "path": "located_at",
+    "路径": "located_at",
+    "位于": "located_at",
+    "所在位置": "located_at",
+    "failed_because": "failed_because",
+    "failure_reason": "failed_because",
+    "error_reason": "failed_because",
+    "失败原因": "failed_because",
+    "报错原因": "failed_because",
+    "错误原因": "failed_because",
+    "caused_by": "caused_by",
+    "原因是": "caused_by",
+    "由导致": "caused_by",
+    "causes": "causes",
+    "cause": "causes",
+    "导致": "causes",
+    "造成": "causes",
+    "fixed_by": "fixed_by",
+    "fix": "fixed_by",
+    "fixes": "fixed_by",
+    "解决方案": "fixed_by",
+    "修复方式": "fixed_by",
+    "修复": "fixed_by",
+    "supports": "supports",
+    "support": "supports",
+    "支持": "supports",
+    "用于": "supports",
+    "works_on": "works_on",
+    "负责": "works_on",
+    "工作于": "works_on",
+    "belongs_to": "belongs_to",
+    "属于": "belongs_to",
+    "produces": "produces",
+    "produce": "produces",
+    "输出": "produces",
+    "产生": "produces",
+    "结果是": "produces",
+    "has_version": "has_version",
+    "version": "has_version",
+    "版本": "has_version",
+    "版本为": "has_version",
+    "provided_by": "provided_by",
+    "由提供": "provided_by",
+    "服务商": "provided_by",
+    "runs_on": "runs_on",
+    "run_on": "runs_on",
+    "运行于": "runs_on",
+    "运行环境": "runs_on",
+}
+ROLE_ALIASES = {
+    "actor": "actor",
+    "执行者": "actor",
+    "操作者": "actor",
+    "用户": "actor",
+    "使用者": "actor",
+    "主体": "actor",
+    "source": "source",
+    "来源": "source",
+    "provider": "provider",
+    "供应商": "provider",
+    "服务商": "provider",
+    "提供方": "provider",
+    "tool": "tool",
+    "工具": "tool",
+    "model": "model",
+    "模型": "model",
+    "version": "version",
+    "版本": "version",
+    "environment": "environment",
+    "环境": "environment",
+    "运行环境": "environment",
+    "system": "system",
+    "系统": "system",
+    "config": "config",
+    "配置": "config",
+    "参数": "config",
+    "设置": "config",
+    "file": "file",
+    "文件": "file",
+    "路径": "file",
+    "library": "library",
+    "库": "library",
+    "依赖": "library",
+    "依赖库": "library",
+    "project": "project",
+    "项目": "project",
+    "target": "target",
+    "目标": "target",
+    "对象": "target",
+    "purpose": "purpose",
+    "目的": "purpose",
+    "用途": "purpose",
+    "cause": "cause",
+    "原因": "cause",
+    "error": "error",
+    "错误": "error",
+    "报错": "error",
+    "异常": "error",
+    "effect": "effect",
+    "影响": "effect",
+    "效果": "effect",
+    "result": "result",
+    "结果": "result",
+    "输出": "result",
 }
 HYPER_FACT_FIELDS = (
     "chain_id",
@@ -305,11 +504,11 @@ def normalize_extracted_facts(
 
 def build_extraction_prompt(source_kind: str) -> str:
     prompt = [
-        "You are an information extraction engine for a long-term knowledge graph.",
+        "你是长期知识图谱（Neo4j Graph RAG）的信息抽取引擎。",
         "",
-        "Extract only durable, useful, explicitly supported facts from the text.",
-        "Return ONLY valid JSON with this shape:",
-        "Do not explain, analyze, or include prose outside the JSON.",
+        "只抽取文本中明确支持、可长期复用的有用事实。",
+        "只返回合法 JSON，结构如下（字段名保持英文）：",
+        "不要输出 JSON 以外的说明或分析。",
         (
             '{"tuples":[{"subject":"canonical entity name",'
             '"subject_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
@@ -320,12 +519,14 @@ def build_extraction_prompt(source_kind: str) -> str:
             '"confidence":0.0}]}'
         ),
         "",
-        "For multi-argument facts with three or more roles, also use hyper_tuples:",
+        "若同一事实包含三个及以上角色，另用 hyper_tuples：",
         (
             '{"hyper_tuples":[{"event":"canonical event/fact name",'
             '"event_type":"Decision|Event|Process|Error|Other",'
             '"predicate":"main_relation",'
-            '"roles":[{"role":"actor|tool|project|purpose|cause|target|other",'
+            '"roles":[{"role":"actor|source|provider|tool|model|version|environment|'
+            "system|config|file|library|project|target|purpose|cause|error|effect|"
+            'result|other",'
             '"entity":"canonical entity name",'
             '"entity_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other"}],'
             '"chain":[{"from_role":"actor","predicate":"uses","to_role":"tool"}],'
@@ -333,62 +534,68 @@ def build_extraction_prompt(source_kind: str) -> str:
             '"confidence":0.0}]}'
         ),
         "",
-        "Rules:",
-        "- Extract facts, not conversation mechanics.",
+        "规则：",
+        "- 抽取事实，不要抽取对话动作本身。",
         (
-            "- Do NOT extract tuples like user asked/requested/said unless the content is a "
-            "stable preference, decision, constraint, or reusable project fact."
+            "- 不要抽取 user asked/requested/said 类 tuples，除非是稳定的偏好、"
+            "决策、约束或可复用的 Project 事实。"
         ),
-        "- Do NOT invent facts not directly supported by the text.",
+        "- 不要编造文本未直接支持的事实。",
         (
-            "- Prefer specific technical facts: tools, errors, causes, configs, file paths, "
-            "decisions, dependencies."
+            "- 优先具体技术事实：Tool、Model、Provider、版本、Error、原因、"
+            "config、文件路径、决策、依赖。"
         ),
+        ("- 使用稳定的 canonical 实体名；避免模糊主语 user/this/it/message，除非无法避免。"),
+        ("- 助手统一用实体名 ATRI；不要另建 Assistant、Bot、助手 等实体。"),
         (
-            '- Use stable canonical entity names. Avoid vague subjects like "user", "this", '
-            '"it", or "message" unless unavoidable.'
+            "- predicate 尽量用 lower_snake_case 英文：uses, depends_on, "
+            "configured_with, failed_because, caused_by, causes, fixed_by, prefers, "
+            "avoids, requires, constrained_by, has_trait, has_identity, has_style, "
+            "located_at, belongs_to, supports, works_on, produces, has_version, runs_on。"
         ),
+        "- 合并重复项，保留最具体版本。",
         (
-            "- Use ATRI as the canonical entity name for this assistant; do not create "
-            'separate "Assistant", "Bot", or "助手" entities.'
+            "- 面向检索的连边：文本把 Person 与 Tool/Project 绑在一起时，"
+            "必须输出 Person-[uses/works_on]->Tool/Project，不能只有 Project->Tool。"
         ),
+        ("- 把原文中的活动词写入 evidence（如 配乐、剪辑、podcast editing），便于后续查询匹配。"),
         (
-            "- Use concise lower_snake_case predicates, e.g. uses, depends_on, "
-            "configured_with, failed_because, prefers, located_at."
+            "- 有 Person/Project/Tool 时，避免孤立 Concept（如 Music scoring、配乐工作）；"
+            "若文本说明了谁在用 Tool，不要把 Tool 只挂在 Project 上。"
         ),
-        "- Merge duplicates. Keep the most specific version.",
+        ("- 说话人自报姓名（如 我叫林晚）时，用该 Person 名；不要用 User、用户 等泛称。"),
+        ("- 同一事件绑定多角色时用 hyper_tuples，并写 chain 保留可检索路径。"),
         (
-            "- Use hyper_tuples when one fact binds multiple roles in the same event; include "
-            "a chain that preserves the useful retrieval path between roles."
-        ),
-        (
-            "- If a hyper_tuple has no obvious chain, order roles from actor/cause/source "
-            "toward tool/project/target/purpose/result."
-        ),
-        (
-            f"- At most {MAX_HYPER_TUPLES} hyper_tuples; each hyper_tuple should have "
-            f"at most {MAX_HYPER_ROLES} roles and at most "
-            f"{MAX_HYPER_CHAIN_EDGES} chain edges."
+            "- Person、Project、Tool 同句出现时，优先 hyper_tuple 链 "
+            "actor->project->tool（以及 actor->tool），避免断开的 tuples。"
         ),
         (
-            "- Skip timestamps, chat metadata, IDs, and numeric-only entities unless they are "
-            "essential."
+            "- hyper_tuple 无明显 chain 时，按 actor/cause/source → "
+            "provider/tool/model/config/file/library/project/target/purpose/result 排序。"
         ),
-        '- If no useful durable facts exist, return {"tuples":[]}.',
-        "- Limit output to the 12 most useful tuples.",
+        (
+            f"- hyper_tuples 最多 {MAX_HYPER_TUPLES} 条；每条最多 {MAX_HYPER_ROLES} 个 role、"
+            f"最多 {MAX_HYPER_CHAIN_EDGES} 条 chain 边。"
+        ),
+        "- 跳过时间戳、聊天元数据、ID、纯数字实体（除非必不可少）。",
+        '- 若无有用事实，返回 {"tuples":[]}。',
+        "- 最多输出 12 条最有用的 tuples。",
+        "- Tool/Model/Library/File 等专有名词保持英文原文（如 Ableton Live、Neo4j、config.yaml）。",
     ]
     if str(source_kind or "").lower() == "chat":
         prompt.extend(
             [
                 "",
-                "For chat text:",
+                "针对 chat 文本：",
+                ("- 保留稳定用户偏好、Project 决策、反复出现的 Error、Tool 行为与环境事实。"),
                 (
-                    "- Keep stable user preferences, project decisions, recurring errors, "
-                    "tool behavior, and environment facts."
+                    "- 若聊天写明某人用某软件做某活动，必须抽 Person-[uses]->Tool，"
+                    "evidence 写明活动；即使同一 Tool 也挂在 Project 上。"
                 ),
-                "- Skip one-off requests, greetings, task wording, and emotional filler.",
-                "- Example skip: User -[requested]-> screenshot.",
-                "- Example keep: ATRI screenshot tool -[failed_because]-> permission_denied.",
+                ("- 示例保留：林晚 -[uses]-> Ableton Live (evidence: 林晚用 Ableton 做配乐)。"),
+                "- 跳过一次性请求、问候、任务措辞与情绪填充。",
+                "- 示例跳过：User -[requested]-> screenshot。",
+                "- 示例保留：ATRI screenshot tool -[failed_because]-> permission_denied。",
             ]
         )
     return "\n".join(prompt)
@@ -399,10 +606,19 @@ def normalize_entity_key(value: str) -> str:
 
 
 def normalize_predicate(value: object | None) -> str:
+    cleaned = _normalize_relation_token(value)
+    return PREDICATE_ALIASES.get(cleaned, cleaned)
+
+
+def normalize_role(value: object | None) -> str:
+    cleaned = _normalize_relation_token(value)
+    return ROLE_ALIASES.get(cleaned, cleaned)
+
+
+def _normalize_relation_token(value: object | None) -> str:
     cleaned = "_".join(str(value or "").strip().lower().split())
     cleaned = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]+", "_", cleaned)
-    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
-    return cleaned
+    return re.sub(r"_+", "_", cleaned).strip("_")
 
 
 def _canonical_entity(name: str, entity_type: str) -> tuple[str, str]:
@@ -512,7 +728,7 @@ def _hyper_roles(raw_roles: Any) -> list[dict[str, str]]:
     for index, raw_role in enumerate(raw_roles, start=1):
         if not isinstance(raw_role, dict):
             continue
-        role = normalize_predicate(raw_role.get("role")) or f"role_{index}"
+        role = normalize_role(raw_role.get("role")) or f"role_{index}"
         entity = _clean_text(
             raw_role.get("entity")
             or raw_role.get("name")
@@ -539,8 +755,8 @@ def _explicit_chain_edges(
     for order, raw_edge in enumerate(raw_chain, start=1):
         if not isinstance(raw_edge, dict):
             continue
-        from_role_key = normalize_predicate(raw_edge.get("from_role") or raw_edge.get("from"))
-        to_role_key = normalize_predicate(raw_edge.get("to_role") or raw_edge.get("to"))
+        from_role_key = normalize_role(raw_edge.get("from_role") or raw_edge.get("from"))
+        to_role_key = normalize_role(raw_edge.get("to_role") or raw_edge.get("to"))
         predicate = normalize_predicate(raw_edge.get("predicate")) or _role_chain_predicate(
             from_role_key,
             to_role_key,

@@ -176,12 +176,25 @@ def _merge_graph_knowledge_config(
         merged["extraction_sources"] = sources
     if "max_facts" in incoming:
         merged["max_facts"] = _positive_int(incoming["max_facts"], "knowledge.graph.max_facts")
+    if "expansion_candidate_limit" in incoming:
+        merged["expansion_candidate_limit"] = _bounded_positive_int(
+            incoming["expansion_candidate_limit"],
+            "knowledge.graph.expansion_candidate_limit",
+            200,
+        )
     if "retrieval_depth" in incoming:
         merged["retrieval_depth"] = _bounded_positive_int(
             incoming["retrieval_depth"],
             "knowledge.graph.retrieval_depth",
             3,
         )
+    if "ranking_policy" in incoming:
+        ranking_policy = str(incoming.get("ranking_policy") or "hybrid").strip().lower()
+        if ranking_policy not in {"hybrid", "relevance", "latest"}:
+            raise ValueError(
+                "knowledge.graph.ranking_policy must be one of: hybrid, relevance, latest"
+            )
+        merged["ranking_policy"] = ranking_policy
     if "queue_max_size" in incoming:
         merged["queue_max_size"] = _positive_int(
             incoming["queue_max_size"],
@@ -199,6 +212,8 @@ def _merge_graph_knowledge_config(
     merged.setdefault("retrieval_enabled", True)
     merged.setdefault("retrieval_depth", 1)
     merged.setdefault("max_facts", 8)
+    merged.setdefault("expansion_candidate_limit", 40)
+    merged.setdefault("ranking_policy", "hybrid")
     merged.setdefault("queue_max_size", 1000)
     if (
         reject_empty_extraction_sources

@@ -525,6 +525,15 @@
                   >
                 </label>
                 <label class="setting-field">
+                  <span>Expansion Candidates</span>
+                  <input
+                    v-model.number="form.knowledge.graph.expansion_candidate_limit"
+                    type="number"
+                    min="1"
+                    max="200"
+                  >
+                </label>
+                <label class="setting-field">
                   <span>Ranking Policy</span>
                   <select v-model="form.knowledge.graph.ranking_policy">
                     <option value="hybrid">
@@ -869,6 +878,7 @@ const form = ref({
       retrieval_enabled: true,
       retrieval_depth: 1,
       max_facts: 8,
+      expansion_candidate_limit: 40,
       ranking_policy: 'hybrid',
       queue_max_size: 1000,
     },
@@ -1063,6 +1073,9 @@ function normalizeGraphKnowledge(value = {}) {
     retrieval_enabled: value.retrieval_enabled !== false,
     retrieval_depth: normalizeGraphRetrievalDepth(value.retrieval_depth),
     max_facts: Number(value.max_facts || 8),
+    expansion_candidate_limit: normalizeGraphExpansionCandidateLimit(
+      value.expansion_candidate_limit,
+    ),
     ranking_policy: normalizeGraphRankingPolicy(value.ranking_policy),
     queue_max_size: Number(value.queue_max_size || 1000),
   }
@@ -1072,6 +1085,12 @@ function normalizeGraphRetrievalDepth(value) {
   const parsed = Number(value || 1)
   if (!Number.isFinite(parsed)) return 1
   return Math.min(3, Math.max(1, Math.trunc(parsed)))
+}
+
+function normalizeGraphExpansionCandidateLimit(value) {
+  const parsed = Number(value || 40)
+  if (!Number.isFinite(parsed)) return 40
+  return Math.min(200, Math.max(1, Math.trunc(parsed)))
 }
 
 function normalizeGraphRankingPolicy(value) {
@@ -1169,6 +1188,9 @@ async function runGraphQuery() {
       max_facts: Number(form.value.knowledge.graph.max_facts || 8),
       retrieval_depth: normalizeGraphRetrievalDepth(
         form.value.knowledge.graph.retrieval_depth,
+      ),
+      expansion_candidate_limit: normalizeGraphExpansionCandidateLimit(
+        form.value.knowledge.graph.expansion_candidate_limit,
       ),
       ranking_policy: normalizeGraphRankingPolicy(
         form.value.knowledge.graph.ranking_policy,

@@ -113,6 +113,7 @@ class _FakeGraphManager:
         max_facts=8,
         retrieval_depth=1,
         ranking_policy="hybrid",
+        expansion_candidate_limit=40,
     ):
         self.retrieve_calls.append(
             {
@@ -121,6 +122,7 @@ class _FakeGraphManager:
                 "max_facts": max_facts,
                 "retrieval_depth": retrieval_depth,
                 "ranking_policy": ranking_policy,
+                "expansion_candidate_limit": expansion_candidate_limit,
             }
         )
         return self.retrieve_result
@@ -341,6 +343,8 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
             "retrieval_enabled": True,
             "retrieval_depth": 1,
             "max_facts": 8,
+            "expansion_candidate_limit": 40,
+            "ranking_policy": "hybrid",
             "queue_max_size": 1000,
         },
     }
@@ -375,6 +379,7 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
                     "retrieval_enabled": True,
                     "retrieval_depth": 2,
                     "max_facts": 6,
+                    "expansion_candidate_limit": 64,
                     "queue_max_size": 25,
                 }
             }
@@ -399,6 +404,7 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
     assert dashboard.lifecycle.config["knowledge"]["graph"]["password"] == "sec" + "ret"
     assert dashboard.lifecycle.config["knowledge"]["graph"]["retrieval_depth"] == 2
     assert dashboard.lifecycle.config["knowledge"]["graph"]["max_facts"] == 4
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["expansion_candidate_limit"] == 64
     assert process_stage.updated[-1]["knowledge"] == dashboard.lifecycle.config["knowledge"]
     assert dashboard.lifecycle.graph_manager.updated[-1] == dashboard.lifecycle.config
 
@@ -492,6 +498,7 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
             "max_facts": 4,
             "retrieval_depth": 2,
             "ranking_policy": "relevance",
+            "expansion_candidate_limit": 72,
         },
         headers=headers,
     )
@@ -515,6 +522,7 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
             "max_facts": 4,
             "retrieval_depth": 2,
             "ranking_policy": "relevance",
+            "expansion_candidate_limit": 72,
         }
     ]
     assert empty_response.status_code == 400

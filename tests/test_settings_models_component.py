@@ -52,6 +52,8 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "graph-extraction-model-field" in source
     assert "Retrieval Depth" in source
     assert "retrieval_depth" in source
+    assert "Expansion Candidates" in source
+    assert "expansion_candidate_limit" in source
     assert "Ranking Policy" in source
     assert "ranking_policy" in source
     assert "normalizeGraphRankingPolicy" in source

@@ -704,6 +704,7 @@ class ProcessStage(Stage):
                     max_facts=int(graph_cfg.get("max_facts") or 8),
                     retrieval_depth=int(graph_cfg.get("retrieval_depth") or 1),
                     ranking_policy=str(graph_cfg.get("ranking_policy") or "hybrid"),
+                    expansion_candidate_limit=int(graph_cfg.get("expansion_candidate_limit") or 40),
                 ),
             )
         except Exception as e:

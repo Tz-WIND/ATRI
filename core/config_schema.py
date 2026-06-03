@@ -88,6 +88,12 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "maximum": 3,
                         },
                         "max_facts": {"type": "integer", "default": 8, "minimum": 1},
+                        "expansion_candidate_limit": {
+                            "type": "integer",
+                            "default": 40,
+                            "minimum": 1,
+                            "maximum": 200,
+                        },
                         "ranking_policy": {
                             "type": "string",
                             "default": "hybrid",

@@ -10,13 +10,33 @@ from core.knowledge.extraction import (
     MAX_HYPER_ROLES,
     MAX_HYPER_TUPLES,
     GraphTupleExtractor,
+    build_extraction_prompt,
     normalize_extracted_facts,
     parse_extraction_json,
 )
 from core.knowledge.graph import Neo4jGraphClient, _query_terms
-from core.knowledge.graph_constants import CHAIN_ORDER_KEY_SEPARATOR
+from core.knowledge.graph_constants import CHAIN_ORDER_KEY_SEPARATOR, format_graph_context
 from core.knowledge.graph_worker import GraphKnowledgeManager, _chat_turn_text
 from core.runtime.tasks import TaskStore
+
+
+def test_build_extraction_prompt_prefers_person_tool_links_for_chat():
+    prompt = build_extraction_prompt("chat")
+
+    assert "Person-[uses/works_on]->Tool/Project" in prompt
+    assert "不要用 User、用户" in prompt
+    assert "林晚 -[uses]-> Ableton Live" in prompt
+    assert "孤立 Concept" in prompt
+    assert "专有名词保持英文" in prompt
+
+
+def test_format_graph_context_includes_usage_guidance():
+    context = format_graph_context(["- Alice -[works_at]-> Acme"])
+
+    assert context.startswith("[Graph context]\n")
+    assert "跨跳串联" in context
+    assert "predicate 保持原文" in context
+    assert context.endswith("- Alice -[works_at]-> Acme")
 
 
 def test_chain_order_separator_is_shared_and_parameterized_in_cypher():
@@ -146,6 +166,52 @@ def test_normalize_extracted_facts_filters_chat_request_actions():
     assert len(facts) == 1
     assert facts[0]["subject"] == "ATRI screenshot tool"
     assert facts[0]["predicate"] == "failed_because"
+
+
+def test_normalize_extracted_facts_canonicalizes_predicate_aliases():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "ATRI",
+                    "subject_type": "Project",
+                    "predicate": "依赖于",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                },
+                {
+                    "subject": "User",
+                    "subject_type": "Person",
+                    "predicate": "喜欢",
+                    "object": "concise answers",
+                    "object_type": "Preference",
+                },
+                {
+                    "subject": "screenshot tool",
+                    "subject_type": "Tool",
+                    "predicate": "报错原因",
+                    "object": "permission denied",
+                    "object_type": "Error",
+                },
+                {
+                    "subject": "config.yaml",
+                    "subject_type": "File",
+                    "predicate": "位于",
+                    "object": "workspace root",
+                    "object_type": "Concept",
+                },
+            ]
+        },
+        source_id="chunk-predicate-aliases",
+        source_kind="document",
+    )
+
+    predicates_by_subject = {fact["subject"]: fact["predicate"] for fact in facts}
+
+    assert predicates_by_subject["ATRI"] == "depends_on"
+    assert predicates_by_subject["User"] == "prefers"
+    assert predicates_by_subject["screenshot tool"] == "failed_because"
+    assert predicates_by_subject["config.yaml"] == "located_at"
 
 
 def test_normalize_extracted_facts_canonicalizes_assistant_aliases_to_atri():
@@ -325,6 +391,46 @@ def test_normalize_extracted_facts_auto_chains_roles_by_semantic_order():
     assert by_edge[("Alice", "uses", "Neo4j")]["chain_order"] == 1
     assert by_edge[("Neo4j", "used_in", "ATRI")]["chain_order"] == 2
     assert by_edge[("ATRI", "supports", "Graph RAG")]["chain_order"] == 3
+
+
+def test_normalize_extracted_facts_canonicalizes_hyper_role_aliases_for_auto_chain():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "graph extraction model budget",
+                    "event_type": "Decision",
+                    "roles": [
+                        {
+                            "role": "结果",
+                            "entity": "larger extraction budget",
+                            "entity_type": "Concept",
+                        },
+                        {"role": "配置", "entity": "max_tokens=4096", "entity_type": "Concept"},
+                        {"role": "模型", "entity": "deepseek-v4-pro", "entity_type": "System"},
+                        {"role": "执行者", "entity": "ATRI", "entity_type": "Project"},
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-role-aliases",
+        source_kind="document",
+    )
+
+    by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
+    role_edges = {
+        (fact["object"], fact.get("hyper_role"))
+        for fact in facts
+        if fact["predicate"] == "has_role"
+    }
+
+    assert ("ATRI", "actor") in role_edges
+    assert ("deepseek-v4-pro", "model") in role_edges
+    assert ("max_tokens=4096", "config") in role_edges
+    assert ("larger extraction budget", "result") in role_edges
+    assert by_edge[("ATRI", "uses", "deepseek-v4-pro")]["chain_order"] == 1
+    assert by_edge[("deepseek-v4-pro", "configured_with", "max_tokens=4096")]["chain_order"] == 2
+    assert by_edge[("max_tokens=4096", "produces", "larger extraction budget")]["chain_order"] == 3
 
 
 def test_normalize_extracted_facts_caps_hyper_tuple_count():
@@ -560,8 +666,8 @@ def test_normalize_extracted_facts_can_disambiguate_duplicate_roles_by_entity():
 
     by_edge = {(fact["subject"], fact["predicate"], fact["object"]): fact for fact in facts}
 
-    assert ("Bob", "configured", "Neo4j") in by_edge
-    assert ("Alice", "configured", "Neo4j") not in by_edge
+    assert ("Bob", "configured_with", "Neo4j") in by_edge
+    assert ("Alice", "configured_with", "Neo4j") not in by_edge
 
 
 @pytest.mark.asyncio
@@ -585,18 +691,19 @@ async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
     system_prompt = captured["messages"][0]["content"]
     assert facts == []
     assert captured["stream"] is False
-    assert "durable, useful, explicitly supported facts" in system_prompt
-    assert "Do NOT extract tuples like user asked/requested/said" in system_prompt
-    assert "Use ATRI as the canonical entity name for this assistant" in system_prompt
-    assert "Do not explain, analyze, or include prose outside the JSON." in system_prompt
-    assert "For chat text:" in system_prompt
-    assert "Example skip: User -[requested]-> screenshot" in system_prompt
+    assert "明确支持、可长期复用的有用事实" in system_prompt
+    assert "不要抽取 user asked/requested/said 类 tuples" in system_prompt
+    assert "助手统一用实体名 ATRI" in system_prompt
+    assert "不要输出 JSON 以外的说明或分析" in system_prompt
+    assert "针对 chat 文本" in system_prompt
+    assert "示例跳过" in system_prompt
+    assert "User -[requested]-> screenshot" in system_prompt
     assert "hyper_tuples" in system_prompt
     assert "chain" in system_prompt
-    assert f"At most {MAX_HYPER_TUPLES} hyper_tuples" in system_prompt
-    assert f"at most {MAX_HYPER_ROLES} roles" in system_prompt
-    assert f"at most {MAX_HYPER_CHAIN_EDGES} chain edges" in system_prompt
-    assert "Limit output to the 12 most useful tuples" in system_prompt
+    assert f"hyper_tuples 最多 {MAX_HYPER_TUPLES} 条" in system_prompt
+    assert f"每条最多 {MAX_HYPER_ROLES} 个 role" in system_prompt
+    assert f"最多 {MAX_HYPER_CHAIN_EDGES} 条 chain 边" in system_prompt
+    assert "最多输出 12 条最有用的 tuples" in system_prompt
 
 
 @pytest.mark.asyncio
@@ -771,7 +878,7 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
         "label": "测试",
     }
     assert count == 1
-    assert context == "[Graph context]\n- Alice -[works_at]-> Acme (Alice works at Acme.)"
+    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
     assert driver.closed is True
 
 
@@ -894,13 +1001,515 @@ def test_neo4j_graph_client_retrieves_limited_multihop_context():
         retrieval_depth=2,
     )
 
-    assert "FACT*1..2" in driver.session_obj.calls[-1]["query"]
-    assert driver.session_obj.calls[-1]["params"]["limit"] == 4
-    assert context == (
-        "[Graph context]\n"
-        "- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)\n"
-        "- [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"
+    retrieve_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "RETURN s.name AS subject" in call["query"]
+        or "RETURN startNode(r).name AS subject" in call["query"]
+    ]
+    assert retrieve_calls[0]["params"]["limit"] == 4
+    assert "FACT*1..2" in retrieve_calls[1]["query"]
+    assert retrieve_calls[1]["params"]["limit"] == 40
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.) "
+                "| linked: [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"
+            ),
+        ]
     )
+
+
+def test_neo4j_graph_client_multihop_preserves_one_hop_context_and_dedupes():
+    class PreserveOneHopSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..2" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "uses",
+                        "object": "Studio One",
+                        "evidence": "duplicate path evidence",
+                        "confidence": 0.9,
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "Studio One",
+                        "predicate": "supports",
+                        "object": "scoring",
+                        "evidence": "Studio One supports scoring.",
+                        "confidence": 0.8,
+                        "hop": 2,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "uses",
+                        "object": "Studio One",
+                        "evidence": "Lin Wan uses Studio One.",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "prefers",
+                        "object": "concise explanations",
+                        "evidence": "Lin Wan prefers concise explanations.",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "has_trait",
+                        "object": "podcast post-production",
+                        "evidence": "Lin Wan does podcast post-production.",
+                        "confidence": 0.8,
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = PreserveOneHopSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Lin Wan Studio One",
+        source_ids=[],
+        max_facts=6,
+        retrieval_depth=2,
+    )
+
+    retrieve_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "RETURN s.name AS subject" in call["query"]
+        or "RETURN startNode(r).name AS subject" in call["query"]
+    ]
+    assert len(retrieve_calls) == 2
+    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" in retrieve_calls[0]["query"]
+    assert "FACT*1..2" in retrieve_calls[1]["query"]
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Lin Wan -[uses]-> Studio One (Lin Wan uses Studio One.) "
+                "| linked: [2-hop] Studio One -[supports]-> scoring "
+                "(Studio One supports scoring.)"
+            ),
+            (
+                "- [1-hop] Lin Wan -[prefers]-> concise explanations "
+                "(Lin Wan prefers concise explanations.)"
+            ),
+            (
+                "- [1-hop] Lin Wan -[has_trait]-> podcast post-production "
+                "(Lin Wan does podcast post-production.)"
+            ),
+        ]
+    )
+
+
+def test_neo4j_graph_client_nests_three_hop_context_as_one_fact_line():
+    class ThreeHopSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..3" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "uses",
+                        "object": "Studio One",
+                        "evidence": "duplicate path evidence",
+                        "confidence": 0.9,
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "Studio One",
+                        "predicate": "supports",
+                        "object": "scoring",
+                        "evidence": "Studio One supports scoring.",
+                        "confidence": 0.8,
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "scoring",
+                        "predicate": "depends_on",
+                        "object": "Neo4j",
+                        "evidence": "Scoring context depends on Neo4j.",
+                        "confidence": 0.7,
+                        "hop": 3,
+                    },
+                    {
+                        "subject": "Detached",
+                        "predicate": "mentions",
+                        "object": "orphan fact",
+                        "evidence": "Detached fact was retrieved separately.",
+                        "confidence": 0.6,
+                        "hop": 3,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "uses",
+                        "object": "Studio One",
+                        "evidence": "Lin Wan uses Studio One.",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "prefers",
+                        "object": "concise explanations",
+                        "evidence": "Lin Wan prefers concise explanations.",
+                        "confidence": 0.9,
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ThreeHopSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Lin Wan Studio One scoring Neo4j",
+        source_ids=[],
+        max_facts=8,
+        retrieval_depth=3,
+    )
+
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Lin Wan -[uses]-> Studio One (Lin Wan uses Studio One.) "
+                "| linked: [2-hop] Studio One -[supports]-> scoring "
+                "(Studio One supports scoring.) | linked: [3-hop] scoring "
+                "-[depends_on]-> Neo4j (Scoring context depends on Neo4j.)"
+            ),
+            (
+                "- [1-hop] Lin Wan -[prefers]-> concise explanations "
+                "(Lin Wan prefers concise explanations.)"
+            ),
+            (
+                "- [3-hop] Detached -[mentions]-> orphan fact "
+                "(Detached fact was retrieved separately.)"
+            ),
+        ]
+    )
+
+
+def test_neo4j_graph_client_counts_nested_context_as_one_top_level_fact():
+    class NestedQuotaSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..3" in query:
+                return [
+                    {
+                        "subject": "Project",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Project uses Neo4j.",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "Neo4j",
+                        "predicate": "configured_with",
+                        "object": "5.x",
+                        "evidence": "Neo4j runs as 5.x.",
+                        "hop": 3,
+                    },
+                    {
+                        "subject": "Detached",
+                        "predicate": "mentions",
+                        "object": "first orphan",
+                        "evidence": "First orphan was retrieved.",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "Detached",
+                        "predicate": "mentions",
+                        "object": "second orphan",
+                        "evidence": "Second orphan was retrieved.",
+                        "hop": 2,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "works_on",
+                        "object": "Project",
+                        "evidence": "Lin Wan works on Project.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "prefers",
+                        "object": "short answers",
+                        "evidence": "Lin Wan prefers short answers.",
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = NestedQuotaSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Lin Wan Project Neo4j",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=3,
+    )
+
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Lin Wan -[works_on]-> Project (Lin Wan works on Project.) "
+                "| linked: [2-hop] Project -[uses]-> Neo4j (Project uses Neo4j.) "
+                "| linked: [3-hop] Neo4j -[configured_with]-> 5.x (Neo4j runs as 5.x.)"
+            ),
+            "- [1-hop] Lin Wan -[prefers]-> short answers (Lin Wan prefers short answers.)",
+            "- [2-hop] Detached -[mentions]-> first orphan (First orphan was retrieved.)",
+        ]
+    )
+    assert "second orphan" not in context
+
+
+def test_neo4j_graph_client_multihop_expansion_ignores_one_hop_rows_before_limit():
+    class ExpansionLimitSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..2" in query:
+                if "WHERE hop > 1" in query:
+                    return [
+                        {
+                            "subject": "Project",
+                            "predicate": "uses",
+                            "object": "Neo4j",
+                            "evidence": "Project uses Neo4j.",
+                            "hop": 2,
+                        }
+                    ]
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "works_on",
+                        "object": "Project",
+                        "evidence": "duplicate one-hop path",
+                        "hop": 1,
+                    }
+                ][: int(params.get("limit") or 1)]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "works_on",
+                        "object": "Project",
+                        "evidence": "Lin Wan works on Project.",
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ExpansionLimitSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Lin Wan Project Neo4j",
+        source_ids=[],
+        max_facts=1,
+        retrieval_depth=2,
+    )
+
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Lin Wan -[works_on]-> Project (Lin Wan works on Project.) "
+                "| linked: [2-hop] Project -[uses]-> Neo4j (Project uses Neo4j.)"
+            ),
+        ]
+    )
+
+
+def test_neo4j_graph_client_multihop_expansion_uses_larger_candidate_pool_than_output_limit():
+    class ExpansionCandidatePoolSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..2" in query:
+                if int(params.get("limit") or 0) < 40:
+                    return []
+                return [
+                    {
+                        "subject": "Night Radio",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Night Radio uses Neo4j for Graph RAG.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "uses",
+                        "object": "Studio One",
+                        "evidence": "Lin Wan uses Studio One.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "no_longer_uses",
+                        "object": "Ableton Live",
+                        "evidence": "Lin Wan no longer uses Ableton Live.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "prefers",
+                        "object": "concise explanations",
+                        "evidence": "Lin Wan prefers concise explanations.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "has_trait",
+                        "object": "podcast post-production",
+                        "evidence": "Lin Wan does podcast post-production.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "avoids",
+                        "object": "long tutorials",
+                        "evidence": "Lin Wan avoids long tutorials.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "prefers",
+                        "object": "Chinese replies with English technical terms",
+                        "evidence": "Lin Wan prefers Chinese replies.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "works_on",
+                        "object": "Night Radio",
+                        "evidence": "Lin Wan works on Night Radio.",
+                    },
+                    {
+                        "subject": "Lin Wan",
+                        "predicate": "uses",
+                        "object": "Reaper",
+                        "evidence": "Lin Wan uses Reaper.",
+                    },
+                ][: int(params.get("limit") or 1)]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ExpansionCandidatePoolSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Lin Wan Night Radio Neo4j",
+        source_ids=[],
+        max_facts=8,
+        retrieval_depth=2,
+    )
+
+    expansion_call = next(call for call in driver.session_obj.calls if "FACT*1..2" in call["query"])
+    assert expansion_call["params"]["limit"] >= 40
+    assert context == format_graph_context(
+        [
+            "- [1-hop] Lin Wan -[uses]-> Studio One (Lin Wan uses Studio One.)",
+            (
+                "- [1-hop] Lin Wan -[no_longer_uses]-> Ableton Live "
+                "(Lin Wan no longer uses Ableton Live.)"
+            ),
+            (
+                "- [1-hop] Lin Wan -[prefers]-> concise explanations "
+                "(Lin Wan prefers concise explanations.)"
+            ),
+            (
+                "- [1-hop] Lin Wan -[has_trait]-> podcast post-production "
+                "(Lin Wan does podcast post-production.)"
+            ),
+            "- [1-hop] Lin Wan -[avoids]-> long tutorials (Lin Wan avoids long tutorials.)",
+            (
+                "- [1-hop] Lin Wan -[prefers]-> Chinese replies with English technical terms "
+                "(Lin Wan prefers Chinese replies.)"
+            ),
+            (
+                "- [1-hop] Lin Wan -[works_on]-> Night Radio (Lin Wan works on Night Radio.) "
+                "| linked: [2-hop] Night Radio -[uses]-> Neo4j "
+                "(Night Radio uses Neo4j for Graph RAG.)"
+            ),
+            "- [1-hop] Lin Wan -[uses]-> Reaper (Lin Wan uses Reaper.)",
+        ]
+    )
+
+
+def test_neo4j_graph_client_uses_configured_multihop_expansion_candidate_limit():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+            "expansion_candidate_limit": 72,
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice",
+        source_ids=[],
+        max_facts=8,
+        retrieval_depth=2,
+    )
+
+    expansion_call = next(call for call in driver.session_obj.calls if "FACT*1..2" in call["query"])
+    assert expansion_call["params"]["limit"] == 72
 
 
 def test_neo4j_graph_client_uses_hybrid_ranking_score_before_limit():
@@ -1067,7 +1676,7 @@ def test_neo4j_graph_client_reconnects_when_connection_config_changes():
         {"uri": "bolt://old:7687", "auth": ("neo4j", "old-secret")},
         {"uri": "bolt://new:7687", "auth": ("neo4j", "new-secret")},
     ]
-    assert context == "[Graph context]\n- Alice -[works_at]-> Acme (Alice works at Acme.)"
+    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
 
 
 def test_neo4j_graph_client_canonicalizes_assistant_aliases_in_retrieved_context():
@@ -1106,7 +1715,7 @@ def test_neo4j_graph_client_canonicalizes_assistant_aliases_in_retrieved_context
 
     context = client.retrieve_context(query="助手", source_ids=[], max_facts=2)
 
-    assert context == "[Graph context]\n- ATRI -[can_help_with]-> 写代码 (助手可以写代码。)"
+    assert context == format_graph_context(["- ATRI -[can_help_with]-> 写代码 (助手可以写代码。)"])
 
 
 def test_neo4j_graph_client_retries_retrieve_after_defunct_connection():
@@ -1138,7 +1747,7 @@ def test_neo4j_graph_client_retries_retrieve_after_defunct_connection():
     assert first_driver.closed is True
     assert second_driver.verified is True
     assert len(calls) == 2
-    assert context == "[Graph context]\n- Alice -[works_at]-> Acme (Alice works at Acme.)"
+    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
 
 
 class FakeExtractor:
@@ -1271,6 +1880,7 @@ class FakeGraphClient:
         max_facts=8,
         retrieval_depth=1,
         ranking_policy="hybrid",
+        expansion_candidate_limit=40,
     ):
         self.retrieve_calls.append(
             {
@@ -1279,9 +1889,10 @@ class FakeGraphClient:
                 "max_facts": max_facts,
                 "retrieval_depth": retrieval_depth,
                 "ranking_policy": ranking_policy,
+                "expansion_candidate_limit": expansion_candidate_limit,
             }
         )
-        return "[Graph context]\n- Alice -[works_at]-> Acme"
+        return format_graph_context(["- Alice -[works_at]-> Acme"])
 
     def close(self):
         return None
@@ -1814,7 +2425,7 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
     try:
         context = await manager.retrieve_context(query="Alice", source_ids=[], max_facts=5)
 
-        assert context == "[Graph context]\n- Alice -[works_at]-> Acme"
+        assert context == format_graph_context(["- Alice -[works_at]-> Acme"])
         assert graph.retrieve_calls == [
             {
                 "query": "Alice",
@@ -1822,6 +2433,7 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
                 "max_facts": 5,
                 "retrieval_depth": 3,
                 "ranking_policy": "hybrid",
+                "expansion_candidate_limit": 40,
             }
         ]
     finally:
@@ -1849,7 +2461,7 @@ async def test_graph_manager_passes_configured_ranking_policy_to_graph_client(tm
     try:
         context = await manager.retrieve_context(query="Alice", source_ids=[], max_facts=5)
 
-        assert context == "[Graph context]\n- Alice -[works_at]-> Acme"
+        assert context == format_graph_context(["- Alice -[works_at]-> Acme"])
         assert graph.retrieve_calls == [
             {
                 "query": "Alice",
@@ -1857,6 +2469,43 @@ async def test_graph_manager_passes_configured_ranking_policy_to_graph_client(tm
                 "max_facts": 5,
                 "retrieval_depth": 1,
                 "ranking_policy": "relevance",
+                "expansion_candidate_limit": 40,
+            }
+        ]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_passes_configured_expansion_candidate_limit_to_graph_client(tmp_path):
+    store = TaskStore(tmp_path / "runtime")
+    graph = FakeGraphClient()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                    "expansion_candidate_limit": 72,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
+        task_store=store,
+    )
+    try:
+        context = await manager.retrieve_context(query="Alice", source_ids=[], max_facts=5)
+
+        assert context == format_graph_context(["- Alice -[works_at]-> Acme"])
+        assert graph.retrieve_calls == [
+            {
+                "query": "Alice",
+                "source_ids": [],
+                "max_facts": 5,
+                "retrieval_depth": 1,
+                "ranking_policy": "hybrid",
+                "expansion_candidate_limit": 72,
             }
         ]
     finally:

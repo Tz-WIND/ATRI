@@ -175,6 +175,7 @@ class GraphKnowledgeManager:
         max_facts: int = 8,
         retrieval_depth: int | None = None,
         ranking_policy: str | None = None,
+        expansion_candidate_limit: int | None = None,
     ) -> str:
         if not self.graph_config.get("enabled") or not self.graph_config.get("retrieval_enabled"):
             return ""
@@ -184,6 +185,11 @@ class GraphKnowledgeManager:
             else self.graph_config.get("retrieval_depth", 1)
         )
         policy = _ranking_policy(ranking_policy or self.graph_config.get("ranking_policy"))
+        candidate_limit = _expansion_candidate_limit(
+            expansion_candidate_limit
+            if expansion_candidate_limit is not None
+            else self.graph_config.get("expansion_candidate_limit")
+        )
         try:
             return await asyncio.to_thread(
                 self.graph_client.retrieve_context,
@@ -192,6 +198,7 @@ class GraphKnowledgeManager:
                 max_facts=max_facts,
                 retrieval_depth=depth,
                 ranking_policy=policy,
+                expansion_candidate_limit=candidate_limit,
             )
         except Exception as e:
             logger.warning("Graph knowledge retrieval skipped: %s", e)
@@ -424,6 +431,9 @@ def _graph_config_from_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "retrieval_enabled": bool(graph.get("retrieval_enabled", True)),
         "retrieval_depth": _retrieval_depth(graph.get("retrieval_depth", 1)),
         "max_facts": max(1, int(graph.get("max_facts") or 8)),
+        "expansion_candidate_limit": _expansion_candidate_limit(
+            graph.get("expansion_candidate_limit", 40)
+        ),
         "ranking_policy": _ranking_policy(graph.get("ranking_policy")),
         "queue_max_size": int(graph.get("queue_max_size") or 1000),
     }
@@ -442,6 +452,14 @@ def _ranking_policy(value: Any) -> str:
     if policy not in {"hybrid", "relevance", "latest"}:
         return "hybrid"
     return policy
+
+
+def _expansion_candidate_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 40
+    return max(1, min(200, parsed))
 
 
 def _document_extraction_batches(

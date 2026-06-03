@@ -1,0 +1,656 @@
+﻿[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:507:18
+    [1m[94m|[0m
+[1m[94m505 |[0m def build_extraction_prompt(source_kind: str) -> str:
+[1m[94m506 |[0m     prompt = [
+[1m[94m507 |[0m         "浣犳槸闀挎湡鐭ヨ瘑鍥捐氨锛圢eo4j Graph RAG锛夌殑淇℃伅鎶藉彇寮曟搸銆?,
+    [1m[94m|[0m                          [1m[91m^^[0m
+[1m[94m508 |[0m         "",
+[1m[94m509 |[0m         "鍙娊鍙栨枃鏈腑鏄庣‘鏀寔銆佸彲闀挎湡澶嶇敤鐨勬湁鐢ㄤ簨瀹炪€?,
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:507:34
+    [1m[94m|[0m
+[1m[94m505 |[0m def build_extraction_prompt(source_kind: str) -> str:
+[1m[94m506 |[0m     prompt = [
+[1m[94m507 |[0m         "浣犳槸闀挎湡鐭ヨ瘑鍥捐氨锛圢eo4j Graph RAG锛夌殑淇℃伅鎶藉彇寮曟搸銆?,
+    [1m[94m|[0m                                           [1m[91m^^[0m
+[1m[94m508 |[0m         "",
+[1m[94m509 |[0m         "鍙娊鍙栨枃鏈腑鏄庣‘鏀寔銆佸彲闀挎湡澶嶇敤鐨勬湁鐢ㄤ簨瀹炪€?,
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:510:20
+    [1m[94m|[0m
+[1m[94m508 |[0m         "",
+[1m[94m509 |[0m         "鍙娊鍙栨枃鏈腑鏄庣‘鏀寔銆佸彲闀挎湡澶嶇敤鐨勬湁鐢ㄤ簨瀹炪€?,
+[1m[94m510 |[0m         "鍙繑鍥炲悎娉?JSON锛岀粨鏋勫涓嬶紙瀛楁鍚嶄繚鎸佽嫳鏂囷級锛?,
+    [1m[94m|[0m                         [1m[91m^^[0m
+[1m[94m511 |[0m         "涓嶈杈撳嚭 JSON 浠ュ鐨勮鏄庢垨鍒嗘瀽銆?,
+[1m[94m512 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:510:25
+    [1m[94m|[0m
+[1m[94m508 |[0m         "",
+[1m[94m509 |[0m         "鍙娊鍙栨枃鏈腑鏄庣‘鏀寔銆佸彲闀挎湡澶嶇敤鐨勬湁鐢ㄤ簨瀹炪€?,
+[1m[94m510 |[0m         "鍙繑鍥炲悎娉?JSON锛岀粨鏋勫涓嬶紙瀛楁鍚嶄繚鎸佽嫳鏂囷級锛?,
+    [1m[94m|[0m                                   [1m[91m^^[0m
+[1m[94m511 |[0m         "涓嶈杈撳嚭 JSON 浠ュ鐨勮鏄庢垨鍒嗘瀽銆?,
+[1m[94m512 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:510:33
+    [1m[94m|[0m
+[1m[94m508 |[0m         "",
+[1m[94m509 |[0m         "鍙娊鍙栨枃鏈腑鏄庣‘鏀寔銆佸彲闀挎湡澶嶇敤鐨勬湁鐢ㄤ簨瀹炪€?,
+[1m[94m510 |[0m         "鍙繑鍥炲悎娉?JSON锛岀粨鏋勫涓嬶紙瀛楁鍚嶄繚鎸佽嫳鏂囷級锛?,
+    [1m[94m|[0m                                                   [1m[91m^^[0m
+[1m[94m511 |[0m         "涓嶈杈撳嚭 JSON 浠ュ鐨勮鏄庢垨鍒嗘瀽銆?,
+[1m[94m512 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:510:34
+    [1m[94m|[0m
+[1m[94m508 |[0m         "",
+[1m[94m509 |[0m         "鍙娊鍙栨枃鏈腑鏄庣‘鏀寔銆佸彲闀挎湡澶嶇敤鐨勬湁鐢ㄤ簨瀹炪€?,
+[1m[94m510 |[0m         "鍙繑鍥炲悎娉?JSON锛岀粨鏋勫涓嬶紙瀛楁鍚嶄繚鎸佽嫳鏂囷級锛?,
+    [1m[94m|[0m                                                     [1m[91m^^[0m
+[1m[94m511 |[0m         "涓嶈杈撳嚭 JSON 浠ュ鐨勮鏄庢垨鍒嗘瀽銆?,
+[1m[94m512 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:522:24
+    [1m[94m|[0m
+[1m[94m520 |[0m         ),
+[1m[94m521 |[0m         "",
+[1m[94m522 |[0m         "鑻ュ悓涓€浜嬪疄鍖呭惈涓変釜鍙婁互涓婅鑹诧紝鍙︾敤 hyper_tuples锛?,
+    [1m[94m|[0m                                      [1m[91m^^[0m
+[1m[94m523 |[0m         (
+[1m[94m524 |[0m             '{"hyper_tuples":[{"event":"canonical event/fact name",'
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:522:40
+    [1m[94m|[0m
+[1m[94m520 |[0m         ),
+[1m[94m521 |[0m         "",
+[1m[94m522 |[0m         "鑻ュ悓涓€浜嬪疄鍖呭惈涓変釜鍙婁互涓婅鑹诧紝鍙︾敤 hyper_tuples锛?,
+    [1m[94m|[0m                                                         [1m[91m^^[0m
+[1m[94m523 |[0m         (
+[1m[94m524 |[0m             '{"hyper_tuples":[{"event":"canonical event/fact name",'
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:537:12
+    [1m[94m|[0m
+[1m[94m535 |[0m         ),
+[1m[94m536 |[0m         "",
+[1m[94m537 |[0m         "瑙勫垯锛?,
+    [1m[94m|[0m              [1m[91m^^[0m
+[1m[94m538 |[0m         "- 鎶藉彇浜嬪疄锛屼笉瑕佹娊鍙栧璇濆姩浣滄湰韬€?,
+[1m[94m539 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:538:16
+    [1m[94m|[0m
+[1m[94m536 |[0m         "",
+[1m[94m537 |[0m         "瑙勫垯锛?,
+[1m[94m538 |[0m         "- 鎶藉彇浜嬪疄锛屼笉瑕佹娊鍙栧璇濆姩浣滄湰韬€?,
+    [1m[94m|[0m                    [1m[91m^^[0m
+[1m[94m539 |[0m         (
+[1m[94m540 |[0m             "- 涓嶈鎶藉彇 user asked/requested/said 绫?tuples锛岄櫎闈炴槸绋冲畾鐨勫亸濂姐€?
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:540:55
+    [1m[94m|[0m
+[1m[94m538 |[0m         "- 鎶藉彇浜嬪疄锛屼笉瑕佹娊鍙栧璇濆姩浣滄湰韬€?,
+[1m[94m539 |[0m         (
+[1m[94m540 |[0m             "- 涓嶈鎶藉彇 user asked/requested/said 绫?tuples锛岄櫎闈炴槸绋冲畾鐨勫亸濂姐€?
+    [1m[94m|[0m                                                            [1m[91m^^[0m
+[1m[94m541 |[0m             "鍐崇瓥銆佺害鏉熸垨鍙鐢ㄧ殑 Project 浜嬪疄銆?
+[1m[94m542 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:545:24
+    [1m[94m|[0m
+[1m[94m543 |[0m         "- 涓嶈缂栭€犳枃鏈湭鐩存帴鏀寔鐨勪簨瀹炪€?,
+[1m[94m544 |[0m         (
+[1m[94m545 |[0m             "- 浼樺厛鍏蜂綋鎶€鏈簨瀹烇細Tool銆丮odel銆丳rovider銆佺増鏈€丒rror銆佸師鍥犮€?
+    [1m[94m|[0m                                [1m[91m^^[0m
+[1m[94m546 |[0m             "config銆佹枃浠惰矾寰勩€佸喅绛栥€佷緷璧栥€?
+[1m[94m547 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛沗 (FULLWIDTH SEMICOLON). Did you mean `;` (SEMICOLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:548:32
+    [1m[94m|[0m
+[1m[94m546 |[0m             "config銆佹枃浠惰矾寰勩€佸喅绛栥€佷緷璧栥€?
+[1m[94m547 |[0m         ),
+[1m[94m548 |[0m         ("- 浣跨敤绋冲畾鐨?canonical 瀹炰綋鍚嶏紱閬垮厤妯＄硦涓昏 user/this/it/message锛岄櫎闈炴棤娉曢伩鍏嶃€?),
+    [1m[94m|[0m                                        [1m[91m^^[0m
+[1m[94m549 |[0m         ("- 鍔╂墜缁熶竴鐢ㄥ疄浣撳悕 ATRI锛涗笉瑕佸彟寤?Assistant銆丅ot銆佸姪鎵?绛夊疄浣撱€?),
+[1m[94m550 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:548:60
+    [1m[94m|[0m
+[1m[94m546 |[0m             "config銆佹枃浠惰矾寰勩€佸喅绛栥€佷緷璧栥€?
+[1m[94m547 |[0m         ),
+[1m[94m548 |[0m         ("- 浣跨敤绋冲畾鐨?canonical 瀹炰綋鍚嶏紱閬垮厤妯＄硦涓昏 user/this/it/message锛岄櫎闈炴棤娉曢伩鍏嶃€?),
+    [1m[94m|[0m                                                                           [1m[91m^^[0m
+[1m[94m549 |[0m         ("- 鍔╂墜缁熶竴鐢ㄥ疄浣撳悕 ATRI锛涗笉瑕佸彟寤?Assistant銆丅ot銆佸姪鎵?绛夊疄浣撱€?),
+[1m[94m550 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛沗 (FULLWIDTH SEMICOLON). Did you mean `;` (SEMICOLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:549:26
+    [1m[94m|[0m
+[1m[94m547 |[0m         ),
+[1m[94m548 |[0m         ("- 浣跨敤绋冲畾鐨?canonical 瀹炰綋鍚嶏紱閬垮厤妯＄硦涓昏 user/this/it/message锛岄櫎闈炴棤娉曢伩鍏嶃€?),
+[1m[94m549 |[0m         ("- 鍔╂墜缁熶竴鐢ㄥ疄浣撳悕 ATRI锛涗笉瑕佸彟寤?Assistant銆丅ot銆佸姪鎵?绛夊疄浣撱€?),
+    [1m[94m|[0m                                  [1m[91m^^[0m
+[1m[94m550 |[0m         (
+[1m[94m551 |[0m             "- predicate 灏介噺鐢?lower_snake_case 鑻辨枃锛歶ses, depends_on, "
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:551:49
+    [1m[94m|[0m
+[1m[94m549 |[0m         ("- 鍔╂墜缁熶竴鐢ㄥ疄浣撳悕 ATRI锛涗笉瑕佸彟寤?Assistant銆丅ot銆佸姪鎵?绛夊疄浣撱€?),
+[1m[94m550 |[0m         (
+[1m[94m551 |[0m             "- predicate 灏介噺鐢?lower_snake_case 鑻辨枃锛歶ses, depends_on, "
+    [1m[94m|[0m                                                      [1m[91m^^[0m
+[1m[94m552 |[0m             "configured_with, failed_because, caused_by, causes, fixed_by, prefers, "
+[1m[94m553 |[0m             "avoids, requires, constrained_by, has_trait, has_identity, has_style, "
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:556:17
+    [1m[94m|[0m
+[1m[94m554 |[0m             "located_at, belongs_to, supports, works_on, produces, has_version, runs_on銆?
+[1m[94m555 |[0m         ),
+[1m[94m556 |[0m         "- 鍚堝苟閲嶅椤癸紝淇濈暀鏈€鍏蜂綋鐗堟湰銆?,
+    [1m[94m|[0m                      [1m[91m^^[0m
+[1m[94m557 |[0m         (
+[1m[94m558 |[0m             "- 闈㈠悜妫€绱㈢殑杩炶竟锛氭枃鏈妸 Person 涓?Tool/Project 缁戝湪涓€璧锋椂锛?
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:558:23
+    [1m[94m|[0m
+[1m[94m556 |[0m         "- 鍚堝苟閲嶅椤癸紝淇濈暀鏈€鍏蜂綋鐗堟湰銆?,
+[1m[94m557 |[0m         (
+[1m[94m558 |[0m             "- 闈㈠悜妫€绱㈢殑杩炶竟锛氭枃鏈妸 Person 涓?Tool/Project 缁戝湪涓€璧锋椂锛?
+    [1m[94m|[0m                              [1m[91m^^[0m
+[1m[94m559 |[0m             "蹇呴』杈撳嚭 Person-[uses/works_on]->Tool/Project锛屼笉鑳藉彧鏈?Project->Tool銆?
+[1m[94m560 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:558:55
+    [1m[94m|[0m
+[1m[94m556 |[0m         "- 鍚堝苟閲嶅椤癸紝淇濈暀鏈€鍏蜂綋鐗堟湰銆?,
+[1m[94m557 |[0m         (
+[1m[94m558 |[0m             "- 闈㈠悜妫€绱㈢殑杩炶竟锛氭枃鏈妸 Person 涓?Tool/Project 缁戝湪涓€璧锋椂锛?
+    [1m[94m|[0m                                                                        [1m[91m^^[0m
+[1m[94m559 |[0m             "蹇呴』杈撳嚭 Person-[uses/works_on]->Tool/Project锛屼笉鑳藉彧鏈?Project->Tool銆?
+[1m[94m560 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:559:55
+    [1m[94m|[0m
+[1m[94m557 |[0m         (
+[1m[94m558 |[0m             "- 闈㈠悜妫€绱㈢殑杩炶竟锛氭枃鏈妸 Person 涓?Tool/Project 缁戝湪涓€璧锋椂锛?
+[1m[94m559 |[0m             "蹇呴』杈撳嚭 Person-[uses/works_on]->Tool/Project锛屼笉鑳藉彧鏈?Project->Tool銆?
+    [1m[94m|[0m                                                           [1m[91m^^[0m
+[1m[94m560 |[0m         ),
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:561:32
+    [1m[94m|[0m
+[1m[94m559 |[0m             "蹇呴』杈撳嚭 Person-[uses/works_on]->Tool/Project锛屼笉鑳藉彧鏈?Project->Tool銆?
+[1m[94m560 |[0m         ),
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+    [1m[94m|[0m                                          [1m[91m^^[0m
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:561:56
+    [1m[94m|[0m
+[1m[94m559 |[0m             "蹇呴』杈撳嚭 Person-[uses/works_on]->Tool/Project锛屼笉鑳藉彧鏈?Project->Tool銆?
+[1m[94m560 |[0m         ),
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+    [1m[94m|[0m                                                                          [1m[91m^^[0m
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:561:57
+    [1m[94m|[0m
+[1m[94m559 |[0m             "蹇呴』杈撳嚭 Person-[uses/works_on]->Tool/Project锛屼笉鑳藉彧鏈?Project->Tool銆?
+[1m[94m560 |[0m         ),
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+    [1m[94m|[0m                                                                            [1m[91m^^[0m
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:563:39
+    [1m[94m|[0m
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+    [1m[94m|[0m                                         [1m[91m^^[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:563:52
+    [1m[94m|[0m
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+    [1m[94m|[0m                                                           [1m[91m^^[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:563:73
+    [1m[94m|[0m
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+    [1m[94m|[0m                                                                                       [1m[91m^^[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛沗 (FULLWIDTH SEMICOLON). Did you mean `;` (SEMICOLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:563:74
+    [1m[94m|[0m
+[1m[94m561 |[0m         ("- 鎶婂師鏂囦腑鐨勬椿鍔ㄨ瘝鍐欏叆 evidence锛堝 閰嶄箰銆佸壀杈戙€乸odcast editing锛夛紝渚夸簬鍚庣画鏌ヨ鍖归厤銆?),
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+    [1m[94m|[0m                                                                                         [1m[91m^^[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:564:28
+    [1m[94m|[0m
+[1m[94m562 |[0m         (
+[1m[94m563 |[0m             "- 鏈?Person/Project/Tool 鏃讹紝閬垮厤瀛ょ珛 Concept锛堝 Music scoring銆侀厤涔愬伐浣滐級锛?
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+    [1m[94m|[0m                                     [1m[91m^^[0m
+[1m[94m565 |[0m         ),
+[1m[94m566 |[0m         ("- 璇磋瘽浜鸿嚜鎶ュ鍚嶏紙濡?鎴戝彨鏋楁櫄锛夋椂锛岀敤璇?Person 鍚嶏紱涓嶈鐢?User銆佺敤鎴?绛夋硾绉般€?),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:566:20
+    [1m[94m|[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+[1m[94m566 |[0m         ("- 璇磋瘽浜鸿嚜鎶ュ鍚嶏紙濡?鎴戝彨鏋楁櫄锛夋椂锛岀敤璇?Person 鍚嶏紱涓嶈鐢?User銆佺敤鎴?绛夋硾绉般€?),
+    [1m[94m|[0m                           [1m[91m^^[0m
+[1m[94m567 |[0m         ("- 鍚屼竴浜嬩欢缁戝畾澶氳鑹叉椂鐢?hyper_tuples锛屽苟鍐?chain 淇濈暀鍙绱㈣矾寰勩€?),
+[1m[94m568 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:566:27
+    [1m[94m|[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+[1m[94m566 |[0m         ("- 璇磋瘽浜鸿嚜鎶ュ鍚嶏紙濡?鎴戝彨鏋楁櫄锛夋椂锛岀敤璇?Person 鍚嶏紱涓嶈鐢?User銆佺敤鎴?绛夋硾绉般€?),
+    [1m[94m|[0m                                        [1m[91m^^[0m
+[1m[94m567 |[0m         ("- 鍚屼竴浜嬩欢缁戝畾澶氳鑹叉椂鐢?hyper_tuples锛屽苟鍐?chain 淇濈暀鍙绱㈣矾寰勩€?),
+[1m[94m568 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:566:29
+    [1m[94m|[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+[1m[94m566 |[0m         ("- 璇磋瘽浜鸿嚜鎶ュ鍚嶏紙濡?鎴戝彨鏋楁櫄锛夋椂锛岀敤璇?Person 鍚嶏紱涓嶈鐢?User銆佺敤鎴?绛夋硾绉般€?),
+    [1m[94m|[0m                                            [1m[91m^^[0m
+[1m[94m567 |[0m         ("- 鍚屼竴浜嬩欢缁戝畾澶氳鑹叉椂鐢?hyper_tuples锛屽苟鍐?chain 淇濈暀鍙绱㈣矾寰勩€?),
+[1m[94m568 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛沗 (FULLWIDTH SEMICOLON). Did you mean `;` (SEMICOLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:566:41
+    [1m[94m|[0m
+[1m[94m564 |[0m             "鑻ユ枃鏈鏄庝簡璋佸湪鐢?Tool锛屼笉瑕佹妸 Tool 鍙寕鍦?Project 涓娿€?
+[1m[94m565 |[0m         ),
+[1m[94m566 |[0m         ("- 璇磋瘽浜鸿嚜鎶ュ鍚嶏紙濡?鎴戝彨鏋楁櫄锛夋椂锛岀敤璇?Person 鍚嶏紱涓嶈鐢?User銆佺敤鎴?绛夋硾绉般€?),
+    [1m[94m|[0m                                                            [1m[91m^^[0m
+[1m[94m567 |[0m         ("- 鍚屼竴浜嬩欢缁戝畾澶氳鑹叉椂鐢?hyper_tuples锛屽苟鍐?chain 淇濈暀鍙绱㈣矾寰勩€?),
+[1m[94m568 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:567:37
+    [1m[94m|[0m
+[1m[94m565 |[0m         ),
+[1m[94m566 |[0m         ("- 璇磋瘽浜鸿嚜鎶ュ鍚嶏紙濡?鎴戝彨鏋楁櫄锛夋椂锛岀敤璇?Person 鍚嶏紱涓嶈鐢?User銆佺敤鎴?绛夋硾绉般€?),
+[1m[94m567 |[0m         ("- 鍚屼竴浜嬩欢缁戝畾澶氳鑹叉椂鐢?hyper_tuples锛屽苟鍐?chain 淇濈暀鍙绱㈣矾寰勩€?),
+    [1m[94m|[0m                                                [1m[91m^^[0m
+[1m[94m568 |[0m         (
+[1m[94m569 |[0m             "- Person銆丳roject銆乀ool 鍚屽彞鍑虹幇鏃讹紝浼樺厛 hyper_tuple 閾?"
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:569:41
+    [1m[94m|[0m
+[1m[94m567 |[0m         ("- 鍚屼竴浜嬩欢缁戝畾澶氳鑹叉椂鐢?hyper_tuples锛屽苟鍐?chain 淇濈暀鍙绱㈣矾寰勩€?),
+[1m[94m568 |[0m         (
+[1m[94m569 |[0m             "- Person銆丳roject銆乀ool 鍚屽彞鍑虹幇鏃讹紝浼樺厛 hyper_tuple 閾?"
+    [1m[94m|[0m                                                [1m[91m^^[0m
+[1m[94m570 |[0m             "actor->project->tool锛堜互鍙?actor->tool锛夛紝閬垮厤鏂紑鐨?tuples銆?
+[1m[94m571 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:570:34
+    [1m[94m|[0m
+[1m[94m568 |[0m         (
+[1m[94m569 |[0m             "- Person銆丳roject銆乀ool 鍚屽彞鍑虹幇鏃讹紝浼樺厛 hyper_tuple 閾?"
+[1m[94m570 |[0m             "actor->project->tool锛堜互鍙?actor->tool锛夛紝閬垮厤鏂紑鐨?tuples銆?
+    [1m[94m|[0m                                  [1m[91m^^[0m
+[1m[94m571 |[0m         ),
+[1m[94m572 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:570:49
+    [1m[94m|[0m
+[1m[94m568 |[0m         (
+[1m[94m569 |[0m             "- Person銆丳roject銆乀ool 鍚屽彞鍑虹幇鏃讹紝浼樺厛 hyper_tuple 閾?"
+[1m[94m570 |[0m             "actor->project->tool锛堜互鍙?actor->tool锛夛紝閬垮厤鏂紑鐨?tuples銆?
+    [1m[94m|[0m                                                    [1m[91m^^[0m
+[1m[94m571 |[0m         ),
+[1m[94m572 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:570:50
+    [1m[94m|[0m
+[1m[94m568 |[0m         (
+[1m[94m569 |[0m             "- Person銆丳roject銆乀ool 鍚屽彞鍑虹幇鏃讹紝浼樺厛 hyper_tuple 閾?"
+[1m[94m570 |[0m             "actor->project->tool锛堜互鍙?actor->tool锛夛紝閬垮厤鏂紑鐨?tuples銆?
+    [1m[94m|[0m                                                      [1m[91m^^[0m
+[1m[94m571 |[0m         ),
+[1m[94m572 |[0m         (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:573:39
+    [1m[94m|[0m
+[1m[94m571 |[0m         ),
+[1m[94m572 |[0m         (
+[1m[94m573 |[0m             "- hyper_tuple 鏃犳槑鏄?chain 鏃讹紝鎸?actor/cause/source 鈫?"
+    [1m[94m|[0m                                           [1m[91m^^[0m
+[1m[94m574 |[0m             "provider/tool/model/config/file/library/project/target/purpose/result 鎺掑簭銆?
+[1m[94m575 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛沗 (FULLWIDTH SEMICOLON). Did you mean `;` (SEMICOLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:577:53
+    [1m[94m|[0m
+[1m[94m575 |[0m         ),
+[1m[94m576 |[0m         (
+[1m[94m577 |[0m             f"- hyper_tuples 鏈€澶?{MAX_HYPER_TUPLES} 鏉★紱姣忔潯鏈€澶?{MAX_HYPER_ROLES} 涓?role銆?
+    [1m[94m|[0m                                                        [1m[91m^^[0m
+[1m[94m578 |[0m             f"鏈€澶?{MAX_HYPER_CHAIN_EDGES} 鏉?chain 杈广€?
+[1m[94m579 |[0m         ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:580:32
+    [1m[94m|[0m
+[1m[94m578 |[0m             f"鏈€澶?{MAX_HYPER_CHAIN_EDGES} 鏉?chain 杈广€?
+[1m[94m579 |[0m         ),
+[1m[94m580 |[0m         "- 璺宠繃鏃堕棿鎴炽€佽亰澶╁厓鏁版嵁銆両D銆佺函鏁板瓧瀹炰綋锛堥櫎闈炲繀涓嶅彲灏戯級銆?,
+    [1m[94m|[0m                                                  [1m[91m^^[0m
+[1m[94m581 |[0m         '- 鑻ユ棤鏈夌敤浜嬪疄锛岃繑鍥?{"tuples":[]}銆?,
+[1m[94m582 |[0m         "- 鏈€澶氳緭鍑?12 鏉℃渶鏈夌敤鐨?tuples銆?,
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:580:39
+    [1m[94m|[0m
+[1m[94m578 |[0m             f"鏈€澶?{MAX_HYPER_CHAIN_EDGES} 鏉?chain 杈广€?
+[1m[94m579 |[0m         ),
+[1m[94m580 |[0m         "- 璺宠繃鏃堕棿鎴炽€佽亰澶╁厓鏁版嵁銆両D銆佺函鏁板瓧瀹炰綋锛堥櫎闈炲繀涓嶅彲灏戯級銆?,
+    [1m[94m|[0m                                                                [1m[91m^^[0m
+[1m[94m581 |[0m         '- 鑻ユ棤鏈夌敤浜嬪疄锛岃繑鍥?{"tuples":[]}銆?,
+[1m[94m582 |[0m         "- 鏈€澶氳緭鍑?12 鏉℃渶鏈夌敤鐨?tuples銆?,
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:581:18
+    [1m[94m|[0m
+[1m[94m579 |[0m         ),
+[1m[94m580 |[0m         "- 璺宠繃鏃堕棿鎴炽€佽亰澶╁厓鏁版嵁銆両D銆佺函鏁板瓧瀹炰綋锛堥櫎闈炲繀涓嶅彲灏戯級銆?,
+[1m[94m581 |[0m         '- 鑻ユ棤鏈夌敤浜嬪疄锛岃繑鍥?{"tuples":[]}銆?,
+    [1m[94m|[0m                        [1m[91m^^[0m
+[1m[94m582 |[0m         "- 鏈€澶氳緭鍑?12 鏉℃渶鏈夌敤鐨?tuples銆?,
+[1m[94m583 |[0m         "- Tool/Model/Library/File 绛変笓鏈夊悕璇嶄繚鎸佽嫳鏂囧師鏂囷紙濡?Ableton Live銆丯eo4j銆乧onfig.yaml锛夈€?,
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:583:47
+    [1m[94m|[0m
+[1m[94m581 |[0m         '- 鑻ユ棤鏈夌敤浜嬪疄锛岃繑鍥?{"tuples":[]}銆?,
+[1m[94m582 |[0m         "- 鏈€澶氳緭鍑?12 鏉℃渶鏈夌敤鐨?tuples銆?,
+[1m[94m583 |[0m         "- Tool/Model/Library/File 绛変笓鏈夊悕璇嶄繚鎸佽嫳鏂囧師鏂囷紙濡?Ableton Live銆丯eo4j銆乧onfig.yaml锛夈€?,
+    [1m[94m|[0m                                                          [1m[91m^^[0m
+[1m[94m584 |[0m     ]
+[1m[94m585 |[0m     if str(source_kind or "").lower() == "chat":
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:583:80
+    [1m[94m|[0m
+[1m[94m581 |[0m         '- 鑻ユ棤鏈夌敤浜嬪疄锛岃繑鍥?{"tuples":[]}銆?,
+[1m[94m582 |[0m         "- 鏈€澶氳緭鍑?12 鏉℃渶鏈夌敤鐨?tuples銆?,
+[1m[94m583 |[0m         "- Tool/Model/Library/File 绛変笓鏈夊悕璇嶄繚鎸佽嫳鏂囧師鏂囷紙濡?Ableton Live銆丯eo4j銆乧onfig.yaml锛夈€?,
+    [1m[94m|[0m                                                                                               [1m[91m^^[0m
+[1m[94m584 |[0m     ]
+[1m[94m585 |[0m     if str(source_kind or "").lower() == "chat":
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:589:28
+    [1m[94m|[0m
+[1m[94m587 |[0m             [
+[1m[94m588 |[0m                 "",
+[1m[94m589 |[0m                 "閽堝 chat 鏂囨湰锛?,
+    [1m[94m|[0m                                [1m[91m^^[0m
+[1m[94m590 |[0m                 ("- 淇濈暀绋冲畾鐢ㄦ埛鍋忓ソ銆丳roject 鍐崇瓥銆佸弽澶嶅嚭鐜扮殑 Error銆乀ool 琛屼负涓庣幆澧冧簨瀹炪€?),
+[1m[94m591 |[0m                 (
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:592:39
+    [1m[94m|[0m
+[1m[94m590 |[0m                 ("- 淇濈暀绋冲畾鐢ㄦ埛鍋忓ソ銆丳roject 鍐崇瓥銆佸弽澶嶅嚭鐜扮殑 Error銆乀ool 琛屼负涓庣幆澧冧簨瀹炪€?),
+[1m[94m591 |[0m                 (
+[1m[94m592 |[0m                     "- 鑻ヨ亰澶╁啓鏄庢煇浜虹敤鏌愯蒋浠跺仛鏌愭椿鍔紝蹇呴』鎶?Person-[uses]->Tool锛?
+    [1m[94m|[0m                                                      [1m[91m^^[0m
+[1m[94m593 |[0m                     "evidence 鍐欐槑娲诲姩锛涘嵆浣垮悓涓€ Tool 涔熸寕鍦?Project 涓娿€?
+[1m[94m594 |[0m                 ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:592:63
+    [1m[94m|[0m
+[1m[94m590 |[0m                 ("- 淇濈暀绋冲畾鐢ㄦ埛鍋忓ソ銆丳roject 鍐崇瓥銆佸弽澶嶅嚭鐜扮殑 Error銆乀ool 琛屼负涓庣幆澧冧簨瀹炪€?),
+[1m[94m591 |[0m                 (
+[1m[94m592 |[0m                     "- 鑻ヨ亰澶╁啓鏄庢煇浜虹敤鏌愯蒋浠跺仛鏌愭椿鍔紝蹇呴』鎶?Person-[uses]->Tool锛?
+    [1m[94m|[0m                                                                                  [1m[91m^^[0m
+[1m[94m593 |[0m                     "evidence 鍐欐槑娲诲姩锛涘嵆浣垮悓涓€ Tool 涔熸寕鍦?Project 涓娿€?
+[1m[94m594 |[0m                 ),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛沗 (FULLWIDTH SEMICOLON). Did you mean `;` (SEMICOLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:593:35
+    [1m[94m|[0m
+[1m[94m591 |[0m                 (
+[1m[94m592 |[0m                     "- 鑻ヨ亰澶╁啓鏄庢煇浜虹敤鏌愯蒋浠跺仛鏌愭椿鍔紝蹇呴』鎶?Person-[uses]->Tool锛?
+[1m[94m593 |[0m                     "evidence 鍐欐槑娲诲姩锛涘嵆浣垮悓涓€ Tool 涔熸寕鍦?Project 涓娿€?
+    [1m[94m|[0m                                       [1m[91m^^[0m
+[1m[94m594 |[0m                 ),
+[1m[94m595 |[0m                 ("- 绀轰緥淇濈暀锛氭灄鏅?-[uses]-> Ableton Live (evidence: 鏋楁櫄鐢?Ableton 鍋氶厤涔?銆?),
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:595:25
+    [1m[94m|[0m
+[1m[94m593 |[0m                     "evidence 鍐欐槑娲诲姩锛涘嵆浣垮悓涓€ Tool 涔熸寕鍦?Project 涓娿€?
+[1m[94m594 |[0m                 ),
+[1m[94m595 |[0m                 ("- 绀轰緥淇濈暀锛氭灄鏅?-[uses]-> Ableton Live (evidence: 鏋楁櫄鐢?Ableton 鍋氶厤涔?銆?),
+    [1m[94m|[0m                             [1m[91m^^[0m
+[1m[94m596 |[0m                 "- 璺宠繃涓€娆℃€ц姹傘€侀棶鍊欍€佷换鍔℃帾杈炰笌鎯呯华濉厖銆?,
+[1m[94m597 |[0m                 "- 绀轰緥璺宠繃锛歎ser -[requested]-> screenshot銆?,
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:597:24
+    [1m[94m|[0m
+[1m[94m595 |[0m                 ("- 绀轰緥淇濈暀锛氭灄鏅?-[uses]-> Ableton Live (evidence: 鏋楁櫄鐢?Ableton 鍋氶厤涔?銆?),
+[1m[94m596 |[0m                 "- 璺宠繃涓€娆℃€ц姹傘€侀棶鍊欍€佷换鍔℃帾杈炰笌鎯呯华濉厖銆?,
+[1m[94m597 |[0m                 "- 绀轰緥璺宠繃锛歎ser -[requested]-> screenshot銆?,
+    [1m[94m|[0m                            [1m[91m^^[0m
+[1m[94m598 |[0m                 "- 绀轰緥淇濈暀锛欰TRI screenshot tool -[failed_because]-> permission_denied銆?,
+[1m[94m599 |[0m             ]
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛歚 (FULLWIDTH COLON). Did you mean `:` (COLON)?[0m
+   [1m[94m-->[0m core\knowledge\extraction.py:598:24
+    [1m[94m|[0m
+[1m[94m596 |[0m                 "- 璺宠繃涓€娆℃€ц姹傘€侀棶鍊欍€佷换鍔℃帾杈炰笌鎯呯华濉厖銆?,
+[1m[94m597 |[0m                 "- 绀轰緥璺宠繃锛歎ser -[requested]-> screenshot銆?,
+[1m[94m598 |[0m                 "- 绀轰緥淇濈暀锛欰TRI screenshot tool -[failed_because]-> permission_denied銆?,
+    [1m[94m|[0m                            [1m[91m^^[0m
+[1m[94m599 |[0m             ]
+[1m[94m600 |[0m         )
+    [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:22:17
+   [1m[94m|[0m
+[1m[94m21 |[0m GRAPH_CONTEXT_GUIDANCE = (
+[1m[94m22 |[0m     "浠ヤ笅涓烘绱㈠埌鐨勯暱鏈熻蹇嗭紙鎸夊叧閿瘝鍖归厤鐨勫瓙鍥撅紝鍙兘涓嶅畬鏁达級銆?
+   [1m[94m|[0m                            [1m[91m^^[0m
+[1m[94m23 |[0m     "姣忚鏍煎紡涓?Subject -[predicate]-> Object锛屾嫭鍙峰唴涓?evidence銆?
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:22:27
+   [1m[94m|[0m
+[1m[94m21 |[0m GRAPH_CONTEXT_GUIDANCE = (
+[1m[94m22 |[0m     "浠ヤ笅涓烘绱㈠埌鐨勯暱鏈熻蹇嗭紙鎸夊叧閿瘝鍖归厤鐨勫瓙鍥撅紝鍙兘涓嶅畬鏁达級銆?
+   [1m[94m|[0m                                                [1m[91m^^[0m
+[1m[94m23 |[0m     "姣忚鏍煎紡涓?Subject -[predicate]-> Object锛屾嫭鍙峰唴涓?evidence銆?
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:22:33
+   [1m[94m|[0m
+[1m[94m21 |[0m GRAPH_CONTEXT_GUIDANCE = (
+[1m[94m22 |[0m     "浠ヤ笅涓烘绱㈠埌鐨勯暱鏈熻蹇嗭紙鎸夊叧閿瘝鍖归厤鐨勫瓙鍥撅紝鍙兘涓嶅畬鏁达級銆?
+   [1m[94m|[0m                                                            [1m[91m^^[0m
+[1m[94m23 |[0m     "姣忚鏍煎紡涓?Subject -[predicate]-> Object锛屾嫭鍙峰唴涓?evidence銆?
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛宍 (FULLWIDTH COMMA). Did you mean `,` (COMMA)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:23:41
+   [1m[94m|[0m
+[1m[94m21 |[0m GRAPH_CONTEXT_GUIDANCE = (
+[1m[94m22 |[0m     "浠ヤ笅涓烘绱㈠埌鐨勯暱鏈熻蹇嗭紙鎸夊叧閿瘝鍖归厤鐨勫瓙鍥撅紝鍙兘涓嶅畬鏁达級銆?
+[1m[94m23 |[0m     "姣忚鏍煎紡涓?Subject -[predicate]-> Object锛屾嫭鍙峰唴涓?evidence銆?
+   [1m[94m|[0m                                              [1m[91m^^[0m
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+[1m[94m25 |[0m     "鑻ヨ繖浜涗簨瀹炶兘鍥炵瓟闂鍒欐嵁姝や綔绛旓紱浠呭綋纭疄娌℃湁鐩稿叧鍐呭鏃舵墠璇存槑鏈煡銆?
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:24:15
+   [1m[94m|[0m
+[1m[94m22 |[0m     "浠ヤ笅涓烘绱㈠埌鐨勯暱鏈熻蹇嗭紙鎸夊叧閿瘝鍖归厤鐨勫瓙鍥撅紝鍙兘涓嶅畬鏁达級銆?
+[1m[94m23 |[0m     "姣忚鏍煎紡涓?Subject -[predicate]-> Object锛屾嫭鍙峰唴涓?evidence銆?
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+   [1m[94m|[0m                        [1m[91m^^[0m
+[1m[94m25 |[0m     "鑻ヨ繖浜涗簨瀹炶兘鍥炵瓟闂鍒欐嵁姝や綔绛旓紱浠呭綋纭疄娌℃湁鐩稿叧鍐呭鏃舵墠璇存槑鏈煡銆?
+[1m[94m26 |[0m     "涓撴湁鍚嶈瘝銆乀ool/Project 鍚嶇О銆乸redicate 淇濇寔鍘熸枃锛堥€氬父涓鸿嫳鏂囷級銆?
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:24:48
+   [1m[94m|[0m
+[1m[94m22 |[0m     "浠ヤ笅涓烘绱㈠埌鐨勯暱鏈熻蹇嗭紙鎸夊叧閿瘝鍖归厤鐨勫瓙鍥撅紝鍙兘涓嶅畬鏁达級銆?
+[1m[94m23 |[0m     "姣忚鏍煎紡涓?Subject -[predicate]-> Object锛屾嫭鍙峰唴涓?evidence銆?
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+   [1m[94m|[0m                                                             [1m[91m^^[0m
+[1m[94m25 |[0m     "鑻ヨ繖浜涗簨瀹炶兘鍥炵瓟闂鍒欐嵁姝や綔绛旓紱浠呭綋纭疄娌℃湁鐩稿叧鍐呭鏃舵墠璇存槑鏈煡銆?
+[1m[94m26 |[0m     "涓撴湁鍚嶈瘝銆乀ool/Project 鍚嶇О銆乸redicate 淇濇寔鍘熸枃锛堥€氬父涓鸿嫳鏂囷級銆?
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛沗 (FULLWIDTH SEMICOLON). Did you mean `;` (SEMICOLON)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:25:21
+   [1m[94m|[0m
+[1m[94m23 |[0m     "姣忚鏍煎紡涓?Subject -[predicate]-> Object锛屾嫭鍙峰唴涓?evidence銆?
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+[1m[94m25 |[0m     "鑻ヨ繖浜涗簨瀹炶兘鍥炵瓟闂鍒欐嵁姝や綔绛旓紱浠呭綋纭疄娌℃湁鐩稿叧鍐呭鏃舵墠璇存槑鏈煡銆?
+   [1m[94m|[0m                                    [1m[91m^^[0m
+[1m[94m26 |[0m     "涓撴湁鍚嶈瘝銆乀ool/Project 鍚嶇О銆乸redicate 淇濇寔鍘熸枃锛堥€氬父涓鸿嫳鏂囷級銆?
+[1m[94m27 |[0m )
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛坄 (FULLWIDTH LEFT PARENTHESIS). Did you mean `(` (LEFT PARENTHESIS)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:26:41
+   [1m[94m|[0m
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+[1m[94m25 |[0m     "鑻ヨ繖浜涗簨瀹炶兘鍥炵瓟闂鍒欐嵁姝や綔绛旓紱浠呭綋纭疄娌℃湁鐩稿叧鍐呭鏃舵墠璇存槑鏈煡銆?
+[1m[94m26 |[0m     "涓撴湁鍚嶈瘝銆乀ool/Project 鍚嶇О銆乸redicate 淇濇寔鍘熸枃锛堥€氬父涓鸿嫳鏂囷級銆?
+   [1m[94m|[0m                                                     [1m[91m^^[0m
+[1m[94m27 |[0m )
+   [1m[94m|[0m
+
+[1m[91mRUF001 [0m[1mString contains ambiguous `锛塦 (FULLWIDTH RIGHT PARENTHESIS). Did you mean `)` (RIGHT PARENTHESIS)?[0m
+  [1m[94m-->[0m core\knowledge\graph_constants.py:26:47
+   [1m[94m|[0m
+[1m[94m24 |[0m     "鍙法璺充覆鑱旂浉鍏充簨瀹烇紙渚嬪 Person鈫扨roject 涓?Project鈫扵ool锛夈€?
+[1m[94m25 |[0m     "鑻ヨ繖浜涗簨瀹炶兘鍥炵瓟闂鍒欐嵁姝や綔绛旓紱浠呭綋纭疄娌℃湁鐩稿叧鍐呭鏃舵墠璇存槑鏈煡銆?
+[1m[94m26 |[0m     "涓撴湁鍚嶈瘝銆乀ool/Project 鍚嶇О銆乸redicate 淇濇寔鍘熸枃锛堥€氬父涓鸿嫳鏂囷級銆?
+   [1m[94m|[0m                                                                 [1m[91m^^[0m
+[1m[94m27 |[0m )
+   [1m[94m|[0m
+
+Found 60 errors.

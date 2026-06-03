@@ -39,6 +39,7 @@ class FakeGraphManager:
         max_facts=8,
         retrieval_depth=1,
         ranking_policy="hybrid",
+        expansion_candidate_limit=40,
     ):
         self.retrieve_calls.append(
             {
@@ -47,6 +48,7 @@ class FakeGraphManager:
                 "max_facts": max_facts,
                 "retrieval_depth": retrieval_depth,
                 "ranking_policy": ranking_policy,
+                "expansion_candidate_limit": expansion_candidate_limit,
             }
         )
         return self.context_text
@@ -78,6 +80,7 @@ def test_normalize_config_adds_knowledge_defaults():
             "retrieval_enabled": True,
             "retrieval_depth": 1,
             "max_facts": 8,
+            "expansion_candidate_limit": 40,
             "ranking_policy": "hybrid",
             "queue_max_size": 1000,
         },
@@ -125,6 +128,7 @@ async def test_process_stage_appends_graph_context_without_replacing_vector_cont
             "retrieval_enabled": True,
             "retrieval_depth": 2,
             "max_facts": 2,
+            "expansion_candidate_limit": 64,
         },
     }
     stage.knowledge_manager = FakeKnowledgeManager()
@@ -145,6 +149,7 @@ async def test_process_stage_appends_graph_context_without_replacing_vector_cont
             "max_facts": 2,
             "retrieval_depth": 2,
             "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 64,
         }
     ]
 
@@ -185,6 +190,7 @@ async def test_process_stage_injects_graph_context_when_vector_knowledge_is_disa
             "max_facts": 2,
             "retrieval_depth": 2,
             "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 40,
         }
     ]
 
