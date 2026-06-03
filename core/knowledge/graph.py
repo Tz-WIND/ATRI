@@ -683,7 +683,7 @@ def _format_retrieved_fact_lines(
 
 
 def _retrieved_fact_tree(entries: list[dict[str, Any]]) -> dict[str, Any]:
-    nodes = [{"children": []} for _ in entries]
+    nodes: list[dict[str, list[int]]] = [{"children": []} for _ in entries]
     parent_indexes_by_object: dict[tuple[int, str], list[int]] = {}
     for index, entry in enumerate(entries):
         hop = _retrieval_depth(entry.get("hop", 1))
