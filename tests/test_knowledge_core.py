@@ -294,7 +294,9 @@ async def test_knowledge_manager_repairs_empty_kb_dimensions_on_import(tmp_path)
         }
     )
 
-    task = await manager.import_document(kb["kb_id"], file_name="notes.txt", content="sqlite python")
+    task = await manager.import_document(
+        kb["kb_id"], file_name="notes.txt", content="sqlite python"
+    )
     refreshed = await manager.get_knowledge_base(kb["kb_id"])
 
     assert task["status"] == "completed"

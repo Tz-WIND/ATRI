@@ -75,7 +75,7 @@ def test_chain_order_separator_is_shared_and_parameterized_in_cypher():
     assert "split(chain_order_keys[0], $chain_order_separator)" in graph_source
     assert "split(right_key, $chain_order_separator)" in graph_source
     assert 8 <= GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS <= 10
-    assert f"timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS" in graph_source
+    assert "timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS" in graph_source
 
 
 def test_normalize_extracted_facts_filters_and_deduplicates_graph_tuples():
