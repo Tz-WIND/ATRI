@@ -8,6 +8,8 @@ import re
 from hashlib import sha256
 from typing import Any, Protocol
 
+from core import logger
+from core.agent.context import estimate_tokens
 from core.knowledge.graph_constants import (
     ASSISTANT_CANONICAL_NAME,
     ASSISTANT_CANONICAL_TYPE,
@@ -399,14 +401,28 @@ class GraphTupleExtractor:
         if not cleaned:
             return []
         llm = self.llm_factory()
+        user_content = cleaned[:12000]
         messages = [
             {
                 "role": "system",
                 "content": build_extraction_prompt(source_kind),
             },
-            {"role": "user", "content": cleaned[:12000]},
+            {"role": "user", "content": user_content},
         ]
         response = await asyncio.to_thread(lambda: llm.chat(messages, stream=False))
+        prompt_tokens = _response_int_attr(response, "prompt_tokens")
+        completion_tokens = _response_int_attr(response, "completion_tokens")
+        logger.info(
+            "Graph extraction token usage: source_kind=%s source_id=%s input_chars=%s "
+            "estimated_prompt_tokens=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+            source_kind,
+            source_id,
+            len(user_content),
+            estimate_tokens(messages),
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+        )
         content = _extraction_response_text(response)
         payload = parse_extraction_json(content)
         return normalize_extracted_facts(
@@ -416,6 +432,13 @@ class GraphTupleExtractor:
             default_evidence=cleaned[:500],
             metadata=metadata,
         )
+
+
+def _response_int_attr(response: Any, name: str) -> int:
+    try:
+        return int(getattr(response, name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _extraction_response_text(response: Any) -> str:

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any, cast
 
@@ -759,6 +760,43 @@ async def test_graph_tuple_extractor_parses_reasoning_json_when_content_is_empty
     assert facts[0]["subject"] == "User"
     assert facts[0]["predicate"] == "commutes_by"
     assert facts[0]["object"] == "bike"
+
+
+@pytest.mark.asyncio
+async def test_graph_tuple_extractor_logs_token_usage_to_console(caplog):
+    class FakeLLM:
+        def chat(self, messages, stream=False):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": (
+                        '{"tuples":[{"subject":"Alice","subject_type":"Person",'
+                        '"predicate":"works_at","object":"Acme",'
+                        '"object_type":"Company","evidence":"Alice works at Acme.",'
+                        '"confidence":0.9}]}'
+                    ),
+                    "prompt_tokens": 123,
+                    "completion_tokens": 45,
+                },
+            )()
+
+    caplog.set_level(logging.INFO, logger="atri")
+    extractor = GraphTupleExtractor(lambda: FakeLLM())
+
+    facts = await extractor.extract_facts(
+        "Alice works at Acme.",
+        source_id="chunk-token-log",
+        source_kind="document",
+    )
+
+    assert len(facts) == 1
+    assert "Graph extraction token usage" in caplog.text
+    assert "source_kind=document" in caplog.text
+    assert "source_id=chunk-token-log" in caplog.text
+    assert "prompt_tokens=123" in caplog.text
+    assert "completion_tokens=45" in caplog.text
+    assert "total_tokens=168" in caplog.text
 
 
 def test_chat_turn_text_does_not_include_runtime_timestamp():
