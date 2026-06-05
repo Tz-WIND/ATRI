@@ -9,9 +9,9 @@ from typing import Any
 
 from core import logger
 from core.agent.llm import LLM
+from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.extraction import GraphTupleExtractor
 from core.knowledge.graph import Neo4jGraphClient
-from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.graph_constants import (
     GRAPH_EXTRACTION_BATCH_CHARS,
     GRAPH_EXTRACTION_BATCH_OVERLAP_CHARS,
