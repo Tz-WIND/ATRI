@@ -11,10 +11,16 @@ from core import logger
 from core.agent.llm import LLM
 from core.knowledge.extraction import GraphTupleExtractor
 from core.knowledge.graph import Neo4jGraphClient
-from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
+from core.knowledge.chunking import RecursiveTextChunker
+from core.knowledge.graph_constants import (
+    GRAPH_EXTRACTION_BATCH_CHARS,
+    GRAPH_EXTRACTION_BATCH_OVERLAP_CHARS,
+    GRAPH_EXTRACTION_SEMANTIC_CHUNK_CHARS,
+    GRAPH_EXTRACTION_SEMANTIC_CHUNK_OVERLAP_CHARS,
+    GRAPH_RETRIEVAL_MAX_DEPTH,
+)
 from core.runtime import TaskStore
 
-_DOCUMENT_EXTRACTION_BATCH_CHARS = 10_000
 _EXTRACTION_MAX_ATTEMPTS = 3
 _GRAPH_EXTRACTION_DEFAULT_MAX_TOKENS = 4096
 
@@ -168,6 +174,39 @@ class GraphKnowledgeManager:
         )
         return self._put_job(task_id, job)
 
+    def enqueue_manual_ingest(self, *, text: str, source_name: str = "manual.txt") -> str | None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            raise ValueError("content is required")
+        if not self._can_enqueue(
+            "manual",
+            require_extraction_enabled=False,
+            require_source_enabled=False,
+        ):
+            return None
+        clean_source_name = str(source_name or "").strip() or "manual.txt"
+        task_id = self.task_store.create_task(
+            kind="graph_extraction",
+            title=f"Manual graph ingest: {clean_source_name}",
+            input_text=cleaned,
+            metadata={
+                "source": "manual",
+                "source_name": clean_source_name,
+            },
+        )
+        source_id = f"manual:{task_id}"
+        job = GraphExtractionJob(
+            task_id=task_id,
+            source_kind="document",
+            text=cleaned,
+            metadata={
+                "source": "manual",
+                "source_name": clean_source_name,
+                "source_id": source_id,
+            },
+        )
+        return self._put_job(task_id, job)
+
     async def retrieve_context(
         self,
         *,
@@ -205,10 +244,18 @@ class GraphKnowledgeManager:
             logger.warning("Graph knowledge retrieval skipped: %s", e)
             return ""
 
-    def _can_enqueue(self, source: str) -> bool:
+    def _can_enqueue(
+        self,
+        source: str,
+        *,
+        require_extraction_enabled: bool = True,
+        require_source_enabled: bool = True,
+    ) -> bool:
         if self._closing or self.queue is None:
             return False
-        if not self.graph_config.get("enabled") or not self.graph_config.get(
+        if not self.graph_config.get("enabled"):
+            return False
+        if require_extraction_enabled and not self.graph_config.get(
             "extraction_enabled",
             True,
         ):
@@ -216,7 +263,7 @@ class GraphKnowledgeManager:
         if int(self.graph_config.get("queue_max_size") or 0) < 1:
             return False
         sources = self.graph_config.get("extraction_sources", ["documents", "chat"])
-        if source not in sources:
+        if require_source_enabled and source not in sources:
             return False
         return not self.queue.full()
 
@@ -273,7 +320,7 @@ class GraphKnowledgeManager:
         try:
             facts = []
             failed_extractions = []
-            if job.source_kind == "document":
+            if job.source_kind == "document" and job.chunks:
                 for batch in _document_extraction_batches(job.chunks, job.task_id):
                     chunk_ids = [item["chunk_id"] for item in batch]
                     source_id = chunk_ids[0]
@@ -284,29 +331,31 @@ class GraphKnowledgeManager:
                         "source_ids": chunk_ids,
                         "chunk_count": len(chunk_ids),
                     }
-                    extracted, error = await self._extract_facts_with_retries(
-                        task_id=job.task_id,
+                    batch_facts, batch_failed = await self._extract_segmented_text(
+                        job=job,
                         text=_document_batch_text(batch),
                         source_id=source_id,
                         source_kind=job.source_kind,
                         metadata=metadata,
                     )
-                    if error:
-                        failed_extractions.append({"source_id": source_id, "error": error})
-                        continue
-                    facts.extend(extracted)
+                    facts.extend(batch_facts)
+                    failed_extractions.extend(batch_failed)
             else:
-                facts, error = await self._extract_facts_with_retries(
-                    task_id=job.task_id,
+                source_id = (
+                    _chat_source_id(job.metadata)
+                    if job.source_kind == "chat"
+                    else str(job.metadata.get("source_id") or f"{job.source_kind}:{job.task_id}")
+                )
+                batch_facts, batch_failed = await self._extract_segmented_text(
+                    job=job,
                     text=job.text,
-                    source_id=_chat_source_id(job.metadata),
+                    source_id=source_id,
                     source_kind=job.source_kind,
                     metadata=job.metadata,
+                    semantic_chunking=True,
                 )
-                if error:
-                    failed_extractions.append(
-                        {"source_id": _chat_source_id(job.metadata), "error": error}
-                    )
+                facts.extend(batch_facts)
+                failed_extractions.extend(batch_failed)
             written = await asyncio.to_thread(self.graph_client.upsert_facts, facts)
             result = f"extracted {len(facts)} facts; wrote {written}"
             if failed_extractions:
@@ -324,6 +373,39 @@ class GraphKnowledgeManager:
         except Exception as e:
             logger.warning("Graph extraction failed: %s", e)
             self.task_store.finish_task(job.task_id, status="failed", error=str(e))
+
+    async def _extract_segmented_text(
+        self,
+        *,
+        job: GraphExtractionJob,
+        text: str,
+        source_id: str,
+        source_kind: str,
+        metadata: dict[str, Any],
+        semantic_chunking: bool = False,
+    ) -> tuple[list[dict], list[dict]]:
+        facts: list[dict] = []
+        failed_extractions: list[dict] = []
+        segments = _extraction_text_segments(text, semantic_chunking=semantic_chunking)
+        for segment_index, segment_text in enumerate(segments):
+            segment_metadata = dict(metadata)
+            segment_source_id = source_id
+            if len(segments) > 1:
+                segment_metadata["text_part_index"] = segment_index + 1
+                segment_metadata["text_part_count"] = len(segments)
+                segment_source_id = f"{source_id}:part-{segment_index + 1}"
+            extracted, error = await self._extract_facts_with_retries(
+                task_id=job.task_id,
+                text=segment_text,
+                source_id=segment_source_id,
+                source_kind=source_kind,
+                metadata=segment_metadata,
+            )
+            if error:
+                failed_extractions.append({"source_id": segment_source_id, "error": error})
+                continue
+            facts.extend(extracted)
+        return facts, failed_extractions
 
     async def _extract_facts_with_retries(
         self,
@@ -478,7 +560,7 @@ def _document_extraction_batches(
         chunk_id = str(chunk.get("chunk_id") or f"{fallback_id}:{index}").strip()
         item = {"chunk_id": chunk_id, "text": text}
         candidate = [*current, item]
-        if current and len(_document_batch_text(candidate)) > _DOCUMENT_EXTRACTION_BATCH_CHARS:
+        if current and len(_document_batch_text(candidate)) > GRAPH_EXTRACTION_BATCH_CHARS:
             batches.append(current)
             current = [item]
         else:
@@ -494,6 +576,70 @@ def _document_batch_text(batch: list[dict[str, str]]) -> str:
     return "\n\n".join(
         f"[Chunk {index}]\n{item['text']}" for index, item in enumerate(batch, start=1)
     )
+
+
+def _extraction_text_segments(
+    text: str,
+    *,
+    semantic_chunking: bool = False,
+) -> list[str]:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    if not semantic_chunking:
+        return _plain_text_extraction_batches(cleaned)
+
+    chunker = RecursiveTextChunker(
+        chunk_size=GRAPH_EXTRACTION_SEMANTIC_CHUNK_CHARS,
+        chunk_overlap=GRAPH_EXTRACTION_SEMANTIC_CHUNK_OVERLAP_CHARS,
+    )
+    pieces = chunker.chunk(cleaned)
+    if not pieces:
+        return []
+    pseudo_chunks = [
+        {"chunk_id": f"segment-{index}", "content": piece} for index, piece in enumerate(pieces)
+    ]
+    segments: list[str] = []
+    for batch in _document_extraction_batches(pseudo_chunks, "semantic"):
+        segments.extend(_plain_text_extraction_batches(_document_batch_text(batch)))
+    return segments
+
+
+def _plain_text_extraction_batches(
+    text: str,
+    *,
+    batch_chars: int = GRAPH_EXTRACTION_BATCH_CHARS,
+    overlap_chars: int = GRAPH_EXTRACTION_BATCH_OVERLAP_CHARS,
+) -> list[str]:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= batch_chars:
+        return [cleaned]
+
+    overlap_chars = max(0, min(overlap_chars, batch_chars - 1))
+    batches: list[str] = []
+    start = 0
+    text_len = len(cleaned)
+    while start < text_len:
+        end = min(text_len, start + batch_chars)
+        if end < text_len:
+            window = cleaned[start:end]
+            for separator in ("\n\n", "\n", "\u3002", ". ", "! ", "? ", " "):
+                idx = window.rfind(separator)
+                if idx > 0:
+                    end = start + idx + (len(separator) if separator.strip() else 0)
+                    break
+        piece = cleaned[start:end].strip()
+        if piece:
+            batches.append(piece)
+        if end >= text_len:
+            break
+        next_start = end - overlap_chars if overlap_chars else end
+        if next_start <= start:
+            next_start = end
+        start = next_start
+    return batches
 
 
 def _chat_source_id(metadata: dict[str, Any]) -> str:

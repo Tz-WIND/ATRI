@@ -217,6 +217,29 @@ def register(dashboard: Dashboard) -> None:
             }
         )
 
+    @app.route("/api/knowledge/graph/ingest", methods=["POST"])
+    async def ingest_graph_content():
+        graph_manager = getattr(dashboard.lifecycle, "graph_manager", None)
+        if graph_manager is None:
+            return jsonify({"error": "graph knowledge manager is not available"}), 503
+        data = await request.get_json(silent=True) or {}
+        content = str(data.get("content") or "").strip()
+        if not content:
+            return jsonify({"error": "content is required"}), 400
+        source_name = str(data.get("source_name") or "manual.txt").strip() or "manual.txt"
+        try:
+            task_id = graph_manager.enqueue_manual_ingest(
+                text=content,
+                source_name=source_name,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        if task_id is None:
+            return jsonify({"error": "graph extraction queue is not available"}), 503
+        return jsonify({"task_id": task_id, "status": "queued"})
+
     @app.route("/api/knowledge/graph/tasks/latest", methods=["GET"])
     async def latest_graph_task():
         graph_manager = getattr(dashboard.lifecycle, "graph_manager", None)

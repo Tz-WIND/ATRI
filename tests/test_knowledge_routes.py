@@ -96,6 +96,8 @@ class _FakeGraphManager:
         self.updated = []
         self.retrieve_result = "[Graph context]\n- ATRI -[can_help_with]-> 写代码"
         self.retrieve_calls = []
+        self.manual_ingest_calls = []
+        self.manual_ingest_result = "graph-manual-1"
 
     def update_config(self, config):
         self.updated.append(config)
@@ -126,6 +128,10 @@ class _FakeGraphManager:
             }
         )
         return self.retrieve_result
+
+    def enqueue_manual_ingest(self, *, text, source_name="manual.txt"):
+        self.manual_ingest_calls.append({"text": text, "source_name": source_name})
+        return self.manual_ingest_result
 
 
 async def _dashboard(monkeypatch, tmp_path) -> Dashboard:
@@ -527,3 +533,43 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
     ]
     assert empty_response.status_code == 400
     assert "query is required" in (await empty_response.get_json())["error"]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_graph_manual_ingest_route(monkeypatch, tmp_path):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    response = await client.post(
+        "/api/knowledge/graph/ingest",
+        json={"content": "Alice works at Acme."},
+        headers=headers,
+    )
+    payload = await response.get_json()
+    empty_response = await client.post(
+        "/api/knowledge/graph/ingest",
+        json={"content": "   ", "source_name": "empty.md"},
+        headers=headers,
+    )
+    dashboard.lifecycle.graph_manager.manual_ingest_result = None
+    unavailable_response = await client.post(
+        "/api/knowledge/graph/ingest",
+        json={"content": "Alice works at Acme."},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert payload == {"task_id": "graph-manual-1", "status": "queued"}
+    assert dashboard.lifecycle.graph_manager.manual_ingest_calls == [
+        {"text": "Alice works at Acme.", "source_name": "manual.txt"},
+        {"text": "Alice works at Acme.", "source_name": "manual.txt"},
+    ]
+    assert empty_response.status_code == 400
+    assert "content is required" in (await empty_response.get_json())["error"]
+    assert unavailable_response.status_code == 503
+    assert (
+        "graph extraction queue is not available"
+        in (await unavailable_response.get_json())["error"]
+    )

@@ -15,6 +15,7 @@ from core.knowledge.graph_constants import (
     ASSISTANT_CANONICAL_TYPE,
     ASSISTANT_ENTITY_ALIAS_KEYS,
     CHAIN_ORDER_KEY_SEPARATOR,
+    GRAPH_EXTRACTION_INPUT_MAX_CHARS,
     HYPER_ROLE_PREDICATE,
 )
 
@@ -401,7 +402,7 @@ class GraphTupleExtractor:
         if not cleaned:
             return []
         llm = self.llm_factory()
-        user_content = cleaned[:12000]
+        user_content = _build_segmented_user_content(cleaned, metadata)
         messages = [
             {
                 "role": "system",
@@ -571,6 +572,25 @@ def normalize_extracted_facts(
     return facts
 
 
+def _build_segmented_user_content(text: str, metadata: dict[str, Any] | None) -> str:
+    prefix = ""
+    if isinstance(metadata, dict):
+        try:
+            part_count = int(metadata.get("text_part_count") or 0)
+            part_index = int(metadata.get("text_part_index") or 0)
+        except (TypeError, ValueError):
+            part_count = 0
+            part_index = 0
+        if part_count > 1 and part_index > 0:
+            prefix = (
+                f"[文本分段 {part_index}/{part_count}] "
+                "原文因过长被分成多段；仅抽取本段文本中明确支持的事实。"
+                "段首段尾可能与相邻段重叠，仅用于保留上下文。\n\n"
+            )
+    body = text[:GRAPH_EXTRACTION_INPUT_MAX_CHARS]
+    return prefix + body
+
+
 def build_extraction_prompt(source_kind: str) -> str:
     prompt = [
         "你是长期知识图谱（Neo4j Graph RAG）的信息抽取引擎。",
@@ -610,6 +630,10 @@ def build_extraction_prompt(source_kind: str) -> str:
             "决策、约束或可复用的 Project 事实。"
         ),
         "- 不要编造文本未直接支持的事实。",
+        (
+            "- 若用户消息以 [文本分段 i/n] 开头，说明这是长文的一段；"
+            "只根据本段内容抽取事实，不要假设未出现的上下文。"
+        ),
         (
             "- 保留细节：一句里有多个人名、物品、地点、动作时，"
             "尽量拆成多条可检索的边，不要只压成一条事件摘要。"

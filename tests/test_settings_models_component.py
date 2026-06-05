@@ -46,6 +46,15 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "runGraphQuery" in source
     assert "retrieveKnowledgeGraph" in api_source
     assert "/api/knowledge/graph/retrieve" in api_source
+    assert "Manual Graph Ingest" in source
+    assert "manualGraphIngestForm" in source
+    assert "runManualGraphIngest" in source
+    assert "handleManualGraphFile" in source
+    assert "sourceName" in source
+    assert "onManualGraphContentInput" in source
+    assert "ingestKnowledgeGraph" in api_source
+    assert "/api/knowledge/graph/ingest" in api_source
+    assert "Source Name" not in source
     assert "graph-query-result" in source
     assert "Extraction Model" in source
     assert "graphExtractionModelOptions" in source

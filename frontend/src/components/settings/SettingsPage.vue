@@ -596,6 +596,55 @@
               <div class="section-title-row">
                 <div>
                   <div class="subsection-title">
+                    Manual Graph Ingest
+                  </div>
+                </div>
+                <button
+                  class="btn btn-secondary"
+                  :disabled="manualGraphIngestRunning || !manualGraphIngestForm.content.trim()"
+                  @click="runManualGraphIngest"
+                >
+                  {{ manualGraphIngestRunning ? 'Ingesting' : 'Ingest' }}
+                </button>
+              </div>
+
+              <label class="setting-field">
+                <span>File</span>
+                <input
+                  type="file"
+                  accept=".txt,.md,.json,.csv,.log,.yaml,.yml,text/*"
+                  @change="handleManualGraphFile"
+                >
+              </label>
+
+              <label class="setting-field full">
+                <span>Content</span>
+                <textarea
+                  v-model="manualGraphIngestForm.content"
+                  rows="6"
+                  spellcheck="false"
+                  @input="onManualGraphContentInput"
+                />
+              </label>
+
+              <div
+                v-if="manualGraphIngestError"
+                class="graph-status error"
+              >
+                {{ manualGraphIngestError }}
+              </div>
+              <div
+                v-if="manualGraphIngestStatus"
+                class="graph-status ok"
+              >
+                {{ manualGraphIngestStatus }}
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
                     Graph Query
                   </div>
                 </div>
@@ -913,6 +962,14 @@ const graphQueryRunning = ref(false)
 const graphQueryError = ref('')
 const graphQueryResult = ref('')
 const graphQueryForm = ref({ query: '' })
+const manualGraphIngestRunning = ref(false)
+const manualGraphIngestError = ref('')
+const manualGraphIngestStatus = ref('')
+const manualGraphIngestForm = ref({
+  content: '',
+  sourceName: 'manual',
+})
+let manualGraphIngestFromFile = false
 const latestGraphTask = ref(null)
 const audioDevices = ref([])
 const audioDeviceOptions = computed(() => (
@@ -1213,6 +1270,52 @@ async function runGraphQuery() {
     graphQueryError.value = err.message || 'Graph query failed'
   } finally {
     graphQueryRunning.value = false
+  }
+}
+
+function onManualGraphContentInput() {
+  if (manualGraphIngestFromFile) return
+  manualGraphIngestForm.value.sourceName = 'manual'
+}
+
+async function handleManualGraphFile(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  manualGraphIngestError.value = ''
+  manualGraphIngestStatus.value = ''
+  try {
+    const content = await file.text()
+    manualGraphIngestFromFile = true
+    manualGraphIngestForm.value = {
+      content,
+      sourceName: file.name || 'manual',
+    }
+  } catch (err) {
+    manualGraphIngestError.value = err.message || 'Failed to read file'
+  } finally {
+    manualGraphIngestFromFile = false
+    event.target.value = ''
+  }
+}
+
+async function runManualGraphIngest() {
+  const content = manualGraphIngestForm.value.content.trim()
+  const sourceName = manualGraphIngestForm.value.sourceName || 'manual'
+  if (manualGraphIngestRunning.value || !content) return
+  manualGraphIngestRunning.value = true
+  manualGraphIngestError.value = ''
+  manualGraphIngestStatus.value = ''
+  try {
+    const result = await api.ingestKnowledgeGraph({
+      content,
+      source_name: sourceName,
+    })
+    manualGraphIngestStatus.value = `Queued ${result.task_id || 'manual graph ingest'}`
+    await loadLatestGraphTask()
+  } catch (err) {
+    manualGraphIngestError.value = err.message || 'Manual graph ingest failed'
+  } finally {
+    manualGraphIngestRunning.value = false
   }
 }
 

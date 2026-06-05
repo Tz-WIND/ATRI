@@ -103,6 +103,7 @@ export function useApi() {
     getKnowledgeTask: (taskId) => request(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`),
     testKnowledgeGraphConnection: (data) => request('/api/knowledge/graph/test-connection', { method: 'POST', body: JSON.stringify(data) }),
     retrieveKnowledgeGraph: (data) => request('/api/knowledge/graph/retrieve', { method: 'POST', body: JSON.stringify(data) }),
+    ingestKnowledgeGraph: (data) => request('/api/knowledge/graph/ingest', { method: 'POST', body: JSON.stringify(data) }),
     getLatestKnowledgeGraphTask: () => request('/api/knowledge/graph/tasks/latest'),
 
     // Skills

@@ -12,14 +12,30 @@ from core.knowledge.extraction import (
     MAX_HYPER_ROLES,
     MAX_HYPER_TUPLES,
     GraphTupleExtractor,
+    _build_segmented_user_content,
     build_extraction_prompt,
     normalize_extracted_facts,
     parse_extraction_json,
 )
 from core.knowledge.graph import Neo4jGraphClient, _query_terms
-from core.knowledge.graph_constants import CHAIN_ORDER_KEY_SEPARATOR, format_graph_context
-from core.knowledge.graph_worker import GraphKnowledgeManager, _chat_turn_text
+from core.knowledge.graph_constants import (
+    CHAIN_ORDER_KEY_SEPARATOR,
+    GRAPH_EXTRACTION_BATCH_CHARS,
+    format_graph_context,
+)
+from core.knowledge.graph_worker import (
+    GraphKnowledgeManager,
+    _chat_turn_text,
+    _extraction_text_segments,
+    _plain_text_extraction_batches,
+)
 from core.runtime.tasks import TaskStore
+
+
+def test_build_extraction_prompt_documents_segmented_input():
+    prompt = build_extraction_prompt("document")
+
+    assert "[文本分段 i/n]" in prompt
 
 
 def test_build_extraction_prompt_prefers_person_tool_links_for_chat():
@@ -2256,6 +2272,159 @@ async def test_graph_manager_processes_document_jobs_in_background(tmp_path):
         store.close()
 
 
+def test_plain_text_extraction_batches_keeps_short_text_single():
+    text = "Alice works at Acme."
+
+    batches = _plain_text_extraction_batches(text)
+
+    assert batches == [text]
+
+
+def test_plain_text_extraction_batches_overlap_increases_total_coverage():
+    text = ("Alpha. " * 6000).strip()
+
+    batches = _plain_text_extraction_batches(text)
+
+    assert len(batches) > 1
+    assert sum(len(batch) for batch in batches) > len(text)
+
+
+def test_build_segmented_user_content_adds_part_annotation():
+    content = _build_segmented_user_content(
+        "Alice works at Acme.",
+        {"text_part_index": 2, "text_part_count": 3},
+    )
+
+    assert content.startswith("[文本分段 2/3]")
+    assert "仅抽取本段文本中明确支持的事实" in content
+    assert content.endswith("Alice works at Acme.")
+
+
+def test_build_segmented_user_content_omits_annotation_for_single_part():
+    content = _build_segmented_user_content(
+        "Alice works at Acme.",
+        {"text_part_index": 1, "text_part_count": 1},
+    )
+
+    assert content == "Alice works at Acme."
+
+
+def test_extraction_text_segments_uses_semantic_chunk_markers_for_long_manual_text():
+    paragraphs = [f"Paragraph {index}: Alice works at Acme." for index in range(1, 1200)]
+    text = "\n\n".join(paragraphs)
+
+    segments = _extraction_text_segments(text, semantic_chunking=True)
+
+    assert len(text) > GRAPH_EXTRACTION_BATCH_CHARS
+    assert len(segments) > 1
+    assert any("[Chunk " in segment for segment in segments)
+
+
+def test_plain_text_extraction_batches_splits_text_over_batch_limit():
+    text = ("Alpha. " * 6000).strip()
+
+    batches = _plain_text_extraction_batches(text)
+
+    assert len(text) > GRAPH_EXTRACTION_BATCH_CHARS
+    assert len(batches) > 1
+    assert all(len(batch) <= GRAPH_EXTRACTION_BATCH_CHARS for batch in batches)
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_manual_ingest_queues_direct_document_extraction(tmp_path):
+    store = TaskStore(tmp_path / "runtime")
+    graph = FakeGraphClient()
+    extractor = RecordingExtractor()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "extraction_enabled": False,
+                    "extraction_sources": ["chat"],
+                    "queue_max_size": 10,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, extractor),
+        task_store=store,
+    )
+    try:
+        await manager.initialize()
+        task_id = manager.enqueue_manual_ingest(
+            text="Alice works at Acme.",
+            source_name="manual-notes.md",
+        )
+        await manager.drain(wait_seconds=2)
+
+        assert task_id is not None
+        task = store.get_task(task_id)
+        assert task is not None
+        assert task["status"] == "completed"
+        assert task["metadata"]["source"] == "manual"
+        assert task["metadata"]["source_name"] == "manual-notes.md"
+        assert extractor.calls == [
+            {
+                "text": "Alice works at Acme.",
+                "source_id": f"manual:{task_id}",
+                "source_kind": "document",
+                "metadata": {
+                    "source": "manual",
+                    "source_name": "manual-notes.md",
+                    "source_id": f"manual:{task_id}",
+                },
+            }
+        ]
+        assert graph.facts[0]["source_id"] == f"manual:{task_id}"
+        assert graph.facts[0]["source_kind"] == "document"
+        assert graph.facts[0]["metadata"]["source"] == "manual"
+    finally:
+        await manager.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_manual_ingest_batches_text_over_batch_limit(tmp_path):
+    store = TaskStore(tmp_path / "runtime")
+    graph = FakeGraphClient()
+    extractor = RecordingExtractor()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "extraction_enabled": False,
+                    "extraction_sources": ["chat"],
+                    "queue_max_size": 10,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, extractor),
+        task_store=store,
+    )
+    long_text = ("Alice works at Acme. " * 2000).strip()
+    try:
+        await manager.initialize()
+        task_id = manager.enqueue_manual_ingest(
+            text=long_text,
+            source_name="manual-notes.md",
+        )
+        await manager.drain(wait_seconds=2)
+
+        assert task_id is not None
+        assert len(long_text) > GRAPH_EXTRACTION_BATCH_CHARS
+        assert len(extractor.calls) > 1
+        assert all(len(call["text"]) <= GRAPH_EXTRACTION_BATCH_CHARS for call in extractor.calls)
+        assert extractor.calls[0]["source_id"] == f"manual:{task_id}:part-1"
+        assert extractor.calls[1]["source_id"] == f"manual:{task_id}:part-2"
+        assert extractor.calls[0]["metadata"]["text_part_count"] == len(extractor.calls)
+    finally:
+        await manager.close()
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_graph_manager_batches_document_chunks_without_losing_source_ids(tmp_path):
     store = TaskStore(tmp_path / "runtime")
@@ -2425,7 +2594,7 @@ async def test_graph_manager_skips_document_batches_after_retries_fail(tmp_path)
             doc_name="notes.txt",
             chunks=[
                 {"chunk_id": "chunk-1", "content": "Alice works at Acme."},
-                {"chunk_id": "chunk-2", "content": "Bad batch. " * 1200},
+                {"chunk_id": "chunk-2", "content": "Bad batch. " * 3635},
             ],
         )
         await manager.drain(wait_seconds=2)
@@ -2470,6 +2639,12 @@ def test_graph_manager_enqueue_is_safe_when_disabled_or_full(tmp_path):
                 session_id="webchat:friend:default",
                 platform="webchat",
                 metadata={},
+            )
+            is None
+        )
+        assert (
+            manager.enqueue_manual_ingest(
+                text="Alice works at Acme.",
             )
             is None
         )
