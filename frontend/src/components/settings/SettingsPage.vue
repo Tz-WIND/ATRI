@@ -601,7 +601,7 @@
                 </div>
                 <button
                   class="btn btn-secondary"
-                  :disabled="manualGraphIngestRunning || !manualGraphIngestForm.content.trim()"
+                  :disabled="manualGraphIngestRunning || (!manualGraphIngestForm.content.trim() && !manualGraphIngestFile)"
                   @click="runManualGraphIngest"
                 >
                   {{ manualGraphIngestRunning ? 'Ingesting' : 'Ingest' }}
@@ -612,10 +612,16 @@
                 <span>File</span>
                 <input
                   type="file"
-                  accept=".txt,.md,.json,.csv,.log,.yaml,.yml,text/*"
+                  :accept="documentAccept"
                   @change="handleManualGraphFile"
                 >
               </label>
+              <div
+                v-if="selectedManualGraphFileName"
+                class="graph-status"
+              >
+                {{ selectedManualGraphFileName }}
+              </div>
 
               <label class="setting-field full">
                 <span>Content</span>
@@ -842,9 +848,11 @@ import PageHeader from '@/components/layout/PageHeader.vue'
 import ProviderWorkbench from './ProviderWorkbench.vue'
 import ModelPoolSection from './ModelPoolSection.vue'
 import { useApi } from '@/composables/useApi.js'
+import { useDocumentSupport } from '@/composables/useDocumentSupport.js'
 import { useProviders } from '@/composables/useProviders.js'
 
 const api = useApi()
+const { documentAccept, loadDocumentSupport } = useDocumentSupport()
 const {
   loadProviders,
   loadStatus,
@@ -967,9 +975,11 @@ const manualGraphIngestError = ref('')
 const manualGraphIngestStatus = ref('')
 const manualGraphIngestForm = ref({
   content: '',
-  sourceName: 'manual',
 })
-let manualGraphIngestFromFile = false
+const manualGraphIngestFile = ref(null)
+const selectedManualGraphFileName = computed(() => (
+  manualGraphIngestFile.value?.name ? `Selected ${manualGraphIngestFile.value.name}` : ''
+))
 const latestGraphTask = ref(null)
 const audioDevices = ref([])
 const audioDeviceOptions = computed(() => (
@@ -1274,8 +1284,7 @@ async function runGraphQuery() {
 }
 
 function onManualGraphContentInput() {
-  if (manualGraphIngestFromFile) return
-  manualGraphIngestForm.value.sourceName = 'manual'
+  manualGraphIngestFile.value = null
 }
 
 async function handleManualGraphFile(event) {
@@ -1283,34 +1292,24 @@ async function handleManualGraphFile(event) {
   if (!file) return
   manualGraphIngestError.value = ''
   manualGraphIngestStatus.value = ''
-  try {
-    const content = await file.text()
-    manualGraphIngestFromFile = true
-    manualGraphIngestForm.value = {
-      content,
-      sourceName: file.name || 'manual',
-    }
-  } catch (err) {
-    manualGraphIngestError.value = err.message || 'Failed to read file'
-  } finally {
-    manualGraphIngestFromFile = false
-    event.target.value = ''
-  }
+  manualGraphIngestFile.value = file
+  manualGraphIngestForm.value.content = ''
+  event.target.value = ''
 }
 
 async function runManualGraphIngest() {
   const content = manualGraphIngestForm.value.content.trim()
-  const sourceName = manualGraphIngestForm.value.sourceName || 'manual'
-  if (manualGraphIngestRunning.value || !content) return
+  const file = manualGraphIngestFile.value
+  if (manualGraphIngestRunning.value || (!content && !file)) return
   manualGraphIngestRunning.value = true
   manualGraphIngestError.value = ''
   manualGraphIngestStatus.value = ''
   try {
-    const result = await api.ingestKnowledgeGraph({
-      content,
-      source_name: sourceName,
-    })
+    const result = file
+      ? await api.ingestKnowledgeGraph({ file })
+      : await api.ingestKnowledgeGraph({ content })
     manualGraphIngestStatus.value = `Queued ${result.task_id || 'manual graph ingest'}`
+    manualGraphIngestFile.value = null
     await loadLatestGraphTask()
   } catch (err) {
     manualGraphIngestError.value = err.message || 'Manual graph ingest failed'
@@ -1391,6 +1390,7 @@ function handleSettingsShortcut(event) {
 
 onMounted(async () => {
   window.addEventListener('keydown', handleSettingsShortcut)
+  await loadDocumentSupport()
   await Promise.all([
     loadProviders(),
     loadStatus(),

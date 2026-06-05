@@ -30,6 +30,36 @@ try {
   const second = useChat()
   assert.notEqual(second, first)
   assert.deepEqual(second.messages.value, [])
+
+  second.loadTranscript({
+    messages: [
+      {
+        role: 'user',
+        content: 'Summarize\n\n[File: brief.docx]\nPortfolio',
+        _atri_display_content: 'Summarize',
+        _atri_attachments: [
+          {
+            kind: 'file',
+            name: 'brief.docx',
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            size: 42,
+          },
+        ],
+      },
+    ],
+  })
+
+  assert.equal(second.messages.value.length, 1)
+  assert.equal(second.messages.value[0].content, 'Summarize')
+  assert.deepEqual(second.messages.value[0].attachments, [
+    {
+      id: second.messages.value[0].attachments[0].id,
+      kind: 'file',
+      name: 'brief.docx',
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      size: 42,
+    },
+  ])
 } finally {
   clearChatInstance()
   globalThis.localStorage = originalLocalStorage

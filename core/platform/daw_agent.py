@@ -69,6 +69,8 @@ class DawAgentAdapter(Platform):
         workspace: str = DEFAULT_DAW_WORKSPACE,
         host_context: dict[str, Any] | None = None,
         images: list[dict] | None = None,
+        display_user_input: str | None = None,
+        file_attachments: list[dict] | None = None,
         model: str = "",
         model_provider: str = "",
     ) -> tuple[MessageEvent, asyncio.Future]:
@@ -105,6 +107,10 @@ class DawAgentAdapter(Platform):
         event._extras["daw_agent_instance_id"] = str(instance_id or "")
         event._extras["daw_agent_workspace"] = normalize_daw_workspace(workspace)
         event._extras["daw_agent_host_context"] = normalize_daw_host_context(host_context)
+        if display_user_input is not None:
+            event._extras["display_user_input"] = display_user_input
+        if file_attachments:
+            event._extras["file_attachments"] = list(file_attachments)
         selected_model = str(model or "").strip()
         if selected_model:
             event._extras["daw_agent_model"] = selected_model

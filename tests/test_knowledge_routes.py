@@ -1,11 +1,15 @@
+import io
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from werkzeug.datastructures import FileStorage
 
+from core.document_text import SUPPORTED_DOCUMENT_EXTENSIONS, supported_document_accept
 from core.knowledge.manager import KnowledgeBaseManager
 from dashboard import music as music_routes
 from dashboard.routes import _helpers
 from dashboard.server import Dashboard
+from tests.document_samples import pptx_bytes, xlsx_bytes
 from tests.test_knowledge_core import FakeEmbeddingClient, FakeRerankClient
 
 if TYPE_CHECKING:
@@ -144,6 +148,27 @@ async def _dashboard(monkeypatch, tmp_path) -> Dashboard:
 
 
 @pytest.mark.asyncio
+async def test_knowledge_document_support_route_uses_shared_document_constants(
+    monkeypatch,
+    tmp_path,
+):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+
+    response = await dashboard.app.test_client().get(
+        "/api/knowledge/document-support",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 200
+    assert payload == {
+        "accept": supported_document_accept(),
+        "extensions": list(SUPPORTED_DOCUMENT_EXTENSIONS),
+    }
+
+
+@pytest.mark.asyncio
 async def test_knowledge_routes_create_import_retrieve_and_delete(monkeypatch, tmp_path):
     dashboard = await _dashboard(monkeypatch, tmp_path)
     token = dashboard._create_auth_session()
@@ -216,6 +241,48 @@ async def test_knowledge_routes_create_import_retrieve_and_delete(monkeypatch, t
     retrieval = await retrieve_response.get_json()
     assert retrieval["results"][0]["doc_name"] == "notes.md"
     assert "SQLite stores knowledge chunks" in retrieval["results"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_upload_extracts_xlsx_before_import(monkeypatch, tmp_path):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    create_response = await client.post(
+        "/api/knowledge/bases",
+        json={"name": "Sheets", "embedding_provider": "OpenAI", "embedding_model": "embed-a"},
+        headers=headers,
+    )
+    kb_id = (await create_response.get_json())["kb_id"]
+    upload_response = await client.post(
+        f"/api/knowledge/bases/{kb_id}/documents/upload",
+        headers=headers,
+        files={
+            "file": FileStorage(
+                stream=io.BytesIO(xlsx_bytes([["Name", "Fact"], ["Alice", "SQLite database"]])),
+                filename="facts.xlsx",
+                content_type=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            )
+        },
+    )
+    task = await upload_response.get_json()
+    docs_response = await client.get(
+        f"/api/knowledge/bases/{kb_id}/documents",
+        headers=headers,
+    )
+    documents = await docs_response.get_json()
+    chunks_response = await client.get(
+        f"/api/knowledge/documents/{documents['items'][0]['doc_id']}/chunks",
+        headers=headers,
+    )
+    chunks = await chunks_response.get_json()
+
+    assert upload_response.status_code == 200
+    assert task["status"] == "completed"
+    assert documents["items"][0]["doc_name"] == "facts.xlsx"
+    assert "Alice\tSQLite database" in chunks["items"][0]["content"]
 
 
 @pytest.mark.asyncio
@@ -548,6 +615,20 @@ async def test_knowledge_graph_manual_ingest_route(monkeypatch, tmp_path):
         headers=headers,
     )
     payload = await response.get_json()
+    file_response = await client.post(
+        "/api/knowledge/graph/ingest",
+        headers=headers,
+        files={
+            "file": FileStorage(
+                stream=io.BytesIO(pptx_bytes(("Graph Deck", "Neo4j stores facts"))),
+                filename="graph-deck.pptx",
+                content_type=(
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                ),
+            )
+        },
+    )
+    file_payload = await file_response.get_json()
     empty_response = await client.post(
         "/api/knowledge/graph/ingest",
         json={"content": "   ", "source_name": "empty.md"},
@@ -562,8 +643,11 @@ async def test_knowledge_graph_manual_ingest_route(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert payload == {"task_id": "graph-manual-1", "status": "queued"}
+    assert file_response.status_code == 200
+    assert file_payload == {"task_id": "graph-manual-1", "status": "queued"}
     assert dashboard.lifecycle.graph_manager.manual_ingest_calls == [
         {"text": "Alice works at Acme.", "source_name": "manual.txt"},
+        {"text": "[Slide 1]\nGraph Deck\nNeo4j stores facts", "source_name": "graph-deck.pptx"},
         {"text": "Alice works at Acme.", "source_name": "manual.txt"},
     ]
     assert empty_response.status_code == 400

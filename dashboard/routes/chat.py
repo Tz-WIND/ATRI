@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 from quart import jsonify, request
 
 from core import logger
+from core.document_text import DocumentTextError, extract_document_text
 from core.platform.message import Image, Plain, display_session_id, normalize_session_id
 
 if TYPE_CHECKING:
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
 _CHAT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 _MAX_CHAT_IMAGES = 4
 _MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024
+_MAX_CHAT_FILES = 4
+_MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024
 
 
 def _serialize_response_chain(chain: object) -> list[dict[str, object]] | None:
@@ -69,6 +72,30 @@ def _parse_image_data_url(data_url: str) -> tuple[str, int]:
     return mime_type, len(decoded)
 
 
+def _parse_file_data_url(data_url: str) -> tuple[str, bytes]:
+    if not data_url.startswith("data:") or "," not in data_url:
+        raise ValueError("files must be base64 data URLs")
+
+    header, encoded = data_url.split(",", 1)
+    meta = header[5:].split(";")
+    mime_type = (meta[0] or "application/octet-stream").lower()
+    flags = {part.lower() for part in meta[1:]}
+    if "base64" not in flags:
+        raise ValueError("file data URL must be base64 encoded")
+
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError("invalid file data") from e
+
+    if not decoded:
+        raise ValueError("file data is empty")
+    if len(decoded) > _MAX_CHAT_FILE_BYTES:
+        limit_mb = _MAX_CHAT_FILE_BYTES // (1024 * 1024)
+        raise ValueError(f"file must be {limit_mb} MB or smaller")
+    return mime_type, decoded
+
+
 def _normalize_chat_images(raw_images: object) -> list[dict[str, Any]]:
     if raw_images in (None, ""):
         return []
@@ -93,6 +120,64 @@ def _normalize_chat_images(raw_images: object) -> list[dict[str, Any]]:
             }
         )
     return images
+
+
+def _normalize_chat_files(raw_files: object) -> list[dict[str, Any]]:
+    if raw_files in (None, ""):
+        return []
+    if not isinstance(raw_files, list):
+        raise ValueError("files must be a list")
+    if len(raw_files) > _MAX_CHAT_FILES:
+        raise ValueError(f"at most {_MAX_CHAT_FILES} files can be attached")
+
+    files: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_files, start=1):
+        if not isinstance(item, dict):
+            raise ValueError("each file must be an object")
+        data_url = str(item.get("dataUrl") or item.get("url") or "").strip()
+        mime_type, content = _parse_file_data_url(data_url)
+        name = Path(str(item.get("name") or f"attachment-{index}.txt")).name[:120]
+        file_name = name or f"attachment-{index}.txt"
+        try:
+            text = extract_document_text(file_name, content)
+        except DocumentTextError as e:
+            raise ValueError(str(e)) from e
+        files.append(
+            {
+                "file": file_name,
+                "mime_type": mime_type,
+                "size": len(content),
+                "text": text,
+            }
+        )
+    return files
+
+
+def _message_with_file_context(message: str, files: list[dict[str, Any]]) -> str:
+    parts = [str(message or "").strip()] if str(message or "").strip() else []
+    for item in files:
+        file_name = str(item.get("file") or "attachment")
+        text = str(item.get("text") or "").strip()
+        if text:
+            parts.append(f"[File: {file_name}]\n{text}")
+    return "\n\n".join(parts).strip()
+
+
+def _file_display_attachments(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    attachments = []
+    for item in files:
+        name = str(item.get("file") or "").strip()
+        if not name:
+            continue
+        attachments.append(
+            {
+                "kind": "file",
+                "name": name,
+                "type": str(item.get("mime_type") or ""),
+                "size": int(item.get("size") or 0),
+            }
+        )
+    return attachments
 
 
 # ── Route registration ──
@@ -135,18 +220,27 @@ def register(dashboard: Dashboard) -> None:
     async def chat():
         data = await request.get_json(silent=True) or {}
         message = str(data.get("message") or "").strip()
+        display_message = message
         session_id = str(data.get("session_id") or "webchat_default")
         try:
             images = _normalize_chat_images(data.get("images"))
+            files = _normalize_chat_files(data.get("files"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+        message = _message_with_file_context(message, files)
         if not message and not images:
             return jsonify({"error": "empty message"}), 400
         webchat = dashboard.lifecycle.webchat
         if not webchat:
             return jsonify({"error": "webchat adapter not available"}), 503
 
-        event, future = webchat.create_event(message, session_id, images=images)
+        event, future = webchat.create_event(
+            message,
+            session_id,
+            images=images,
+            display_user_input=display_message,
+            file_attachments=_file_display_attachments(files),
+        )
         await dashboard.broadcast({"type": "thinking", "session_id": session_id})
 
         try:

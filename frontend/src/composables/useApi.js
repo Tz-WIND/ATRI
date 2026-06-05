@@ -2,13 +2,7 @@ import { markSetupRequired, markUnauthenticated } from './useAuth.js'
 
 const BASE = ''
 
-async function request(url, options = {}) {
-  const { headers, ...rest } = options
-  const res = await fetch(BASE + url, {
-    ...rest,
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...headers },
-  })
+async function handleResponse(res) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     if (res.status === 428 && body.setup_required) {
@@ -20,6 +14,26 @@ async function request(url, options = {}) {
     throw new Error(body.error || `HTTP ${res.status}`)
   }
   return res.json()
+}
+
+async function request(url, options = {}) {
+  const { headers, ...rest } = options
+  const res = await fetch(BASE + url, {
+    ...rest,
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', ...headers },
+  })
+  return handleResponse(res)
+}
+
+async function requestForm(url, formData, options = {}) {
+  const res = await fetch(BASE + url, {
+    ...options,
+    method: options.method || 'POST',
+    credentials: 'same-origin',
+    body: formData,
+  })
+  return handleResponse(res)
 }
 
 export function useApi() {
@@ -68,6 +82,7 @@ export function useApi() {
     deleteMcpServer: (name) => request(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
     // Knowledge
+    getDocumentSupport: () => request('/api/knowledge/document-support'),
     getKnowledgeBases: () => request('/api/knowledge/bases'),
     createKnowledgeBase: (data) => request('/api/knowledge/bases', { method: 'POST', body: JSON.stringify(data) }),
     getKnowledgeBase: (kbId) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}`),
@@ -78,23 +93,7 @@ export function useApi() {
     uploadKnowledgeDocument: (kbId, file) => {
       const formData = new FormData()
       formData.append('file', file)
-      return fetch(BASE + `/api/knowledge/bases/${encodeURIComponent(kbId)}/documents/upload`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        body: formData,
-      }).then(async res => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          if (res.status === 428 && body.setup_required) {
-            markSetupRequired(body.error || 'setup required')
-          }
-          if (res.status === 401) {
-            markUnauthenticated(body.error || 'authentication required')
-          }
-          throw new Error(body.error || `HTTP ${res.status}`)
-        }
-        return res.json()
-      })
+      return requestForm(`/api/knowledge/bases/${encodeURIComponent(kbId)}/documents/upload`, formData)
     },
     deleteKnowledgeDocument: (docId) => request(`/api/knowledge/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' }),
     getKnowledgeChunks: (docId, page = 1, pageSize = 100) => request(`/api/knowledge/documents/${encodeURIComponent(docId)}/chunks?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`),
@@ -103,7 +102,14 @@ export function useApi() {
     getKnowledgeTask: (taskId) => request(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`),
     testKnowledgeGraphConnection: (data) => request('/api/knowledge/graph/test-connection', { method: 'POST', body: JSON.stringify(data) }),
     retrieveKnowledgeGraph: (data) => request('/api/knowledge/graph/retrieve', { method: 'POST', body: JSON.stringify(data) }),
-    ingestKnowledgeGraph: (data) => request('/api/knowledge/graph/ingest', { method: 'POST', body: JSON.stringify(data) }),
+    ingestKnowledgeGraph: (data) => {
+      if (data?.file) {
+        const formData = new FormData()
+        formData.append('file', data.file)
+        return requestForm('/api/knowledge/graph/ingest', formData)
+      }
+      return request('/api/knowledge/graph/ingest', { method: 'POST', body: JSON.stringify(data) })
+    },
     getLatestKnowledgeGraphTask: () => request('/api/knowledge/graph/tasks/latest'),
 
     // Skills
@@ -114,23 +120,7 @@ export function useApi() {
     uploadSkill: (file) => {
       const formData = new FormData()
       formData.append('file', file)
-      return fetch(BASE + '/api/skills/upload', {
-        method: 'POST',
-        credentials: 'same-origin',
-        body: formData,
-      }).then(async res => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          if (res.status === 428 && body.setup_required) {
-            markSetupRequired(body.error || 'setup required')
-          }
-          if (res.status === 401) {
-            markUnauthenticated(body.error || 'authentication required')
-          }
-          throw new Error(body.error || `HTTP ${res.status}`)
-        }
-        return res.json()
-      })
+      return requestForm('/api/skills/upload', formData)
     },
 
     // Sessions
@@ -139,7 +129,7 @@ export function useApi() {
     deleteSession: (id) => request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
     // Chat
-    sendMessage: (message, sessionId, images = []) => request('/api/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, images }) }),
+    sendMessage: (message, sessionId, images = [], files = []) => request('/api/chat', { method: 'POST', body: JSON.stringify({ message, session_id: sessionId, images, files }) }),
     sendDawAgentMessage: ({
       message,
       projectSessionId = '',
@@ -149,6 +139,7 @@ export function useApi() {
       syncHostProject = false,
       requestHostExport = false,
       images = [],
+      files = [],
       model = '',
       modelProvider = '',
     }) => request('/api/daw-agent/chat', {
@@ -162,6 +153,7 @@ export function useApi() {
         sync_host_project: syncHostProject,
         request_host_dawproject_export: requestHostExport,
         images,
+        files,
         ...(model ? { model } : {}),
         ...(modelProvider ? { model_provider: modelProvider } : {}),
       }),
@@ -286,23 +278,7 @@ export function useApi() {
           formData.append(key, typeof value === 'string' ? value : JSON.stringify(value))
         }
       }
-      return fetch(BASE + '/api/music/studio/audio/import', {
-        method: 'POST',
-        credentials: 'same-origin',
-        body: formData,
-      }).then(async res => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}))
-          if (res.status === 428 && body.setup_required) {
-            markSetupRequired(body.error || 'setup required')
-          }
-          if (res.status === 401) {
-            markUnauthenticated(body.error || 'authentication required')
-          }
-          throw new Error(body.error || `HTTP ${res.status}`)
-        }
-        return res.json()
-      })
+      return requestForm('/api/music/studio/audio/import', formData)
     },
     studioCreateTrack: (name, options = {}) => request('/api/music/studio/tracks', {
       method: 'POST',

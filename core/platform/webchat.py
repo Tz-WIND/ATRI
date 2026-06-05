@@ -29,6 +29,8 @@ class WebChatAdapter(Platform):
         session_id: str,
         *,
         images: list[dict] | None = None,
+        display_user_input: str | None = None,
+        file_attachments: list[dict] | None = None,
     ) -> tuple[MessageEvent, asyncio.Future]:
         """Create a MessageEvent from a WebUI chat message.
 
@@ -62,6 +64,10 @@ class WebChatAdapter(Platform):
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         req_id = uuid.uuid4().hex
         event._extras["_webchat_req_id"] = req_id
+        if display_user_input is not None:
+            event._extras["display_user_input"] = display_user_input
+        if file_attachments:
+            event._extras["file_attachments"] = list(file_attachments)
         self._pending[req_id] = future
 
         self.commit_event(event)

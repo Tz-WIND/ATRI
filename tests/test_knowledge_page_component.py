@@ -39,6 +39,7 @@ def test_api_exposes_knowledge_routes():
         "deleteKnowledgeChunk",
         "retrieveKnowledge",
         "getKnowledgeTask",
+        "getDocumentSupport",
     ]
     for method in expected_methods:
         assert method in source
@@ -54,6 +55,7 @@ def test_api_exposes_knowledge_routes():
         "/api/knowledge/chunks/${encodeURIComponent(chunkId)}",
         "/api/knowledge/retrieve",
         "/api/knowledge/tasks/${encodeURIComponent(taskId)}",
+        "/api/knowledge/document-support",
     ]
     for path in expected_paths:
         assert path in source
@@ -92,9 +94,22 @@ def test_knowledge_page_supports_complete_workflow():
         "toggleSelectedBaseForChat",
         "saveKnowledgeContext",
         "Use in Chat",
+        "useDocumentSupport",
+        "await loadDocumentSupport()",
+        ':accept="documentAccept"',
     ]
     for symbol in expected_symbols:
         assert symbol in source
+
+    assert ".pdf,.docx,.pptx,.xlsx" not in source
+
+
+def test_document_support_composable_uses_backend_endpoint():
+    source = _read("frontend/src/composables/useDocumentSupport.js")
+
+    assert "getDocumentSupport" in source
+    assert "documentAccept" in source
+    assert ".pdf,.docx,.pptx,.xlsx" not in source
 
 
 def test_knowledge_page_can_collapse_and_scroll_chunks():

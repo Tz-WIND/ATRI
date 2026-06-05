@@ -179,6 +179,44 @@ def test_agent_chat_stores_display_content_metadata_without_sending_it_to_llm():
     assert llm.messages[1] == {"role": "user", "content": augmented}
 
 
+def test_agent_chat_stores_user_attachment_metadata_without_sending_it_to_llm():
+    class FakeLLM:
+        model = "gpt-test"
+
+        def __init__(self):
+            self.messages = None
+
+        def chat(self, *, messages, **kwargs):
+            self.messages = messages
+            return LLMResponse(content="ok")
+
+    llm = FakeLLM()
+    agent = Agent(llm=cast(LLM, llm), workspace=".", tools=[])
+    attachments = [
+        {
+            "kind": "file",
+            "name": "brief.docx",
+            "type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size": 42,
+        }
+    ]
+
+    assert (
+        agent.chat(
+            "Summarize\n\n[File: brief.docx]\nPortfolio",
+            display_user_input="Summarize",
+            display_user_attachments=attachments,
+        )
+        == "ok"
+    )
+
+    assert agent.messages[0]["_atri_display_content"] == "Summarize"
+    assert agent.messages[0]["_atri_attachments"] == attachments
+    assert llm.messages is not None
+    assert "_atri_attachments" not in llm.messages[1]
+    assert "_atri_display_content" not in llm.messages[1]
+
+
 def test_generated_images_attach_to_last_assistant_message():
     messages = [
         {"role": "user", "content": "draw"},

@@ -1,4 +1,10 @@
 import { ref } from 'vue'
+import {
+  normalizeFileAttachments,
+  normalizeFilePayload,
+  normalizeImageAttachments,
+  normalizeImagePayload,
+} from './chatAttachments.js'
 import { normalizeAssistantChain } from './chatAssistantChain.js'
 import {
   hasActiveAssistantStream,
@@ -367,7 +373,12 @@ export function useChat() {
       if (m.role === 'user' && m.content) {
         const userContent = stripInternalUserContext(m._atri_display_content || m.content)
         const parsed = parseUserContent(userContent)
-        addMessage('user', parsed.text, false, { attachments: parsed.attachments })
+        addMessage('user', parsed.text, false, {
+          attachments: mergeAttachments(
+            parsed.attachments,
+            normalizeStoredAttachments(m._atri_attachments),
+          ),
+        })
         // Tool-result user messages are continuations of the current turn,
         // not new user requests -- skip inserting runtime thinking here.
         const isToolResult = Array.isArray(m.content) && m.content.some(part => part?.type === 'tool_result')
@@ -521,38 +532,28 @@ export function useChat() {
     return match ? match[1] : ''
   }
 
-  function normalizeImagePayload(images) {
-    return (images || [])
-      .map((image) => ({
-        dataUrl: image.dataUrl || image.src || image.url || '',
-        name: image.name || 'image',
-        type: image.type || '',
-        size: Number(image.size || 0),
-      }))
-      .filter((image) => image.dataUrl)
-  }
-
-  function normalizeImageAttachments(images) {
-    return normalizeImagePayload(images).map((image) => ({
-      id: makeId(),
-      name: image.name,
-      type: image.type,
-      size: image.size,
-      src: image.dataUrl,
-    }))
-  }
-
   function normalizeStoredAttachments(rawAttachments) {
     if (!Array.isArray(rawAttachments)) return []
     return rawAttachments
-      .map((image, index) => ({
-        id: makeId(),
-        name: image.name || `generated-${index + 1}`,
-        type: image.type || mimeFromDataUrl(image.src),
-        size: Number(image.size || 0),
-        src: image.src || image.url || '',
-      }))
-      .filter((image) => image.src)
+      .map((attachment, index) => {
+        if (attachment?.kind === 'file') {
+          return {
+            id: makeId(),
+            kind: 'file',
+            name: attachment.name || `file-${index + 1}`,
+            type: attachment.type || '',
+            size: Number(attachment.size || 0),
+          }
+        }
+        return {
+          id: makeId(),
+          name: attachment.name || `generated-${index + 1}`,
+          type: attachment.type || mimeFromDataUrl(attachment.src),
+          size: Number(attachment.size || 0),
+          src: attachment.src || attachment.url || '',
+        }
+      })
+      .filter((attachment) => attachment.kind === 'file' || attachment.src)
   }
 
   function mergeAttachments(existing = [], incoming = []) {
@@ -625,20 +626,26 @@ export function useChat() {
     }
   }
 
-  async function sendMessage(text, images = []) {
+  async function sendMessage(text, images = [], files = []) {
     const messageText = String(text || '')
     const imagePayload = normalizeImagePayload(images)
-    if ((!messageText.trim() && !imagePayload.length) || sending.value) return
+    const filePayload = normalizeFilePayload(files)
+    if ((!messageText.trim() && !imagePayload.length && !filePayload.length) || sending.value) return
     sending.value = true
     clearThinking()
     clearToolCards()
     streamingAssistantId = null
     streamingMessage = null
 
-    addMessage('user', messageText, false, { attachments: normalizeImageAttachments(imagePayload) })
+    addMessage('user', messageText, false, {
+      attachments: [
+        ...normalizeImageAttachments(imagePayload),
+        ...normalizeFileAttachments(filePayload),
+      ],
+    })
 
     try {
-      const result = await api.sendMessage(messageText, sessionId.value, imagePayload)
+      const result = await api.sendMessage(messageText, sessionId.value, imagePayload, filePayload)
 
       if (result.session_id) {
         const newId = normalizeSessionId(result.session_id)

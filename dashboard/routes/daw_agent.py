@@ -10,7 +10,13 @@ from quart import jsonify, request
 from core import logger
 from core.platform.daw_agent import normalize_daw_host_context, normalize_daw_workspace
 from dashboard import music as music_routes
-from dashboard.routes.chat import _normalize_chat_images, _serialize_response_chain
+from dashboard.routes.chat import (
+    _file_display_attachments,
+    _message_with_file_context,
+    _normalize_chat_files,
+    _normalize_chat_images,
+    _serialize_response_chain,
+)
 
 if TYPE_CHECKING:
     from dashboard.server import Dashboard
@@ -23,10 +29,13 @@ def register(dashboard: Dashboard) -> None:
     async def daw_agent_chat():
         data = await request.get_json(silent=True) or {}
         message = str(data.get("message") or "").strip()
+        display_message = message
         try:
             images = _normalize_chat_images(data.get("images"))
+            files = _normalize_chat_files(data.get("files"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+        message = _message_with_file_context(message, files)
         if not message and not images:
             return jsonify({"error": "empty message"}), 400
 
@@ -88,6 +97,8 @@ def register(dashboard: Dashboard) -> None:
             workspace=workspace,
             host_context=host_context,
             images=images,
+            display_user_input=display_message,
+            file_attachments=_file_display_attachments(files),
             model=model,
             model_provider=model_provider,
         )

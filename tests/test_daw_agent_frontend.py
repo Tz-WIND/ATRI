@@ -30,6 +30,21 @@ def test_daw_workspace_picker_replaces_stash_button_without_context_chips():
     assert "Studio One connected" not in source
 
 
+def test_chat_input_supports_document_file_attachments():
+    source = CHAT_INPUT.read_text(encoding="utf-8")
+
+    assert "useDocumentSupport" in source
+    assert ':accept="documentAccept"' in source
+    assert "documentExtensions" in source
+    assert ".pdf,.docx,.pptx,.xlsx" not in source
+    assert "fileAttachments" in source
+    assert "openFilePicker" in source
+    assert "addDocumentFiles" in source
+    assert "cloneFileAttachments" in source
+    assert "const documentFiles = cloneFileAttachments()" in source
+    assert "emit('send', { text: draft, images, files })" in source
+
+
 def test_use_api_exposes_daw_agent_chat_endpoint():
     source = USE_API.read_text(encoding="utf-8")
 
@@ -39,6 +54,41 @@ def test_use_api_exposes_daw_agent_chat_endpoint():
     assert "instance_id" in source
     assert "host_context" in source
     assert "model_provider" in source
+
+
+def test_use_api_sends_document_files_for_chat_surfaces():
+    source = USE_API.read_text(encoding="utf-8")
+
+    assert "getDocumentSupport" in source
+    assert "/api/knowledge/document-support" in source
+    assert "sendMessage: (message, sessionId, images = [], files = [])" in source
+    assert "JSON.stringify({ message, session_id: sessionId, images, files })" in source
+    assert "files = []" in source
+    assert "files," in source
+
+
+def test_use_api_uses_shared_form_request_for_graph_ingest_uploads():
+    source = USE_API.read_text(encoding="utf-8")
+
+    assert "async function handleResponse(res)" in source
+    assert "async function requestForm(url, formData, options = {})" in source
+    assert "return requestForm('/api/knowledge/graph/ingest', formData)" in source
+    assert (
+        "return requestForm(`/api/knowledge/bases/${encodeURIComponent(kbId)}/documents/upload`, "
+        "formData)" in source
+    )
+
+
+def test_daw_agent_page_reuses_shared_chat_attachment_normalizers():
+    source = DAW_AGENT_PAGE.read_text(encoding="utf-8")
+
+    assert "chatAttachments.js" in source
+    assert "buildUserMessageAttachments" in source
+    assert "normalizeImagePayload" in source
+    assert "normalizeFilePayload" in source
+    assert "attachments: buildUserMessageAttachments(imagePayload, filePayload)" in source
+    assert "images: imagePayload" in source
+    assert "files: filePayload" in source
 
 
 def test_use_api_can_request_host_project_sync_for_daw_agent():
@@ -116,6 +166,14 @@ def test_daw_agent_page_reuses_chat_components_and_daw_api():
     assert '@set-workspace="setWorkspace"' in source
 
 
+def test_daw_agent_page_forwards_document_files_to_chat_api():
+    source = DAW_AGENT_PAGE.read_text(encoding="utf-8")
+
+    assert "const files = Array.isArray(payload?.files) ? payload.files : []" in source
+    assert "const filePayload = normalizeFilePayload(files)" in source
+    assert "files: filePayload" in source
+
+
 def test_daw_agent_page_reuses_http_assistant_response_dedupe():
     source = DAW_AGENT_PAGE.read_text(encoding="utf-8")
 
@@ -154,6 +212,24 @@ def test_use_chat_exposes_shared_http_assistant_response_handler():
 
     assert "normalizeAssistantChain" in source
     assert "addAssistantHttpResponse" in source
+
+
+def test_use_chat_sends_document_files_and_keeps_display_attachments():
+    source = (ROOT / "frontend" / "src" / "composables" / "useChat.js").read_text(encoding="utf-8")
+
+    assert "async function sendMessage(text, images = [], files = [])" in source
+    assert "normalizeFilePayload" in source
+    assert "normalizeFileAttachments" in source
+    assert "api.sendMessage(messageText, sessionId.value, imagePayload, filePayload)" in source
+
+
+def test_chat_page_forwards_document_files_to_shared_chat():
+    source = (ROOT / "frontend" / "src" / "components" / "chat" / "ChatPage.vue").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const files = Array.isArray(payload?.files) ? payload.files : []" in source
+    assert "await sendMessage(text, images, files)" in source
 
 
 def test_use_chat_restores_display_content_for_augmented_user_messages():

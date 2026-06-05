@@ -63,6 +63,33 @@ def _event_user_content(event: MessageEvent) -> str | list[dict]:
     return blocks
 
 
+def _event_display_user_content(event: MessageEvent) -> str | list[dict]:
+    raw_display = event._extras.get("display_user_input")
+    display_text = (
+        str(raw_display).strip() if isinstance(raw_display, str) else _event_plain_text(event)
+    )
+    images = _event_images(event)
+    if not images:
+        return display_text if isinstance(raw_display, str) else _event_user_content(event)
+
+    blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": display_text or "Please analyze the attached image(s).",
+        }
+    ]
+    for image in images:
+        blocks.append({"type": "image_url", "image_url": {"url": image.url}})
+    return blocks
+
+
+def _event_display_user_attachments(event: MessageEvent) -> list[dict]:
+    attachments = event._extras.get("file_attachments")
+    if not isinstance(attachments, list):
+        return []
+    return [item for item in attachments if isinstance(item, dict)]
+
+
 def _event_user_content_with_transcription(event: MessageEvent, transcription: str) -> str:
     text = _event_plain_text(event)
     parts = []
@@ -588,7 +615,7 @@ class ProcessStage(Stage):
             with self._active_lock:
                 self._active_session_ids.add(session_id)
             agent.high_privilege_tools_allowed = _event_allows_high_privilege_tools(event)
-            display_user_content = _event_user_content(event)
+            display_user_content = _event_display_user_content(event)
             user_content = await self._event_content_for_agent(event)
             response = await agent.chat_async(
                 user_content,
@@ -599,6 +626,7 @@ class ProcessStage(Stage):
                 on_tool_start=turn.on_tool_start,
                 on_tool_end=turn.on_tool_end,
                 display_user_input=display_user_content,
+                display_user_attachments=_event_display_user_attachments(event),
             )
             response_text = response or ""
             turn.mark_thinking_done()

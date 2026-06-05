@@ -17,6 +17,7 @@ dependencies = [
     "rdkit>=2026.3.2",
     "neo4j>=6,<7",
     "pillow>=10.0",
+    "pypdf>=5,<7",
 ]
 
 [tool.uv]

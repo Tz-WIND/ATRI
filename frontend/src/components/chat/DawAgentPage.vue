@@ -119,6 +119,11 @@ import ChatInput from './ChatInput.vue'
 import ChatMessage from './ChatMessage.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 import ToolCard from './ToolCard.vue'
+import {
+  buildUserMessageAttachments,
+  normalizeFilePayload,
+  normalizeImagePayload,
+} from '@/composables/chatAttachments.js'
 import { buildChatDisplayItems } from '@/composables/chatDisplayItems.js'
 import { useApi } from '@/composables/useApi.js'
 import { useChat } from '@/composables/useChat.js'
@@ -215,11 +220,16 @@ function setWorkspace(nextWorkspace) {
 async function handleSend(payload) {
   const text = typeof payload === 'string' ? payload : payload?.text || ''
   const images = Array.isArray(payload?.images) ? payload.images : []
-  if ((!text.trim() && !images.length) || sending.value) return
+  const files = Array.isArray(payload?.files) ? payload.files : []
+  const imagePayload = normalizeImagePayload(images)
+  const filePayload = normalizeFilePayload(files)
+  if ((!text.trim() && !imagePayload.length && !filePayload.length) || sending.value) return
 
   clearThinking()
   clearToolCards()
-  addMessage('user', text, false)
+  addMessage('user', text, false, {
+    attachments: buildUserMessageAttachments(imagePayload, filePayload),
+  })
   sending.value = true
   const hostAutoImport = workspace.value === 'host_project' && autoImportOnSend.value
   hostProjectSyncStatus.value = hostAutoImport
@@ -239,7 +249,8 @@ async function handleSend(payload) {
         host: hostName.value,
         workspace: workspace.value,
       },
-      images,
+      images: imagePayload,
+      files: filePayload,
       model: activeModel.value,
       modelProvider: activeModelProvider.value,
     })

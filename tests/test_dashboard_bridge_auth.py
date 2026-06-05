@@ -29,6 +29,8 @@ class _FakeDawAgent:
         workspace="atri_studio",
         host_context=None,
         images=None,
+        display_user_input=None,
+        file_attachments=None,
         model="",
         model_provider="",
     ):

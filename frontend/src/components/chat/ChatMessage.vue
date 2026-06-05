@@ -16,7 +16,7 @@
               class="msg-text user-text"
             >{{ message.content }}</pre>
             <div
-              v-if="userAttachments.length"
+              v-if="userAttachments.length || userFileAttachments.length"
               class="user-attachments"
             >
               <figure
@@ -30,6 +30,23 @@
                 >
                 <figcaption>{{ image.name || 'image' }}</figcaption>
               </figure>
+              <div
+                v-for="file in userFileAttachments"
+                :key="file.id || file.name"
+                class="user-file"
+                :title="file.name"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
+                </svg>
+                <span>{{ file.name || 'file' }}</span>
+              </div>
             </div>
           </div>
           <span
@@ -98,6 +115,12 @@ const props = defineProps({
 const userAttachments = computed(() => (
   Array.isArray(props.message.attachments)
     ? props.message.attachments.filter((image) => safeImageSrc(image.src))
+    : []
+))
+
+const userFileAttachments = computed(() => (
+  Array.isArray(props.message.attachments)
+    ? props.message.attachments.filter((file) => file?.kind === 'file')
     : []
 ))
 
@@ -354,6 +377,35 @@ async function handleMarkdownClick(event) {
   white-space: nowrap;
   padding: 4px 6px 5px;
   color: var(--t3);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.user-file {
+  min-width: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: rgba(24, 24, 24, 0.5);
+  color: var(--t2);
+  padding: 0 9px;
+}
+
+.user-file svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--acc2);
+}
+
+.user-file span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--mono);
   font-size: 10px;
 }

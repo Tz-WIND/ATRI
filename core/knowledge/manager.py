@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+from core.document_text import extract_document_text
 from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.embedding import (
     EmbeddingClient,
@@ -221,7 +222,7 @@ class KnowledgeBaseManager:
         content: bytes,
         file_type: str | None = None,
     ) -> dict:
-        text = content.decode("utf-8")
+        text = extract_document_text(file_name, content)
         return await self.import_document(
             kb_id,
             file_name=file_name,

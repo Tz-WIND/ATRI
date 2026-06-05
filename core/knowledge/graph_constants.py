@@ -30,7 +30,7 @@ GRAPH_CONTEXT_GUIDANCE = (
     "每行格式为 Subject -[predicate]-> Object，括号内为 evidence。"
     "可跨跳串联相关事实（例如 Person→Project 与 Project→Tool）。"
     "若这些事实能回答问题则据此作答；仅当确实没有相关内容时才说明未知。"
-    "专有名词、Tool/Project 名称、predicate 保持原文（通常为英文）。"
+    "实体名保持原文语言（中文/英文/日文等，不翻译）；predicate 保持 lower_snake_case 英文。"
 )
 
 

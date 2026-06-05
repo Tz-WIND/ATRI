@@ -50,10 +50,17 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "manualGraphIngestForm" in source
     assert "runManualGraphIngest" in source
     assert "handleManualGraphFile" in source
-    assert "sourceName" in source
+    assert "manualGraphIngestFile" in source
+    assert "selectedManualGraphFileName" in source
+    assert "useDocumentSupport" in source
+    assert "await loadDocumentSupport()" in source
+    assert ':accept="documentAccept"' in source
+    assert ".pdf,.docx,.pptx,.xlsx" not in source
     assert "onManualGraphContentInput" in source
     assert "ingestKnowledgeGraph" in api_source
     assert "/api/knowledge/graph/ingest" in api_source
+    assert "getDocumentSupport" in api_source
+    assert "/api/knowledge/document-support" in api_source
     assert "Source Name" not in source
     assert "graph-query-result" in source
     assert "Extraction Model" in source

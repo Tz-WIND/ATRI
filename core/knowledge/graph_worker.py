@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core import logger
 from core.agent.llm import LLM
@@ -23,6 +24,7 @@ from core.runtime import TaskStore
 
 _EXTRACTION_MAX_ATTEMPTS = 3
 _GRAPH_EXTRACTION_DEFAULT_MAX_TOKENS = 4096
+_EXTRACTION_CONTEXT_QUERY_MAX_CHARS = 2000
 
 
 @dataclass
@@ -416,15 +418,18 @@ class GraphKnowledgeManager:
         source_kind: str,
         metadata: dict[str, Any],
     ) -> tuple[list[dict], str | None]:
+        existing_graph_context = await self._existing_graph_context_for_extraction(text)
         last_error: Exception | None = None
         for attempt in range(1, _EXTRACTION_MAX_ATTEMPTS + 1):
             try:
                 return (
-                    await self.extractor.extract_facts(
+                    await _extractor_extract_facts(
+                        self.extractor,
                         text,
                         source_id=source_id,
                         source_kind=source_kind,
                         metadata=metadata,
+                        existing_graph_context=existing_graph_context,
                     ),
                     None,
                 )
@@ -457,6 +462,28 @@ class GraphKnowledgeManager:
             },
         )
         return [], error
+
+    async def _existing_graph_context_for_extraction(self, text: str) -> str:
+        if not self.graph_config.get("enabled") or not self.graph_config.get("retrieval_enabled"):
+            return ""
+        query = str(text or "").strip()[:_EXTRACTION_CONTEXT_QUERY_MAX_CHARS]
+        if not query:
+            return ""
+        try:
+            return await asyncio.to_thread(
+                self.graph_client.retrieve_context,
+                query=query,
+                source_ids=[],
+                max_facts=max(1, int(self.graph_config.get("max_facts") or 8)),
+                retrieval_depth=_retrieval_depth(self.graph_config.get("retrieval_depth", 1)),
+                ranking_policy=_ranking_policy(self.graph_config.get("ranking_policy")),
+                expansion_candidate_limit=_expansion_candidate_limit(
+                    self.graph_config.get("expansion_candidate_limit")
+                ),
+            )
+        except Exception as e:
+            logger.warning("Graph extraction context retrieval skipped: %s", e)
+            return ""
 
     def _create_llm(self) -> LLM:
         cfg = self.config
@@ -660,6 +687,50 @@ def _find_active_chat_model_entry(config: dict[str, Any], provider: str, model: 
         if str(entry.get("provider") or "") == provider and str(entry.get("model") or "") == model:
             return entry
     return None
+
+
+async def _extractor_extract_facts(
+    extractor: Any,
+    text: str,
+    *,
+    source_id: str,
+    source_kind: str,
+    metadata: dict[str, Any],
+    existing_graph_context: str,
+) -> list[dict]:
+    method = extractor.extract_facts
+    if _accepts_existing_graph_context(method):
+        return cast(
+            list[dict],
+            await method(
+                text,
+                source_id=source_id,
+                source_kind=source_kind,
+                metadata=metadata,
+                existing_graph_context=existing_graph_context,
+            ),
+        )
+    return cast(
+        list[dict],
+        await method(
+            text,
+            source_id=source_id,
+            source_kind=source_kind,
+            metadata=metadata,
+        ),
+    )
+
+
+def _accepts_existing_graph_context(method: Any) -> bool:
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "existing_graph_context"
+        or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 def _chat_turn_text(user_text: str, assistant_text: str) -> str:

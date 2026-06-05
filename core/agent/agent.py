@@ -49,10 +49,13 @@ def _prepend_user_notice(user_input: str | list[dict], notice: str) -> str | lis
 def _user_message(
     content: str | list[dict],
     display_content: str | list[dict] | None = None,
+    display_attachments: list[dict] | None = None,
 ) -> dict:
     message: dict = {"role": "user", "content": content}
     if display_content is not None:
         message["_atri_display_content"] = display_content
+    if display_attachments:
+        message["_atri_attachments"] = list(display_attachments)
     return message
 
 
@@ -237,6 +240,7 @@ class Agent:
         on_tool_end: Callable | None = None,
         *,
         display_user_input: str | list[dict] | None = None,
+        display_user_attachments: list[dict] | None = None,
     ) -> str:
         """Process one user message. May involve multiple LLM/tool rounds.
 
@@ -263,10 +267,13 @@ class Agent:
                         ),
                     ),
                     display_user_input if display_user_input is not None else user_input,
+                    display_user_attachments,
                 )
             )
         else:
-            self.messages.append(_user_message(user_input, display_user_input))
+            self.messages.append(
+                _user_message(user_input, display_user_input, display_user_attachments)
+            )
 
         self.context.maybe_compress(self.messages, self.llm, self._build_system())
 
@@ -347,6 +354,7 @@ class Agent:
         on_tool_end: Callable | None = None,
         *,
         display_user_input: str | list[dict] | None = None,
+        display_user_attachments: list[dict] | None = None,
     ) -> str:
         """Async wrapper: runs the synchronous chat in a thread executor."""
         loop = asyncio.get_running_loop()
@@ -361,6 +369,7 @@ class Agent:
                 on_tool_start=on_tool_start,
                 on_tool_end=on_tool_end,
                 display_user_input=display_user_input,
+                display_user_attachments=display_user_attachments,
             ),
         )
 

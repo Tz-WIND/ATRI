@@ -190,7 +190,7 @@
         @focus="updateInlinePanel"
       />
       <div
-        v-if="attachments.length"
+        v-if="attachments.length || fileAttachments.length"
         class="attachment-row"
       >
         <div
@@ -221,6 +221,43 @@
             </svg>
           </button>
         </div>
+        <div
+          v-for="file in fileAttachments"
+          :key="file.id"
+          class="attachment-chip file-attachment"
+          :title="`${file.name} (${formatSize(file.size)})`"
+        >
+          <span class="attachment-file-icon">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+              <path d="M8 13h8" />
+              <path d="M8 17h5" />
+            </svg>
+          </span>
+          <span class="attachment-name">{{ file.name }}</span>
+          <span class="attachment-size">{{ formatSize(file.size) }}</span>
+          <button
+            class="attachment-remove"
+            type="button"
+            title="Remove file"
+            @click="removeFileAttachment(file.id)"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
       </div>
       <input
         ref="imageInput"
@@ -229,6 +266,14 @@
         :accept="IMAGE_ACCEPT"
         multiple
         @change="onImageSelected"
+      >
+      <input
+        ref="fileInput"
+        class="attachment-input"
+        type="file"
+        :accept="documentAccept"
+        multiple
+        @change="onFileSelected"
       >
       <div class="input-toolbar">
         <div class="tools-left">
@@ -376,6 +421,22 @@
           </div>
           <button
             class="icon-btn"
+            :class="{ active: fileAttachments.length }"
+            type="button"
+            :title="fileAttachments.length ? `${fileAttachments.length} file attached` : 'Attach file'"
+            @click="openFilePicker"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
+          <button
+            class="icon-btn"
             :class="{ active: attachments.length }"
             type="button"
             :title="attachments.length ? `${attachments.length} image attached` : 'Attach image'"
@@ -447,6 +508,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useApi } from '@/composables/useApi.js'
+import { useDocumentSupport } from '@/composables/useDocumentSupport.js'
 import ModelSelector from './ModelSelector.vue'
 
 const HISTORY_KEY = 'atri.composerHistory.v1'
@@ -460,6 +522,8 @@ const MAX_IMAGE_ATTACHMENTS = 4
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif'
 const IMAGE_TYPES = new Set(IMAGE_ACCEPT.split(','))
+const MAX_DOCUMENT_ATTACHMENTS = 4
+const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 
 const props = defineProps({
   sending: { type: Boolean, default: false },
@@ -471,10 +535,12 @@ const props = defineProps({
 
 const emit = defineEmits(['send', 'cancel', 'set-mode', 'set-workspace'])
 const api = useApi()
+const { documentAccept, loadDocumentSupport } = useDocumentSupport()
 
 const text = ref('')
 const textarea = ref(null)
 const imageInput = ref(null)
+const fileInput = ref(null)
 const popover = ref(null)
 const modePicker = ref(null)
 const workspacePicker = ref(null)
@@ -489,6 +555,7 @@ const queuedDrafts = ref([])
 const history = ref([])
 const stash = ref([])
 const attachments = ref([])
+const fileAttachments = ref([])
 const fileIndex = ref([])
 const filesLoading = ref(false)
 const fileIndexLoaded = ref(false)
@@ -662,7 +729,25 @@ const workspaceOptions = computed(() => [
   },
 ])
 
-const hasDraft = computed(() => Boolean(text.value.trim() || attachments.value.length))
+const hasDraft = computed(() => Boolean(
+  text.value.trim() || attachments.value.length || fileAttachments.value.length,
+))
+
+const documentExtensions = computed(() => new Set(
+  documentAccept.value
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean),
+))
+
+const documentTypeLabel = computed(() => {
+  const labels = Array.from(documentExtensions.value)
+    .map(extension => extension.replace(/^\./, '').toUpperCase())
+  if (!labels.length) return 'supported document'
+  if (labels.length === 1) return labels[0]
+  if (labels.length === 2) return labels.join(' or ')
+  return `${labels.slice(0, -1).join(', ')}, or ${labels[labels.length - 1]}`
+})
 
 const hasPanelSearch = computed(() => ['palette', 'history', 'stash'].includes(activePanel.value))
 
@@ -899,12 +984,24 @@ function formatImageCount(count) {
   return `${count} image${count === 1 ? '' : 's'}`
 }
 
+function formatDocumentCount(count) {
+  return `${count} file${count === 1 ? '' : 's'}`
+}
+
 function openImagePicker() {
   imageInput.value?.click()
 }
 
+function openFilePicker() {
+  fileInput.value?.click()
+}
+
 function onImageSelected(event) {
   addImageFiles(event.target?.files)
+}
+
+function onFileSelected(event) {
+  addDocumentFiles(event.target?.files)
 }
 
 function onPaste(event) {
@@ -937,7 +1034,7 @@ async function addImageFiles(fileList) {
       continue
     }
     try {
-      const dataUrl = await readImageFile(file)
+      const dataUrl = await readFileAsDataUrl(file)
       attachments.value.push({
         id: makeId(),
         name: file.name || `image-${attachments.value.length + 1}`,
@@ -959,7 +1056,57 @@ async function addImageFiles(fileList) {
   resetImageInput()
 }
 
-function readImageFile(file) {
+async function addDocumentFiles(fileList) {
+  const files = Array.from(fileList || [])
+  if (!files.length) return
+
+  const slots = MAX_DOCUMENT_ATTACHMENTS - fileAttachments.value.length
+  if (slots <= 0) {
+    showStatus(`Limit ${MAX_DOCUMENT_ATTACHMENTS} files`)
+    resetFileInput()
+    return
+  }
+
+  let added = 0
+  for (const file of files.slice(0, slots)) {
+    const extension = documentExtension(file.name)
+    if (documentExtensions.value.size && !documentExtensions.value.has(extension)) {
+      showStatus(`Use ${documentTypeLabel.value} files`)
+      continue
+    }
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      showStatus(`File must be ${formatSize(MAX_DOCUMENT_BYTES)} or smaller`)
+      continue
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file)
+      fileAttachments.value.push({
+        id: makeId(),
+        name: file.name || `file-${fileAttachments.value.length + 1}${extension}`,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+        dataUrl,
+      })
+      added += 1
+    } catch {
+      showStatus('Unable to read file')
+    }
+  }
+
+  if (files.length > slots) {
+    showStatus(`Attached ${added}, limit ${MAX_DOCUMENT_ATTACHMENTS}`)
+  } else if (added) {
+    showStatus(`Attached ${formatDocumentCount(added)}`)
+  }
+  resetFileInput()
+}
+
+function documentExtension(name) {
+  const match = String(name || '').toLowerCase().match(/\.[^.]+$/)
+  return match ? match[0] : ''
+}
+
+function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(String(reader.result || ''))
@@ -973,15 +1120,28 @@ function removeAttachment(id) {
   resetImageInput()
 }
 
+function removeFileAttachment(id) {
+  fileAttachments.value = fileAttachments.value.filter((file) => file.id !== id)
+  resetFileInput()
+}
+
 function resetImageInput() {
   if (imageInput.value) {
     imageInput.value.value = ''
   }
 }
 
+function resetFileInput() {
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
+}
+
 function clearAttachments() {
   attachments.value = []
+  fileAttachments.value = []
   resetImageInput()
+  resetFileInput()
 }
 
 function cloneAttachments(images = attachments.value) {
@@ -991,6 +1151,16 @@ function cloneAttachments(images = attachments.value) {
     type: image.type,
     size: image.size,
     dataUrl: image.dataUrl,
+  }))
+}
+
+function cloneFileAttachments(files = fileAttachments.value) {
+  return files.map((file) => ({
+    id: file.id,
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    dataUrl: file.dataUrl,
   }))
 }
 
@@ -1445,18 +1615,19 @@ function replaceInlineTrigger(replacement) {
 function submitDraft() {
   const draft = text.value.trim()
   const images = cloneAttachments()
-  if (!draft && !images.length) return
+  const documentFiles = cloneFileAttachments()
+  if (!draft && !images.length && !documentFiles.length) return
   closePanel({ focus: false })
-  if (!images.length && runComposerCommand(draft)) {
+  if (!images.length && !documentFiles.length && runComposerCommand(draft)) {
     return
   }
   if (props.sending) {
-    queueDraft(text.value, images)
+    queueDraft(text.value, images, documentFiles)
     setComposerText('')
     clearAttachments()
     return
   }
-  dispatchDraft(text.value, images)
+  dispatchDraft(text.value, images, documentFiles)
   setComposerText('')
   clearAttachments()
 }
@@ -1507,28 +1678,29 @@ function clearComposerWithoutFocus() {
   autoResize()
 }
 
-function queueDraft(draft, images = []) {
+function queueDraft(draft, images = [], files = []) {
   queuedDrafts.value.push({
     id: makeId(),
     text: draft,
     images,
+    files,
     ts: Date.now(),
   })
   showStatus(`Queued draft ${queuedDrafts.value.length}`)
 }
 
-function dispatchDraft(draft, images = []) {
+function dispatchDraft(draft, images = [], files = []) {
   const value = draft.trim()
-  if (!value && !images.length) return
+  if (!value && !images.length && !files.length) return
   if (value) pushHistory(value)
-  emit('send', { text: draft, images })
+  emit('send', { text: draft, images, files })
 }
 
 function flushNextQueuedDraft() {
   if (props.sending || !queuedDrafts.value.length) return
   const next = queuedDrafts.value.shift()
   if (!next) return
-  dispatchDraft(next.text || '', next.images || [])
+  dispatchDraft(next.text || '', next.images || [], next.files || [])
   showStatus(queuedDrafts.value.length ? `Sent queued draft, ${queuedDrafts.value.length} left` : 'Sent queued draft')
 }
 
@@ -1621,6 +1793,7 @@ async function loadFileIndex() {
 }
 
 onMounted(() => {
+  void loadDocumentSupport()
   history.value = readJson(HISTORY_KEY, [])
     .map(normalizeHistoryEntry)
     .filter(Boolean)
@@ -2003,6 +2176,23 @@ onUnmounted(() => {
   border-radius: 6px;
   object-fit: cover;
   background: rgba(255, 255, 255, 0.05);
+}
+
+.attachment-file-icon {
+  grid-row: 1 / 3;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(125, 168, 232, 0.12);
+  color: var(--acc2);
+}
+
+.attachment-file-icon svg {
+  width: 20px;
+  height: 20px;
 }
 
 .attachment-name,

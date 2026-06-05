@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 
 from core.knowledge.extraction import (
+    EXISTING_GRAPH_CONTEXT_METADATA_KEY,
     MAX_EXTRACTION_TUPLES,
     MAX_HYPER_CHAIN_EDGES,
     MAX_HYPER_ROLES,
@@ -45,7 +46,9 @@ def test_build_extraction_prompt_prefers_person_tool_links_for_chat():
     assert "不要用 User、用户" in prompt
     assert "林晚 -[uses]-> Ableton Live" in prompt
     assert "孤立 Concept" in prompt
-    assert "专有名词保持英文" in prompt
+    assert "严格保持原文语言" in prompt
+    assert "禁止自行翻译" in prompt
+    assert "禁止滥用 related_to" in prompt
     assert "事件类内容" in prompt
     assert "双中心" in prompt or "同为图谱中心" in prompt
 
@@ -71,7 +74,7 @@ def test_format_graph_context_includes_usage_guidance():
 
     assert context.startswith("[Graph context]\n")
     assert "跨跳串联" in context
-    assert "predicate 保持原文" in context
+    assert "实体名保持原文语言" in context
     assert context.endswith("- Alice -[works_at]-> Acme")
 
 
@@ -744,6 +747,33 @@ async def test_graph_tuple_extractor_uses_chat_specific_durable_fact_prompt():
     assert f"每条最多 {MAX_HYPER_ROLES} 个 role" in system_prompt
     assert f"最多 {MAX_HYPER_CHAIN_EDGES} 条 chain 边" in system_prompt
     assert f"最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_graph_tuple_extractor_includes_existing_graph_context_in_user_prompt():
+    captured = {}
+    existing_context = format_graph_context(["- Alice -[works_at]-> Acme"])
+
+    class FakeLLM:
+        def chat(self, messages, stream=False):
+            captured["messages"] = messages
+            return type("Response", (), {"content": '{"tuples":[]}'})()
+
+    extractor = GraphTupleExtractor(lambda: FakeLLM())
+
+    facts = await extractor.extract_facts(
+        "Alice now works on Neo4j graph extraction.",
+        source_id="chunk-existing-context",
+        source_kind="document",
+        metadata={EXISTING_GRAPH_CONTEXT_METADATA_KEY: existing_context},
+    )
+
+    user_content = captured["messages"][1]["content"]
+    assert facts == []
+    assert "当前图数据库中按本文本检索到的已有事实" in user_content
+    assert existing_context in user_content
+    assert "不要把已有事实当作本次待抽取文本的证据来源" in user_content
+    assert user_content.rstrip().endswith("Alice now works on Neo4j graph extraction.")
 
 
 @pytest.mark.asyncio
@@ -2106,6 +2136,44 @@ class FailingSecondBatchExtractor:
         )
 
 
+class ContextRecordingExtractor:
+    def __init__(self):
+        self.calls = []
+
+    async def extract_facts(
+        self,
+        text,
+        *,
+        source_id,
+        source_kind,
+        metadata=None,
+        existing_graph_context="",
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "source_id": source_id,
+                "source_kind": source_kind,
+                "metadata": dict(metadata or {}),
+                "existing_graph_context": existing_graph_context,
+            }
+        )
+        return normalize_extracted_facts(
+            [
+                {
+                    "subject": "Alice",
+                    "subject_type": "Person",
+                    "predicate": "works_on",
+                    "object": "Neo4j graph extraction",
+                    "object_type": "Project",
+                }
+            ],
+            source_id=source_id,
+            source_kind=source_kind,
+            metadata=metadata,
+        )
+
+
 class FakeGraphClient:
     def __init__(self):
         self.facts = []
@@ -2267,6 +2335,66 @@ async def test_graph_manager_processes_document_jobs_in_background(tmp_path):
         assert task is not None
         assert task["status"] == "completed"
         assert graph.facts[0]["source_id"] == "chunk-1"
+    finally:
+        await manager.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_retrieves_existing_graph_context_before_extraction(tmp_path):
+    store = TaskStore(tmp_path / "runtime")
+    graph = FakeGraphClient()
+    extractor = ContextRecordingExtractor()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "extraction_enabled": True,
+                    "extraction_sources": ["documents"],
+                    "retrieval_enabled": True,
+                    "retrieval_depth": 3,
+                    "max_facts": 5,
+                    "expansion_candidate_limit": 24,
+                    "ranking_policy": "latest",
+                    "queue_max_size": 10,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, extractor),
+        task_store=store,
+    )
+    try:
+        await manager.initialize()
+        task_id = manager.enqueue_document(
+            kb_id="kb-1",
+            doc_id="doc-1",
+            doc_name="notes.txt",
+            chunks=[
+                {
+                    "chunk_id": "chunk-context",
+                    "content": "Alice now works on Neo4j graph extraction.",
+                }
+            ],
+        )
+        await manager.drain(wait_seconds=2)
+
+        assert task_id is not None
+        assert graph.retrieve_calls == [
+            {
+                "query": "Alice now works on Neo4j graph extraction.",
+                "source_ids": [],
+                "max_facts": 5,
+                "retrieval_depth": 3,
+                "ranking_policy": "latest",
+                "expansion_candidate_limit": 24,
+            }
+        ]
+        assert extractor.calls[0]["existing_graph_context"] == format_graph_context(
+            ["- Alice -[works_at]-> Acme"]
+        )
+        assert EXISTING_GRAPH_CONTEXT_METADATA_KEY not in graph.facts[0]["metadata"]
     finally:
         await manager.close()
         store.close()

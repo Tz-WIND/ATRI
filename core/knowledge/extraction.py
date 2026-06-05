@@ -31,6 +31,7 @@ MAX_HYPER_TUPLES = 4
 MAX_HYPER_ROLES = 6
 MAX_HYPER_CHAIN_EDGES = 5
 MAX_EXTRACTION_TUPLES = 18
+EXISTING_GRAPH_CONTEXT_METADATA_KEY = "existing_graph_context"
 ROLE_CHAIN_PREDICATES = {
     ("actor", "tool"): "uses",
     ("actor", "model"): "uses",
@@ -397,12 +398,19 @@ class GraphTupleExtractor:
         source_id: str,
         source_kind: str,
         metadata: dict[str, Any] | None = None,
+        existing_graph_context: str = "",
     ) -> list[dict]:
         cleaned = str(text or "").strip()
         if not cleaned:
             return []
         llm = self.llm_factory()
-        user_content = _build_segmented_user_content(cleaned, metadata)
+        prompt_metadata = dict(metadata or {})
+        context_text = str(
+            existing_graph_context or prompt_metadata.get(EXISTING_GRAPH_CONTEXT_METADATA_KEY) or ""
+        ).strip()
+        if context_text:
+            prompt_metadata[EXISTING_GRAPH_CONTEXT_METADATA_KEY] = context_text
+        user_content = _build_segmented_user_content(cleaned, prompt_metadata)
         messages = [
             {
                 "role": "system",
@@ -431,7 +439,7 @@ class GraphTupleExtractor:
             source_id=source_id,
             source_kind=source_kind,
             default_evidence=cleaned[:500],
-            metadata=metadata,
+            metadata=_fact_metadata(metadata),
         )
 
 
@@ -450,6 +458,14 @@ def _extraction_response_text(response: Any) -> str:
     if reasoning_content:
         return reasoning_content
     return ""
+
+
+def _fact_metadata(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return metadata
+    cleaned = dict(metadata)
+    cleaned.pop(EXISTING_GRAPH_CONTEXT_METADATA_KEY, None)
+    return cleaned
 
 
 def parse_extraction_json(text: str) -> Any:
@@ -573,7 +589,7 @@ def normalize_extracted_facts(
 
 
 def _build_segmented_user_content(text: str, metadata: dict[str, Any] | None) -> str:
-    prefix = ""
+    prefixes: list[str] = []
     if isinstance(metadata, dict):
         try:
             part_count = int(metadata.get("text_part_count") or 0)
@@ -582,13 +598,22 @@ def _build_segmented_user_content(text: str, metadata: dict[str, Any] | None) ->
             part_count = 0
             part_index = 0
         if part_count > 1 and part_index > 0:
-            prefix = (
+            prefixes.append(
                 f"[文本分段 {part_index}/{part_count}] "
                 "原文因过长被分成多段；仅抽取本段文本中明确支持的事实。"
-                "段首段尾可能与相邻段重叠，仅用于保留上下文。\n\n"
+                "段首段尾可能与相邻段重叠，仅用于保留上下文。"
+            )
+        existing_context = str(metadata.get(EXISTING_GRAPH_CONTEXT_METADATA_KEY) or "").strip()
+        if existing_context:
+            prefixes.append(
+                "[已有图谱上下文]\n"
+                "以下是当前图数据库中按本文本检索到的已有事实，仅用于实体对齐、"
+                "关系去重、补充歧义判断。不要把已有事实当作本次待抽取文本的证据来源；"
+                "新输出的事实仍必须由下方待抽取文本明确支持。\n"
+                f"{existing_context}"
             )
     body = text[:GRAPH_EXTRACTION_INPUT_MAX_CHARS]
-    return prefix + body
+    return "\n\n".join([*prefixes, body])
 
 
 def build_extraction_prompt(source_kind: str) -> str:
@@ -599,10 +624,10 @@ def build_extraction_prompt(source_kind: str) -> str:
         "只返回合法 JSON，结构如下（字段名保持英文）：",
         "不要输出 JSON 以外的说明或分析。",
         (
-            '{"tuples":[{"subject":"canonical entity name",'
+            '{"tuples":[{"subject":"原文实体名（不翻译）",'
             '"subject_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
-            '"predicate":"lower_snake_case_relation",'
-            '"object":"canonical entity name or concise value",'
+            '"predicate":"specific_lower_snake_case_relation",'
+            '"object":"原文实体名或原文中的简洁取值（不翻译）",'
             '"object_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
             '"evidence":"short quote or close paraphrase from the text",'
             '"confidence":0.0}]}'
@@ -610,15 +635,16 @@ def build_extraction_prompt(source_kind: str) -> str:
         "",
         "若同一事实包含三个及以上角色，另用 hyper_tuples：",
         (
-            '{"hyper_tuples":[{"event":"canonical event/fact name",'
+            '{"hyper_tuples":[{"event":"原文事件名（不翻译）",'
             '"event_type":"Decision|Event|Process|Error|Other",'
-            '"predicate":"main_relation",'
+            '"predicate":"most_specific_main_relation",'
             '"roles":[{"role":"actor|source|provider|tool|model|version|environment|'
             "system|config|file|library|project|target|purpose|cause|error|effect|"
             'result|other",'
-            '"entity":"canonical entity name",'
+            '"entity":"原文实体名（不翻译）",'
             '"entity_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other"}],'
-            '"chain":[{"from_role":"actor","predicate":"uses","to_role":"tool"}],'
+            '"chain":[{"from_role":"actor","predicate":"uses","to_role":"tool"},'
+            '{"from_role":"tool","predicate":"configured_with","to_role":"config"}],'
             '"evidence":"short quote or close paraphrase from the text",'
             '"confidence":0.0}]}'
         ),
@@ -660,15 +686,56 @@ def build_extraction_prompt(source_kind: str) -> str:
             "- 技术事实与事件事实同等重要：Tool/Model/Error/config 要写；"
             "事件、Person、Tool、地点、组织等也要写。"
         ),
+        "",
+        "实体命名（语言与 canonical）：",
+        (
+            "- subject/object/event/roles.entity 必须使用原文中的实体表面形式，"
+            "严格保持原文语言与写法；禁止自行翻译、音译、罗马化或添加英文括号注释。"
+        ),
+        (
+            "- 中文人名/项目/地点/组织写中文（如 林晚、星尘计划、新加坡）；"
+            "英文专有名词写英文（如 Neo4j、Ableton Live）；"
+            "日文/韩文等亦保持原文脚本，不要改成英文等价词。"
+        ),
+        (
+            "- canonical 指同一文档/会话内拼写一致，不是把实体统一译成英文；"
+            "同一实体只用一种写法，但不得改变语言。"
+        ),
+        ("- entity_type 仍用英文 schema 值；predicate 仍用 lower_snake_case 英文关系名。"),
         ("- 使用稳定的 canonical 实体名；避免模糊主语 user/this/it/message，除非无法避免。"),
         ("- 助手统一用实体名 ATRI；不要另建 Assistant、Bot、助手 等实体。"),
+        "",
+        "关系细化（predicate 选择）：",
         (
-            "- predicate 尽量用 lower_snake_case 英文：uses, depends_on, "
-            "configured_with, failed_because, caused_by, causes, fixed_by, prefers, "
-            "avoids, requires, constrained_by, has_trait, has_identity, has_style, "
-            "located_at, belongs_to, supports, works_on, produces, has_version, runs_on, "
-            "involves_person, involves_item, has_participant；"
-            "也可用其它贴合原文的 lower_snake_case。"
+            "- 优先最具体、可检索、方向明确的关系；"
+            "禁止滥用 related_to、associated_with、has、connected_to、involves 等泛化谓词，"
+            "除非原文确实无法区分更细关系。"
+        ),
+        (
+            "- 按原文动词/因果/从属选 predicate："
+            "使用→uses；依赖→depends_on；配置→configured_with；"
+            "失败原因→failed_because；根因→caused_by；导致→causes；修复→fixed_by；"
+            "偏好→prefers；回避→avoids；要求→requires；约束→constrained_by；"
+            "位于→located_at；属于→belongs_to；负责/参与项目→works_on；"
+            "支持用途→supports；产出→produces；版本→has_version；运行于→runs_on；"
+            "转交→transferred_to；涉及人员→involves_person；涉及物品→involves_item。"
+        ),
+        (
+            "- 一句含多个动作/对象时，拆成多条不同 predicate 的边，"
+            "不要合并成一条 related_to 或单个 Event 摘要。"
+        ),
+        (
+            "- hyper_tuple 的 chain 中每条边必须写独立、具体的 predicate，"
+            "不得让所有 chain 边复用同一个 main_relation 或 related_to。"
+        ),
+        (
+            "- 能区分因果/配置/用途/归属时，不要降级为 uses 或 related_to；"
+            "例：「因权限不足失败」用 failed_because，不用 causes；"
+            "「把 temperature 设为 0.7」用 configured_with，不用 uses。"
+        ),
+        (
+            "- 也可用其它贴合原文语义的 lower_snake_case predicate；"
+            "新 predicate 仍须比 related_to 更具体。"
         ),
         (
             "- 合并重复项，保留最具体版本；evidence 用原文短引或贴近原文的 "
@@ -705,16 +772,20 @@ def build_extraction_prompt(source_kind: str) -> str:
         '- 若无有用事实，返回 {"tuples":[]}。',
         f"- 最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples（含 hyper 展开前的条目）；"
         "事件类文本优先完整覆盖事件属性、involves_person 与参与者动作，避免只留少量摘要边。",
-        "- Tool/Model/Library/File 等专有名词保持英文原文（如 Ableton Live、Neo4j、config.yaml）。",
         "",
-        "事件类双中心示例（占位名，勿照抄未出现的实体）：",
+        "事件类双中心示例（占位名，勿照抄未出现的实体；实体名保持原文语言）：",
+        "- 星尘计划发布 -[located_at]-> 新加坡 (evidence: …)",
+        "- 星尘计划发布 -[involves_person]-> 林晚 (evidence: 林晚主持 …)",
+        "- 林晚 -[works_on]-> 星尘计划发布 (evidence: …)",
         "- Q3 Product Launch -[located_at]-> Singapore (evidence: …)",
         "- Q3 Product Launch -[involves_person]-> Alice (evidence: Alice led …)",
         "- Alice -[works_on]-> Q3 Product Launch (evidence: …)",
         (
-            "- hyper_tuple：event 均为 Q3 Product Launch；roles=Alice(actor)、CI(tool)；"
-            "chain actor-[uses]->tool；另可写 Bob(target) 等分步 chain。"
-            "勿另建「Alice 配置 CI」类 Event 节点。"
+            "- hyper_tuple：event 均为 星尘计划发布；roles=林晚(actor)、GitHub Actions(tool)、"
+            "main 分支(config)；"
+            "chain: actor-[uses]->tool, tool-[configured_with]->config；"
+            "另可写 测试环境(environment) 等分步 chain，每步 predicate 各自具体。"
+            "勿另建「林晚 配置 CI」类 Event 节点。"
         ),
     ]
     source = str(source_kind or "").lower()
@@ -739,7 +810,10 @@ def build_extraction_prompt(source_kind: str) -> str:
             [
                 "",
                 "针对 document 文本：",
-                "- 长段落按句拆事实；同一文档内实体名保持同一 canonical 拼写。",
+                (
+                    "- 长段落按句拆事实；同一文档内实体名保持同一 canonical 拼写，"
+                    "且始终保留原文语言，不得跨语言统一。"
+                ),
                 "- 事件叙述与工程技术事实同等优先；事件与主要参与人应形成可互通的子图。",
                 (
                     "- 不要把整段只压缩成一个 Event 节点加少量属性边；"

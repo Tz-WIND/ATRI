@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import io
 import json
 import zipfile
@@ -7,11 +9,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from core.platform.message import MessageEvent, MessageType, Sender
 from core.tools import novelai_image
 from core.tools.novelai_image import NovelAIImageTool
 from dashboard import music as music_routes
 from dashboard.routes import _helpers, chat, management, models
 from dashboard.server import DASHBOARD_MAX_CONTENT_LENGTH, Dashboard
+from tests.document_samples import docx_bytes
 
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
@@ -76,6 +80,41 @@ class _FakeDashboardLifecycle:
 class _FakeDashboardHost:
     def set_audio_callback(self, callback):
         self.callback = callback
+
+
+class _FakeWebChat:
+    def __init__(self):
+        self.calls = []
+
+    def create_event(
+        self,
+        message,
+        session_id,
+        *,
+        images=None,
+        display_user_input=None,
+        file_attachments=None,
+    ):
+        self.calls.append(
+            {
+                "message": message,
+                "session_id": session_id,
+                "images": images,
+                "display_user_input": display_user_input,
+                "file_attachments": file_attachments,
+            }
+        )
+        event = MessageEvent(
+            message_str=message,
+            message_type=MessageType.FRIEND_MESSAGE,
+            sender=Sender(user_id="webui_user", nickname="WebUI"),
+            session_id=session_id,
+            self_id="atri",
+            platform_name="webchat",
+        )
+        future = asyncio.get_event_loop().create_future()
+        future.set_result({"text": "ok", "chain": None})
+        return event, future
 
 
 class _FakeStreamingDashboardHost:
@@ -938,6 +977,83 @@ def test_dashboard_normalize_chat_images_rejects_invalid_payloads(monkeypatch):
 def test_dashboard_chat_images_still_reject_svg_uploads():
     with pytest.raises(ValueError, match="image type"):
         chat._normalize_chat_images([{"dataUrl": "data:image/svg+xml;base64,PHN2Zy8+"}])
+
+
+def test_dashboard_normalize_chat_files_extracts_document_text():
+    data = base64.b64encode(docx_bytes("Portfolio", "Alice owns ATRI notes")).decode("ascii")
+
+    files = chat._normalize_chat_files(
+        [
+            {
+                "dataUrl": (
+                    "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+                    f"base64,{data}"
+                ),
+                "name": "../brief.docx",
+            }
+        ]
+    )
+
+    assert files == [
+        {
+            "file": "brief.docx",
+            "mime_type": (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "size": len(docx_bytes("Portfolio", "Alice owns ATRI notes")),
+            "text": "Portfolio\nAlice owns ATRI notes",
+        }
+    ]
+    assert chat._message_with_file_context("Summarize", files) == (
+        "Summarize\n\n[File: brief.docx]\nPortfolio\nAlice owns ATRI notes"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_chat_route_extracts_file_attachments(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    fake_webchat = _FakeWebChat()
+    dashboard.lifecycle.webchat = fake_webchat  # type: ignore[assignment]
+    token = dashboard._create_auth_session()
+    data = base64.b64encode(docx_bytes("Portfolio", "Alice owns ATRI notes")).decode("ascii")
+
+    response = await dashboard.app.test_client().post(
+        "/api/chat",
+        json={
+            "message": "Remember this",
+            "session_id": "default",
+            "files": [
+                {
+                    "name": "brief.docx",
+                    "dataUrl": (
+                        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+                        f"base64,{data}"
+                    ),
+                }
+            ],
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert fake_webchat.calls == [
+        {
+            "message": "Remember this\n\n[File: brief.docx]\nPortfolio\nAlice owns ATRI notes",
+            "session_id": "default",
+            "images": [],
+            "display_user_input": "Remember this",
+            "file_attachments": [
+                {
+                    "kind": "file",
+                    "name": "brief.docx",
+                    "type": (
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ),
+                    "size": len(docx_bytes("Portfolio", "Alice owns ATRI notes")),
+                }
+            ],
+        }
+    ]
 
 
 def test_dashboard_csp_allows_chat_image_previews():

@@ -257,7 +257,7 @@
                     ref="fileInput"
                     type="file"
                     class="file-input"
-                    accept=".txt,.md,.json,.csv,.log"
+                    :accept="documentAccept"
                     @change="onFileSelected"
                   >
                   <button
@@ -441,9 +441,11 @@ import { computed, onMounted, ref } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import StatusBadge from '@/components/shared/StatusBadge.vue'
 import { useApi } from '@/composables/useApi.js'
+import { useDocumentSupport } from '@/composables/useDocumentSupport.js'
 import { useProviders } from '@/composables/useProviders.js'
 
 const api = useApi()
+const { documentAccept, loadDocumentSupport } = useDocumentSupport()
 const {
   activeEmbeddingModels,
   activeRerankModels,
@@ -511,6 +513,7 @@ const embeddingOptions = computed(() => activeEmbeddingModels.value.map(modelOpt
 const rerankOptions = computed(() => activeRerankModels.value.map(modelOption))
 
 onMounted(async () => {
+  await loadDocumentSupport()
   await loadStatus()
   setDefaultModelKeys()
   await loadKnowledgeContext()

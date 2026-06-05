@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import zipfile
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ from core.platform.daw_agent import normalize_daw_project_session_id
 from core.platform.message import MessageEvent, MessageType, Sender
 from dashboard import music as music_routes
 from dashboard.routes import daw_agent
+from tests.document_samples import xlsx_bytes
 
 
 def _register_fake_dashboard(dashboard: "_FakeDashboard") -> None:
@@ -28,6 +30,8 @@ class _FakeDawAgent:
         workspace="atri_studio",
         host_context=None,
         images=None,
+        display_user_input=None,
+        file_attachments=None,
         model="",
         model_provider="",
     ):
@@ -39,6 +43,8 @@ class _FakeDawAgent:
                 "workspace": workspace,
                 "host_context": host_context,
                 "images": images,
+                "display_user_input": display_user_input,
+                "file_attachments": file_attachments,
                 "model": model,
                 "model_provider": model_provider,
             }
@@ -70,6 +76,8 @@ class _FailingDawAgent:
         workspace="atri_studio",
         host_context=None,
         images=None,
+        display_user_input=None,
+        file_attachments=None,
         model="",
         model_provider="",
     ):
@@ -144,6 +152,8 @@ async def test_daw_agent_chat_route_creates_project_scoped_event():
             "workspace": "atri_studio",
             "host_context": {"tempo_bpm": 128},
             "images": [],
+            "display_user_input": "tighten the bass",
+            "file_attachments": [],
             "model": "",
             "model_provider": "",
         }
@@ -170,6 +180,47 @@ async def test_daw_agent_chat_route_forwards_selected_model():
     assert response.status_code == 200
     assert adapter.calls[0]["model"] == "gpt-4.1"
     assert adapter.calls[0]["model_provider"] == "OpenAI"
+
+
+@pytest.mark.asyncio
+async def test_daw_agent_chat_route_extracts_file_attachments_into_message():
+    adapter = _FakeDawAgent()
+    dashboard = _FakeDashboard(adapter)
+    _register_fake_dashboard(dashboard)
+    client = dashboard.app.test_client()
+    data = base64.b64encode(xlsx_bytes([["Track", "Issue"], ["Bass", "Late notes"]])).decode(
+        "ascii"
+    )
+
+    response = await client.post(
+        "/api/daw-agent/chat",
+        json={
+            "message": "Review this sheet",
+            "files": [
+                {
+                    "name": "timing.xlsx",
+                    "dataUrl": (
+                        "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;"
+                        f"base64,{data}"
+                    ),
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert adapter.calls[0]["message"] == (
+        "Review this sheet\n\n[File: timing.xlsx]\n[Sheet 1]\nTrack\tIssue\nBass\tLate notes"
+    )
+    assert adapter.calls[0]["display_user_input"] == "Review this sheet"
+    assert adapter.calls[0]["file_attachments"] == [
+        {
+            "kind": "file",
+            "name": "timing.xlsx",
+            "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size": len(xlsx_bytes([["Track", "Issue"], ["Bass", "Late notes"]])),
+        }
+    ]
 
 
 @pytest.mark.asyncio

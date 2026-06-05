@@ -6,6 +6,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from quart import jsonify, request
 
+from core.document_text import (
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+    DocumentTextError,
+    extract_document_text,
+    supported_document_accept,
+)
 from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
 
 if TYPE_CHECKING:
@@ -15,6 +21,15 @@ if TYPE_CHECKING:
 
 def register(dashboard: Dashboard) -> None:
     app = dashboard.app
+
+    @app.route("/api/knowledge/document-support", methods=["GET"])
+    async def document_support():
+        return jsonify(
+            {
+                "accept": supported_document_accept(),
+                "extensions": list(SUPPORTED_DOCUMENT_EXTENSIONS),
+            }
+        )
 
     @app.route("/api/knowledge/bases", methods=["GET"])
     async def list_knowledge_bases():
@@ -108,7 +123,7 @@ def register(dashboard: Dashboard) -> None:
                 file_name=upload.filename or "upload.txt",
                 content=bytes(content),
             )
-        except (UnicodeDecodeError, ValueError) as e:
+        except (DocumentTextError, ValueError) as e:
             return jsonify({"error": str(e)}), 400
         return jsonify(task)
 
@@ -222,11 +237,12 @@ def register(dashboard: Dashboard) -> None:
         graph_manager = getattr(dashboard.lifecycle, "graph_manager", None)
         if graph_manager is None:
             return jsonify({"error": "graph knowledge manager is not available"}), 503
-        data = await request.get_json(silent=True) or {}
-        content = str(data.get("content") or "").strip()
-        if not content:
-            return jsonify({"error": "content is required"}), 400
-        source_name = str(data.get("source_name") or "manual.txt").strip() or "manual.txt"
+        try:
+            content, source_name = await _manual_graph_ingest_payload()
+        except DocumentTextError as e:
+            return jsonify({"error": str(e)}), 400
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         try:
             task_id = graph_manager.enqueue_manual_ingest(
                 text=content,
@@ -263,6 +279,24 @@ def _knowledge_manager(dashboard: Dashboard) -> KnowledgeBaseManager:
     if manager is None:
         raise RuntimeError("knowledge manager is not available")
     return cast("KnowledgeBaseManager", manager)
+
+
+async def _manual_graph_ingest_payload() -> tuple[str, str]:
+    files = await request.files
+    upload = files.get("file")
+    if upload is not None:
+        content = upload.read()
+        if hasattr(content, "__await__"):
+            content = await content
+        file_name = upload.filename or "manual.txt"
+        return extract_document_text(file_name, bytes(content)), file_name
+
+    data = await request.get_json(silent=True) or {}
+    content = str(data.get("content") or "").strip()
+    if not content:
+        raise ValueError("content is required")
+    source_name = str(data.get("source_name") or "manual.txt").strip() or "manual.txt"
+    return content, source_name
 
 
 def _optional_str(value: object) -> str | None:
