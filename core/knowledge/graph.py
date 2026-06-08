@@ -13,6 +13,7 @@ from core.knowledge.graph_constants import (
     ASSISTANT_ENTITY_ALIAS_KEYS,
     CHAIN_ORDER_KEY_SEPARATOR,
     GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+    GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
     GRAPH_RETRIEVAL_MAX_DEPTH,
     HYPER_ROLE_PREDICATE,
     format_graph_context,
@@ -21,7 +22,6 @@ from core.knowledge.graph_constants import (
 DriverFactory = Callable[[str, tuple[str, str]], Any]
 _MAX_QUERY_TERMS = 32
 _DEFAULT_MULTIHOP_EXPANSION_LIMIT = 40
-_MAX_MULTIHOP_EXPANSION_LIMIT = 200
 _VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
 T = TypeVar("T")
 
@@ -389,8 +389,8 @@ class Neo4jGraphClient:
                      AND toInteger(split(right_key, $chain_order_separator)[1])
                          = toInteger(split(left_key, $chain_order_separator)[1]) + 1)))
              END AS chain_order_path
-        WITH rels[size(rels) - 1] AS r, hop, chain_path, chain_order_path
-        WITH startNode(r) AS s, r, endNode(r) AS o, hop,
+        WITH rels, rels[size(rels) - 1] AS r, hop, chain_path, chain_order_path
+        WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop,
              CASE WHEN (
                size($source_ids) > 0
                AND (
@@ -449,13 +449,13 @@ class Neo4jGraphClient:
                  THEN -2.0
                ELSE 0.0
              END AS structural_role_score
-        WITH s, r, o, hop, confidence_score, source_count_score, recency_score, hop_score,
+        WITH rels, s, r, o, hop, confidence_score, source_count_score, recency_score, hop_score,
              chain_path_score, chain_order_score, structural_role,
              source_match_score + term_match_score + confidence_score
              + source_count_score + hop_score + chain_path_score + chain_order_score
              + structural_role_score
              AS relevance_score
-        WITH s, r, o, hop, chain_path_score, chain_order_score, structural_role,
+        WITH rels, s, r, o, hop, chain_path_score, chain_order_score, structural_role,
              CASE $ranking_policy
                WHEN 'relevance' THEN relevance_score
                WHEN 'latest' THEN recency_score
@@ -467,6 +467,10 @@ class Neo4jGraphClient:
                     + chain_path_score * 0.10
                     + chain_order_score * 0.05
              END AS graph_score
+        {multi_hop_order_by}
+        LIMIT $limit
+        UNWIND range(0, size(rels) - 1) AS rel_index
+        WITH rels[rel_index] AS r, rel_index + 1 AS hop, graph_score, structural_role
         RETURN startNode(r).name AS subject,
                r.predicate AS predicate,
                endNode(r).name AS object,
@@ -477,7 +481,6 @@ class Neo4jGraphClient:
                r.confidence AS confidence,
                hop AS hop
         {multi_hop_order_by}
-        LIMIT $limit
         """
         query_limit = max(1, int(max_facts or 8))
         expansion_query_limit = _expansion_candidate_limit(
@@ -675,8 +678,17 @@ def _format_retrieved_fact_lines(
             detail = f"{detail} | linked: {linked_details}"
         return detail
 
+    roots = list(tree["roots"])
+    if len(roots) > line_limit:
+        roots.sort(
+            key=lambda index: _retrieved_fact_root_sort_key(
+                tree["nodes"],
+                index,
+            )
+        )
+
     lines: list[str] = []
-    for index in tree["roots"]:
+    for index in roots:
         lines.append("- " + render_node(index, set()))
         if len(lines) >= line_limit:
             break
@@ -735,6 +747,43 @@ def _retrieved_fact_parent_sort_key(entry: dict[str, Any], index: int) -> tuple[
     )
 
 
+def _retrieved_fact_root_sort_key(
+    nodes: list[dict[str, list[int]]],
+    index: int,
+) -> tuple[Any, ...]:
+    descendant_count, descendant_depth = _retrieved_fact_descendant_stats(nodes, index, set())
+    return (
+        0 if descendant_count else 1,
+        -descendant_depth,
+        -descendant_count,
+        index,
+    )
+
+
+def _retrieved_fact_descendant_stats(
+    nodes: list[dict[str, list[int]]],
+    index: int,
+    path: set[int],
+) -> tuple[int, int]:
+    if index in path:
+        return (0, 0)
+    children = nodes[index]["children"]
+    if not children:
+        return (0, 0)
+    child_path = {*path, index}
+    descendant_count = 0
+    descendant_depth = 0
+    for child_index in children:
+        child_count, child_depth = _retrieved_fact_descendant_stats(
+            nodes,
+            child_index,
+            child_path,
+        )
+        descendant_count += 1 + child_count
+        descendant_depth = max(descendant_depth, 1 + child_depth)
+    return (descendant_count, descendant_depth)
+
+
 def _append_query_term(terms: list[str], term: str) -> None:
     if len(term) > 1 and term not in terms and len(terms) < _MAX_QUERY_TERMS:
         terms.append(term)
@@ -773,7 +822,7 @@ def _expansion_candidate_limit(value: Any) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = _DEFAULT_MULTIHOP_EXPANSION_LIMIT
-    return max(1, min(_MAX_MULTIHOP_EXPANSION_LIMIT, parsed))
+    return max(1, min(GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT, parsed))
 
 
 def _fact_source_ids(fact: dict[str, Any]) -> list[str]:

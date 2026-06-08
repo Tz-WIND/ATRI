@@ -12,7 +12,10 @@ from core.document_text import (
     extract_document_text,
     supported_document_accept,
 )
-from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
+from core.knowledge.graph_constants import (
+    GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_RETRIEVAL_MAX_DEPTH,
+)
 
 if TYPE_CHECKING:
     from core.knowledge.manager import KnowledgeBaseManager
@@ -217,7 +220,7 @@ def register(dashboard: Dashboard) -> None:
                     40,
                     "expansion_candidate_limit",
                     1,
-                    maximum=200,
+                    maximum=GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
                 ),
             )
         except ValueError as e:

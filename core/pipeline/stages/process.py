@@ -13,6 +13,7 @@ import json
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from core import logger
@@ -757,7 +758,10 @@ class ProcessStage(Stage):
                 assistant_text=response_text,
                 session_id=event.unified_msg_origin,
                 platform=event.platform_name,
-                metadata={"message_type": event.message_type.value},
+                metadata={
+                    "message_type": event.message_type.value,
+                    "reference_date": datetime.now().strftime("%Y-%m-%d"),
+                },
             )
         except Exception as e:
             logger.warning(f"Graph chat extraction enqueue skipped: {e}")

@@ -32,6 +32,44 @@ MAX_HYPER_ROLES = 6
 MAX_HYPER_CHAIN_EDGES = 5
 MAX_EXTRACTION_TUPLES = 18
 EXISTING_GRAPH_CONTEXT_METADATA_KEY = "existing_graph_context"
+REFERENCE_DATE_METADATA_KEY = "reference_date"
+_TIME_OF_DAY_ONLY_RE = re.compile(
+    r"^(?:"
+    r"今天上午|今天下午|今天晚上|今天早上|今早|今晚|昨夜|昨天|明天|今天|"
+    r"上午|下午|晚上|早上|中午|凌晨|傍晚|早晨|夜间|"
+    r"this\s+morning|this\s+afternoon|this\s+evening|tonight|yesterday|tomorrow|today|"
+    r"morning|afternoon|evening|noon|midnight|night"
+    r")$",
+    re.IGNORECASE,
+)
+_CONCRETE_DATE_RE = re.compile(
+    r"(?:"
+    r"\b(?:19|20)\d{2}\b|"
+    r"\d{4}年|"
+    r"\d{4}-\d{2}-\d{2}|"
+    r"\d{4}/\d{1,2}/\d{1,2}|"
+    r"\d{1,2}月\d{1,2}日|"
+    r"\b(?:january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)\s+\d{1,2}(?:,\s*\d{4})?\b|"
+    r"\b(?:jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d{1,2}(?:,\s*\d{4})?\b|"
+    r"q[1-4]\s*(?:19|20)\d{2}|"
+    r"(?:19|20)\d{2}\s*q[1-4]"
+    r")",
+    re.IGNORECASE,
+)
+EXTRACTION_ANCHOR_CONTEXT_HEADER = "[已有图谱上下文]"
+EXTRACTION_ANCHOR_CONTEXT_GUIDANCE = (
+    "以下是当前图数据库中按本段文本检索到的相关子图。"
+    "你的任务是把本段待抽取文本中的新事实挂接到这些已有节点与关系上，"
+    "而不是另起一套近义实体名。\n"
+    "操作顺序：\n"
+    "1. 先阅读已有事实，记下其中的 Subject/Object 实体名与常用 predicate。\n"
+    "2. 再阅读待抽取文本，识别其中实体；能与已有行匹配的，输出时必须复用已有实体名的原文拼写"
+    "（语言、大小写、空格一致）。\n"
+    "3. 只输出本段文本明确支持的新边；已有边不要重复；完成实体对齐后再写入 tuples/hyper_tuples。\n"
+    "注意：已有事实仅用于对齐与挂接，不得当作本段文本的证据来源；"
+    "evidence 必须引用下方待抽取文本。"
+)
 ROLE_CHAIN_PREDICATES = {
     ("actor", "tool"): "uses",
     ("actor", "model"): "uses",
@@ -161,6 +199,15 @@ PREDICATE_ALIASES = {
     "路径": "located_at",
     "位于": "located_at",
     "所在位置": "located_at",
+    "occurred_at": "occurred_at",
+    "happened_at": "occurred_at",
+    "happened_on": "occurred_at",
+    "occurs_at": "occurred_at",
+    "发生于": "occurred_at",
+    "发生在": "occurred_at",
+    "发生时间": "occurred_at",
+    "事发时间": "occurred_at",
+    "事发于": "occurred_at",
     "failed_because": "failed_because",
     "failure_reason": "failed_because",
     "error_reason": "failed_because",
@@ -555,6 +602,8 @@ def normalize_extracted_facts(
         object_type_key = normalize_entity_key(values["object_type"])
         if not subject_key or not object_key or not predicate_key:
             continue
+        if predicate_key == "occurred_at" and not _has_concrete_datetime(values["object"]):
+            continue
         fact_key = (
             f"{subject_type_key}:{subject_key}|{predicate_key}|{object_type_key}:{object_key}"
         )
@@ -603,15 +652,21 @@ def _build_segmented_user_content(text: str, metadata: dict[str, Any] | None) ->
                 "原文因过长被分成多段；仅抽取本段文本中明确支持的事实。"
                 "段首段尾可能与相邻段重叠，仅用于保留上下文。"
             )
+        reference_date = str(metadata.get(REFERENCE_DATE_METADATA_KEY) or "").strip()
+        if reference_date:
+            prefixes.append(
+                f"[参考日期] {reference_date}\n"
+                "仅用于本段 chat 对话：把用户口中的「今天/今天下午/今晚/早上」换算为具体日期。"
+                "不要用于 document/叙述性文本；那些文本的日期须从文内语境自行查找。"
+            )
         existing_context = str(metadata.get(EXISTING_GRAPH_CONTEXT_METADATA_KEY) or "").strip()
         if existing_context:
-            prefixes.append(
-                "[已有图谱上下文]\n"
-                "以下是当前图数据库中按本文本检索到的已有事实，仅用于实体对齐、"
-                "关系去重、补充歧义判断。不要把已有事实当作本次待抽取文本的证据来源；"
-                "新输出的事实仍必须由下方待抽取文本明确支持。\n"
-                f"{existing_context}"
-            )
+            fact_lines = _fact_lines_from_graph_context(existing_context)
+            if fact_lines:
+                prefixes.append(
+                    f"{EXTRACTION_ANCHOR_CONTEXT_HEADER}\n"
+                    f"{EXTRACTION_ANCHOR_CONTEXT_GUIDANCE}\n" + "\n".join(fact_lines)
+                )
     body = text[:GRAPH_EXTRACTION_INPUT_MAX_CHARS]
     return "\n\n".join([*prefixes, body])
 
@@ -670,6 +725,36 @@ def build_extraction_prompt(source_kind: str) -> str:
             "也要写参与者的动作边，并用事件↔参与者的连边把两侧连起来。"
         ),
         (
+            "- 事件何时发生用 occurred_at 记录，object_type 用 Concept；"
+            "occurred_at 的 object 必须能定位到具体日期，禁止只写「上午/下午/晚上/今早/今晚」"
+            "这类无法单独断定日期的时段词。"
+        ),
+        (
+            "- 文件、报告、日记、新闻、小说等叙述性文字里出现「今天/明天/昨天/早上/下午/晚上」"
+            "是正常现象——它们是文内相对说法，不是让你原样写入知识库的 occurred_at。"
+            "必须从同篇语境中定位该事件实际对应的日期：文首日期、段落时间线、"
+            "前后文已写明的具体日期、章节标题、会议纪要时间栏等。"
+        ),
+        (
+            "- 遇到「今天下午/今天晚上/今早/今晚/今天/早上」等相对时间时，"
+            "不要直接把这几个词当作 occurred_at；先在全文或本段语境里找该事件锚定的具体日期，"
+            "再换算为「具体日期+可选时段」。"
+        ),
+        (
+            "- 仅在与 AI 的 chat 文本且提供 [参考日期] 时，才把该日期当作对话当天的「今天」锚点；"
+            "例如 [参考日期] 2026-06-08 且用户说「今天下午开会」"
+            "→ occurred_at 写「2026年6月8日下午」。"
+            "document/叙述性文本不要使用 [参考日期]，即使出现也不要用它替代文内语境。"
+        ),
+        (
+            "- 若只能确定年月或季度（如 2024年3月、Q3 2024）可写该粒度；"
+            "若从语境中实在找不到任何可锚定的日期信息，则不要写 occurred_at 边。"
+        ),
+        (
+            "- occurred_at 仅用于叙事中事件本身的发生时间，不用于对话记录时间、"
+            "消息时间戳或系统元数据。"
+        ),
+        (
             "- 同一事件只用 ONE 个 canonical 事件名，不要用近义重复实体"
             "（如「X」与「X案」「X事件」）；该名称为本篇的事件 hub。"
         ),
@@ -705,6 +790,36 @@ def build_extraction_prompt(source_kind: str) -> str:
         ("- 使用稳定的 canonical 实体名；避免模糊主语 user/this/it/message，除非无法避免。"),
         ("- 助手统一用实体名 ATRI；不要另建 Assistant、Bot、助手 等实体。"),
         "",
+        "已有图谱挂接（当用户提供 [已有图谱上下文] 时）：",
+        (
+            "- 先把待抽取文本中的实体与已有图谱行做对齐：同一人/项目/工具/事件/地点，"
+            "必须使用已有行里完全相同的实体名，不要因简称、别名、翻译或近义说法另起新节点。"
+        ),
+        (
+            "- 若新文本用简称、代词、英文缩写或近义说法指代已有实体，"
+            "输出时改回已有图谱中的 canonical 名；"
+            "例如已有「林晚」，新文本写「晚姐」仍输出「林晚」。"
+        ),
+        (
+            "- 对已有关系补充新信息：保留相同 subject 与 object，可新增不同 predicate 的边；"
+            "若语义与已有边等价则复用已有 predicate，不要为同一关系发明近义谓词。"
+        ),
+        (
+            "- 若新文本更新/修正已有关系（如换工作、更换工具、迁移项目），"
+            "仍挂到同一 subject 实体写新边，evidence 引用本段文本；"
+            "不要创建「张三」与「张先生」这类近义并存节点，除非原文明确是不同人。"
+        ),
+        (
+            "- 新事实应尽量从已有节点向外延伸：若已有 A-[r1]->B，新文本说 B 与 C 有关，"
+            "优先写 B-[r2]->C，而不是生成与已有子图断开的孤立节点。"
+        ),
+        (
+            "- 事件续写：若已有图谱中已有 canonical 事件名，同一事件的新步骤、参与者、"
+            "时间/地点属性必须继续挂到该事件名；不要另建「X」「X案」「X事件」等近义 Event。"
+        ),
+        ("- 仅当待抽取文本明确引入全新实体，或已有图谱中确实无对应节点时，才创建新实体名。"),
+        ("- 不要把已有图谱中的事实重复输出；只输出本段文本新支持、且完成挂接后的边。"),
+        "",
         "关系细化（predicate 选择）：",
         (
             "- 优先最具体、可检索、方向明确的关系；"
@@ -716,7 +831,8 @@ def build_extraction_prompt(source_kind: str) -> str:
             "使用→uses；依赖→depends_on；配置→configured_with；"
             "失败原因→failed_because；根因→caused_by；导致→causes；修复→fixed_by；"
             "偏好→prefers；回避→avoids；要求→requires；约束→constrained_by；"
-            "位于→located_at；属于→belongs_to；负责/参与项目→works_on；"
+            "位于→located_at；发生于/发生时间→occurred_at（事件何时发生）；"
+            "属于→belongs_to；负责/参与项目→works_on；"
             "支持用途→supports；产出→produces；版本→has_version；运行于→runs_on；"
             "转交→transferred_to；涉及人员→involves_person；涉及物品→involves_item。"
         ),
@@ -768,15 +884,20 @@ def build_extraction_prompt(source_kind: str) -> str:
             f"- hyper_tuples 最多 {MAX_HYPER_TUPLES} 条；每条最多 {MAX_HYPER_ROLES} 个 role、"
             f"最多 {MAX_HYPER_CHAIN_EDGES} 条 chain 边。"
         ),
-        "- 跳过时间戳、聊天元数据、ID、纯数字实体（除非必不可少）。",
+        (
+            "- 跳过聊天元数据时间戳、消息 ID、纯数字实体（除非必不可少）；"
+            "不要跳过原文叙述中的事件发生时间——后者用 occurred_at 记在事件节点上。"
+        ),
         '- 若无有用事实，返回 {"tuples":[]}。',
         f"- 最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples（含 hyper 展开前的条目）；"
         "事件类文本优先完整覆盖事件属性、involves_person 与参与者动作，避免只留少量摘要边。",
         "",
         "事件类双中心示例（占位名，勿照抄未出现的实体；实体名保持原文语言）：",
+        "- 星尘计划发布 -[occurred_at]-> 2024年3月15日下午 (evidence: …)",
         "- 星尘计划发布 -[located_at]-> 新加坡 (evidence: …)",
         "- 星尘计划发布 -[involves_person]-> 林晚 (evidence: 林晚主持 …)",
         "- 林晚 -[works_on]-> 星尘计划发布 (evidence: …)",
+        "- Q3 Product Launch -[occurred_at]-> March 2024 (evidence: …)",
         "- Q3 Product Launch -[located_at]-> Singapore (evidence: …)",
         "- Q3 Product Launch -[involves_person]-> Alice (evidence: Alice led …)",
         "- Alice -[works_on]-> Q3 Product Launch (evidence: …)",
@@ -794,6 +915,11 @@ def build_extraction_prompt(source_kind: str) -> str:
             [
                 "",
                 "针对 chat 文本：",
+                (
+                    "- 聊天里用户说「今天下午/今晚/早上」时，以 [参考日期] 作为对话当天锚点，"
+                    "换算成含具体日期的 occurred_at；"
+                    "禁止把「上午/下午/晚上」等模糊时段单独写入知识库。"
+                ),
                 ("- 保留稳定用户偏好、Project 决策、反复出现的 Error、Tool 行为与环境事实。"),
                 (
                     "- 若聊天写明某人用某软件做某活动，必须抽 Person-[uses]->Tool，"
@@ -811,6 +937,16 @@ def build_extraction_prompt(source_kind: str) -> str:
                 "",
                 "针对 document 文本：",
                 (
+                    "- 文档/叙述性文本里「今天/早上/下午」只是文内说法，"
+                    "常见于新闻、日记、纪要、小说；"
+                    "不要照抄进 occurred_at，也不要用抽取时的系统日期替代。"
+                ),
+                (
+                    "- 须从文档语境找日期：文件标题/页眉日期、同段或相邻段写明的年月日、"
+                    "时间线叙述（如「3月15日……当天早上……」）、会议纪要时间栏、章节时间标记等；"
+                    "找到后再写 occurred_at；语境中找不到就不要写时间。"
+                ),
+                (
                     "- 长段落按句拆事实；同一文档内实体名保持同一 canonical 拼写，"
                     "且始终保留原文语言，不得跨语言统一。"
                 ),
@@ -822,6 +958,24 @@ def build_extraction_prompt(source_kind: str) -> str:
             ]
         )
     return "\n".join(prompt)
+
+
+def _has_concrete_datetime(value: str) -> bool:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return False
+    if _TIME_OF_DAY_ONLY_RE.fullmatch(cleaned):
+        return False
+    return _CONCRETE_DATE_RE.search(cleaned) is not None
+
+
+def _fact_lines_from_graph_context(context: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(context or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("- "):
+            lines.append(line)
+    return lines
 
 
 def normalize_entity_key(value: str) -> str:

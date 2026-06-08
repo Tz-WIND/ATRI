@@ -483,6 +483,30 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_settings_route_preserves_high_graph_expansion_candidate_limit(
+    monkeypatch,
+    tmp_path,
+):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    update_response = await client.post(
+        "/api/settings",
+        json={"knowledge": {"graph": {"expansion_candidate_limit": 500}}},
+        headers=headers,
+    )
+    get_response = await client.get("/api/settings", headers=headers)
+    payload = await get_response.get_json()
+
+    assert update_response.status_code == 200
+    assert get_response.status_code == 200
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["expansion_candidate_limit"] == 500
+    assert payload["knowledge"]["graph"]["expansion_candidate_limit"] == 500
+
+
+@pytest.mark.asyncio
 async def test_settings_route_rejects_empty_graph_extraction_sources_when_enabled(
     monkeypatch,
     tmp_path,

@@ -13,7 +13,10 @@ from core.config_schema import (
     EMBEDDING_MODEL_CONFIG_DEFAULT,
     RERANK_MODEL_CONFIG_DEFAULT,
 )
-from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
+from core.knowledge.graph_constants import (
+    GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_RETRIEVAL_MAX_DEPTH,
+)
 from core.tools.novelai_image import mask_novelai_config, merge_novelai_config, set_novelai_config
 
 if TYPE_CHECKING:
@@ -181,7 +184,7 @@ def _merge_graph_knowledge_config(
         merged["expansion_candidate_limit"] = _bounded_positive_int(
             incoming["expansion_candidate_limit"],
             "knowledge.graph.expansion_candidate_limit",
-            200,
+            GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
         )
     if "retrieval_depth" in incoming:
         merged["retrieval_depth"] = _bounded_positive_int(

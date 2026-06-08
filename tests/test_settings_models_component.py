@@ -72,6 +72,9 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "Math.min(7" in source
     assert "Expansion Candidates" in source
     assert "expansion_candidate_limit" in source
+    assert "graphExpansionCandidateMax" in source
+    assert "getConfigSchema" in source
+    assert "loadConfigLimits" in source
     assert "Ranking Policy" in source
     assert "ranking_policy" in source
     assert "normalizeGraphRankingPolicy" in source

@@ -14,6 +14,7 @@ from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.extraction import GraphTupleExtractor
 from core.knowledge.graph import Neo4jGraphClient
 from core.knowledge.graph_constants import (
+    GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
     GRAPH_EXTRACTION_BATCH_CHARS,
     GRAPH_EXTRACTION_BATCH_OVERLAP_CHARS,
     GRAPH_EXTRACTION_SEMANTIC_CHUNK_CHARS,
@@ -569,7 +570,7 @@ def _expansion_candidate_limit(value: Any) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = 40
-    return max(1, min(200, parsed))
+    return max(1, min(GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT, parsed))
 
 
 def _document_extraction_batches(

@@ -530,7 +530,7 @@
                     v-model.number="form.knowledge.graph.expansion_candidate_limit"
                     type="number"
                     min="1"
-                    max="200"
+                    :max="graphExpansionCandidateMax"
                   >
                 </label>
                 <label class="setting-field">
@@ -907,6 +907,7 @@ const settingsGroups = [
 ]
 
 const flatTabs = settingsGroups.flatMap(group => group.tabs)
+const graphExpansionCandidateMax = ref(1000)
 const activeTab = ref('providers')
 const activeTabMeta = computed(() => flatTabs.find(tab => tab.id === activeTab.value) || flatTabs[0])
 
@@ -1169,7 +1170,21 @@ function normalizeGraphRetrievalDepth(value) {
 function normalizeGraphExpansionCandidateLimit(value) {
   const parsed = Number(value || 40)
   if (!Number.isFinite(parsed)) return 40
-  return Math.min(200, Math.max(1, Math.trunc(parsed)))
+  return Math.min(
+    graphExpansionCandidateMax.value,
+    Math.max(1, Math.trunc(parsed)),
+  )
+}
+
+async function loadConfigLimits() {
+  try {
+    const schema = await api.getConfigSchema()
+    const maximum = schema?.properties?.knowledge?.properties?.graph
+      ?.properties?.expansion_candidate_limit?.maximum
+    if (Number.isFinite(maximum) && maximum > 0) {
+      graphExpansionCandidateMax.value = Math.trunc(maximum)
+    }
+  } catch {}
 }
 
 function normalizeGraphRankingPolicy(value) {
@@ -1372,7 +1387,12 @@ async function saveSettings() {
         bit_depth: form.value.audio_host.bit_depth,
       },
     })
-    await Promise.all([loadStatus(), loadAudioDevices(), loadLatestGraphTask()])
+    await Promise.all([
+      loadSettings(),
+      loadStatus(),
+      loadAudioDevices(),
+      loadLatestGraphTask(),
+    ])
   } finally {
     saving.value = false
   }
@@ -1392,6 +1412,7 @@ onMounted(async () => {
   window.addEventListener('keydown', handleSettingsShortcut)
   await loadDocumentSupport()
   await Promise.all([
+    loadConfigLimits(),
     loadProviders(),
     loadStatus(),
     loadSettings(),

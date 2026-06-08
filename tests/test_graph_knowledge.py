@@ -12,8 +12,11 @@ from core.knowledge.extraction import (
     MAX_HYPER_CHAIN_EDGES,
     MAX_HYPER_ROLES,
     MAX_HYPER_TUPLES,
+    REFERENCE_DATE_METADATA_KEY,
     GraphTupleExtractor,
     _build_segmented_user_content,
+    _fact_lines_from_graph_context,
+    _has_concrete_datetime,
     build_extraction_prompt,
     normalize_extracted_facts,
     parse_extraction_json,
@@ -69,6 +72,100 @@ def test_build_extraction_prompt_event_dual_hub_for_documents():
     assert f"最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples" in prompt
 
 
+def test_build_extraction_prompt_records_event_occurrence_time():
+    prompt = build_extraction_prompt("document")
+
+    assert "occurred_at" in prompt
+    assert "2024年3月15日下午" in prompt
+    assert "禁止只写「上午/下午/晚上" in prompt
+    assert "叙述性文字里出现「今天" in prompt
+    assert "不要照抄进 occurred_at" in prompt
+    assert "document/叙述性文本不要使用 [参考日期]" in prompt
+    assert "不要写 occurred_at 边" in prompt
+    assert "不要跳过原文叙述中的事件发生时间" in prompt
+    assert "不用于对话记录时间" in prompt
+
+
+def test_build_extraction_prompt_chat_resolves_relative_time_with_reference_date():
+    prompt = build_extraction_prompt("chat")
+
+    assert "[参考日期]" in prompt
+    assert "今天下午" in prompt
+    assert "禁止把「上午/下午/晚上」" in prompt
+
+
+def test_build_extraction_prompt_document_resolves_relative_time_from_narrative_context():
+    prompt = build_extraction_prompt("document")
+
+    assert "针对 document 文本" in prompt
+    assert "文内说法" in prompt
+    assert "从文档语境找日期" in prompt
+    assert "会议纪要时间栏" in prompt
+
+
+def test_has_concrete_datetime_rejects_vague_time_only_values():
+    assert _has_concrete_datetime("下午") is False
+    assert _has_concrete_datetime("今天上午") is False
+    assert _has_concrete_datetime("今天晚上") is False
+    assert _has_concrete_datetime("2026年6月8日下午") is True
+    assert _has_concrete_datetime("2026-06-08") is True
+    assert _has_concrete_datetime("3月15日") is True
+
+
+def test_normalize_extracted_facts_drops_occurred_at_without_concrete_datetime():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "项目评审",
+                    "subject_type": "Event",
+                    "predicate": "occurred_at",
+                    "object": "今天下午",
+                    "object_type": "Concept",
+                    "evidence": "项目评审安排在今天下午。",
+                },
+                {
+                    "subject": "项目评审",
+                    "subject_type": "Event",
+                    "predicate": "occurred_at",
+                    "object": "2026年6月8日下午",
+                    "object_type": "Concept",
+                    "evidence": "项目评审安排在2026年6月8日下午。",
+                },
+            ]
+        },
+        source_id="chunk-time",
+        source_kind="chat",
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["object"] == "2026年6月8日下午"
+
+
+def test_build_extraction_prompt_anchors_new_facts_to_existing_graph_nodes():
+    prompt = build_extraction_prompt("document")
+
+    assert "已有图谱挂接" in prompt
+    assert "[已有图谱上下文]" in prompt
+    assert "另起新节点" in prompt
+    assert "从已有节点向外延伸" in prompt
+    assert "不要把已有图谱中的事实重复输出" in prompt
+
+
+def test_fact_lines_from_graph_context_keeps_only_fact_rows():
+    wrapped = format_graph_context(
+        [
+            "- 林晚 -[works_on]-> 星尘计划",
+            "- 星尘计划 -[uses]-> Neo4j",
+        ]
+    )
+
+    assert _fact_lines_from_graph_context(wrapped) == [
+        "- 林晚 -[works_on]-> 星尘计划",
+        "- 星尘计划 -[uses]-> Neo4j",
+    ]
+
+
 def test_format_graph_context_includes_usage_guidance():
     context = format_graph_context(["- Alice -[works_at]-> Acme"])
 
@@ -94,7 +191,7 @@ def test_chain_order_separator_is_shared_and_parameterized_in_cypher():
     assert "'::order::'" not in graph_source
     assert "split(chain_order_keys[0], $chain_order_separator)" in graph_source
     assert "split(right_key, $chain_order_separator)" in graph_source
-    assert 8 <= GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS <= 10
+    assert GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS >= 30
     assert "timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS" in graph_source
 
 
@@ -243,6 +340,13 @@ def test_normalize_extracted_facts_canonicalizes_predicate_aliases():
                     "object": "workspace root",
                     "object_type": "Concept",
                 },
+                {
+                    "subject": "星尘计划发布",
+                    "subject_type": "Event",
+                    "predicate": "发生于",
+                    "object": "2024年3月15日",
+                    "object_type": "Concept",
+                },
             ]
         },
         source_id="chunk-predicate-aliases",
@@ -255,6 +359,7 @@ def test_normalize_extracted_facts_canonicalizes_predicate_aliases():
     assert predicates_by_subject["User"] == "prefers"
     assert predicates_by_subject["screenshot tool"] == "failed_because"
     assert predicates_by_subject["config.yaml"] == "located_at"
+    assert predicates_by_subject["星尘计划发布"] == "occurred_at"
 
 
 def test_normalize_extracted_facts_canonicalizes_assistant_aliases_to_atri():
@@ -770,9 +875,11 @@ async def test_graph_tuple_extractor_includes_existing_graph_context_in_user_pro
 
     user_content = captured["messages"][1]["content"]
     assert facts == []
-    assert "当前图数据库中按本文本检索到的已有事实" in user_content
-    assert existing_context in user_content
-    assert "不要把已有事实当作本次待抽取文本的证据来源" in user_content
+    assert "[已有图谱上下文]" in user_content
+    assert "挂接到这些已有节点与关系上" in user_content
+    assert "- Alice -[works_at]-> Acme" in user_content
+    assert "若这些事实能回答问题" not in user_content
+    assert "evidence 必须引用下方待抽取文本" in user_content
     assert user_content.rstrip().endswith("Alice now works on Neo4j graph extraction.")
 
 
@@ -1582,6 +1689,123 @@ def test_neo4j_graph_client_counts_nested_context_as_one_top_level_fact():
     assert "second orphan" not in context
 
 
+def test_neo4j_graph_client_prioritizes_multihop_chain_when_single_hop_roots_exceed_limit():
+    class CausalChainSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..4" in query:
+                return [
+                    {
+                        "subject": "夜间维护策略变更",
+                        "predicate": "causes",
+                        "object": "DHCP配置批量下发",
+                        "evidence": "夜间维护策略变更触发 DHCP 配置批量下发。",
+                        "hop": 1,
+                    },
+                    {
+                        "subject": "DHCP配置批量下发",
+                        "predicate": "causes",
+                        "object": "地址池冲突",
+                        "evidence": "DHCP 配置批量下发导致地址池冲突。",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "地址池冲突",
+                        "predicate": "causes",
+                        "object": "设备批量掉线",
+                        "evidence": "地址池冲突最终导致设备批量掉线。",
+                        "hop": 3,
+                    },
+                    {
+                        "subject": "夜间维护策略变更",
+                        "predicate": "causes",
+                        "object": "证书批量刷新",
+                        "evidence": "同一夜间维护策略变更还触发证书批量刷新。",
+                        "hop": 1,
+                    },
+                    {
+                        "subject": "证书批量刷新",
+                        "predicate": "causes",
+                        "object": "认证失败",
+                        "evidence": "证书批量刷新导致认证失败。",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "认证失败",
+                        "predicate": "causes",
+                        "object": "设备批量掉线",
+                        "evidence": "认证失败最终导致设备批量掉线。",
+                        "hop": 3,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "客服工单",
+                        "predicate": "mentions",
+                        "object": "设备批量掉线",
+                        "evidence": "客服工单记录设备批量掉线。",
+                    },
+                    {
+                        "subject": "监控报警",
+                        "predicate": "mentions",
+                        "object": "设备批量掉线",
+                        "evidence": "监控报警记录设备批量掉线。",
+                    },
+                    {
+                        "subject": "值班日报",
+                        "predicate": "mentions",
+                        "object": "设备批量掉线",
+                        "evidence": "值班日报记录设备批量掉线。",
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = CausalChainSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query=(
+            '哪些根因事件最终导致了"设备批量掉线", 且这些根因之间是否存在共同的上游'
+            "触发因素? 列出完整的因果链及每个环节涉及的责任人"
+        ),
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=4,
+    )
+
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] 夜间维护策略变更 -[causes]-> DHCP配置批量下发 "
+                "(夜间维护策略变更触发 DHCP 配置批量下发。) | linked: [2-hop] "
+                "DHCP配置批量下发 -[causes]-> 地址池冲突 "
+                "(DHCP 配置批量下发导致地址池冲突。) | linked: [3-hop] "
+                "地址池冲突 -[causes]-> 设备批量掉线 "
+                "(地址池冲突最终导致设备批量掉线。)"
+            ),
+            (
+                "- [1-hop] 夜间维护策略变更 -[causes]-> 证书批量刷新 "
+                "(同一夜间维护策略变更还触发证书批量刷新。) | linked: [2-hop] "
+                "证书批量刷新 -[causes]-> 认证失败 (证书批量刷新导致认证失败。) "
+                "| linked: [3-hop] 认证失败 -[causes]-> 设备批量掉线 "
+                "(认证失败最终导致设备批量掉线。)"
+            ),
+            "- [1-hop] 客服工单 -[mentions]-> 设备批量掉线 (客服工单记录设备批量掉线。)",
+        ]
+    )
+
+
 def test_neo4j_graph_client_multihop_expansion_ignores_one_hop_rows_before_limit():
     class ExpansionLimitSession(FakeNeo4jSession):
         def run(self, query, **params):
@@ -1899,6 +2123,87 @@ def test_neo4j_graph_client_multihop_retrieval_uses_hyper_chain_metadata():
     assert "r[$hyper_role_property] AS hyper_role" in query
     assert "rel.hyper_role" not in query
     assert "r.hyper_role" not in query
+
+
+def test_neo4j_graph_client_multihop_query_returns_each_path_edge_for_stitching():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="root causes that led to device batch offline",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=4,
+        ranking_policy="hybrid",
+    )
+
+    query = driver.session_obj.calls[-1]["query"]
+    assert "UNWIND range(0, size(rels) - 1) AS rel_index" in query
+    assert "rels[rel_index] AS r" in query
+    assert "rel_index + 1 AS hop" in query
+
+
+def test_neo4j_graph_client_multihop_query_limits_paths_before_unwinding_edges():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="complete 4 hop causal chain",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=4,
+        ranking_policy="hybrid",
+    )
+
+    query = driver.session_obj.calls[-1]["query"]
+    limit_index = query.index("LIMIT $limit")
+    unwind_index = query.index("UNWIND range(0, size(rels) - 1) AS rel_index")
+    assert limit_index < unwind_index
+
+
+def test_neo4j_graph_client_multihop_query_keeps_path_rels_until_edge_unwind():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="complete 4 hop causal chain",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=4,
+        ranking_policy="hybrid",
+    )
+
+    query = driver.session_obj.calls[-1]["query"]
+    assert "WITH rels, startNode(r) AS s" in query
+    assert "WITH rels, s, r, o, hop, confidence_score" in query
+    assert "WITH rels, s, r, o, hop, chain_path_score" in query
 
 
 def test_graph_query_terms_include_cjk_ngrams_for_unsegmented_queries():
@@ -2435,6 +2740,18 @@ def test_build_segmented_user_content_omits_annotation_for_single_part():
     )
 
     assert content == "Alice works at Acme."
+
+
+def test_build_segmented_user_content_includes_reference_date_for_chat():
+    content = _build_segmented_user_content(
+        "今天下午开会。",
+        {REFERENCE_DATE_METADATA_KEY: "2026-06-08"},
+    )
+
+    assert content.startswith("[参考日期] 2026-06-08")
+    assert "仅用于本段 chat 对话" in content
+    assert "不要用于 document/叙述性文本" in content
+    assert content.endswith("今天下午开会。")
 
 
 def test_extraction_text_segments_uses_semantic_chunk_markers_for_long_manual_text():
