@@ -24,6 +24,7 @@ from core.agent.llm import LLM
 from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
 from core.config_schema import CHAT_MODEL_CONFIG_DEFAULT
+from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
 from core.pipeline.stage import Stage, register_stage
 from core.platform.daw_agent import normalize_daw_host_context
 from core.platform.message import Image, MessageEvent, MessageType, Plain, resolve_session_id
@@ -731,7 +732,9 @@ class ProcessStage(Stage):
                     query=query,
                     source_ids=_retrieval_source_ids(retrieval_result or {}),
                     max_facts=int(graph_cfg.get("max_facts") or 8),
-                    retrieval_depth=int(graph_cfg.get("retrieval_depth") or 1),
+                    retrieval_depth=int(
+                        graph_cfg.get("retrieval_depth") or GRAPH_RETRIEVAL_MAX_DEPTH
+                    ),
                     ranking_policy=str(graph_cfg.get("ranking_policy") or "hybrid"),
                     expansion_candidate_limit=int(graph_cfg.get("expansion_candidate_limit") or 40),
                 ),

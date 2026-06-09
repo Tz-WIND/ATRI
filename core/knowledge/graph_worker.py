@@ -225,7 +225,7 @@ class GraphKnowledgeManager:
         depth = _retrieval_depth(
             retrieval_depth
             if retrieval_depth is not None
-            else self.graph_config.get("retrieval_depth", 1)
+            else self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_MAX_DEPTH)
         )
         policy = _ranking_policy(ranking_policy or self.graph_config.get("ranking_policy"))
         candidate_limit = _expansion_candidate_limit(
@@ -476,11 +476,14 @@ class GraphKnowledgeManager:
                 query=query,
                 source_ids=[],
                 max_facts=max(1, int(self.graph_config.get("max_facts") or 8)),
-                retrieval_depth=_retrieval_depth(self.graph_config.get("retrieval_depth", 1)),
+                retrieval_depth=_retrieval_depth(
+                    self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_MAX_DEPTH)
+                ),
                 ranking_policy=_ranking_policy(self.graph_config.get("ranking_policy")),
                 expansion_candidate_limit=_expansion_candidate_limit(
                     self.graph_config.get("expansion_candidate_limit")
                 ),
+                include_entity_types=True,
             )
         except Exception as e:
             logger.warning("Graph extraction context retrieval skipped: %s", e)
@@ -540,7 +543,9 @@ def _graph_config_from_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "extraction_enabled": bool(graph.get("extraction_enabled", True)),
         "extraction_sources": list(graph.get("extraction_sources") or ["documents", "chat"]),
         "retrieval_enabled": bool(graph.get("retrieval_enabled", True)),
-        "retrieval_depth": _retrieval_depth(graph.get("retrieval_depth", 1)),
+        "retrieval_depth": _retrieval_depth(
+            graph.get("retrieval_depth", GRAPH_RETRIEVAL_MAX_DEPTH)
+        ),
         "max_facts": max(1, int(graph.get("max_facts") or 8)),
         "expansion_candidate_limit": _expansion_candidate_limit(
             graph.get("expansion_candidate_limit", 40)

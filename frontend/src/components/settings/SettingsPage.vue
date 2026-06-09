@@ -946,7 +946,7 @@ const form = ref({
       extraction_enabled: true,
       extraction_sources: ['documents', 'chat'],
       retrieval_enabled: true,
-      retrieval_depth: 1,
+      retrieval_depth: 7,
       max_facts: 8,
       expansion_candidate_limit: 40,
       ranking_policy: 'hybrid',

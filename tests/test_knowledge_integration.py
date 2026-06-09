@@ -4,6 +4,7 @@ import pytest
 
 import core.pipeline.stages.process as process_stage_module
 from core.config_schema import DEFAULT_CONFIG, normalize_config
+from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
 from core.pipeline.stages.process import ProcessStage
 from core.platform.message import MessageEvent
 
@@ -80,7 +81,7 @@ def test_normalize_config_adds_knowledge_defaults():
             "extraction_enabled": True,
             "extraction_sources": ["documents", "chat"],
             "retrieval_enabled": True,
-            "retrieval_depth": 1,
+            "retrieval_depth": GRAPH_RETRIEVAL_MAX_DEPTH,
             "max_facts": 8,
             "expansion_candidate_limit": 40,
             "ranking_policy": "hybrid",
@@ -152,6 +153,37 @@ async def test_process_stage_appends_graph_context_without_replacing_vector_cont
             "retrieval_depth": 2,
             "ranking_policy": "hybrid",
             "expansion_candidate_limit": 64,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_stage_uses_max_default_graph_retrieval_depth():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": False,
+        "active_bases": [],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "max_facts": 2,
+        },
+    }
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="Trace the alert chain.")
+
+    await stage._event_content_for_agent(event)
+
+    assert stage.graph_manager.retrieve_calls == [
+        {
+            "query": "Trace the alert chain.",
+            "source_ids": [],
+            "max_facts": 2,
+            "retrieval_depth": GRAPH_RETRIEVAL_MAX_DEPTH,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 40,
         }
     ]
 

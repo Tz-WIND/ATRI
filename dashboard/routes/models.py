@@ -214,7 +214,7 @@ def _merge_graph_knowledge_config(
     merged.setdefault("extraction_enabled", True)
     merged.setdefault("extraction_sources", ["documents", "chat"])
     merged.setdefault("retrieval_enabled", True)
-    merged.setdefault("retrieval_depth", 1)
+    merged.setdefault("retrieval_depth", GRAPH_RETRIEVAL_MAX_DEPTH)
     merged.setdefault("max_facts", 8)
     merged.setdefault("expansion_candidate_limit", 40)
     merged.setdefault("ranking_policy", "hybrid")

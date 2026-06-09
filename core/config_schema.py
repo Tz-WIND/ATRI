@@ -88,7 +88,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
                         "retrieval_enabled": {"type": "boolean", "default": True},
                         "retrieval_depth": {
                             "type": "integer",
-                            "default": 1,
+                            "default": GRAPH_RETRIEVAL_MAX_DEPTH,
                             "minimum": 1,
                             "maximum": GRAPH_RETRIEVAL_MAX_DEPTH,
                         },

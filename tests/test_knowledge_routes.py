@@ -414,7 +414,7 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
             "extraction_enabled": True,
             "extraction_sources": ["documents", "chat"],
             "retrieval_enabled": True,
-            "retrieval_depth": 1,
+            "retrieval_depth": 7,
             "max_facts": 8,
             "expansion_candidate_limit": 40,
             "ranking_policy": "hybrid",

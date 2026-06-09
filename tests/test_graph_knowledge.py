@@ -153,6 +153,21 @@ def test_build_extraction_prompt_links_incidents_to_category_hub():
     assert "预警平台" not in prompt
 
 
+def test_build_extraction_prompt_infers_incident_category_without_inventing_facts():
+    prompt = build_extraction_prompt("document")
+
+    assert MAX_EXTRACTION_TUPLES >= 28
+    assert "允许从事件名称、告警词、错误码、症状语义归纳分类中心" in prompt
+    assert "硬盘掉线" in prompt
+    assert "硬件故障" in prompt
+    assert "已有图谱里已有匹配的分类中心" in prompt
+    assert "优先复用其原文 canonical 写法" in prompt
+    assert "不得补写原文未支持的根因、责任人、修复结果、影响范围或发生时间" in prompt
+    assert "症状" in prompt
+    assert "处理动作" in prompt
+    assert "恢复状态" in prompt
+
+
 def test_build_extraction_prompt_anchors_new_facts_to_existing_graph_nodes():
     prompt = build_extraction_prompt("document")
 
@@ -161,6 +176,9 @@ def test_build_extraction_prompt_anchors_new_facts_to_existing_graph_nodes():
     assert "另起新节点" in prompt
     assert "从已有节点向外延伸" in prompt
     assert "不要把已有图谱中的事实重复输出" in prompt
+    assert "若已有上下文标出实体类型" in prompt
+    assert "同时复用已有 name 与 type" in prompt
+    assert "同名异物" in prompt
 
 
 def test_fact_lines_from_graph_context_keeps_only_fact_rows():
@@ -895,6 +913,137 @@ async def test_graph_tuple_extractor_includes_existing_graph_context_in_user_pro
 
 
 @pytest.mark.asyncio
+async def test_graph_tuple_extractor_reuses_unambiguous_existing_entity_type():
+    existing_context = format_graph_context(
+        ["- 订单系统 (System) -[belongs_to]-> 交易平台 (System)"]
+    )
+
+    class FakeLLM:
+        def chat(self, messages, stream=False):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": json.dumps(
+                        {
+                            "tuples": [
+                                {
+                                    "subject": "订单系统",
+                                    "subject_type": "Component",
+                                    "predicate": "has_error",
+                                    "object": "5xx 告警",
+                                    "object_type": "Concept",
+                                    "evidence": "订单系统出现 5xx 告警。",
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+            )()
+
+    extractor = GraphTupleExtractor(lambda: FakeLLM())
+
+    facts = await extractor.extract_facts(
+        "订单系统出现 5xx 告警。",
+        source_id="chunk-type-reuse",
+        source_kind="document",
+        existing_graph_context=existing_context,
+    )
+
+    assert facts[0]["subject"] == "订单系统"
+    assert facts[0]["subject_type"] == "System"
+    assert facts[0]["subject_type_key"] == "system"
+    assert facts[0]["fact_key"] == "system:订单系统|has_error|concept:5xx 告警"
+
+
+@pytest.mark.asyncio
+async def test_graph_tuple_extractor_does_not_force_ambiguous_same_name_type_reuse():
+    existing_context = format_graph_context(
+        [
+            "- Apple (Company) -[makes]-> iPhone (Product)",
+            "- Apple (Product) -[has_color]-> Red (Color)",
+        ]
+    )
+
+    class FakeLLM:
+        def chat(self, messages, stream=False):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": json.dumps(
+                        {
+                            "tuples": [
+                                {
+                                    "subject": "Apple",
+                                    "subject_type": "Product",
+                                    "predicate": "has_color",
+                                    "object": "Green",
+                                    "object_type": "Color",
+                                    "evidence": "Apple is green.",
+                                }
+                            ]
+                        }
+                    )
+                },
+            )()
+
+    extractor = GraphTupleExtractor(lambda: FakeLLM())
+
+    facts = await extractor.extract_facts(
+        "Apple is green.",
+        source_id="chunk-ambiguous-type",
+        source_kind="document",
+        existing_graph_context=existing_context,
+    )
+
+    assert facts[0]["subject_type"] == "Product"
+    assert facts[0]["subject_type_key"] == "product"
+    assert facts[0]["fact_key"] == "product:apple|has_color|color:green"
+
+
+@pytest.mark.asyncio
+async def test_graph_tuple_extractor_keeps_incompatible_same_name_entity_type():
+    existing_context = format_graph_context(["- Apple (Company) -[makes]-> iPhone (Product)"])
+
+    class FakeLLM:
+        def chat(self, messages, stream=False):
+            return type(
+                "Response",
+                (),
+                {
+                    "content": json.dumps(
+                        {
+                            "tuples": [
+                                {
+                                    "subject": "Apple",
+                                    "subject_type": "Product",
+                                    "predicate": "has_color",
+                                    "object": "Green",
+                                    "object_type": "Color",
+                                    "evidence": "The Apple is green.",
+                                }
+                            ]
+                        }
+                    )
+                },
+            )()
+
+    extractor = GraphTupleExtractor(lambda: FakeLLM())
+
+    facts = await extractor.extract_facts(
+        "The Apple is green.",
+        source_id="chunk-incompatible-same-name",
+        source_kind="document",
+        existing_graph_context=existing_context,
+    )
+
+    assert facts[0]["subject_type"] == "Product"
+    assert facts[0]["fact_key"] == "product:apple|has_color|color:green"
+
+
+@pytest.mark.asyncio
 async def test_graph_tuple_extractor_parses_reasoning_json_when_content_is_empty():
     class FakeLLM:
         def chat(self, messages, stream=False):
@@ -987,16 +1136,20 @@ class FakeNeo4jSession:
             return [
                 {
                     "subject": "Alice",
+                    "subject_type": "Person",
                     "predicate": "works_at",
                     "object": "Acme",
+                    "object_type": "Company",
                     "evidence": "Alice works at Acme.",
                     "confidence": 0.9,
                     "hop": 1,
                 },
                 {
                     "subject": "Acme",
+                    "subject_type": "Company",
                     "predicate": "uses",
                     "object": "Neo4j",
+                    "object_type": "Tool",
                     "evidence": "Acme uses Neo4j.",
                     "confidence": 0.8,
                     "hop": 2,
@@ -1006,8 +1159,10 @@ class FakeNeo4jSession:
             return [
                 {
                     "subject": "Alice",
+                    "subject_type": "Person",
                     "predicate": "works_at",
                     "object": "Acme",
+                    "object_type": "Company",
                     "evidence": "Alice works at Acme.",
                     "confidence": 0.9,
                 }
@@ -1105,6 +1260,38 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
     assert count == 1
     assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
     assert driver.closed is True
+
+
+def test_neo4j_graph_client_can_include_entity_types_in_retrieved_context():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=1,
+        include_entity_types=True,
+    )
+
+    query = next(
+        call["query"]
+        for call in driver.session_obj.calls
+        if "RETURN s.name AS subject" in call["query"]
+    )
+    assert "s.type AS subject_type" in query
+    assert "o.type AS object_type" in query
+    assert context == format_graph_context(
+        ["- Alice (Person) -[works_at]-> Acme (Company) (Alice works at Acme.)"]
+    )
 
 
 def test_neo4j_graph_client_keeps_same_name_different_types_separate():
@@ -1817,6 +2004,181 @@ def test_neo4j_graph_client_prioritizes_multihop_chain_when_single_hop_roots_exc
     )
 
 
+def test_neo4j_graph_client_keeps_deep_duplicate_edges_for_chain_stitching():
+    class DuplicateShallowHopSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..4" in query:
+                return [
+                    {
+                        "subject": "地址池冲突",
+                        "predicate": "causes",
+                        "object": "网关异常",
+                        "evidence": "地址池冲突导致网关异常。",
+                        "hop": 1,
+                    },
+                    {
+                        "subject": "网关异常",
+                        "predicate": "causes",
+                        "object": "用户断连",
+                        "evidence": "网关异常造成用户断连。",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "DHCP配置批量下发",
+                        "predicate": "causes",
+                        "object": "地址池冲突",
+                        "evidence": "DHCP 配置批量下发导致地址池冲突。",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "地址池冲突",
+                        "predicate": "causes",
+                        "object": "网关异常",
+                        "evidence": "地址池冲突导致网关异常。",
+                        "hop": 3,
+                    },
+                    {
+                        "subject": "网关异常",
+                        "predicate": "causes",
+                        "object": "用户断连",
+                        "evidence": "网关异常造成用户断连。",
+                        "hop": 4,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "夜间维护策略变更",
+                        "predicate": "causes",
+                        "object": "DHCP配置批量下发",
+                        "evidence": "夜间维护策略变更触发 DHCP 配置批量下发。",
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = DuplicateShallowHopSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="夜间维护策略变更 DHCP 地址池冲突 网关异常 用户断连",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=4,
+    )
+
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] 夜间维护策略变更 -[causes]-> DHCP配置批量下发 "
+                "(夜间维护策略变更触发 DHCP 配置批量下发。) | linked: [2-hop] "
+                "DHCP配置批量下发 -[causes]-> 地址池冲突 "
+                "(DHCP 配置批量下发导致地址池冲突。) | linked: [3-hop] "
+                "地址池冲突 -[causes]-> 网关异常 (地址池冲突导致网关异常。) "
+                "| linked: [4-hop] 网关异常 -[causes]-> 用户断连 "
+                "(网关异常造成用户断连。)"
+            )
+        ]
+    )
+
+
+def test_neo4j_graph_client_prefers_longest_root_over_duplicate_inner_short_chain():
+    class ShortDuplicateFirstSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "FACT*1..4" in query:
+                return [
+                    {
+                        "subject": "网关异常",
+                        "predicate": "causes",
+                        "object": "用户断连",
+                        "evidence": "网关异常造成用户断连。",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "DHCP配置批量下发",
+                        "predicate": "causes",
+                        "object": "地址池冲突",
+                        "evidence": "DHCP 配置批量下发导致地址池冲突。",
+                        "hop": 2,
+                    },
+                    {
+                        "subject": "地址池冲突",
+                        "predicate": "causes",
+                        "object": "网关异常",
+                        "evidence": "地址池冲突导致网关异常。",
+                        "hop": 3,
+                    },
+                    {
+                        "subject": "网关异常",
+                        "predicate": "causes",
+                        "object": "用户断连",
+                        "evidence": "网关异常造成用户断连。",
+                        "hop": 4,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "地址池冲突",
+                        "predicate": "causes",
+                        "object": "网关异常",
+                        "evidence": "地址池冲突导致网关异常。",
+                    },
+                    {
+                        "subject": "夜间维护策略变更",
+                        "predicate": "causes",
+                        "object": "DHCP配置批量下发",
+                        "evidence": "夜间维护策略变更触发 DHCP 配置批量下发。",
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ShortDuplicateFirstSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="夜间维护策略变更 DHCP 地址池冲突 网关异常 用户断连",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=4,
+    )
+
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] 夜间维护策略变更 -[causes]-> DHCP配置批量下发 "
+                "(夜间维护策略变更触发 DHCP 配置批量下发。) | linked: [2-hop] "
+                "DHCP配置批量下发 -[causes]-> 地址池冲突 "
+                "(DHCP 配置批量下发导致地址池冲突。) | linked: [3-hop] "
+                "地址池冲突 -[causes]-> 网关异常 (地址池冲突导致网关异常。) "
+                "| linked: [4-hop] 网关异常 -[causes]-> 用户断连 "
+                "(网关异常造成用户断连。)"
+            )
+        ]
+    )
+
+
 def test_neo4j_graph_client_multihop_expansion_ignores_one_hop_rows_before_limit():
     class ExpansionLimitSession(FakeNeo4jSession):
         def run(self, query, **params):
@@ -2085,7 +2447,10 @@ def test_neo4j_graph_client_latest_ranking_preserves_recency_order():
     )
 
     query = driver.session_obj.calls[-1]["query"]
-    assert "ORDER BY structural_role ASC, hop ASC, r.updated_at DESC" in query
+    assert (
+        "ORDER BY structural_role ASC, chain_path_score DESC, "
+        "chain_order_score DESC, hop DESC, r.updated_at DESC"
+    ) in query
     assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "latest"
 
 
@@ -2187,6 +2552,8 @@ def test_neo4j_graph_client_multihop_query_limits_paths_before_unwinding_edges()
     query = driver.session_obj.calls[-1]["query"]
     limit_index = query.index("LIMIT $limit")
     unwind_index = query.index("UNWIND range(0, size(rels) - 1) AS rel_index")
+    deep_path_order_index = query.index("hop DESC")
+    assert deep_path_order_index < limit_index
     assert limit_index < unwind_index
 
 
@@ -2516,17 +2883,19 @@ class FakeGraphClient:
         retrieval_depth=1,
         ranking_policy="hybrid",
         expansion_candidate_limit=40,
+        include_entity_types=False,
     ):
-        self.retrieve_calls.append(
-            {
-                "query": query,
-                "source_ids": source_ids,
-                "max_facts": max_facts,
-                "retrieval_depth": retrieval_depth,
-                "ranking_policy": ranking_policy,
-                "expansion_candidate_limit": expansion_candidate_limit,
-            }
-        )
+        call = {
+            "query": query,
+            "source_ids": source_ids,
+            "max_facts": max_facts,
+            "retrieval_depth": retrieval_depth,
+            "ranking_policy": ranking_policy,
+            "expansion_candidate_limit": expansion_candidate_limit,
+        }
+        if include_entity_types:
+            call["include_entity_types"] = True
+        self.retrieve_calls.append(call)
         return format_graph_context(["- Alice -[works_at]-> Acme"])
 
     def close(self):
@@ -2705,6 +3074,7 @@ async def test_graph_manager_retrieves_existing_graph_context_before_extraction(
                 "retrieval_depth": 3,
                 "ranking_policy": "latest",
                 "expansion_candidate_limit": 24,
+                "include_entity_types": True,
             }
         ]
         assert extractor.calls[0]["existing_graph_context"] == format_graph_context(
@@ -3333,7 +3703,7 @@ async def test_graph_manager_passes_configured_ranking_policy_to_graph_client(tm
                 "query": "Alice",
                 "source_ids": [],
                 "max_facts": 5,
-                "retrieval_depth": 1,
+                "retrieval_depth": 7,
                 "ranking_policy": "relevance",
                 "expansion_candidate_limit": 40,
             }
@@ -3369,7 +3739,7 @@ async def test_graph_manager_passes_configured_expansion_candidate_limit_to_grap
                 "query": "Alice",
                 "source_ids": [],
                 "max_facts": 5,
-                "retrieval_depth": 1,
+                "retrieval_depth": 7,
                 "ranking_policy": "hybrid",
                 "expansion_candidate_limit": 72,
             }

@@ -209,7 +209,7 @@ def register(dashboard: Dashboard) -> None:
                 max_facts=_int_at_least(data.get("max_facts"), 8, "max_facts", 1),
                 retrieval_depth=_int_at_least(
                     data.get("retrieval_depth"),
-                    1,
+                    GRAPH_RETRIEVAL_MAX_DEPTH,
                     "retrieval_depth",
                     1,
                     maximum=GRAPH_RETRIEVAL_MAX_DEPTH,

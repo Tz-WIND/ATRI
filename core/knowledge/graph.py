@@ -228,6 +228,7 @@ class Neo4jGraphClient:
         retrieval_depth: int = 1,
         ranking_policy: str = "hybrid",
         expansion_candidate_limit: int | None = None,
+        include_entity_types: bool = False,
     ) -> str:
         if not self.enabled:
             return ""
@@ -244,10 +245,15 @@ class Neo4jGraphClient:
             if policy == "latest"
             else "ORDER BY structural_role ASC, graph_score DESC, r.updated_at DESC"
         )
-        multi_hop_order_by = (
-            "ORDER BY structural_role ASC, hop ASC, r.updated_at DESC"
+        multi_hop_path_order_by = (
+            "ORDER BY structural_role ASC, chain_path_score DESC, "
+            "chain_order_score DESC, hop DESC, r.updated_at DESC"
             if policy == "latest"
-            else "ORDER BY structural_role ASC, graph_score DESC, hop ASC, r.updated_at DESC"
+            else "ORDER BY structural_role ASC, chain_path_score DESC, "
+            "chain_order_score DESC, hop DESC, graph_score DESC, r.updated_at DESC"
+        )
+        multi_hop_edge_order_by = (
+            "ORDER BY structural_role ASC, graph_score DESC, hop ASC, r.updated_at DESC"
         )
         single_hop_cypher = f"""
         MATCH (s:Entity)-[r:FACT]->(o:Entity)
@@ -334,8 +340,10 @@ class Neo4jGraphClient:
                     + source_count_score * 0.05
              END AS graph_score
         RETURN s.name AS subject,
+               s.type AS subject_type,
                r.predicate AS predicate,
                o.name AS object,
+               o.type AS object_type,
                r.evidence AS evidence,
                r[$hyper_event_property] AS hyper_event,
                r[$hyper_role_property] AS hyper_role,
@@ -467,20 +475,22 @@ class Neo4jGraphClient:
                     + chain_path_score * 0.10
                     + chain_order_score * 0.05
              END AS graph_score
-        {multi_hop_order_by}
+        {multi_hop_path_order_by}
         LIMIT $limit
         UNWIND range(0, size(rels) - 1) AS rel_index
         WITH rels[rel_index] AS r, rel_index + 1 AS hop, graph_score, structural_role
         RETURN startNode(r).name AS subject,
+               startNode(r).type AS subject_type,
                r.predicate AS predicate,
                endNode(r).name AS object,
+               endNode(r).type AS object_type,
                r.evidence AS evidence,
                r[$hyper_event_property] AS hyper_event,
                r[$hyper_role_property] AS hyper_role,
                r[$chain_order_property] AS chain_order,
                r.confidence AS confidence,
                hop AS hop
-        {multi_hop_order_by}
+        {multi_hop_edge_order_by}
         """
         query_limit = max(1, int(max_facts or 8))
         expansion_query_limit = _expansion_candidate_limit(
@@ -520,23 +530,36 @@ class Neo4jGraphClient:
         else:
             rows = run_context_query(cypher, limit=query_limit)
         entries: list[dict[str, Any]] = []
-        seen = set()
+        seen_positions = set()
         for row in rows:
             subject = _canonical_retrieved_entity_name(row.get("subject"))
+            subject_type = str(row.get("subject_type") or "").strip()
             predicate = str(row.get("predicate") or "").strip()
             obj = _canonical_retrieved_entity_name(row.get("object"))
+            object_type = str(row.get("object_type") or "").strip()
             if not subject or not predicate or not obj:
                 continue
-            key = (subject.lower(), predicate.lower(), obj.lower())
-            if key in seen:
-                continue
-            seen.add(key)
+            key = (
+                subject.lower(),
+                subject_type.lower() if include_entity_types else "",
+                predicate.lower(),
+                obj.lower(),
+                object_type.lower() if include_entity_types else "",
+            )
             evidence = str(row.get("evidence") or "").strip()
-            detail = f"{subject} -[{predicate}]-> {obj}"
+            detail = (
+                f"{_context_entity_label(subject, subject_type, include_entity_types)} "
+                f"-[{predicate}]-> "
+                f"{_context_entity_label(obj, object_type, include_entity_types)}"
+            )
             hop = 1
             if depth > 1:
                 hop = _retrieval_depth(row.get("hop", 1))
                 detail = f"[{hop}-hop] {detail}"
+            position_key = (*key, hop)
+            if position_key in seen_positions:
+                continue
+            seen_positions.add(position_key)
             notes = []
             hyper_event = str(row.get("hyper_event") or "").strip()
             hyper_role = str(row.get("hyper_role") or "").strip()
@@ -553,6 +576,7 @@ class Neo4jGraphClient:
                 detail += f" ({'; '.join(notes)})"
             entries.append(
                 {
+                    "dedupe_key": key,
                     "detail": detail,
                     "hop": hop,
                     "evidence_length": len(evidence),
@@ -648,6 +672,14 @@ def _canonical_retrieved_entity_name(value: Any) -> str:
     return text
 
 
+def _context_entity_label(name: str, entity_type: str, include_entity_types: bool) -> str:
+    cleaned_name = str(name or "").strip()
+    cleaned_type = str(entity_type or "").strip()
+    if include_entity_types and cleaned_name and cleaned_type:
+        return f"{cleaned_name} ({cleaned_type})"
+    return cleaned_name
+
+
 def _entity_alias_key(value: str) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
@@ -663,23 +695,32 @@ def _format_retrieved_fact_lines(
         return ["- " + str(entry["detail"]) for entry in entries[:line_limit]]
 
     tree = _retrieved_fact_tree(entries)
+    rendered_keys = set()
 
     def render_node(index: int, path: set[int]) -> str:
         if index in path:
             return str(entries[index]["detail"])
+        entry_key = entries[index].get("dedupe_key")
+        if entry_key and entry_key in rendered_keys:
+            return ""
+        if entry_key:
+            rendered_keys.add(entry_key)
         node = tree["nodes"][index]
         detail = str(entries[index]["detail"])
         children = node["children"]
         if children:
             child_path = {*path, index}
-            linked_details = "; ".join(
-                render_node(child_index, child_path) for child_index in children
-            )
-            detail = f"{detail} | linked: {linked_details}"
+            linked_parts = [
+                child_detail
+                for child_index in children
+                if (child_detail := render_node(child_index, child_path))
+            ]
+            if linked_parts:
+                detail = f"{detail} | linked: {'; '.join(linked_parts)}"
         return detail
 
     roots = list(tree["roots"])
-    if len(roots) > line_limit:
+    if len(roots) > line_limit or _retrieved_fact_roots_overlap(tree["nodes"], entries, roots):
         roots.sort(
             key=lambda index: _retrieved_fact_root_sort_key(
                 tree["nodes"],
@@ -689,7 +730,10 @@ def _format_retrieved_fact_lines(
 
     lines: list[str] = []
     for index in roots:
-        lines.append("- " + render_node(index, set()))
+        rendered = render_node(index, set())
+        if not rendered:
+            continue
+        lines.append("- " + rendered)
         if len(lines) >= line_limit:
             break
     return lines
@@ -722,6 +766,38 @@ def _retrieved_fact_tree(entries: list[dict[str, Any]]) -> dict[str, Any]:
         attached.add(index)
     roots = [index for index in range(len(entries)) if index not in attached]
     return {"nodes": nodes, "roots": roots}
+
+
+def _retrieved_fact_roots_overlap(
+    nodes: list[dict[str, list[int]]],
+    entries: list[dict[str, Any]],
+    roots: list[int],
+) -> bool:
+    seen_keys = set()
+    for root_index in roots:
+        root_keys = _retrieved_fact_subtree_keys(nodes, entries, root_index, set())
+        if seen_keys.intersection(root_keys):
+            return True
+        seen_keys.update(root_keys)
+    return False
+
+
+def _retrieved_fact_subtree_keys(
+    nodes: list[dict[str, list[int]]],
+    entries: list[dict[str, Any]],
+    index: int,
+    path: set[int],
+) -> set[Any]:
+    if index in path:
+        return set()
+    keys = set()
+    entry_key = entries[index].get("dedupe_key")
+    if entry_key:
+        keys.add(entry_key)
+    child_path = {*path, index}
+    for child_index in nodes[index]["children"]:
+        keys.update(_retrieved_fact_subtree_keys(nodes, entries, child_index, child_path))
+    return keys
 
 
 def _best_retrieved_fact_parent_index(

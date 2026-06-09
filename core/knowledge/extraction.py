@@ -30,9 +30,22 @@ HYPER_TUPLE_KEYS = ("hyper_tuples", "hyper_facts", "events")
 MAX_HYPER_TUPLES = 4
 MAX_HYPER_ROLES = 6
 MAX_HYPER_CHAIN_EDGES = 5
-MAX_EXTRACTION_TUPLES = 18
+MAX_EXTRACTION_TUPLES = 32
 EXISTING_GRAPH_CONTEXT_METADATA_KEY = "existing_graph_context"
 REFERENCE_DATE_METADATA_KEY = "reference_date"
+_TYPED_GRAPH_FACT_RE = re.compile(
+    r"^(?P<subject>.+?) \((?P<subject_type>[A-Za-z][A-Za-z0-9_ ]*)\) "
+    r"-\[[^\]]+\]-> "
+    r"(?P<object>.+?) \((?P<object_type>[A-Za-z][A-Za-z0-9_ ]*)\)"
+    r"(?:\s+\(.*\))?$"
+)
+_GENERIC_ENTITY_TYPE_KEYS = {"", "concept", "entity", "item", "object", "other", "thing", "unknown"}
+_COMPATIBLE_ENTITY_TYPE_GROUPS = (
+    frozenset({"system", "component", "service", "platform", "application", "app"}),
+    frozenset({"organization", "company", "team", "department"}),
+    frozenset({"tool", "library", "framework"}),
+    frozenset({"event", "incident", "alert", "error"}),
+)
 _TIME_OF_DAY_ONLY_RE = re.compile(
     r"^(?:"
     r"今天上午|今天下午|今天晚上|今天早上|今早|今晚|昨夜|昨天|明天|今天|"
@@ -481,12 +494,14 @@ class GraphTupleExtractor:
         )
         content = _extraction_response_text(response)
         payload = parse_extraction_json(content)
+        entity_type_hints = _entity_type_hints_from_graph_context(context_text)
         return normalize_extracted_facts(
             payload,
             source_id=source_id,
             source_kind=source_kind,
             default_evidence=cleaned[:500],
             metadata=_fact_metadata(metadata),
+            entity_type_hints=entity_type_hints,
         )
 
 
@@ -554,6 +569,7 @@ def normalize_extracted_facts(
     source_kind: str,
     default_evidence: str = "",
     metadata: dict[str, Any] | None = None,
+    entity_type_hints: dict[str, str] | None = None,
 ) -> list[dict]:
     """Validate, normalize, and deduplicate extracted five-tuples."""
     raw_items = [
@@ -585,10 +601,12 @@ def normalize_extracted_facts(
             raw_values["subject"],
             raw_values["subject_type"],
         )
+        subject_type = _entity_type_from_hint(subject, subject_type, entity_type_hints)
         obj, object_type = _canonical_entity(
             raw_values["object"],
             raw_values["object_type"],
         )
+        object_type = _entity_type_from_hint(obj, object_type, entity_type_hints)
         values = {
             **raw_values,
             "subject": subject,
@@ -680,10 +698,10 @@ def build_extraction_prompt(source_kind: str) -> str:
         "不要输出 JSON 以外的说明或分析。",
         (
             '{"tuples":[{"subject":"原文实体名（不翻译）",'
-            '"subject_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
+            '"subject_type":"Person|Organization|Project|Tool|System|Component|Library|File|Event|Process|Concept|Preference|Error|Other",'
             '"predicate":"specific_lower_snake_case_relation",'
             '"object":"原文实体名或原文中的简洁取值（不翻译）",'
-            '"object_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other",'
+            '"object_type":"Person|Organization|Project|Tool|System|Component|Library|File|Event|Process|Concept|Preference|Error|Other",'
             '"evidence":"short quote or close paraphrase from the text",'
             '"confidence":0.0}]}'
         ),
@@ -697,7 +715,7 @@ def build_extraction_prompt(source_kind: str) -> str:
             "system|config|file|library|project|target|purpose|cause|error|effect|"
             'result|other",'
             '"entity":"原文实体名（不翻译）",'
-            '"entity_type":"Person|Project|Tool|System|Library|File|Concept|Preference|Error|Other"}],'
+            '"entity_type":"Person|Organization|Project|Tool|System|Component|Library|File|Event|Process|Concept|Preference|Error|Other"}],'
             '"chain":[{"from_role":"actor","predicate":"uses","to_role":"tool"},'
             '{"from_role":"tool","predicate":"configured_with","to_role":"config"}],'
             '"evidence":"short quote or close paraphrase from the text",'
@@ -780,6 +798,13 @@ def build_extraction_prompt(source_kind: str) -> str:
             "不要因为正文没写出分类名就省略这层）。"
         ),
         (
+            "- 分类中心引申规则：允许从事件名称、告警词、错误码、症状语义归纳分类中心；"
+            "例如「硬盘掉线」「I/O error」「SMART 告警」可归到「硬件故障」或「存储故障」，"
+            "「接口 5xx 告警」可归到「服务异常」或「异常事件」。"
+            "若已有图谱里已有匹配的分类中心，优先复用其原文 canonical 写法；"
+            "不得补写原文未支持的根因、责任人、修复结果、影响范围或发生时间。"
+        ),
+        (
             "- 标题或文件名以 YYYYMMDD 开头时：事件 hub 用完整标题；occurred_at 从日期前缀"
             "换算为具体日期；并抽取标题/正文中的涉事 System 或组件实体。"
         ),
@@ -788,6 +813,11 @@ def build_extraction_prompt(source_kind: str) -> str:
             "{事件} -[belongs_to]-> {分类中心}；"
             "{事件} -[involves_system]-> {涉事系统/组件}。"
             "若名称体现从属关系，可再写 {子组件} -[part_of]-> {上级系统/平台}。"
+        ),
+        (
+            "- 事件信息尽量抽全：在 tuple 上限内保留症状、错误码、告警级别、原因/根因、"
+            "影响对象、处理动作、恢复状态、修复方式、责任组织、上下游组件等。"
+            "这些事实必须有原文证据；不确定时只写分类中心，不写具体因果或结论。"
         ),
         (
             "- 多条同类记录不要只留孤立事件节点；应通过共同的分类中心与共同上级系统/平台"
@@ -823,6 +853,12 @@ def build_extraction_prompt(source_kind: str) -> str:
             "例如已有「林晚」，新文本写「晚姐」仍输出「林晚」。"
         ),
         (
+            "- 若已有上下文标出实体类型（如 订单系统 (System)），"
+            "同一实体必须同时复用已有 name 与 type，"
+            "不要只复用 name 后改成 Component/Concept/Other。"
+            "但同名异物可以保留不同 type：只有当上下文明确是同一个实体时才复用类型。"
+        ),
+        (
             "- 对已有关系补充新信息：保留相同 subject 与 object，可新增不同 predicate 的边；"
             "若语义与已有边等价则复用已有 predicate，不要为同一关系发明近义谓词。"
         ),
@@ -856,6 +892,8 @@ def build_extraction_prompt(source_kind: str) -> str:
             "位于→located_at；发生于/发生时间→occurred_at（事件何时发生）；"
             "属于/归类→belongs_to（具体事件挂到故障/异常等分类中心）；"
             "涉事系统→involves_system；组件归属→part_of；"
+            "症状/表现→has_symptom；错误码→has_error_code；告警级别→has_severity；"
+            "影响对象/范围→affects；处理动作→handled_by；恢复状态→has_recovery_status；"
             "负责/参与项目→works_on；"
             "支持用途→supports；产出→produces；版本→has_version；运行于→runs_on；"
             "转交→transferred_to；涉及人员→involves_person；涉及物品→involves_item。"
@@ -914,13 +952,17 @@ def build_extraction_prompt(source_kind: str) -> str:
         ),
         '- 若无有用事实，返回 {"tuples":[]}。',
         f"- 最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples（含 hyper 展开前的条目）；"
-        "事件类文本优先完整覆盖事件属性、involves_person 与参与者动作，避免只留少量摘要边。",
+        "事件类文本优先完整覆盖事件属性、分类中心、涉事系统/组件、症状、原因、影响、处理动作、"
+        "恢复状态、involves_person 与参与者动作，避免只留少量摘要边。",
         "",
         "故障/异常类结构示例（仅示连边模式，实体名必须来自原文，勿照抄占位符）：",
         "- {具体事件标题} -[occurred_at]-> {具体日期} (evidence: …)",
         "- {具体事件标题} -[belongs_to]-> {分类中心} (evidence: …)",
         "- {具体事件标题} -[involves_system]-> {涉事系统或组件} (evidence: …)",
         "- {子组件} -[part_of]-> {上级系统或平台} (evidence: …，仅当原文/命名体现从属时)",
+        "- {具体事件标题} -[has_symptom]-> {原文症状/告警表现} (evidence: …，原文有症状时)",
+        "- {具体事件标题} -[handled_by]-> {原文处理动作} (evidence: …，原文有处理动作时)",
+        "- {具体事件标题} -[has_recovery_status]-> {原文恢复状态} (evidence: …，原文有恢复状态时)",
         "",
         "事件类双中心示例（占位名，勿照抄未出现的实体；实体名保持原文语言）：",
         "- 星尘计划发布 -[occurred_at]-> 2024年3月15日下午 (evidence: …)",
@@ -1011,6 +1053,79 @@ def _fact_lines_from_graph_context(context: str) -> list[str]:
         if line.startswith("- "):
             lines.append(line)
     return lines
+
+
+def _entity_type_hints_from_graph_context(context: str) -> dict[str, str]:
+    candidates: dict[str, set[str]] = {}
+    display_types: dict[tuple[str, str], str] = {}
+    for line in _fact_lines_from_graph_context(context):
+        for segment in _typed_fact_segments(line):
+            match = _TYPED_GRAPH_FACT_RE.match(segment)
+            if not match:
+                continue
+            for name_key, type_key, display_type in (
+                (
+                    normalize_entity_key(match.group("subject")),
+                    normalize_entity_key(match.group("subject_type")),
+                    _clean_text(match.group("subject_type")),
+                ),
+                (
+                    normalize_entity_key(match.group("object")),
+                    normalize_entity_key(match.group("object_type")),
+                    _clean_text(match.group("object_type")),
+                ),
+            ):
+                if not name_key or not type_key:
+                    continue
+                candidates.setdefault(name_key, set()).add(type_key)
+                display_types.setdefault((name_key, type_key), display_type)
+    hints: dict[str, str] = {}
+    for name_key, type_keys in candidates.items():
+        if len(type_keys) == 1:
+            type_key = next(iter(type_keys))
+            hints[name_key] = display_types[(name_key, type_key)]
+    return hints
+
+
+def _typed_fact_segments(line: str) -> list[str]:
+    cleaned = str(line or "").strip()
+    if cleaned.startswith("- "):
+        cleaned = cleaned[2:].strip()
+    parts = [part.strip() for part in cleaned.split(" | linked: ")]
+    segments: list[str] = []
+    for part in parts:
+        segments.append(re.sub(r"^\[\d+-hop\]\s+", "", part).strip())
+    return segments
+
+
+def _entity_type_from_hint(
+    entity_name: str,
+    current_type: str,
+    entity_type_hints: dict[str, str] | None,
+) -> str:
+    if not entity_type_hints:
+        return current_type
+    hinted_type = entity_type_hints.get(normalize_entity_key(entity_name))
+    if not hinted_type:
+        return current_type
+    current_type_key = normalize_entity_key(current_type)
+    hinted_type_key = normalize_entity_key(hinted_type)
+    if (
+        current_type_key in _GENERIC_ENTITY_TYPE_KEYS
+        or current_type_key == hinted_type_key
+        or _entity_type_keys_compatible(current_type_key, hinted_type_key)
+    ):
+        return hinted_type
+    return current_type
+
+
+def _entity_type_keys_compatible(current_type_key: str, hinted_type_key: str) -> bool:
+    if not current_type_key or not hinted_type_key:
+        return False
+    return any(
+        current_type_key in group and hinted_type_key in group
+        for group in _COMPATIBLE_ENTITY_TYPE_GROUPS
+    )
 
 
 def normalize_entity_key(value: str) -> str:
