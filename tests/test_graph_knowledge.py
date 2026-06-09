@@ -142,6 +142,17 @@ def test_normalize_extracted_facts_drops_occurred_at_without_concrete_datetime()
     assert facts[0]["object"] == "2026年6月8日下午"
 
 
+def test_build_extraction_prompt_links_incidents_to_category_hub():
+    prompt = build_extraction_prompt("document")
+
+    assert "故障/异常/告警" in prompt
+    assert "分类中心" in prompt
+    assert "{具体事件标题} -[belongs_to]-> {分类中心}" in prompt
+    assert "involves_system" in prompt
+    assert "YYYYMMDD" in prompt
+    assert "预警平台" not in prompt
+
+
 def test_build_extraction_prompt_anchors_new_facts_to_existing_graph_nodes():
     prompt = build_extraction_prompt("document")
 

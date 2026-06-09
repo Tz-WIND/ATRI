@@ -771,6 +771,28 @@ def build_extraction_prompt(source_kind: str) -> str:
             "- 技术事实与事件事实同等重要：Tool/Model/Error/config 要写；"
             "事件、Person、Tool、地点、组织等也要写。"
         ),
+        (
+            "- 故障/异常/告警/运维台账类记录（标题或正文含 异常、故障、告警、失效、宕机、"
+            "中断、报错 等）必须同时建立两层结构："
+            "① 每条具体记录一个 canonical 事件 hub（用原文标题或最贴近原文的事件名）；"
+            "② 主动挂到稳定的分类中心 Concept（从文本语义归纳，如 故障事件、异常事件、"
+            "服务中断；更细可用 数据库异常、网络故障 等；"
+            "不要因为正文没写出分类名就省略这层）。"
+        ),
+        (
+            "- 标题或文件名以 YYYYMMDD 开头时：事件 hub 用完整标题；occurred_at 从日期前缀"
+            "换算为具体日期；并抽取标题/正文中的涉事 System 或组件实体。"
+        ),
+        (
+            "- 具体异常事件除 occurred_at 外，至少写："
+            "{事件} -[belongs_to]-> {分类中心}；"
+            "{事件} -[involves_system]-> {涉事系统/组件}。"
+            "若名称体现从属关系，可再写 {子组件} -[part_of]-> {上级系统/平台}。"
+        ),
+        (
+            "- 多条同类记录不要只留孤立事件节点；应通过共同的分类中心与共同上级系统/平台"
+            "形成可串联子图，便于按类别和时间检索。"
+        ),
         "",
         "实体命名（语言与 canonical）：",
         (
@@ -832,7 +854,9 @@ def build_extraction_prompt(source_kind: str) -> str:
             "失败原因→failed_because；根因→caused_by；导致→causes；修复→fixed_by；"
             "偏好→prefers；回避→avoids；要求→requires；约束→constrained_by；"
             "位于→located_at；发生于/发生时间→occurred_at（事件何时发生）；"
-            "属于→belongs_to；负责/参与项目→works_on；"
+            "属于/归类→belongs_to（具体事件挂到故障/异常等分类中心）；"
+            "涉事系统→involves_system；组件归属→part_of；"
+            "负责/参与项目→works_on；"
             "支持用途→supports；产出→produces；版本→has_version；运行于→runs_on；"
             "转交→transferred_to；涉及人员→involves_person；涉及物品→involves_item。"
         ),
@@ -892,6 +916,12 @@ def build_extraction_prompt(source_kind: str) -> str:
         f"- 最多输出 {MAX_EXTRACTION_TUPLES} 条 tuples（含 hyper 展开前的条目）；"
         "事件类文本优先完整覆盖事件属性、involves_person 与参与者动作，避免只留少量摘要边。",
         "",
+        "故障/异常类结构示例（仅示连边模式，实体名必须来自原文，勿照抄占位符）：",
+        "- {具体事件标题} -[occurred_at]-> {具体日期} (evidence: …)",
+        "- {具体事件标题} -[belongs_to]-> {分类中心} (evidence: …)",
+        "- {具体事件标题} -[involves_system]-> {涉事系统或组件} (evidence: …)",
+        "- {子组件} -[part_of]-> {上级系统或平台} (evidence: …，仅当原文/命名体现从属时)",
+        "",
         "事件类双中心示例（占位名，勿照抄未出现的实体；实体名保持原文语言）：",
         "- 星尘计划发布 -[occurred_at]-> 2024年3月15日下午 (evidence: …)",
         "- 星尘计划发布 -[located_at]-> 新加坡 (evidence: …)",
@@ -936,6 +966,11 @@ def build_extraction_prompt(source_kind: str) -> str:
             [
                 "",
                 "针对 document 文本：",
+                (
+                    "- 运维台账、告警记录、故障通报、日期前缀标题（YYYYMMDD …）的文件："
+                    "按故障/异常类规则建具体事件 hub，并主动挂到分类中心 Concept，"
+                    "不要只写 System-Error 边或只留一条孤立摘要。"
+                ),
                 (
                     "- 文档/叙述性文本里「今天/早上/下午」只是文内说法，"
                     "常见于新闻、日记、纪要、小说；"

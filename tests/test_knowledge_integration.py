@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 import core.pipeline.stages.process as process_stage_module
@@ -212,7 +214,10 @@ def test_process_stage_chat_turn_enqueue_is_non_blocking():
             "assistant_text": "Acme employs Alice.",
             "session_id": "webchat:friend:session-1",
             "platform": "webchat",
-            "metadata": {"message_type": "friend"},
+            "metadata": {
+                "message_type": "friend",
+                "reference_date": datetime.now().strftime("%Y-%m-%d"),
+            },
         }
     ]
 
