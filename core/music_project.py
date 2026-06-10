@@ -37,6 +37,26 @@ def _reexport_project_model() -> None:
 _reexport_project_model()
 del _reexport_project_model
 
+TIME_SIGNATURE_AUTOMATION_ERROR = project_model.TIME_SIGNATURE_AUTOMATION_ERROR
+
+default_project = project_model.default_project
+normalize_project = project_model.normalize_project
+project_summary = project_model.project_summary
+
+_apply_batch_velocity_operation = project_model._apply_batch_velocity_operation
+_apply_midi_event_curve = project_model._apply_midi_event_curve
+_bounded_int = project_model._bounded_int
+_ensure_midi_clip = project_model._ensure_midi_clip
+_event_payload_from_op = project_model._event_payload_from_op
+_normalize_automation_target = project_model._normalize_automation_target
+_normalize_clip = project_model._normalize_clip
+_normalize_meter_events = project_model._normalize_meter_events
+_normalize_midi_event = project_model._normalize_midi_event
+_normalize_note = project_model._normalize_note
+_normalize_piano_lane_id = project_model._normalize_piano_lane_id
+_normalize_plugin_slot = project_model._normalize_plugin_slot
+_normalize_selection = project_model._normalize_selection
+
 PROJECT_INDEX_PATH = project_repository.PROJECT_INDEX_PATH
 PROJECT_PATH = project_repository.PROJECT_PATH
 PROJECTS_DIR = project_repository.PROJECTS_DIR

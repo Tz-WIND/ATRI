@@ -7,7 +7,7 @@ import re
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from core.utils import atomic_write_text
@@ -17,10 +17,18 @@ PROJECTS_DIR = Path("data/music_workstation/projects")
 PROJECT_INDEX_PATH = Path("data/music_workstation/project_index.json")
 
 
-def _project_model():
+class _ProjectModel(Protocol):
+    def default_project(self) -> dict[str, Any]: ...
+
+    def normalize_project(self, project: dict[str, Any] | None) -> dict[str, Any]: ...
+
+    def project_summary(self, project: dict[str, Any]) -> dict[str, Any]: ...
+
+
+def _project_model() -> _ProjectModel:
     from core.music import project_model
 
-    return project_model
+    return cast(_ProjectModel, project_model)
 
 
 def _now_iso() -> str:
@@ -124,7 +132,7 @@ def _load_project_file(project_path: Path) -> dict[str, Any]:
         loaded = json.loads(project_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         loaded = music_project.default_project()
-    return music_project.normalize_project(loaded)
+    return music_project.normalize_project(cast(dict[str, Any], loaded))
 
 
 def _save_project_file(project: dict[str, Any], path: Path) -> dict[str, Any]:
@@ -194,7 +202,7 @@ def _read_project_archive_record(path: Path) -> dict[str, Any]:
         raise ValueError("project archive must be an object")
     project = data.get("project")
     if isinstance(project, dict):
-        return data
+        return cast(dict[str, Any], data)
     return {
         "id": path.stem,
         "title": str(data.get("title") or path.stem),
@@ -208,7 +216,7 @@ def _read_project_index() -> dict[str, Any]:
         data = json.loads(PROJECT_INDEX_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    return data if isinstance(data, dict) else {}
+    return cast(dict[str, Any], data) if isinstance(data, dict) else {}
 
 
 def _write_project_index(project_id: str) -> None:
