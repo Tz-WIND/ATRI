@@ -29,7 +29,7 @@ EXPECTED_GRAPH_KNOWLEDGE_DEFAULT = {
     "extraction_enabled": True,
     "extraction_sources": ["documents", "chat"],
     "retrieval_enabled": True,
-    "retrieval_depth": 7,
+    "retrieval_depth": 3,
     "max_facts": 8,
     "expansion_candidate_limit": 40,
     "ranking_policy": "hybrid",

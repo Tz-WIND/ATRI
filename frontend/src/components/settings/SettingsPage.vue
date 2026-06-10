@@ -946,7 +946,7 @@ const form = ref({
       extraction_enabled: true,
       extraction_sources: ['documents', 'chat'],
       retrieval_enabled: true,
-      retrieval_depth: 7,
+      retrieval_depth: 3,
       max_facts: 8,
       expansion_candidate_limit: 40,
       ranking_policy: 'hybrid',
@@ -1162,8 +1162,8 @@ function normalizeGraphKnowledge(value = {}) {
 }
 
 function normalizeGraphRetrievalDepth(value) {
-  const parsed = Number(value || 1)
-  if (!Number.isFinite(parsed)) return 1
+  const parsed = Number(value || 3)
+  if (!Number.isFinite(parsed)) return 3
   return Math.min(7, Math.max(1, Math.trunc(parsed)))
 }
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from core.knowledge.graph_constants import (
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
 
@@ -88,7 +89,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
                         "retrieval_enabled": {"type": "boolean", "default": True},
                         "retrieval_depth": {
                             "type": "integer",
-                            "default": GRAPH_RETRIEVAL_MAX_DEPTH,
+                            "default": GRAPH_RETRIEVAL_DEFAULT_DEPTH,
                             "minimum": 1,
                             "maximum": GRAPH_RETRIEVAL_MAX_DEPTH,
                         },

@@ -14,6 +14,7 @@ from core.knowledge.graph_constants import (
     CHAIN_ORDER_KEY_SEPARATOR,
     GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
     HYPER_ROLE_PREDICATE,
     format_graph_context,
@@ -103,10 +104,35 @@ class Neo4jGraphClient:
             "FOR (e:Entity) REQUIRE (e.name_key, e.type_key) IS UNIQUE",
             "CREATE CONSTRAINT fact_key IF NOT EXISTS "
             "FOR ()-[r:FACT]-() REQUIRE r.fact_key IS UNIQUE",
+            "CREATE CONSTRAINT graph_source_id IF NOT EXISTS "
+            "FOR (source:GraphSource) REQUIRE source.source_id IS UNIQUE",
+            "CREATE CONSTRAINT graph_fact_key IF NOT EXISTS "
+            "FOR (fact:GraphFact) REQUIRE fact.fact_key IS UNIQUE",
             "CREATE INDEX fact_source_id IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.source_id)",
             "CREATE INDEX fact_updated_at IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.updated_at)",
             "CREATE INDEX fact_predicate IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.predicate)",
             "CREATE INDEX entity_name_key IF NOT EXISTS FOR (e:Entity) ON (e.name_key)",
+            """
+            MATCH (s:Entity)-[r:FACT]->(o:Entity)
+            WHERE r.fact_key IS NOT NULL
+            MERGE (fact_node:GraphFact {fact_key: r.fact_key})
+              ON CREATE SET fact_node.created_at = coalesce(r.created_at, r.updated_at)
+            SET fact_node.updated_at = coalesce(r.updated_at, fact_node.updated_at),
+                fact_node.predicate = r.predicate
+            MERGE (fact_node)-[:FACT_SUBJECT]->(s)
+            MERGE (fact_node)-[:FACT_OBJECT]->(o)
+            WITH r, fact_node,
+                 CASE
+                   WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
+                   WHEN r.source_id IS NULL THEN []
+                   ELSE [r.source_id]
+                 END AS source_ids
+            UNWIND source_ids AS source_id
+            WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
+            WHERE source_id <> ''
+            MERGE (source_node:GraphSource {source_id: source_id})
+            MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)
+            """,
             "CREATE FULLTEXT INDEX entity_text IF NOT EXISTS "
             "FOR (e:Entity) ON EACH [e.name, e.name_key, e.type, e.type_key]",
             "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS "
@@ -185,17 +211,17 @@ class Neo4jGraphClient:
                         o.updated_at = fact.now
         MERGE (s)-[r:FACT {fact_key: fact.fact_key}]->(o)
           ON CREATE SET r.created_at = fact.now
-        WITH r, fact,
+        WITH s, o, r, fact,
              coalesce(r.source_ids, []) + coalesce(fact.source_ids, [fact.source_id])
              AS raw_source_ids
-        WITH r, fact,
+        WITH s, o, r, fact,
              reduce(source_ids = [], source_id IN raw_source_ids |
                   CASE
                     WHEN source_id IN source_ids THEN source_ids
                     ELSE source_ids + [source_id]
                   END) AS source_ids,
              coalesce(r.chain_ids, []) + coalesce(fact.chain_ids, []) AS raw_chain_ids
-        WITH r, fact, source_ids,
+        WITH s, o, r, fact, source_ids,
              reduce(chain_ids = [], chain_id IN raw_chain_ids |
                   CASE
                     WHEN chain_id IN chain_ids THEN chain_ids
@@ -203,7 +229,7 @@ class Neo4jGraphClient:
                   END) AS chain_ids,
              coalesce(r.chain_order_keys, []) + coalesce(fact.chain_order_keys, [])
              AS raw_chain_order_keys
-        WITH r, fact, source_ids, chain_ids,
+        WITH s, o, r, fact, source_ids, chain_ids,
              reduce(chain_order_keys = [], chain_order_key IN raw_chain_order_keys |
                   CASE
                     WHEN chain_order_key IN chain_order_keys THEN chain_order_keys
@@ -247,7 +273,23 @@ class Neo4jGraphClient:
               r.structural = coalesce(fact.structural, r.structural, false),
               r.updated_at = fact.now,
               r.source_count = size(source_ids)
-        RETURN count(r) AS count
+        MERGE (fact_node:GraphFact {fact_key: fact.fact_key})
+          ON CREATE SET fact_node.created_at = fact.now
+        SET fact_node.updated_at = fact.now,
+            fact_node.predicate = fact.predicate
+        MERGE (fact_node)-[:FACT_SUBJECT]->(s)
+        MERGE (fact_node)-[:FACT_OBJECT]->(o)
+        WITH r, fact_node, source_ids
+        CALL {
+          WITH fact_node, source_ids
+          UNWIND source_ids AS source_id
+          WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
+          WHERE source_id <> ''
+          MERGE (source_node:GraphSource {source_id: source_id})
+          MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)
+          RETURN count(*) AS linked_source_count
+        }
+        RETURN count(DISTINCT r) AS count
         """
         result = self._run_with_reconnect(
             lambda session: list(
@@ -266,13 +308,14 @@ class Neo4jGraphClient:
         query: str,
         source_ids: list[str] | None = None,
         max_facts: int = 8,
-        retrieval_depth: int = 1,
+        retrieval_depth: int = GRAPH_RETRIEVAL_DEFAULT_DEPTH,
         ranking_policy: str = "hybrid",
         expansion_candidate_limit: int | None = None,
         include_entity_types: bool = False,
     ) -> str:
         if not self.enabled:
             return ""
+        started_at = time.perf_counter()
         self.initialize()
         if self.driver is None:
             return ""
@@ -300,12 +343,10 @@ class Neo4jGraphClient:
         if fulltext_query:
             single_hop_seed_cypher = """
         CALL {
+          MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+          WHERE source_node.source_id IN $source_ids
           MATCH (s:Entity)-[r:FACT]->(o:Entity)
-          WHERE size($source_ids) > 0
-            AND (
-              r.source_id IN $source_ids
-              OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
-            )
+          WHERE r.fact_key = fact_node.fact_key
           RETURN s, r, o, 3.0 AS index_score
           UNION
           CALL db.index.fulltext.queryNodes(
@@ -333,16 +374,15 @@ class Neo4jGraphClient:
             """
         elif terms:
             single_hop_seed_cypher = """
-        MATCH (s:Entity)-[r:FACT]->(o:Entity)
-        WHERE
-          (
-            size($source_ids) > 0
-            AND (
-              r.source_id IN $source_ids
-              OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
-            )
-          )
-          OR any(term IN $terms WHERE
+        CALL {
+          MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+          WHERE source_node.source_id IN $source_ids
+          MATCH (s:Entity)-[r:FACT]->(o:Entity)
+          WHERE r.fact_key = fact_node.fact_key
+          RETURN s, r, o, 3.0 AS index_score
+          UNION
+          MATCH (s:Entity)-[r:FACT]->(o:Entity)
+          WHERE any(term IN $terms WHERE
               toLower(s.name) CONTAINS term
               OR toLower(o.name) CONTAINS term
               OR toLower(r.predicate) CONTAINS term
@@ -352,28 +392,26 @@ class Neo4jGraphClient:
               OR toLower(coalesce(r[$chain_id_property], '')) CONTAINS term
               OR any(chain_id IN coalesce(r[$chain_ids_property], [])
                      WHERE toLower(toString(chain_id)) CONTAINS term))
-        WITH s, r, o, 0.0 AS index_score
+          RETURN s, r, o, 0.0 AS index_score
+        }
+        WITH s, r, o, max(index_score) AS index_score
             """
         else:
             single_hop_seed_cypher = """
+        MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+        WHERE source_node.source_id IN $source_ids
         MATCH (s:Entity)-[r:FACT]->(o:Entity)
-        WHERE size($source_ids) > 0
-          AND (
-            r.source_id IN $source_ids
-            OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
-          )
+        WHERE r.fact_key = fact_node.fact_key
         WITH s, r, o, 3.0 AS index_score
             """
         single_hop_cypher = f"""
         {single_hop_seed_cypher}
         WITH s, r, o, index_score,
-             CASE WHEN (
-               size($source_ids) > 0
-               AND (
-                 r.source_id IN $source_ids
-                 OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
-               )
-             ) THEN 3.0 ELSE 0.0 END AS source_match_score,
+             CASE WHEN EXISTS {{
+               MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+               WHERE source_node.source_id IN $source_ids
+                 AND fact_node.fact_key = r.fact_key
+             }} THEN 3.0 ELSE 0.0 END AS source_match_score,
              reduce(term_score = 0.0, term IN $terms |
                term_score
                + CASE WHEN toLower(coalesce(s.name, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
@@ -451,15 +489,9 @@ class Neo4jGraphClient:
             if fulltext_query:
                 multi_hop_seed_cypher = f"""
         CALL {{
-          MATCH (source_s:Entity)-[source_r:FACT]->(source_o:Entity)
-          WHERE size($source_ids) > 0
-            AND (
-              source_r.source_id IN $source_ids
-              OR any(source_id IN coalesce(source_r.source_ids, [])
-                     WHERE source_id IN $source_ids)
-            )
-          WITH [source_s, source_o] AS source_seeds
-          UNWIND source_seeds AS seed
+          MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+          WHERE source_node.source_id IN $source_ids
+          MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
           RETURN seed, 3.0 AS seed_score
           UNION
           CALL db.index.fulltext.queryNodes(
@@ -494,8 +526,11 @@ class Neo4jGraphClient:
           (
             size($source_ids) > 0
             AND any(rel IN relationships(path) WHERE
-              rel.source_id IN $source_ids
-              OR any(source_id IN coalesce(rel.source_ids, []) WHERE source_id IN $source_ids))
+              EXISTS {{
+                MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+                WHERE source_node.source_id IN $source_ids
+                  AND fact_node.fact_key = rel.fact_key
+              }})
           )
           OR any(term IN $terms WHERE
               any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term)
@@ -517,8 +552,11 @@ class Neo4jGraphClient:
           (
             size($source_ids) > 0
             AND any(rel IN relationships(path) WHERE
-              rel.source_id IN $source_ids
-              OR any(source_id IN coalesce(rel.source_ids, []) WHERE source_id IN $source_ids))
+              EXISTS {{
+                MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+                WHERE source_node.source_id IN $source_ids
+                  AND fact_node.fact_key = rel.fact_key
+              }})
           )
           OR any(term IN $terms WHERE
               any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term)
@@ -536,15 +574,9 @@ class Neo4jGraphClient:
             else:
                 multi_hop_seed_cypher = f"""
         CALL {{
-          MATCH (source_s:Entity)-[source_r:FACT]->(source_o:Entity)
-          WHERE size($source_ids) > 0
-            AND (
-              source_r.source_id IN $source_ids
-              OR any(source_id IN coalesce(source_r.source_ids, [])
-                     WHERE source_id IN $source_ids)
-            )
-          WITH [source_s, source_o] AS source_seeds
-          UNWIND source_seeds AS seed
+          MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+          WHERE source_node.source_id IN $source_ids
+          MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
           RETURN seed, 3.0 AS seed_score
         }}
         WITH seed, max(seed_score) AS seed_score
@@ -597,13 +629,11 @@ class Neo4jGraphClient:
              path_term_match_score
         WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop, seed_score,
              path_term_match_score,
-             CASE WHEN (
-               size($source_ids) > 0
-               AND (
-                 r.source_id IN $source_ids
-                 OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
-               )
-             ) THEN 3.0 ELSE 0.0 END AS source_match_score,
+             CASE WHEN EXISTS {{
+               MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+               WHERE source_node.source_id IN $source_ids
+                 AND fact_node.fact_key = r.fact_key
+             }} THEN 3.0 ELSE 0.0 END AS source_match_score,
              reduce(term_score = 0.0, term IN $terms |
                term_score
                + CASE
@@ -731,13 +761,16 @@ class Neo4jGraphClient:
             )
 
         if depth > 1:
+            used_scan_fallback = False
             rows = [
                 *run_context_query(single_hop_cypher, limit=query_limit),
                 *run_context_query(cypher, limit=expansion_query_limit),
             ]
-            if multi_hop_scan_cypher:
+            if multi_hop_scan_cypher and len(rows) < query_limit:
+                used_scan_fallback = True
                 rows.extend(run_context_query(multi_hop_scan_cypher, limit=expansion_query_limit))
         else:
+            used_scan_fallback = False
             rows = run_context_query(cypher, limit=query_limit)
         entries: list[dict[str, Any]] = []
         seen_positions = set()
@@ -795,6 +828,20 @@ class Neo4jGraphClient:
                 }
             )
         lines = _format_retrieved_fact_lines(entries, depth=depth, limit=query_limit)
+        logger.info(
+            "Neo4j graph retrieval done: elapsed_ms=%.1f depth=%d max_facts=%d "
+            "source_ids_count=%d row_count=%d returned_facts=%d used_fulltext=%s "
+            "used_scan_fallback=%s ranking_policy=%s",
+            (time.perf_counter() - started_at) * 1000,
+            depth,
+            query_limit,
+            len(source_ids or []),
+            len(rows),
+            len(lines),
+            bool(fulltext_query),
+            used_scan_fallback,
+            policy,
+        )
         return format_graph_context(lines)
 
     def _session(self):
@@ -991,7 +1038,7 @@ def _retrieved_fact_roots_overlap(
     entries: list[dict[str, Any]],
     roots: list[int],
 ) -> bool:
-    seen_keys = set()
+    seen_keys: set[Any] = set()
     for root_index in roots:
         root_keys = _retrieved_fact_subtree_keys(nodes, entries, root_index, set())
         if seen_keys.intersection(root_keys):

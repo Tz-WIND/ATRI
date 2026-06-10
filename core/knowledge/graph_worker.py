@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +20,7 @@ from core.knowledge.graph_constants import (
     GRAPH_EXTRACTION_BATCH_OVERLAP_CHARS,
     GRAPH_EXTRACTION_SEMANTIC_CHUNK_CHARS,
     GRAPH_EXTRACTION_SEMANTIC_CHUNK_OVERLAP_CHARS,
+    GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
 from core.runtime import TaskStore
@@ -225,7 +227,7 @@ class GraphKnowledgeManager:
         depth = _retrieval_depth(
             retrieval_depth
             if retrieval_depth is not None
-            else self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_MAX_DEPTH)
+            else self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
         )
         policy = _ranking_policy(ranking_policy or self.graph_config.get("ranking_policy"))
         candidate_limit = _expansion_candidate_limit(
@@ -233,8 +235,9 @@ class GraphKnowledgeManager:
             if expansion_candidate_limit is not None
             else self.graph_config.get("expansion_candidate_limit")
         )
+        started_at = time.perf_counter()
         try:
-            return await asyncio.to_thread(
+            context = await asyncio.to_thread(
                 self.graph_client.retrieve_context,
                 query=query,
                 source_ids=source_ids or [],
@@ -243,6 +246,20 @@ class GraphKnowledgeManager:
                 ranking_policy=policy,
                 expansion_candidate_limit=candidate_limit,
             )
+            logger.debug(
+                "Graph knowledge retrieval done: elapsed_ms=%.1f depth=%d max_facts=%d "
+                "source_ids_count=%d expansion_candidate_limit=%d ranking_policy=%s "
+                "context_chars=%d returned_context=%s",
+                (time.perf_counter() - started_at) * 1000,
+                depth,
+                max_facts,
+                len(source_ids or []),
+                candidate_limit,
+                policy,
+                len(context),
+                bool(context),
+            )
+            return context
         except Exception as e:
             logger.warning("Graph knowledge retrieval skipped: %s", e)
             return ""
@@ -477,7 +494,7 @@ class GraphKnowledgeManager:
                 source_ids=[],
                 max_facts=max(1, int(self.graph_config.get("max_facts") or 8)),
                 retrieval_depth=_retrieval_depth(
-                    self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_MAX_DEPTH)
+                    self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
                 ),
                 ranking_policy=_ranking_policy(self.graph_config.get("ranking_policy")),
                 expansion_candidate_limit=_expansion_candidate_limit(
@@ -544,7 +561,7 @@ def _graph_config_from_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "extraction_sources": list(graph.get("extraction_sources") or ["documents", "chat"]),
         "retrieval_enabled": bool(graph.get("retrieval_enabled", True)),
         "retrieval_depth": _retrieval_depth(
-            graph.get("retrieval_depth", GRAPH_RETRIEVAL_MAX_DEPTH)
+            graph.get("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
         ),
         "max_facts": max(1, int(graph.get("max_facts") or 8)),
         "expansion_candidate_limit": _expansion_candidate_limit(

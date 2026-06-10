@@ -14,6 +14,7 @@ from core.document_text import (
 )
 from core.knowledge.graph_constants import (
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
 
@@ -209,7 +210,7 @@ def register(dashboard: Dashboard) -> None:
                 max_facts=_int_at_least(data.get("max_facts"), 8, "max_facts", 1),
                 retrieval_depth=_int_at_least(
                     data.get("retrieval_depth"),
-                    GRAPH_RETRIEVAL_MAX_DEPTH,
+                    GRAPH_RETRIEVAL_DEFAULT_DEPTH,
                     "retrieval_depth",
                     1,
                     maximum=GRAPH_RETRIEVAL_MAX_DEPTH,

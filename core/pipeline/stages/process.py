@@ -24,7 +24,7 @@ from core.agent.llm import LLM
 from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
 from core.config_schema import CHAT_MODEL_CONFIG_DEFAULT
-from core.knowledge.graph_constants import GRAPH_RETRIEVAL_MAX_DEPTH
+from core.knowledge.graph_constants import GRAPH_RETRIEVAL_DEFAULT_DEPTH
 from core.pipeline.stage import Stage, register_stage
 from core.platform.daw_agent import normalize_daw_host_context
 from core.platform.message import Image, MessageEvent, MessageType, Plain, resolve_session_id
@@ -32,6 +32,8 @@ from core.runtime import RuntimeTimelineStore, TaskStore, TodoStore, summarize_t
 from core.skills import SkillManager, build_skills_prompt
 from core.tools.bash import CONFIRM_MARKER
 from core.utils import clean_optional_str
+
+_GRAPH_SOURCE_ANCHOR_WAIT_SECONDS = 0.05
 
 if TYPE_CHECKING:
     pass
@@ -686,35 +688,118 @@ class ProcessStage(Stage):
         if not query.strip():
             return ""
 
+        total_started_at = time.perf_counter()
+        vector_started_at = time.perf_counter()
+        vector_task = asyncio.create_task(self._vector_context_for_event(knowledge, query))
+        graph_task: asyncio.Task[str] | None = None
         retrieval_result: dict | None = None
-        parts: list[str] = []
-        if isinstance(knowledge, dict) and knowledge.get("enabled"):
-            manager = getattr(self, "knowledge_manager", None)
-            active_bases = knowledge.get("active_bases", [])
-            if manager is not None and isinstance(active_bases, list) and active_bases:
-                try:
-                    retrieval_result = await manager.retrieve(
-                        query=query,
-                        kb_ids=[str(item) for item in active_bases if str(item or "").strip()],
-                        kb_names=[],
-                        top_k=int(knowledge.get("top_k") or 5),
+        graph_context = ""
+        graph_source_ids: list[str] = []
+        graph_retry = False
+        graph_elapsed_ms = 0.0
+        try:
+            if self._graph_retrieval_available():
+                done, _ = await asyncio.wait(
+                    {vector_task},
+                    timeout=_GRAPH_SOURCE_ANCHOR_WAIT_SECONDS,
+                )
+                if vector_task in done:
+                    retrieval_result = await vector_task
+                    graph_source_ids = _retrieval_source_ids(retrieval_result or {})
+                graph_started_at = time.perf_counter()
+                graph_task = asyncio.create_task(
+                    self._graph_context_for_event(
+                        event,
+                        query,
+                        source_ids=graph_source_ids,
                     )
-                except Exception as e:
-                    logger.warning(f"Knowledge retrieval skipped: {e}")
-                else:
-                    if retrieval_result.get("results"):
-                        parts.append(str(retrieval_result.get("context_text") or ""))
+                )
 
-        graph_context = await self._graph_context_for_event(event, query, retrieval_result)
-        if graph_context:
-            parts.append(graph_context)
-        return "\n\n".join(part for part in parts if part.strip())
+            if retrieval_result is None:
+                retrieval_result = await vector_task
+            vector_elapsed_ms = (time.perf_counter() - vector_started_at) * 1000
+
+            if graph_task is not None:
+                graph_context = await graph_task
+                graph_elapsed_ms += (time.perf_counter() - graph_started_at) * 1000
+
+            source_ids = _retrieval_source_ids(retrieval_result or {})
+            if graph_task is not None and source_ids and not graph_source_ids:
+                graph_retry = True
+                graph_retry_started_at = time.perf_counter()
+                anchored_graph_context = await self._graph_context_for_event(
+                    event,
+                    query,
+                    source_ids=source_ids,
+                )
+                graph_elapsed_ms += (time.perf_counter() - graph_retry_started_at) * 1000
+                if anchored_graph_context:
+                    graph_context = anchored_graph_context
+
+            parts: list[str] = []
+            if retrieval_result and retrieval_result.get("results"):
+                parts.append(str(retrieval_result.get("context_text") or ""))
+            if graph_context:
+                parts.append(graph_context)
+            source_ids_count = len(_retrieval_source_ids(retrieval_result or {}))
+            logger.info(
+                "Knowledge context retrieval done: total_ms=%.1f vector_ms=%.1f "
+                "graph_ms=%.1f source_ids_count=%d graph_anchored=%s graph_retry=%s "
+                "vector_results=%d graph_context=%s",
+                (time.perf_counter() - total_started_at) * 1000,
+                vector_elapsed_ms,
+                graph_elapsed_ms,
+                source_ids_count,
+                bool(graph_source_ids),
+                graph_retry,
+                len(retrieval_result.get("results", [])) if retrieval_result else 0,
+                bool(graph_context),
+            )
+            return "\n\n".join(part for part in parts if part.strip())
+        finally:
+            pending_tasks = [
+                task for task in (vector_task, graph_task) if task is not None and not task.done()
+            ]
+            for task in pending_tasks:
+                task.cancel()
+            if pending_tasks:
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+    def _graph_retrieval_available(self) -> bool:
+        knowledge = getattr(self, "knowledge", {})
+        graph_cfg = knowledge.get("graph", {}) if isinstance(knowledge, dict) else {}
+        if not isinstance(graph_cfg, dict):
+            return False
+        if not graph_cfg.get("enabled") or not graph_cfg.get("retrieval_enabled", True):
+            return False
+        return getattr(self, "graph_manager", None) is not None
+
+    async def _vector_context_for_event(self, knowledge: object, query: str) -> dict | None:
+        if not isinstance(knowledge, dict) or not knowledge.get("enabled"):
+            return None
+        manager = getattr(self, "knowledge_manager", None)
+        active_bases = knowledge.get("active_bases", [])
+        if manager is None or not isinstance(active_bases, list) or not active_bases:
+            return None
+        try:
+            return cast(
+                dict,
+                await manager.retrieve(
+                    query=query,
+                    kb_ids=[str(item) for item in active_bases if str(item or "").strip()],
+                    kb_names=[],
+                    top_k=int(knowledge.get("top_k") or 5),
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Knowledge retrieval skipped: {e}")
+            return None
 
     async def _graph_context_for_event(
         self,
         event: MessageEvent,
         query: str,
-        retrieval_result: dict | None = None,
+        source_ids: list[str] | None = None,
     ) -> str:
         knowledge = getattr(self, "knowledge", {})
         graph_cfg = knowledge.get("graph", {}) if isinstance(knowledge, dict) else {}
@@ -730,10 +815,10 @@ class ProcessStage(Stage):
                 str,
                 await graph_manager.retrieve_context(
                     query=query,
-                    source_ids=_retrieval_source_ids(retrieval_result or {}),
+                    source_ids=source_ids or [],
                     max_facts=int(graph_cfg.get("max_facts") or 8),
                     retrieval_depth=int(
-                        graph_cfg.get("retrieval_depth") or GRAPH_RETRIEVAL_MAX_DEPTH
+                        graph_cfg.get("retrieval_depth") or GRAPH_RETRIEVAL_DEFAULT_DEPTH
                     ),
                     ranking_policy=str(graph_cfg.get("ranking_policy") or "hybrid"),
                     expansion_candidate_limit=int(graph_cfg.get("expansion_candidate_limit") or 40),

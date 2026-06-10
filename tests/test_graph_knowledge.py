@@ -1262,8 +1262,144 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
         "label": "测试",
     }
     assert count == 1
-    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
+    assert context == format_graph_context(
+        ["- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)"]
+    )
     assert driver.closed is True
+
+
+def test_neo4j_graph_client_builds_source_index_nodes_for_fact_source_ids():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={"chunk_ids": ["chunk-1", "chunk-2"]},
+    )[0]
+
+    client.upsert_facts([fact])
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert (
+        "CREATE CONSTRAINT graph_source_id IF NOT EXISTS "
+        "FOR (source:GraphSource) REQUIRE source.source_id IS UNIQUE"
+    ) in queries
+    assert (
+        "CREATE CONSTRAINT graph_fact_key IF NOT EXISTS "
+        "FOR (fact:GraphFact) REQUIRE fact.fact_key IS UNIQUE"
+    ) in queries
+    assert "MERGE (fact_node:GraphFact {fact_key: fact.fact_key})" in queries
+    assert "MERGE (fact_node)-[:FACT_SUBJECT]->(s)" in queries
+    assert "MERGE (fact_node)-[:FACT_OBJECT]->(o)" in queries
+    assert "MERGE (source_node:GraphSource {source_id: source_id})" in queries
+    assert "MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)" in queries
+
+
+def test_neo4j_graph_client_backfills_source_index_nodes_for_existing_facts():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" in queries
+    assert "MERGE (fact_node:GraphFact {fact_key: r.fact_key})" in queries
+    assert "MERGE (fact_node)-[:FACT_SUBJECT]->(s)" in queries
+    assert "MERGE (fact_node)-[:FACT_OBJECT]->(o)" in queries
+    assert "UNWIND source_ids AS source_id" in queries
+    assert "MERGE (source_node:GraphSource {source_id: source_id})" in queries
+    assert "MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)" in queries
+
+
+def test_neo4j_graph_client_uses_source_index_nodes_for_single_hop_source_seed():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=1,
+    )
+
+    retrieve_query = next(
+        call["query"]
+        for call in driver.session_obj.calls
+        if "RETURN s.name AS subject" in call["query"]
+    )
+    assert "MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)" in (
+        retrieve_query
+    )
+    assert "fact_node.fact_key = r.fact_key" in retrieve_query
+    assert "any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)" not in (
+        retrieve_query
+    )
+
+
+def test_neo4j_graph_client_uses_source_index_nodes_for_multihop_source_seeds():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    multihop_query = next(
+        call["query"] for call in driver.session_obj.calls if "FACT*1..2" in call["query"]
+    )
+    assert "MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)" in (
+        multihop_query
+    )
+    assert "MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)" in multihop_query
+    assert "any(source_id IN coalesce(source_r.source_ids, [])" not in multihop_query
 
 
 def test_neo4j_graph_client_can_include_entity_types_in_retrieved_context():
@@ -1294,7 +1430,7 @@ def test_neo4j_graph_client_can_include_entity_types_in_retrieved_context():
     assert "s.type AS subject_type" in query
     assert "o.type AS object_type" in query
     assert context == format_graph_context(
-        ["- Alice (Person) -[works_at]-> Acme (Company) (Alice works at Acme.)"]
+        ["- [1-hop] Alice (Person) -[works_at]-> Acme (Company) (Alice works at Acme.)"]
     )
 
 
@@ -1370,7 +1506,9 @@ def test_neo4j_graph_client_falls_back_when_fulltext_index_creation_fails(caplog
     assert "Neo4j graph fulltext index skipped" in caplog.text
     assert "db.index.fulltext" not in query
     assert "toLower(s.name) CONTAINS term" in query
-    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
+    assert context == format_graph_context(
+        ["- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)"]
+    )
 
 
 def test_neo4j_graph_client_keeps_same_name_different_types_separate():
@@ -1588,6 +1726,77 @@ def test_neo4j_graph_client_multihop_expands_from_fulltext_seeds():
     assert call["params"]["seed_limit"] >= call["params"]["limit"]
 
 
+def test_neo4j_graph_client_skips_fulltext_scan_fallback_when_seeded_results_are_enough():
+    class NoScanFallbackSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" in query:
+                raise AssertionError("scan fallback should not run when seeded results are enough")
+            if "FACT*1..2" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "Alice works at Acme.",
+                        "confidence": 0.9,
+                        "hop": 1,
+                    },
+                    {
+                        "subject": "Acme",
+                        "subject_type": "Company",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "object_type": "Tool",
+                        "evidence": "Acme uses Neo4j.",
+                        "confidence": 0.8,
+                        "hop": 2,
+                    },
+                ]
+            if "RETURN s.name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = NoScanFallbackSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Alice Acme Neo4j",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    retrieve_queries = [
+        call["query"]
+        for call in driver.session_obj.calls
+        if "RETURN s.name AS subject" in call["query"]
+        or "RETURN startNode(r).name AS subject" in call["query"]
+    ]
+    assert len(retrieve_queries) == 2
+    assert "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" not in "\n".join(retrieve_queries)
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.) "
+                "| linked: [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"
+            )
+        ]
+    )
+
+
 def test_neo4j_graph_client_multihop_rescues_non_seeded_path_term_matches():
     class NonSeededPathMatchSession(FakeNeo4jSession):
         def run(self, query, **params):
@@ -1652,6 +1861,35 @@ def test_neo4j_graph_client_multihop_rescues_non_seeded_path_term_matches():
             )
         ]
     )
+
+
+def test_neo4j_graph_client_logs_retrieval_metrics(caplog):
+    caplog.set_level(logging.INFO, logger="atri")
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    assert "Neo4j graph retrieval done" in caplog.text
+    assert "depth=2" in caplog.text
+    assert "source_ids_count=1" in caplog.text
+    assert "row_count=" in caplog.text
+    assert "returned_facts=" in caplog.text
+    assert "used_fulltext=True" in caplog.text
 
 
 def test_neo4j_graph_client_multihop_preserves_one_hop_context_and_dedupes():
@@ -2631,6 +2869,7 @@ def test_neo4j_graph_client_uses_hybrid_ranking_score_before_limit():
         query="Alice",
         source_ids=["chunk-1"],
         max_facts=4,
+        retrieval_depth=1,
         ranking_policy="hybrid",
     )
 
@@ -2864,7 +3103,9 @@ def test_neo4j_graph_client_reconnects_when_connection_config_changes():
         {"uri": "bolt://old:7687", "auth": ("neo4j", "old-secret")},
         {"uri": "bolt://new:7687", "auth": ("neo4j", "new-secret")},
     ]
-    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
+    assert context == format_graph_context(
+        ["- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)"]
+    )
 
 
 def test_neo4j_graph_client_canonicalizes_assistant_aliases_in_retrieved_context():
@@ -2903,7 +3144,9 @@ def test_neo4j_graph_client_canonicalizes_assistant_aliases_in_retrieved_context
 
     context = client.retrieve_context(query="助手", source_ids=[], max_facts=2)
 
-    assert context == format_graph_context(["- ATRI -[can_help_with]-> 写代码 (助手可以写代码。)"])
+    assert context == format_graph_context(
+        ["- [1-hop] ATRI -[can_help_with]-> 写代码 (助手可以写代码。)"]
+    )
 
 
 def test_neo4j_graph_client_retries_retrieve_after_defunct_connection():
@@ -2935,7 +3178,9 @@ def test_neo4j_graph_client_retries_retrieve_after_defunct_connection():
     assert first_driver.closed is True
     assert second_driver.verified is True
     assert len(calls) == 2
-    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
+    assert context == format_graph_context(
+        ["- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)"]
+    )
 
 
 class FakeExtractor:
@@ -3901,6 +4146,50 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_graph_manager_logs_retrieval_metrics(caplog, tmp_path):
+    caplog.set_level(logging.INFO, logger="atri")
+    store = TaskStore(tmp_path / "runtime")
+    graph = FakeGraphClient()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                    "retrieval_depth": 3,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
+        task_store=store,
+    )
+    try:
+        await manager.retrieve_context(
+            query="Alice",
+            source_ids=["chunk-1"],
+            max_facts=5,
+        )
+
+        assert "Graph knowledge retrieval done" not in caplog.text
+
+        caplog.clear()
+        caplog.set_level(logging.DEBUG, logger="atri")
+        await manager.retrieve_context(
+            query="Alice",
+            source_ids=["chunk-1"],
+            max_facts=5,
+        )
+
+        assert "Graph knowledge retrieval done" in caplog.text
+        assert "depth=3" in caplog.text
+        assert "source_ids_count=1" in caplog.text
+        assert "max_facts=5" in caplog.text
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_graph_manager_passes_configured_ranking_policy_to_graph_client(tmp_path):
     store = TaskStore(tmp_path / "runtime")
     graph = FakeGraphClient()
@@ -3927,7 +4216,7 @@ async def test_graph_manager_passes_configured_ranking_policy_to_graph_client(tm
                 "query": "Alice",
                 "source_ids": [],
                 "max_facts": 5,
-                "retrieval_depth": 7,
+                "retrieval_depth": 3,
                 "ranking_policy": "relevance",
                 "expansion_candidate_limit": 40,
             }
@@ -3963,7 +4252,7 @@ async def test_graph_manager_passes_configured_expansion_candidate_limit_to_grap
                 "query": "Alice",
                 "source_ids": [],
                 "max_facts": 5,
-                "retrieval_depth": 7,
+                "retrieval_depth": 3,
                 "ranking_policy": "hybrid",
                 "expansion_candidate_limit": 72,
             }
