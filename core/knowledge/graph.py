@@ -23,6 +23,8 @@ DriverFactory = Callable[[str, tuple[str, str]], Any]
 _MAX_QUERY_TERMS = 32
 _DEFAULT_MULTIHOP_EXPANSION_LIMIT = 40
 _VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
+_ENTITY_FULLTEXT_INDEX = "entity_text"
+_FACT_FULLTEXT_INDEX = "fact_text"
 T = TypeVar("T")
 
 
@@ -39,6 +41,7 @@ class Neo4jGraphClient:
         self.driver_factory = driver_factory or _default_driver_factory
         self.driver: Any = None
         self._constraints_ready = False
+        self._fulltext_indexes_ready = False
 
     @property
     def enabled(self) -> bool:
@@ -66,6 +69,7 @@ class Neo4jGraphClient:
             self.driver.close()
             self.driver = None
         self._constraints_ready = False
+        self._fulltext_indexes_ready = False
 
     def test_connection(self, config: dict[str, Any] | None = None) -> dict:
         cfg = {**self.config, **(config or {}), "enabled": True}
@@ -89,19 +93,48 @@ class Neo4jGraphClient:
             "MATCH (e:Entity) WHERE e.type_key IS NULL AND e.type IS NOT NULL "
             "SET e.type_key = toLower(trim(e.type))",
             "MATCH (e:Entity) WHERE e.type_key IS NULL SET e.type_key = 'entity'",
+            "MATCH ()-[r:FACT]-() "
+            "WHERE r.chain_ids_text IS NULL AND size(coalesce(r.chain_ids, [])) > 0 "
+            "SET r.chain_ids_text = reduce("
+            "text = '', chain_id IN coalesce(r.chain_ids, []) | "
+            "text + ' ' + toString(chain_id))",
             "DROP CONSTRAINT entity_name_key IF EXISTS",
             "CREATE CONSTRAINT entity_identity IF NOT EXISTS "
             "FOR (e:Entity) REQUIRE (e.name_key, e.type_key) IS UNIQUE",
             "CREATE CONSTRAINT fact_key IF NOT EXISTS "
             "FOR ()-[r:FACT]-() REQUIRE r.fact_key IS UNIQUE",
+            "CREATE INDEX fact_source_id IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.source_id)",
+            "CREATE INDEX fact_updated_at IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.updated_at)",
+            "CREATE INDEX fact_predicate IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.predicate)",
+            "CREATE INDEX entity_name_key IF NOT EXISTS FOR (e:Entity) ON (e.name_key)",
+            "CREATE FULLTEXT INDEX entity_text IF NOT EXISTS "
+            "FOR (e:Entity) ON EACH [e.name, e.name_key, e.type, e.type_key]",
+            "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS "
+            "FOR ()-[r:FACT]-() ON EACH "
+            "[r.predicate, r.evidence, r.hyper_event, r.hyper_role, "
+            "r.chain_id, r.chain_ids_text]",
         ]
+        fulltext_ready = True
+        fulltext_warning_emitted = False
         with self._session() as session:
             for statement in statements:
+                is_fulltext_index = "CREATE FULLTEXT INDEX" in statement
                 try:
                     session.run(statement)
                 except Exception as e:
-                    logger.debug("Neo4j graph constraint skipped: %s", e)
+                    if is_fulltext_index:
+                        fulltext_ready = False
+                        if not fulltext_warning_emitted:
+                            logger.warning(
+                                "Neo4j graph fulltext index skipped; "
+                                "falling back to scan retrieval: %s",
+                                e,
+                            )
+                            fulltext_warning_emitted = True
+                    else:
+                        logger.debug("Neo4j graph constraint skipped: %s", e)
         self._constraints_ready = True
+        self._fulltext_indexes_ready = fulltext_ready
 
     def upsert_facts(self, facts: list[dict]) -> int:
         if not facts or not self.enabled:
@@ -185,6 +218,14 @@ class Neo4jGraphClient:
               r.metadata_json = fact.metadata_json,
               r.chain_id = coalesce(fact.chain_id, r.chain_id),
               r.chain_ids = chain_ids,
+              r.chain_ids_text = CASE
+                WHEN size(chain_ids) > 0 THEN reduce(
+                  text = '',
+                  chain_id IN chain_ids |
+                    text + ' ' + toString(chain_id)
+                )
+                ELSE NULL
+              END,
               r.chain_order = CASE
                 WHEN size(chain_order_keys) = 1
                   THEN toInteger(split(chain_order_keys[0], $chain_order_separator)[1])
@@ -240,6 +281,7 @@ class Neo4jGraphClient:
             return ""
         depth = _retrieval_depth(retrieval_depth)
         policy = _ranking_policy(ranking_policy)
+        fulltext_query = _fulltext_query(terms) if self._fulltext_indexes_ready else ""
         single_hop_order_by = (
             "ORDER BY structural_role ASC, r.updated_at DESC"
             if policy == "latest"
@@ -255,7 +297,42 @@ class Neo4jGraphClient:
         multi_hop_edge_order_by = (
             "ORDER BY structural_role ASC, graph_score DESC, hop ASC, r.updated_at DESC"
         )
-        single_hop_cypher = f"""
+        if fulltext_query:
+            single_hop_seed_cypher = """
+        CALL {
+          MATCH (s:Entity)-[r:FACT]->(o:Entity)
+          WHERE size($source_ids) > 0
+            AND (
+              r.source_id IN $source_ids
+              OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
+            )
+          RETURN s, r, o, 3.0 AS index_score
+          UNION
+          CALL db.index.fulltext.queryNodes(
+            $entity_text_index,
+            $fulltext_query,
+            {limit: $seed_limit}
+          )
+          YIELD node AS seed, score
+          MATCH (seed)-[r:FACT]-(other:Entity)
+          WITH startNode(r) AS s, r, endNode(r) AS o, score
+          WHERE s:Entity AND o:Entity
+          RETURN s, r, o, score AS index_score
+          UNION
+          CALL db.index.fulltext.queryRelationships(
+            $fact_text_index,
+            $fulltext_query,
+            {limit: $seed_limit}
+          )
+          YIELD relationship AS r, score
+          WITH startNode(r) AS s, r, endNode(r) AS o, score
+          WHERE s:Entity AND o:Entity
+          RETURN s, r, o, score AS index_score
+        }
+        WITH s, r, o, max(index_score) AS index_score
+            """
+        elif terms:
+            single_hop_seed_cypher = """
         MATCH (s:Entity)-[r:FACT]->(o:Entity)
         WHERE
           (
@@ -275,7 +352,21 @@ class Neo4jGraphClient:
               OR toLower(coalesce(r[$chain_id_property], '')) CONTAINS term
               OR any(chain_id IN coalesce(r[$chain_ids_property], [])
                      WHERE toLower(toString(chain_id)) CONTAINS term))
-        WITH s, r, o,
+        WITH s, r, o, 0.0 AS index_score
+            """
+        else:
+            single_hop_seed_cypher = """
+        MATCH (s:Entity)-[r:FACT]->(o:Entity)
+        WHERE size($source_ids) > 0
+          AND (
+            r.source_id IN $source_ids
+            OR any(source_id IN coalesce(r.source_ids, []) WHERE source_id IN $source_ids)
+          )
+        WITH s, r, o, 3.0 AS index_score
+            """
+        single_hop_cypher = f"""
+        {single_hop_seed_cypher}
+        WITH s, r, o, index_score,
              CASE WHEN (
                size($source_ids) > 0
                AND (
@@ -328,7 +419,7 @@ class Neo4jGraphClient:
         WITH s, r, o, confidence_score, source_count_score, recency_score,
              structural_role,
              source_match_score + term_match_score + confidence_score + source_count_score
-             + structural_role_score
+             + structural_role_score + coalesce(toFloat(index_score), 0.0)
              AS relevance_score
         WITH s, r, o, structural_role,
              CASE $ranking_policy
@@ -352,10 +443,52 @@ class Neo4jGraphClient:
         {single_hop_order_by}
         LIMIT $limit
         """
+        multi_hop_scan_cypher = ""
         if depth <= 1:
             cypher = single_hop_cypher
         else:
-            cypher = f"""
+            multi_hop_scan_seed_cypher = ""
+            if fulltext_query:
+                multi_hop_seed_cypher = f"""
+        CALL {{
+          MATCH (source_s:Entity)-[source_r:FACT]->(source_o:Entity)
+          WHERE size($source_ids) > 0
+            AND (
+              source_r.source_id IN $source_ids
+              OR any(source_id IN coalesce(source_r.source_ids, [])
+                     WHERE source_id IN $source_ids)
+            )
+          WITH [source_s, source_o] AS source_seeds
+          UNWIND source_seeds AS seed
+          RETURN seed, 3.0 AS seed_score
+          UNION
+          CALL db.index.fulltext.queryNodes(
+            $entity_text_index,
+            $fulltext_query,
+            {{limit: $seed_limit}}
+          )
+          YIELD node AS seed, score
+          RETURN seed, score AS seed_score
+          UNION
+          CALL db.index.fulltext.queryRelationships(
+            $fact_text_index,
+            $fulltext_query,
+            {{limit: $seed_limit}}
+          )
+          YIELD relationship AS r, score
+          WITH [startNode(r), endNode(r)] AS fact_seeds, score
+          UNWIND fact_seeds AS seed
+          WHERE seed:Entity
+          RETURN seed, score AS seed_score
+        }}
+        WITH seed, max(seed_score) AS seed_score
+        ORDER BY seed_score DESC
+        LIMIT $seed_limit
+        MATCH path = (seed)-[:FACT*1..{depth}]-(o:Entity)
+        WITH path, relationships(path) AS rels, length(path) AS hop, seed_score
+        WHERE hop > 1
+                """
+                multi_hop_scan_seed_cypher = f"""
         MATCH path = (s:Entity)-[:FACT*1..{depth}]->(o:Entity)
         WHERE
           (
@@ -374,9 +507,72 @@ class Neo4jGraphClient:
                 OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term
                 OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
                        WHERE toLower(toString(chain_id)) CONTAINS term)))
-        WITH relationships(path) AS rels, length(path) AS hop
+        WITH path, relationships(path) AS rels, length(path) AS hop, 0.0 AS seed_score
         WHERE hop > 1
-        WITH rels, hop,
+                """
+            elif terms:
+                multi_hop_seed_cypher = f"""
+        MATCH path = (s:Entity)-[:FACT*1..{depth}]->(o:Entity)
+        WHERE
+          (
+            size($source_ids) > 0
+            AND any(rel IN relationships(path) WHERE
+              rel.source_id IN $source_ids
+              OR any(source_id IN coalesce(rel.source_ids, []) WHERE source_id IN $source_ids))
+          )
+          OR any(term IN $terms WHERE
+              any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term)
+              OR any(rel IN relationships(path) WHERE
+                toLower(rel.predicate) CONTAINS term
+                OR toLower(coalesce(rel.evidence, '')) CONTAINS term
+                OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term
+                OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term
+                OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term
+                OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
+                       WHERE toLower(toString(chain_id)) CONTAINS term)))
+        WITH path, relationships(path) AS rels, length(path) AS hop, 0.0 AS seed_score
+        WHERE hop > 1
+                """
+            else:
+                multi_hop_seed_cypher = f"""
+        CALL {{
+          MATCH (source_s:Entity)-[source_r:FACT]->(source_o:Entity)
+          WHERE size($source_ids) > 0
+            AND (
+              source_r.source_id IN $source_ids
+              OR any(source_id IN coalesce(source_r.source_ids, [])
+                     WHERE source_id IN $source_ids)
+            )
+          WITH [source_s, source_o] AS source_seeds
+          UNWIND source_seeds AS seed
+          RETURN seed, 3.0 AS seed_score
+        }}
+        WITH seed, max(seed_score) AS seed_score
+        ORDER BY seed_score DESC
+        LIMIT $seed_limit
+        MATCH path = (seed)-[:FACT*1..{depth}]-(o:Entity)
+        WITH path, relationships(path) AS rels, length(path) AS hop, seed_score
+        WHERE hop > 1
+                """
+
+            def build_multi_hop_cypher(seed_cypher: str) -> str:
+                return f"""
+        {seed_cypher}
+        WITH rels, hop, seed_score,
+             reduce(path_term_score = 0.0, term IN $terms |
+               path_term_score
+               + CASE WHEN any(rel IN rels WHERE
+                   toLower(coalesce(rel.predicate, '')) CONTAINS term
+                   OR toLower(coalesce(rel.evidence, '')) CONTAINS term
+                   OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term
+                   OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term
+                   OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term
+                   OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
+                          WHERE toLower(toString(chain_id)) CONTAINS term))
+                 THEN 0.5
+                 ELSE 0.0
+                 END
+             ) AS path_term_match_score,
              CASE
                WHEN size(rels) = 1 THEN false
                ELSE all(index IN range(0, size(rels) - 2) WHERE
@@ -397,8 +593,10 @@ class Neo4jGraphClient:
                      AND toInteger(split(right_key, $chain_order_separator)[1])
                          = toInteger(split(left_key, $chain_order_separator)[1]) + 1)))
              END AS chain_order_path
-        WITH rels, rels[size(rels) - 1] AS r, hop, chain_path, chain_order_path
-        WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop,
+        WITH rels, rels[size(rels) - 1] AS r, hop, chain_path, chain_order_path, seed_score,
+             path_term_match_score
+        WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop, seed_score,
+             path_term_match_score,
              CASE WHEN (
                size($source_ids) > 0
                AND (
@@ -458,10 +656,11 @@ class Neo4jGraphClient:
                ELSE 0.0
              END AS structural_role_score
         WITH rels, s, r, o, hop, confidence_score, source_count_score, recency_score, hop_score,
-             chain_path_score, chain_order_score, structural_role,
+             chain_path_score, chain_order_score, structural_role, path_term_match_score,
              source_match_score + term_match_score + confidence_score
              + source_count_score + hop_score + chain_path_score + chain_order_score
-             + structural_role_score
+             + structural_role_score + path_term_match_score
+             + coalesce(toFloat(seed_score), 0.0)
              AS relevance_score
         WITH rels, s, r, o, hop, chain_path_score, chain_order_score, structural_role,
              CASE $ranking_policy
@@ -492,6 +691,10 @@ class Neo4jGraphClient:
                hop AS hop
         {multi_hop_edge_order_by}
         """
+
+            cypher = build_multi_hop_cypher(multi_hop_seed_cypher)
+            if multi_hop_scan_seed_cypher:
+                multi_hop_scan_cypher = build_multi_hop_cypher(multi_hop_scan_seed_cypher)
         query_limit = max(1, int(max_facts or 8))
         expansion_query_limit = _expansion_candidate_limit(
             expansion_candidate_limit
@@ -500,14 +703,19 @@ class Neo4jGraphClient:
         )
 
         def run_context_query(query: str, *, limit: int) -> list[Any]:
+            seed_limit = max(limit, query_limit, expansion_query_limit)
             return self._run_with_reconnect(
                 lambda session: list(
                     session.run(
                         query,
                         source_ids=source_ids or [],
                         terms=terms,
+                        fulltext_query=fulltext_query,
                         limit=limit,
+                        seed_limit=seed_limit,
                         ranking_policy=policy,
+                        entity_text_index=_ENTITY_FULLTEXT_INDEX,
+                        fact_text_index=_FACT_FULLTEXT_INDEX,
                         chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
                         hyper_role_predicate=HYPER_ROLE_PREDICATE,
                         chain_id_property="chain_id",
@@ -527,6 +735,8 @@ class Neo4jGraphClient:
                 *run_context_query(single_hop_cypher, limit=query_limit),
                 *run_context_query(cypher, limit=expansion_query_limit),
             ]
+            if multi_hop_scan_cypher:
+                rows.extend(run_context_query(multi_hop_scan_cypher, limit=expansion_query_limit))
         else:
             rows = run_context_query(cypher, limit=query_limit)
         entries: list[dict[str, Any]] = []
@@ -663,6 +873,14 @@ def _query_terms(query: str) -> list[str]:
         if len(terms) >= _MAX_QUERY_TERMS:
             break
     return terms
+
+
+def _fulltext_query(terms: list[str]) -> str:
+    return " OR ".join(f'"{_escape_fulltext_term(term)}"' for term in terms if term)
+
+
+def _escape_fulltext_term(term: str) -> str:
+    return str(term).replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _canonical_retrieved_entity_name(value: Any) -> str:

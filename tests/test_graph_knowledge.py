@@ -1243,6 +1243,10 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
     assert "CREATE CONSTRAINT" in queries
     assert "DROP CONSTRAINT entity_name_key IF EXISTS" in queries
     assert "REQUIRE (e.name_key, e.type_key) IS UNIQUE" in queries
+    assert "CREATE INDEX fact_source_id IF NOT EXISTS" in queries
+    assert "CREATE INDEX fact_updated_at IF NOT EXISTS" in queries
+    assert "CREATE FULLTEXT INDEX entity_text IF NOT EXISTS" in queries
+    assert "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS" in queries
     assert (
         "MERGE (s:Entity {name_key: fact.subject_key, type_key: fact.subject_type_key})" in queries
     )
@@ -1292,6 +1296,81 @@ def test_neo4j_graph_client_can_include_entity_types_in_retrieved_context():
     assert context == format_graph_context(
         ["- Alice (Person) -[works_at]-> Acme (Company) (Alice works at Acme.)"]
     )
+
+
+def test_neo4j_graph_client_uses_fulltext_seeded_single_hop_retrieval():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2)
+
+    call = next(
+        call for call in driver.session_obj.calls if "RETURN s.name AS subject" in call["query"]
+    )
+    query = call["query"]
+    assert "db.index.fulltext.queryNodes" in query
+    assert "db.index.fulltext.queryRelationships" in query
+    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" in query
+    assert call["params"]["fulltext_query"] == '"alice" OR "acme"'
+    assert call["params"]["seed_limit"] >= call["params"]["limit"]
+
+
+def test_neo4j_graph_client_falls_back_when_fulltext_index_creation_fails(caplog):
+    class FulltextUnsupportedSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "CREATE FULLTEXT INDEX" in query:
+                raise RuntimeError("fulltext indexes are not allowed")
+            if "db.index.fulltext" in query:
+                raise AssertionError("fulltext retrieval should be disabled")
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "Alice works at Acme.",
+                        "confidence": 0.9,
+                    }
+                ]
+            return []
+
+    caplog.set_level(logging.WARNING, logger="atri")
+    driver = FakeNeo4jDriver()
+    driver.session_obj = FulltextUnsupportedSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2)
+
+    query = next(
+        call["query"]
+        for call in driver.session_obj.calls
+        if "RETURN s.name AS subject" in call["query"]
+    )
+    assert "Neo4j graph fulltext index skipped" in caplog.text
+    assert "db.index.fulltext" not in query
+    assert "toLower(s.name) CONTAINS term" in query
+    assert context == format_graph_context(["- Alice -[works_at]-> Acme (Alice works at Acme.)"])
 
 
 def test_neo4j_graph_client_keeps_same_name_different_types_separate():
@@ -1393,6 +1472,52 @@ def test_neo4j_graph_client_persists_hyper_chain_metadata_on_facts():
     assert "r.hyper_role = coalesce(fact.hyper_role, r.hyper_role)" in queries
 
 
+def test_neo4j_graph_client_indexes_chain_ids_for_fulltext_seed_retrieval():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "ATRI graph RAG Neo4j adoption",
+                    "event_type": "Decision",
+                    "predicate": "adopted_for",
+                    "roles": [
+                        {"role": "actor", "entity": "Alice", "entity_type": "Person"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "chain": [
+                        {"from_role": "actor", "predicate": "uses", "to_role": "tool"},
+                    ],
+                }
+            ]
+        },
+        source_id="chunk-hyper-chain-index",
+        source_kind="document",
+    )
+
+    client.upsert_facts(facts)
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "r.chain_ids_text" in queries
+    assert "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS" in queries
+    assert "r.chain_ids_text" in next(
+        call["query"]
+        for call in driver.session_obj.calls
+        if "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS" in call["query"]
+    )
+    assert "r.chain_ids_text = reduce" in queries
+
+
 def test_neo4j_graph_client_retrieves_limited_multihop_context():
     driver = FakeNeo4jDriver()
     client = Neo4jGraphClient(
@@ -1428,6 +1553,103 @@ def test_neo4j_graph_client_retrieves_limited_multihop_context():
                 "- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.) "
                 "| linked: [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"
             ),
+        ]
+    )
+
+
+def test_neo4j_graph_client_multihop_expands_from_fulltext_seeds():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme Neo4j",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=3,
+    )
+
+    call = next(call for call in driver.session_obj.calls if "FACT*1..3" in call["query"])
+    query = call["query"]
+    assert "db.index.fulltext.queryNodes" in query
+    assert "db.index.fulltext.queryRelationships" in query
+    assert "WITH seed, max(seed_score) AS seed_score" in query
+    assert "MATCH path = (seed)-[:FACT*1..3]" in query
+    assert "MATCH path = (s:Entity)-[:FACT*1..3]->(o:Entity)" not in query
+    assert call["params"]["fulltext_query"] == '"alice" OR "acme" OR "neo4j"'
+    assert call["params"]["seed_limit"] >= call["params"]["limit"]
+
+
+def test_neo4j_graph_client_multihop_rescues_non_seeded_path_term_matches():
+    class NonSeededPathMatchSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "RETURN s.name AS subject" in query:
+                return []
+            if "MATCH path = (seed)-[:FACT*1..3]" in query:
+                return []
+            if "MATCH path = (s:Entity)-[:FACT*1..3]->(o:Entity)" in query:
+                return [
+                    {
+                        "subject": "Alpha",
+                        "predicate": "routes_through",
+                        "object": "TargetNode",
+                        "evidence": "Alpha routes through TargetNode.",
+                        "hop": 1,
+                    },
+                    {
+                        "subject": "TargetNode",
+                        "predicate": "causes",
+                        "object": "Incident",
+                        "evidence": "TargetNode causes Incident.",
+                        "hop": 2,
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = NonSeededPathMatchSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="TargetNode",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=3,
+    )
+
+    scan_call = next(
+        call
+        for call in driver.session_obj.calls
+        if "MATCH path = (s:Entity)-[:FACT*1..3]->(o:Entity)" in call["query"]
+    )
+    assert "db.index.fulltext" not in scan_call["query"]
+    assert "WHERE hop > 1" in scan_call["query"]
+    assert scan_call["params"]["limit"] == 40
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Alpha -[routes_through]-> TargetNode "
+                "(Alpha routes through TargetNode.) | linked: [2-hop] "
+                "TargetNode -[causes]-> Incident (TargetNode causes Incident.)"
+            )
         ]
     )
 
@@ -1507,9 +1729,11 @@ def test_neo4j_graph_client_multihop_preserves_one_hop_context_and_dedupes():
         if "RETURN s.name AS subject" in call["query"]
         or "RETURN startNode(r).name AS subject" in call["query"]
     ]
-    assert len(retrieve_calls) == 2
+    assert len(retrieve_calls) == 3
     assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" in retrieve_calls[0]["query"]
     assert "FACT*1..2" in retrieve_calls[1]["query"]
+    assert "db.index.fulltext.queryNodes" in retrieve_calls[1]["query"]
+    assert "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" in retrieve_calls[2]["query"]
     assert context == format_graph_context(
         [
             (
