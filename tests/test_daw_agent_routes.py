@@ -10,6 +10,7 @@ from core.platform.daw_agent import normalize_daw_project_session_id
 from core.platform.message import MessageEvent, MessageType, Sender
 from dashboard import music as music_routes
 from dashboard.routes import daw_agent
+from dashboard.studio import bridge_context
 from tests.document_samples import xlsx_bytes
 
 
@@ -417,7 +418,7 @@ async def test_daw_agent_chat_route_requests_studio_one_dawproject_export(
 
 @pytest.mark.asyncio
 async def test_daw_agent_chat_route_skips_expired_published_bridge_context(monkeypatch):
-    monkeypatch.setattr(music_routes, "BRIDGE_CONTEXT_TTL_SECONDS", 0.0, raising=False)
+    monkeypatch.setattr(bridge_context, "BRIDGE_CONTEXT_TTL_SECONDS", 0.0)
     adapter = _FakeDawAgent()
     dashboard = _FakeDashboard(adapter)
     dashboard.app.register_blueprint(music_routes.bp)

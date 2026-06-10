@@ -11,7 +11,6 @@ import os
 import re
 import shutil
 import subprocess
-import time
 import zipfile
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -73,6 +72,8 @@ from dashboard.host_dawproject_sync import (
     request_host_dawproject_snapshot_export,
 )
 from dashboard.routes._helpers import resolve_workspace_path
+from dashboard.studio import bridge_context as bridge_context_service
+from dashboard.studio import export_options
 
 # Re-exported for routes/tests that patch `dashboard.music`.
 host_project_sync_prompt_context = host_dawproject_sync.host_project_sync_prompt_context
@@ -98,16 +99,33 @@ AUDIO_EXTS = {
     ".dff",
 }
 HOST_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
-EXPORT_FORMATS = {"wav", "flac", "mp3", "midi", "dawproject"}
-EXPORT_BIT_DEPTHS = {"i16", "i24", "f32"}
-EXPORT_SAMPLE_RATES = {44100, 48000, 88200, 96000, 192000}
-EXPORT_BITRATES = {"128k", "192k", "256k", "320k"}
+EXPORT_FORMATS = export_options.EXPORT_FORMATS
+EXPORT_BIT_DEPTHS = export_options.EXPORT_BIT_DEPTHS
+EXPORT_SAMPLE_RATES = export_options.EXPORT_SAMPLE_RATES
+EXPORT_BITRATES = export_options.EXPORT_BITRATES
 RAW_HOST_COMMAND_DENYLIST = {"bounce", "render_wav"}
 BRIDGE_API_VERSION = 1
 BRIDGE_LATEST_EXPORT_FILENAME = "atri-bridge-latest-export.json"
-BRIDGE_DEFAULT_CONTEXT_KEY = "__default__"
-BRIDGE_MAX_CONTEXT_INSTANCES = 128
-BRIDGE_CONTEXT_TTL_SECONDS = 10.0
+BRIDGE_DEFAULT_CONTEXT_KEY = bridge_context_service.BRIDGE_DEFAULT_CONTEXT_KEY
+BRIDGE_MAX_CONTEXT_INSTANCES = bridge_context_service.BRIDGE_MAX_CONTEXT_INSTANCES
+BRIDGE_CONTEXT_TTL_SECONDS = bridge_context_service.BRIDGE_CONTEXT_TTL_SECONDS
+_bridge_export_instance_id = bridge_context_service.bridge_export_instance_id
+record_bridge_host_context = bridge_context_service.record_bridge_host_context
+bridge_host_context_for_instance = bridge_context_service.bridge_host_context_for_instance
+StudioExportError = export_options.StudioExportError
+_safe_export_stem = export_options.safe_export_stem
+_normalize_export_format = export_options.normalize_export_format
+_normalize_export_mode = export_options.normalize_export_mode
+_normalize_export_target = export_options.normalize_export_target
+_normalize_export_sample_rate = export_options.normalize_export_sample_rate
+_normalize_export_bit_depth = export_options.normalize_export_bit_depth
+_normalize_export_bitrate = export_options.normalize_export_bitrate
+_normalize_export_consumer = export_options.normalize_export_consumer
+_project_length_seconds = export_options.project_length_seconds
+_export_time_range = export_options.export_time_range
+_export_midi_beat_range = export_options.export_midi_beat_range
+_payload_has_explicit_midi_beat_range = export_options.payload_has_explicit_midi_beat_range
+_payload_has_explicit_time_range = export_options.payload_has_explicit_time_range
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -117,10 +135,6 @@ _project_broadcast_revision: str | None = None
 _HOST_SYNC_SESSION_KEY = "__session__"
 _host_sync_fingerprints: WeakKeyDictionary[object, dict[str, str]] = WeakKeyDictionary()
 _host_sync_fingerprints_by_id: dict[int, dict[str, str]] = {}
-# Local VST3 bridge context is process-local. Multi-worker Quart deployments
-# will not share this cache; bridge mode should run single-worker unless this
-# moves to shared storage.
-_bridge_host_contexts: dict[str, dict[str, Any]] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -170,17 +184,6 @@ def _safe_audio_filename(filename: str) -> str:
     raw_name = Path(str(filename or "audio.wav").replace("\\", "/")).name
     safe = re.sub(r"[^A-Za-z0-9._ -]+", "_", raw_name).strip(" ._")
     return safe or "audio.wav"
-
-
-def _safe_export_stem(value: Any, fallback: str = "ATRI Export") -> str:
-    stem = Path(_safe_audio_filename(str(value or fallback))).stem.strip(" ._")
-    return stem or fallback
-
-
-class StudioExportError(Exception):
-    def __init__(self, message: str, status_code: int = 400):
-        super().__init__(message)
-        self.status_code = status_code
 
 
 def _audio_duration_seconds(path: Path, fallback: Any = None) -> float:
@@ -234,123 +237,6 @@ def _delete_export_file(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def _normalize_export_format(value: Any) -> str:
-    format_name = str(value or "wav").strip().lower().lstrip(".")
-    if format_name not in EXPORT_FORMATS:
-        raise StudioExportError("format is not supported", 400)
-    return format_name
-
-
-def _normalize_export_mode(value: Any) -> str:
-    mode = str(value or "mixdown").strip().lower()
-    if mode not in {"mixdown", "stems"}:
-        raise StudioExportError("mode must be mixdown or stems", 400)
-    return mode
-
-
-def _normalize_export_target(value: Any) -> str:
-    target = str(value or "entire_project").strip().lower()
-    aliases = {
-        "project": "entire_project",
-        "all": "entire_project",
-        "all_tracks": "entire_project",
-        "selected": "selected_tracks",
-        "tracks": "selected_tracks",
-    }
-    target = aliases.get(target, target)
-    if target not in {"entire_project", "selected_tracks"}:
-        raise StudioExportError("target must be entire_project or selected_tracks", 400)
-    return target
-
-
-def _normalize_export_sample_rate(value: Any) -> int:
-    try:
-        sample_rate = int(value or 48000)
-    except (TypeError, ValueError):
-        raise StudioExportError(
-            "sample_rate must be one of 44100, 48000, 88200, 96000, 192000"
-        ) from None
-    if sample_rate not in EXPORT_SAMPLE_RATES:
-        raise StudioExportError("sample_rate must be one of 44100, 48000, 88200, 96000, 192000")
-    return sample_rate
-
-
-def _normalize_export_bit_depth(value: Any, format_name: str) -> str:
-    bit_depth = str(value or "i24").strip().lower()
-    if bit_depth not in EXPORT_BIT_DEPTHS:
-        raise StudioExportError("bit_depth must be i16, i24, or f32")
-    if format_name == "flac" and bit_depth == "f32":
-        raise StudioExportError("flac export requires i16 or i24 bit_depth")
-    return bit_depth
-
-
-def _normalize_export_bitrate(value: Any) -> str:
-    if value is None or value == "":
-        return "320k"
-    if isinstance(value, int):
-        bitrate = f"{value}k"
-    else:
-        bitrate = str(value).strip().lower()
-        if bitrate.isdigit():
-            bitrate = f"{bitrate}k"
-    if bitrate not in EXPORT_BITRATES:
-        raise StudioExportError("bitrate must be 128k, 192k, 256k, or 320k")
-    return bitrate
-
-
-def _project_length_seconds(project: dict[str, Any]) -> float:
-    try:
-        length_beats = max(0.0, float(project.get("length_beats", 16.0) or 0.0))
-    except (TypeError, ValueError):
-        length_beats = 16.0
-    try:
-        tempo = max(1.0, float(project.get("tempo", 120.0) or 120.0))
-    except (TypeError, ValueError):
-        tempo = 120.0
-    return length_beats * 60.0 / tempo
-
-
-def _export_time_range(project: dict[str, Any], payload: dict[str, Any]) -> tuple[float, float]:
-    try:
-        start = float(payload.get("start", payload.get("start_seconds", 0.0)) or 0.0)
-        end_raw = payload.get("end", payload.get("end_seconds"))
-        end = float(end_raw) if end_raw is not None else _project_length_seconds(project)
-    except (TypeError, ValueError):
-        raise StudioExportError("start and end must be numbers") from None
-    if start < 0:
-        raise StudioExportError("start must be non-negative")
-    if end <= start:
-        raise StudioExportError("end must be after start")
-    return start, end
-
-
-def _export_midi_beat_range(payload: dict[str, Any]) -> tuple[float, float] | None:
-    raw_range = payload.get("beat_range")
-    if isinstance(raw_range, (list, tuple)) and len(raw_range) >= 2:
-        start_raw, end_raw = raw_range[0], raw_range[1]
-    elif "start_beat" in payload or "end_beat" in payload:
-        start_raw, end_raw = payload.get("start_beat", 0.0), payload.get("end_beat")
-    else:
-        return None
-
-    try:
-        start = max(0.0, float(start_raw or 0.0))
-        end = float(end_raw)
-    except (TypeError, ValueError):
-        raise StudioExportError("start_beat and end_beat must be numbers") from None
-    if end <= start:
-        raise StudioExportError("end_beat must be after start_beat")
-    return start, end
-
-
-def _payload_has_explicit_midi_beat_range(payload: dict[str, Any]) -> bool:
-    return "beat_range" in payload or "start_beat" in payload or "end_beat" in payload
-
-
-def _payload_has_explicit_time_range(payload: dict[str, Any]) -> bool:
-    return any(key in payload for key in ("start", "end", "start_seconds", "end_seconds"))
 
 
 def _bridge_context_for_export_payload(payload: dict[str, Any], consumer: str) -> dict[str, Any]:
@@ -692,11 +578,6 @@ async def _render_host_wav(
 
 def _export_download_url(path: Path) -> str:
     return f"/api/music/studio/export/download/{path.name}"
-
-
-def _normalize_export_consumer(value: Any) -> str:
-    consumer = str(value or "export").strip().lower()
-    return consumer if consumer in {"export", "bridge"} else "export"
 
 
 def _is_in_music_dirs(filepath: str) -> bool:
@@ -3079,93 +2960,6 @@ def _remember_bridge_export(
     _write_latest_bridge_export(scoped_export)
     if instance_id:
         _write_latest_bridge_export(scoped_export, instance_id=instance_id)
-
-
-def _bridge_export_instance_id(payload: Any) -> str | None:
-    if not hasattr(payload, "get"):
-        return None
-    raw = payload.get("instance_id") or payload.get("bridge_instance_id")
-    host_context = payload.get("host_context")
-    if raw in (None, "") and isinstance(host_context, dict):
-        raw = host_context.get("instance_id") or host_context.get("bridge_instance_id")
-    instance_id = str(raw or "").strip()
-    return instance_id or None
-
-
-def record_bridge_host_context(payload: dict[str, Any]) -> dict[str, Any]:
-    context = _normalize_bridge_host_context_payload(payload)
-    key = _bridge_context_key(_bridge_export_instance_id(payload))
-    now = time.monotonic()
-    _prune_expired_bridge_host_contexts(now=now)
-    _bridge_host_contexts[key] = {"context": deepcopy(context), "updated_at": now}
-    _trim_bridge_host_contexts()
-    return deepcopy(context)
-
-
-def bridge_host_context_for_instance(instance_id: str | None) -> dict[str, Any]:
-    key = _bridge_context_key(instance_id)
-    entry = _bridge_host_contexts.get(key)
-    if not isinstance(entry, dict):
-        return {}
-    context = entry.get("context")
-    updated_at = entry.get("updated_at")
-    if not isinstance(context, dict) or not isinstance(updated_at, int | float):
-        _bridge_host_contexts.pop(key, None)
-        return {}
-    if _bridge_context_is_expired(float(updated_at), now=time.monotonic()):
-        _bridge_host_contexts.pop(key, None)
-        return {}
-    return deepcopy(context) if isinstance(context, dict) else {}
-
-
-def _normalize_bridge_host_context_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise ValueError("bridge context payload must be an object")
-
-    host_context = normalize_daw_host_context(payload.get("host_context"), strict=True)
-    host = str(payload.get("host") or "").strip()
-    if host:
-        host_context.update(normalize_daw_host_context({"host": host}, strict=True))
-    if not host_context:
-        raise ValueError("bridge context must include at least one supported field")
-    return host_context
-
-
-def _bridge_context_key(instance_id: str | None) -> str:
-    instance_id = str(instance_id or "").strip()
-    return instance_id or BRIDGE_DEFAULT_CONTEXT_KEY
-
-
-def _trim_bridge_host_contexts() -> None:
-    while len(_bridge_host_contexts) > BRIDGE_MAX_CONTEXT_INSTANCES:
-        oldest_key = min(
-            _bridge_host_contexts,
-            key=lambda key: _bridge_context_updated_at(_bridge_host_contexts.get(key)),
-        )
-        _bridge_host_contexts.pop(oldest_key, None)
-
-
-def _bridge_context_updated_at(entry: object) -> float:
-    if not isinstance(entry, dict):
-        return 0.0
-    updated_at = entry.get("updated_at")
-    if not isinstance(updated_at, int | float):
-        return 0.0
-    return float(updated_at)
-
-
-def _prune_expired_bridge_host_contexts(*, now: float) -> None:
-    for key, entry in list(_bridge_host_contexts.items()):
-        updated_at = entry.get("updated_at") if isinstance(entry, dict) else None
-        if not isinstance(updated_at, int | float) or _bridge_context_is_expired(
-            float(updated_at),
-            now=now,
-        ):
-            _bridge_host_contexts.pop(key, None)
-
-
-def _bridge_context_is_expired(updated_at: float, *, now: float) -> bool:
-    return now - updated_at >= BRIDGE_CONTEXT_TTL_SECONDS
 
 
 def _latest_bridge_export_path(*, instance_id: str | None = None) -> Path:
