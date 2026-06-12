@@ -40,8 +40,10 @@ const AUDIO_MODULE_CLASS: &str = "Audio Module Class";
 const COMPONENT_CONTROLLER_CLASS: &str = "Component Controller Class";
 const MAIN_OUTPUT_NAME: &str = "ATRI Bridge";
 const EVENT_INPUT_NAME: &str = "ATRI Control";
-const EDITOR_WIDTH: i32 = 420;
-const EDITOR_HEIGHT: i32 = 220;
+const EDITOR_WIDTH: i32 = 900;
+const EDITOR_HEIGHT: i32 = 720;
+const EDITOR_MIN_WIDTH: i32 = 480;
+const EDITOR_MIN_HEIGHT: i32 = 360;
 const DASHBOARD_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const DASHBOARD_EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 const DASHBOARD_CONTEXT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -718,14 +720,16 @@ impl BridgePlugView {
     }
 
     fn open_daw_agent_surface(&self) {
-        let url = {
-            let state = lock_recover(&self.editor_state);
-            state.daw_agent_surface_url(&self.instance_id)
-        };
+        let url = self.surface_url();
 
         if let Err(error) = self.surface_opener.open(&url) {
             self.mark_editor_error(format!("failed to open DAW agent surface: {error}"));
         }
+    }
+
+    /// URL of the embedded `daw-agent` operation page for this plug-in instance.
+    fn surface_url(&self) -> String {
+        lock_recover(&self.editor_state).daw_agent_surface_url(&self.instance_id)
     }
 
     fn start_export_job(&self, request: BridgeExportRequest) {
@@ -1139,7 +1143,8 @@ impl BridgePlugView {
     ) -> Result<(), crate::editor_surface::EditorSurfaceError> {
         let rect = *lock_recover(&self.rect);
         let view_model = lock_recover(&self.view_model).clone();
-        let spec = EditorSurfaceSpec::from_vst3(parent, platform_type, rect, &view_model)?;
+        let spec = EditorSurfaceSpec::from_vst3(parent, platform_type, rect, &view_model)?
+            .with_webview_url(self.surface_url());
         let surface = unsafe {
             NativeEditorSurface::attach(
                 &spec,
@@ -1173,7 +1178,9 @@ impl BridgePlugView {
         let rect = *lock_recover(&self.rect);
         let rect = crate::editor_surface::SurfaceRect::from_view_rect(rect).ok()?;
         let view_model = lock_recover(&self.view_model).clone();
-        EditorSurfaceSpec::from_view_model(parent_handle, platform, rect, &view_model).ok()
+        let spec =
+            EditorSurfaceSpec::from_view_model(parent_handle, platform, rect, &view_model).ok()?;
+        Some(spec.with_webview_url(self.surface_url()))
     }
 }
 
@@ -1271,8 +1278,8 @@ impl IPlugViewTrait for BridgePlugView {
         }
 
         let rect = unsafe { &mut *rect };
-        rect.right = rect.right.max(rect.left + EDITOR_WIDTH);
-        rect.bottom = rect.bottom.max(rect.top + EDITOR_HEIGHT);
+        rect.right = rect.right.max(rect.left + EDITOR_MIN_WIDTH);
+        rect.bottom = rect.bottom.max(rect.top + EDITOR_MIN_HEIGHT);
         kResultOk
     }
 }
@@ -1644,6 +1651,23 @@ mod tests {
         let result = unsafe { view.attached(ptr::null_mut(), kPlatformTypeHWND) };
 
         assert_eq!(result, kInvalidArgument);
+    }
+
+    #[test]
+    fn bridge_plug_view_surface_url_targets_daw_agent_for_this_instance() {
+        let _guard = crate::host_context::test_host_context_guard();
+        crate::host_context::clear_latest_host_application_name_for_test();
+        let view = BridgePlugView::default();
+
+        let url = view.surface_url();
+        let instance_id = view.instance_id();
+
+        assert!(url.contains("surface=daw-agent"), "unexpected url: {url}");
+        assert!(
+            url.contains(&format!("instance_id={instance_id}")),
+            "url should target this instance: {url}"
+        );
+        crate::host_context::clear_latest_host_application_name_for_test();
     }
 
     #[test]

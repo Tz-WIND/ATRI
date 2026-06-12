@@ -12,7 +12,9 @@ use crate::editor::{
     BridgeConnectionState, BridgeEditorAction, BridgeEditorState, BridgeEditorViewModel,
     BridgeExportState,
 };
-use crate::editor_surface::{EditorPlatformType, EditorSurfaceSpec, SurfaceRect};
+use crate::editor_surface::{
+    EDITOR_TOOLBAR_HEIGHT, EditorPlatformType, EditorSurfaceSpec, SurfaceRect,
+};
 use crate::identity::{
     BridgePluginIdentity, COMPONENT_CLASS_ID, CONTROLLER_CLASS_ID, PLUGIN_CATEGORY, PLUGIN_NAME,
     VENDOR,
@@ -1077,6 +1079,78 @@ fn editor_surface_spec_marks_midi_preview_as_primary_drag_source() {
     assert_eq!(spec.preview().unwrap().title, "Edited Synth");
     assert!(spec.drag_export_hit_test(48, 84));
     assert!(!spec.drag_export_hit_test(116, 138));
+}
+
+#[test]
+fn editor_surface_spec_carries_webview_url_and_region_below_toolbar() {
+    let state = BridgeEditorState::default();
+    let view = BridgeEditorViewModel::from_state(&state, 900, 720);
+    let spec = EditorSurfaceSpec::from_view_model(
+        0x20,
+        EditorPlatformType::WindowsHwnd,
+        SurfaceRect {
+            left: 0,
+            top: 0,
+            width: 900,
+            height: 720,
+        },
+        &view,
+    )
+    .unwrap()
+    .with_webview_url("http://127.0.0.1:6185/?surface=daw-agent&instance_id=bridge-1");
+
+    assert_eq!(
+        spec.webview_url(),
+        Some("http://127.0.0.1:6185/?surface=daw-agent&instance_id=bridge-1")
+    );
+    let bounds = spec.webview_bounds();
+    assert_eq!(bounds.left, 0);
+    assert_eq!(bounds.top, EDITOR_TOOLBAR_HEIGHT);
+    assert_eq!(bounds.width, 900);
+    assert_eq!(bounds.height, 720 - EDITOR_TOOLBAR_HEIGHT);
+}
+
+#[test]
+fn editor_surface_spec_without_webview_url_has_no_navigation_target() {
+    let state = BridgeEditorState::default();
+    let view = BridgeEditorViewModel::from_state(&state, 900, 720);
+    let spec = EditorSurfaceSpec::from_view_model(
+        0x20,
+        EditorPlatformType::WindowsHwnd,
+        SurfaceRect {
+            left: 0,
+            top: 0,
+            width: 900,
+            height: 720,
+        },
+        &view,
+    )
+    .unwrap();
+
+    assert_eq!(spec.webview_url(), None);
+    assert_eq!(spec.with_webview_url("   ").webview_url(), None);
+}
+
+#[test]
+fn editor_surface_spec_collapses_webview_region_when_window_shorter_than_toolbar() {
+    let state = BridgeEditorState::default();
+    let view = BridgeEditorViewModel::from_state(&state, 480, 120);
+    let spec = EditorSurfaceSpec::from_view_model(
+        0x20,
+        EditorPlatformType::WindowsHwnd,
+        SurfaceRect {
+            left: 0,
+            top: 0,
+            width: 480,
+            height: 120,
+        },
+        &view,
+    )
+    .unwrap();
+
+    let bounds = spec.webview_bounds();
+    assert_eq!(bounds.top, 120);
+    assert_eq!(bounds.height, 0);
 }
 
 #[test]

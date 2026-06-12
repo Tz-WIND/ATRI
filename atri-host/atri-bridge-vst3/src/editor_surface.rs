@@ -7,6 +7,11 @@ use crate::editor::{
     BridgeEditorAction, BridgeEditorButton, BridgeEditorPreview, BridgeEditorViewModel,
 };
 
+/// Height in pixels reserved at the top of the editor for the native GDI
+/// toolbar (status lines, MIDI drag preview, export buttons). The embedded
+/// WebView2 surface fills the area below this band.
+pub const EDITOR_TOOLBAR_HEIGHT: i32 = 170;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorPlatformType {
     WindowsHwnd,
@@ -45,6 +50,7 @@ pub struct EditorSurfaceSpec {
     lines: Vec<String>,
     buttons: Vec<BridgeEditorButton>,
     preview: Option<BridgeEditorPreview>,
+    webview_url: Option<String>,
 }
 
 impl EditorSurfaceSpec {
@@ -68,7 +74,32 @@ impl EditorSurfaceSpec {
             lines: view_model.render_lines(),
             buttons: view_model.buttons().to_vec(),
             preview: view_model.preview().cloned(),
+            webview_url: None,
         })
+    }
+
+    /// Attach the URL the embedded WebView2 surface should navigate to. The
+    /// live controller is re-navigated when later updates provide a new URL.
+    pub fn with_webview_url(mut self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        self.webview_url = (!url.trim().is_empty()).then_some(url);
+        self
+    }
+
+    pub fn webview_url(&self) -> Option<&str> {
+        self.webview_url.as_deref()
+    }
+
+    /// Client-relative bounds for the embedded WebView2 surface: the full width
+    /// of the editor below the native toolbar band.
+    pub fn webview_bounds(&self) -> SurfaceRect {
+        let top = EDITOR_TOOLBAR_HEIGHT.clamp(0, self.rect.height);
+        SurfaceRect {
+            left: 0,
+            top,
+            width: self.rect.width.max(0),
+            height: (self.rect.height - top).max(0),
+        }
     }
 
     pub fn from_vst3(
@@ -263,13 +294,14 @@ mod windows_editor {
         GWLP_USERDATA, GetWindowLongPtrW, KillTimer, RegisterClassW, SW_SHOW, SWP_NOACTIVATE,
         SWP_NOZORDER, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ERASEBKGND,
         WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_TIMER, WNDCLASSW,
-        WS_CHILD, WS_VISIBLE,
+        WS_CHILD, WS_CLIPCHILDREN, WS_VISIBLE,
     };
 
     use super::{
-        BridgeEditorPreview, EditorSurfaceError, EditorSurfaceSpec, NativeEditorSurfaceEvent,
-        SurfaceEventCallback,
+        BridgeEditorPreview, EDITOR_TOOLBAR_HEIGHT, EditorSurfaceError, EditorSurfaceSpec,
+        NativeEditorSurfaceEvent, SurfaceEventCallback,
     };
+    use crate::webview_surface::{BridgeWebView, WebViewBounds};
 
     const CLASS_NAME: &str = "ATRI Bridge Editor Surface";
     const WINDOW_TITLE: &str = "ATRI Bridge";
@@ -279,6 +311,7 @@ mod windows_editor {
     static WINDOW_CLASS_ATOM: OnceLock<u16> = OnceLock::new();
 
     pub struct WindowsEditorSurface {
+        webview: Option<BridgeWebView>,
         hwnd: HWND,
     }
 
@@ -296,6 +329,7 @@ mod windows_editor {
                 spec: spec.clone(),
                 callback_context,
                 callback,
+                webview_failed: false,
             });
             let state_ptr = Box::into_raw(state);
             let module = current_module_handle();
@@ -305,7 +339,7 @@ mod windows_editor {
                     0,
                     class_name.as_ptr(),
                     title.as_ptr(),
-                    WS_CHILD | WS_VISIBLE,
+                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
                     rect.left,
                     rect.top,
                     rect.width,
@@ -324,7 +358,13 @@ mod windows_editor {
                 ShowWindow(hwnd, SW_SHOW);
                 SetTimer(hwnd, EXPORT_POLL_TIMER_ID, EXPORT_POLL_INTERVAL_MS, None);
             }
-            Ok(Self { hwnd })
+
+            let webview = attach_webview(hwnd, spec);
+            if webview.is_none() && spec.webview_url().is_some() {
+                mark_webview_failed(hwnd);
+            }
+
+            Ok(Self { webview, hwnd })
         }
 
         pub fn update(&mut self, spec: &EditorSurfaceSpec) -> Result<(), EditorSurfaceError> {
@@ -344,12 +384,21 @@ mod windows_editor {
                 );
                 InvalidateRect(self.hwnd, ptr::null(), 1);
             }
+            if let Some(webview) = self.webview.as_ref() {
+                if let Some(url) = spec.webview_url() {
+                    webview.update(webview_bounds(spec), url);
+                } else {
+                    webview.set_bounds(webview_bounds(spec));
+                }
+            }
             Ok(())
         }
     }
 
     impl Drop for WindowsEditorSurface {
         fn drop(&mut self) {
+            // Close the embedded WebView2 before destroying its parent window.
+            self.webview = None;
             if self.hwnd != 0 {
                 unsafe {
                     KillTimer(self.hwnd, EXPORT_POLL_TIMER_ID);
@@ -360,10 +409,44 @@ mod windows_editor {
         }
     }
 
+    fn webview_bounds(spec: &EditorSurfaceSpec) -> WebViewBounds {
+        let bounds = spec.webview_bounds();
+        WebViewBounds {
+            left: bounds.left,
+            top: bounds.top,
+            width: bounds.width,
+            height: bounds.height,
+        }
+    }
+
+    fn attach_webview(hwnd: HWND, spec: &EditorSurfaceSpec) -> Option<BridgeWebView> {
+        let url = spec.webview_url()?;
+        let bounds = webview_bounds(spec);
+        if bounds.width <= 0 || bounds.height <= 0 {
+            return None;
+        }
+        unsafe {
+            BridgeWebView::attach(hwnd, bounds, url, move || {
+                mark_webview_failed(hwnd);
+            })
+        }
+        .ok()
+    }
+
+    fn mark_webview_failed(hwnd: HWND) {
+        if let Some(state) = window_state(hwnd) {
+            unsafe {
+                (*state).webview_failed = true;
+                InvalidateRect(hwnd, ptr::null(), 1);
+            }
+        }
+    }
+
     struct WindowsEditorWindowState {
         spec: EditorSurfaceSpec,
         callback_context: *mut c_void,
         callback: SurfaceEventCallback,
+        webview_failed: bool,
     }
 
     unsafe extern "system" fn window_proc(
@@ -404,7 +487,7 @@ mod windows_editor {
             WM_PAINT => {
                 if let Some(state) = window_state(hwnd) {
                     unsafe {
-                        paint(hwnd, &(*state).spec);
+                        paint(hwnd, &(*state).spec, (*state).webview_failed);
                     }
                     0
                 } else {
@@ -524,7 +607,7 @@ mod windows_editor {
         (ptr != 0).then_some(ptr as *mut WindowsEditorWindowState)
     }
 
-    unsafe fn paint(hwnd: HWND, spec: &EditorSurfaceSpec) {
+    unsafe fn paint(hwnd: HWND, spec: &EditorSurfaceSpec, webview_failed: bool) {
         let mut paint = unsafe { mem::zeroed::<PAINTSTRUCT>() };
         let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
         if hdc == 0 {
@@ -560,6 +643,18 @@ mod windows_editor {
                 SetTextColor(hdc, rgb(244, 247, 250));
             }
             text_out(hdc, button.x + 10, button.y + 9, button.label);
+        }
+
+        if webview_failed {
+            unsafe {
+                SetTextColor(hdc, rgb(214, 188, 130));
+            }
+            text_out(
+                hdc,
+                24,
+                EDITOR_TOOLBAR_HEIGHT + 12,
+                "WebView2 unavailable - click Open ATRI to open the page in a browser.",
+            );
         }
 
         unsafe {

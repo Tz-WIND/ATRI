@@ -13,6 +13,8 @@ pub(crate) mod host_context;
 pub mod identity;
 pub mod packaging;
 pub mod processor;
+#[cfg(target_os = "windows")]
+pub mod webview_surface;
 
 #[cfg(target_os = "windows")]
 #[unsafe(no_mangle)]
