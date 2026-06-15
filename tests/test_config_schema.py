@@ -79,6 +79,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
         "group_ids": [],
     }
     assert config["workspace"] == DEFAULT_CONFIG["workspace"]
+    assert config["trusted_directories"] == []
     assert "dashboard" in config
 
 

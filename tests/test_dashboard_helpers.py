@@ -941,6 +941,108 @@ def test_dashboard_resolve_workspace_path_blocks_escape(tmp_path):
         _helpers.resolve_workspace_path(str(tmp_path), "../outside.txt")
 
 
+@pytest.mark.asyncio
+async def test_dashboard_workspace_update_requires_trust_for_external_path(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "external"
+    workspace.mkdir()
+    external.mkdir()
+    dashboard = _dashboard_for_auth_tests(monkeypatch, workspace)
+    token = dashboard._create_auth_session()
+    client = dashboard.app.test_client()
+
+    response = await client.post(
+        "/api/workspace",
+        json={"workspace": str(external)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 409
+    assert payload["requires_trust"] is True
+    assert payload["paths"] == [str(external.resolve())]
+    assert dashboard.lifecycle.config["workspace"] == str(workspace)
+    assert cast(_FakeDashboardLifecycle, dashboard.lifecycle).saved == 0
+
+    trusted_response = await client.post(
+        "/api/workspace",
+        json={"workspace": str(external), "trust": True},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert trusted_response.status_code == 200
+    assert dashboard.lifecycle.config["workspace"] == str(external)
+    assert dashboard.lifecycle.config["trusted_directories"] == [str(external.resolve())]
+    assert cast(_FakeDashboardLifecycle, dashboard.lifecycle).saved == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_workspace_update_allows_descendant_without_trust(
+    monkeypatch,
+    tmp_path,
+):
+    child_workspace = tmp_path / "project"
+    child_workspace.mkdir()
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+
+    response = await dashboard.app.test_client().post(
+        "/api/workspace",
+        json={"workspace": str(child_workspace)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert dashboard.lifecycle.config["workspace"] == str(child_workspace)
+    assert dashboard.lifecycle.config.get("trusted_directories", []) == []
+    assert cast(_FakeDashboardLifecycle, dashboard.lifecycle).saved == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_music_dirs_require_trust_for_external_path(
+    monkeypatch,
+    tmp_path,
+):
+    _set_test_dashboard_password_cost(monkeypatch)
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "external-music"
+    workspace.mkdir()
+    external.mkdir()
+    monkeypatch.setattr("core.host.configure_host_manager", lambda **kwargs: _FakeDashboardHost())
+    monkeypatch.setattr(music_routes, "_lifecycle", None)
+    lifecycle = _FakeDashboardLifecycle(workspace, _helpers.hash_password("secret"))
+    dashboard = Dashboard(cast("Lifecycle", lifecycle))
+    token = dashboard._create_auth_session()
+    client = dashboard.app.test_client()
+
+    response = await client.post(
+        "/api/music/dirs",
+        json={"directories": [str(external)]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 409
+    assert payload["requires_trust"] is True
+    assert payload["paths"] == [str(external.resolve())]
+    assert "music_directories" not in lifecycle.config
+    assert lifecycle.saved == 0
+
+    trusted_response = await client.post(
+        "/api/music/dirs",
+        json={"directories": [str(external)], "trust": True},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert trusted_response.status_code == 200
+    assert lifecycle.config["music_directories"] == [str(external)]
+    assert lifecycle.config["trusted_directories"] == [str(external.resolve())]
+    assert lifecycle.saved == 1
+
+
 def test_dashboard_normalize_chat_images_accepts_valid_data_urls():
     images = chat._normalize_chat_images(
         [

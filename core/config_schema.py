@@ -63,6 +63,7 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "max_context_tokens": {"type": "integer", "default": 128000, "minimum": 1},
         "max_rounds": {"type": "integer", "default": 50, "minimum": 1},
         "workspace": {"type": "string", "default": "./workspace"},
+        "trusted_directories": {"type": "array", "default": []},
         "sessions_dir": {"type": "string", "default": "data/sessions"},
         "runtime_dir": {"type": "string", "default": "data/runtime"},
         "knowledge": {

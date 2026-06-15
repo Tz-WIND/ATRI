@@ -28,10 +28,15 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import { retryAfterDirectoryTrust } from '@/composables/directoryTrust.js'
 import { useApi } from '@/composables/useApi.js'
 
 const api = useApi()
 const path = ref('')
+const WORKSPACE_DIRECTORY_TRUST = {
+  title: 'Trust this workspace directory?',
+  description: 'The agent will be able to read, write, search, and run file tools inside this directory.',
+}
 
 onMounted(async () => {
   try {
@@ -41,7 +46,15 @@ onMounted(async () => {
 })
 
 async function save() {
-  await api.saveWorkspace(path.value)
+  try {
+    await api.saveWorkspace(path.value)
+  } catch (error) {
+    await retryAfterDirectoryTrust(
+      error,
+      () => api.saveWorkspace(path.value, { trust: true }),
+      WORKSPACE_DIRECTORY_TRUST,
+    )
+  }
 }
 </script>
 

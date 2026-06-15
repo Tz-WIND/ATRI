@@ -847,6 +847,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ProviderWorkbench from './ProviderWorkbench.vue'
 import ModelPoolSection from './ModelPoolSection.vue'
+import { retryAfterDirectoryTrust } from '@/composables/directoryTrust.js'
 import { useApi } from '@/composables/useApi.js'
 import { useDocumentSupport } from '@/composables/useDocumentSupport.js'
 import { useProviders } from '@/composables/useProviders.js'
@@ -964,6 +965,10 @@ const form = ref({
 const saving = ref(false)
 const savingMusic = ref(false)
 const musicDirs = ref([''])
+const MUSIC_DIRECTORY_TRUST = {
+  title: 'Trust these music directories?',
+  description: 'ATRI will be able to scan these directories and serve matching audio and artwork from them.',
+}
 const imageTranscriptionExpanded = ref(false)
 const graphConnectionTesting = ref(false)
 const graphConnectionStatus = ref(null)
@@ -1228,7 +1233,15 @@ async function saveMusicDirs() {
   savingMusic.value = true
   try {
     const dirs = musicDirs.value.map(s => s.trim()).filter(Boolean)
-    await api.saveMusicDirs(dirs)
+    try {
+      await api.saveMusicDirs(dirs)
+    } catch (error) {
+      await retryAfterDirectoryTrust(
+        error,
+        () => api.saveMusicDirs(dirs, { trust: true }),
+        MUSIC_DIRECTORY_TRUST,
+      )
+    }
   } finally {
     savingMusic.value = false
   }

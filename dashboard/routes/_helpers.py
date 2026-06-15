@@ -160,3 +160,92 @@ def resolve_workspace_path(workspace: str, rel_path: str) -> tuple[Path, Path]:
     except ValueError as e:
         raise PermissionError("path outside workspace") from e
     return ws, target
+
+
+def _resolved_directory(value: Any, *, default: str | None = None) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        if default is None:
+            return None
+        text = default
+    try:
+        return Path(text).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _configured_directory_values(values: Any) -> list[Any]:
+    if not isinstance(values, list):
+        return []
+    return [value for value in values if str(value or "").strip()]
+
+
+def untrusted_external_directories(
+    config: dict[str, Any],
+    directories: list[Any],
+    *,
+    extra_trusted: list[Any] | None = None,
+) -> list[str]:
+    """Return directories that would expand access beyond trusted roots."""
+    trusted_values: list[Any] = [config.get("workspace") or "."]
+    trusted_values.extend(_configured_directory_values(config.get("trusted_directories", [])))
+    trusted_values.extend(_configured_directory_values(extra_trusted or []))
+    trusted_roots = [
+        root
+        for value in trusted_values
+        if (root := _resolved_directory(value, default=".")) is not None
+    ]
+
+    untrusted: list[str] = []
+    seen: set[str] = set()
+    for directory in directories:
+        resolved = _resolved_directory(directory)
+        if resolved is None:
+            display_path = str(directory or "").strip()
+            if display_path and display_path not in seen:
+                untrusted.append(display_path)
+                seen.add(display_path)
+            continue
+        if any(_path_is_within(resolved, root) for root in trusted_roots):
+            continue
+        display_path = str(resolved)
+        if display_path not in seen:
+            untrusted.append(display_path)
+            seen.add(display_path)
+    return untrusted
+
+
+def add_trusted_directories(config: dict[str, Any], directories: list[Any]) -> None:
+    existing: list[str] = []
+    seen: set[str] = set()
+    for directory in _configured_directory_values(config.get("trusted_directories", [])):
+        resolved = _resolved_directory(directory)
+        display_path = str(resolved) if resolved is not None else str(directory).strip()
+        if display_path and display_path not in seen:
+            existing.append(display_path)
+            seen.add(display_path)
+
+    for directory in directories:
+        resolved = _resolved_directory(directory)
+        display_path = str(resolved) if resolved is not None else str(directory or "").strip()
+        if display_path and display_path not in seen:
+            existing.append(display_path)
+            seen.add(display_path)
+    config["trusted_directories"] = existing
+
+
+def directory_trust_required_payload(paths: list[str]) -> dict[str, Any]:
+    return {
+        "error": "directory trust required",
+        "requires_trust": True,
+        "paths": paths,
+        "message": "Confirm that these directories are trusted before expanding file access.",
+    }

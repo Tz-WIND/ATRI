@@ -11,7 +11,10 @@ async function handleResponse(res) {
     if (res.status === 401) {
       markUnauthenticated(body.error || 'authentication required')
     }
-    throw new Error(body.error || `HTTP ${res.status}`)
+    const error = new Error(body.error || `HTTP ${res.status}`)
+    error.status = res.status
+    error.body = body
+    throw error
   }
   return res.json()
 }
@@ -65,7 +68,10 @@ export function useApi() {
 
     // Workspace
     getWorkspace: () => request('/api/workspace'),
-    saveWorkspace: (workspace) => request('/api/workspace', { method: 'POST', body: JSON.stringify({ workspace }) }),
+    saveWorkspace: (workspace, options = {}) => request('/api/workspace', {
+      method: 'POST',
+      body: JSON.stringify({ workspace, ...(options.trust ? { trust: true } : {}) }),
+    }),
 
     // Adapter
     getAdapter: () => request('/api/adapter'),
@@ -174,7 +180,10 @@ export function useApi() {
 
     // Music
     musicDirs: () => request('/api/music/dirs'),
-    saveMusicDirs: (directories) => request('/api/music/dirs', { method: 'POST', body: JSON.stringify({ directories }) }),
+    saveMusicDirs: (directories, options = {}) => request('/api/music/dirs', {
+      method: 'POST',
+      body: JSON.stringify({ directories, ...(options.trust ? { trust: true } : {}) }),
+    }),
     musicScan: () => request('/api/music/scan', { method: 'POST' }),
     musicLibrary: () => request('/api/music/library'),
 

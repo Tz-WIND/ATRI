@@ -9,7 +9,13 @@ from quart import jsonify, request
 
 from core.config_schema import ConfigValidationError, normalize_config
 from core.platform.message import display_session_id, normalize_session_id
-from dashboard.routes._helpers import parse_int, resolve_workspace_path
+from dashboard.routes._helpers import (
+    add_trusted_directories,
+    directory_trust_required_payload,
+    parse_int,
+    resolve_workspace_path,
+    untrusted_external_directories,
+)
 
 if TYPE_CHECKING:
     from dashboard.server import Dashboard
@@ -99,9 +105,18 @@ def register(dashboard: Dashboard) -> None:
 
     @app.route("/api/workspace", methods=["POST"])
     async def update_workspace():
-        data = await request.get_json()
+        data = await request.get_json() or {}
         if "workspace" in data:
-            dashboard.lifecycle.config["workspace"] = data["workspace"]
+            workspace = data["workspace"]
+            untrusted = untrusted_external_directories(
+                dashboard.lifecycle.config,
+                [workspace],
+            )
+            if untrusted and data.get("trust") is not True:
+                return jsonify(directory_trust_required_payload(untrusted)), 409
+            if untrusted:
+                add_trusted_directories(dashboard.lifecycle.config, untrusted)
+            dashboard.lifecycle.config["workspace"] = workspace
             dashboard.lifecycle.save_config()
         return jsonify({"ok": True})
 

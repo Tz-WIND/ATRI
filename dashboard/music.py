@@ -71,7 +71,12 @@ from dashboard.host_dawproject_sync import (
     dawproject_snapshot_status,
     request_host_dawproject_snapshot_export,
 )
-from dashboard.routes._helpers import resolve_workspace_path
+from dashboard.routes._helpers import (
+    add_trusted_directories,
+    directory_trust_required_payload,
+    resolve_workspace_path,
+    untrusted_external_directories,
+)
 from dashboard.studio import bridge_context as bridge_context_service
 from dashboard.studio import export_options
 
@@ -800,8 +805,19 @@ async def get_dirs():
 
 @bp.route("/dirs", methods=["POST"])
 async def save_dirs():
-    data = await request.get_json()
+    data = await request.get_json() or {}
     dirs = data.get("directories", [])
+    if not isinstance(dirs, list):
+        dirs = []
+    untrusted = untrusted_external_directories(
+        _cfg(),
+        dirs,
+        extra_trusted=_music_dirs(),
+    )
+    if untrusted and data.get("trust") is not True:
+        return jsonify(directory_trust_required_payload(untrusted)), 409
+    if untrusted:
+        add_trusted_directories(_cfg(), untrusted)
     _cfg()["music_directories"] = dirs
     if _lifecycle:
         _lifecycle.save_config()

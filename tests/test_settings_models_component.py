@@ -86,6 +86,23 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "extraction_provider" in source
 
 
+def test_workspace_and_music_directory_saves_confirm_external_trust():
+    workspace_source = _read("frontend/src/components/pages/WorkspacePage.vue")
+    settings_source = _read("frontend/src/components/settings/SettingsPage.vue")
+    api_source = _read("frontend/src/composables/useApi.js")
+    trust_source = _read("frontend/src/composables/directoryTrust.js")
+
+    assert "retryAfterDirectoryTrust" in workspace_source
+    assert "trust: true" in workspace_source
+    assert "retryAfterDirectoryTrust" in settings_source
+    assert "trust: true" in settings_source
+    assert "error.body" in api_source
+    assert "saveWorkspace: (workspace, options = {})" in api_source
+    assert "saveMusicDirs: (directories, options = {})" in api_source
+    assert "requires_trust" in trust_source
+    assert "directoryTrustMessage" in trust_source
+
+
 def test_model_pool_section_uses_pool_activation_api():
     source = _read("frontend/src/components/settings/ModelPoolSection.vue")
 
