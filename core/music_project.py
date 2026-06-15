@@ -66,6 +66,7 @@ load_project = project_repository.load_project
 save_project = project_repository.save_project
 save_project_as_archive = project_repository.save_project_as_archive
 set_active_project_archive = project_repository.set_active_project_archive
+update_project = project_repository.update_project
 
 create_track = track_operations.create_track
 delete_track = track_operations.delete_track

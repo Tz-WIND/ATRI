@@ -1,6 +1,7 @@
 import { computed, ref, shallowRef } from 'vue'
 import { mergeProjectBroadcast } from '@/components/music/studioProjectPatch.js'
 import { secondsToBeats } from '@/components/music/tempoAutomation.js'
+import { projectUpdatesFromResponse } from './dawHostProjectResponse.js'
 import { useApi } from './useApi.js'
 
 const api = useApi()
@@ -63,16 +64,13 @@ function setProject(nextProject, revision = '') {
   }
 }
 
-function responseRevision(res, fallback = '') {
-  return String(res?.revision || res?.sync?.revision || fallback || '')
-}
-
 function setProjectFromResponse(res) {
-  const revision = responseRevision(res)
-  if (res?.project) setProject(res.project, revision)
-  if (res?.sync?.project) setProject(res.sync.project, responseRevision(res, revision))
-  if (res?.active_project_id) activeProjectId.value = String(res.active_project_id)
-  if (Array.isArray(res?.projects)) projectArchives.value = res.projects
+  const response = projectUpdatesFromResponse(res)
+  for (const update of response.updates) {
+    setProject(update.project, update.revision)
+  }
+  if (response.activeProjectId) activeProjectId.value = response.activeProjectId
+  if (Array.isArray(response.projectArchives)) projectArchives.value = response.projectArchives
 }
 
 async function loadProject() {
@@ -94,7 +92,11 @@ async function saveProject(nextProject, options = {}) {
   loading.value = true
   hostError.value = ''
   try {
-    const res = await api.saveStudioProject(nextProject, { broadcast: true, ...options })
+    const res = await api.saveStudioProject(nextProject, {
+      broadcast: true,
+      base_revision: projectRevision.value,
+      ...options,
+    })
     setProjectFromResponse(res)
     if (res.sync?.host_running) {
       host.value = { ...host.value, running: true }
@@ -102,6 +104,9 @@ async function saveProject(nextProject, options = {}) {
     }
     return res
   } catch (err) {
+    if (err.status === 409 && err.body?.project) {
+      setProjectFromResponse(err.body)
+    }
     hostError.value = err.message || 'Failed to save project'
     return null
   } finally {

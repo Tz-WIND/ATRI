@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import mimetypes
@@ -51,6 +52,7 @@ from core.music_project import (
     save_project_as_archive,
     set_active_project_archive,
     set_track_plugin,
+    update_project,
 )
 from core.music_project import (
     create_track as create_project_track,
@@ -138,6 +140,12 @@ _host_sync_fingerprints: WeakKeyDictionary[object, dict[str, str]] = WeakKeyDict
 _host_sync_fingerprints_by_id: dict[int, dict[str, str]] = {}
 
 logger = logging.getLogger(__name__)
+
+
+class _ProjectRevisionConflictError(Exception):
+    def __init__(self, current_project: dict[str, Any]):
+        super().__init__("project changed since loaded")
+        self.current_project = current_project
 
 
 def init_music(lifecycle: Lifecycle):
@@ -564,7 +572,7 @@ async def _capture_and_save_plugin_states(
         project,
         host_manager=_host_manager,
         load_project=load_project,
-        save_project=save_project,
+        save_project=_save_plugin_state_metadata,
     )
 
 
@@ -746,6 +754,85 @@ def _project_differs_from_saved_project(project: dict[str, Any]) -> bool:
     return _project_save_fingerprint(project) != _project_save_fingerprint(load_project())
 
 
+def _save_project_with_base_revision(
+    project: dict[str, Any],
+    base_revision: str = "",
+) -> dict[str, Any]:
+    expected_revision = str(base_revision or "").strip()
+    if not expected_revision:
+        return save_project(project)
+
+    def mutate(current_project: dict[str, Any]) -> dict[str, Any]:
+        if _project_revision(current_project) != expected_revision:
+            raise _ProjectRevisionConflictError(current_project)
+        return project
+
+    return update_project(mutate)
+
+
+def _merge_host_sync_metadata(
+    current_project: dict[str, Any],
+    synced_project: dict[str, Any],
+) -> dict[str, Any]:
+    synced_tracks = {
+        int(track["id"]): track
+        for track in synced_project.get("tracks", [])
+        if isinstance(track, dict) and track.get("id") is not None
+    }
+    for track in current_project.get("tracks", []):
+        if not isinstance(track, dict) or track.get("id") is None:
+            continue
+        synced_track = synced_tracks.get(int(track["id"]))
+        if synced_track is not None:
+            track["host_track_id"] = synced_track.get("host_track_id")
+
+    current_master = current_project.get("master_bus")
+    synced_master = synced_project.get("master_bus")
+    if isinstance(current_master, dict) and isinstance(synced_master, dict):
+        current_master["host_track_id"] = synced_master.get("host_track_id")
+    return current_project
+
+
+def _save_host_sync_metadata(project: dict[str, Any]) -> dict[str, Any]:
+    return update_project(lambda current: _merge_host_sync_metadata(current, project))
+
+
+def _merge_plugin_state_metadata(
+    current_project: dict[str, Any],
+    captured_project: dict[str, Any],
+) -> dict[str, Any]:
+    captured_tracks = {
+        int(track["id"]): track
+        for track in captured_project.get("tracks", [])
+        if isinstance(track, dict) and track.get("id") is not None
+    }
+    for track in current_project.get("tracks", []):
+        if not isinstance(track, dict) or track.get("id") is None:
+            continue
+        captured_track = captured_tracks.get(int(track["id"]))
+        if not isinstance(captured_track, dict):
+            continue
+        captured_slots = {
+            str(slot.get("id") or "instrument"): slot
+            for slot in captured_track.get("plugin_slots", [])
+            if isinstance(slot, dict)
+        }
+        for slot in track.get("plugin_slots", []):
+            if not isinstance(slot, dict):
+                continue
+            captured_slot = captured_slots.get(str(slot.get("id") or "instrument"))
+            if not isinstance(captured_slot, dict):
+                continue
+            state_b64 = str(captured_slot.get("state_b64") or "")
+            if state_b64:
+                slot["state_b64"] = state_b64
+    return current_project
+
+
+def _save_plugin_state_metadata(project: dict[str, Any]) -> dict[str, Any]:
+    return update_project(lambda current: _merge_plugin_state_metadata(current, project))
+
+
 def _host_sync_cache_for(host: Any) -> dict[str, str]:
     try:
         cache = _host_sync_fingerprints.get(host)
@@ -814,11 +901,16 @@ async def _sync_project_to_host(
     project: dict[str, Any],
     *,
     broadcast: bool = False,
+    persist_unsaved: bool = True,
 ) -> dict[str, Any]:
     host = _host_manager()
     if not host.is_running:
         _clear_host_sync_caches()
-        project = save_project(project)
+        project = (
+            save_project(project)
+            if persist_unsaved and _project_differs_from_saved_project(project)
+            else load_project()
+        )
         if broadcast:
             await _broadcast_project(project)
         return {
@@ -1096,8 +1188,10 @@ async def _sync_project_to_host(
         {"lanes": automation_lanes},
     )
 
-    if project_changed or broadcast:
-        project = save_project(project)
+    if project_changed:
+        project = save_project(project) if persist_unsaved else _save_host_sync_metadata(project)
+    elif broadcast:
+        project = load_project()
     if broadcast:
         await _broadcast_project(project)
 
@@ -1118,8 +1212,23 @@ async def _sync_project_to_host(
     }
 
 
+async def _sync_saved_project_to_host(
+    project: dict[str, Any],
+    *,
+    broadcast: bool = False,
+) -> dict[str, Any]:
+    parameters = inspect.signature(_sync_project_to_host).parameters
+    if "persist_unsaved" in parameters:
+        return await _sync_project_to_host(
+            project,
+            broadcast=broadcast,
+            persist_unsaved=False,
+        )
+    return await _sync_project_to_host(project, broadcast=broadcast)
+
+
 async def sync_current_project_to_host(*, broadcast: bool = False) -> dict[str, Any]:
-    return await _sync_project_to_host(load_project(), broadcast=broadcast)
+    return await _sync_saved_project_to_host(load_project(), broadcast=broadcast)
 
 
 @bp.route("/studio/project", methods=["GET"])
@@ -1157,7 +1266,7 @@ async def studio_save_project_copy():
     copied = save_project_as_archive(project, title=title, activate=True)
     sync = None
     if data.get("sync", True) is not False:
-        sync = await _sync_project_to_host(copied, broadcast=True)
+        sync = await _sync_saved_project_to_host(copied, broadcast=True)
         copied = sync.get("project", copied)
     else:
         await _broadcast_project(copied)
@@ -1181,7 +1290,7 @@ async def studio_open_project(project_id: str):
         return jsonify({"error": str(e)}), 404
     sync = None
     if data.get("sync", True) is not False:
-        sync = await _sync_project_to_host(project, broadcast=True)
+        sync = await _sync_saved_project_to_host(project, broadcast=True)
         project = sync.get("project", project)
     else:
         await _broadcast_project(project)
@@ -1200,11 +1309,30 @@ async def studio_open_project(project_id: str):
 async def save_studio_project():
     data = await _json_payload()
     project, state_capture = await _capture_plugin_states(data.get("project") or {})
-    project = save_project(project)
-    sync = await _sync_project_to_host(
+    base_revision = str(data.get("base_revision") or data.get("revision") or "").strip()
+    try:
+        project = _save_project_with_base_revision(project, base_revision)
+    except _ProjectRevisionConflictError as exc:
+        current_project = exc.current_project
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    **_project_payload(current_project),
+                    "projects": list_project_archives(),
+                    "summary": project_summary(current_project),
+                    "host": _host_snapshot(),
+                    "state": state_capture,
+                }
+            ),
+            409,
+        )
+    sync = await _sync_saved_project_to_host(
         project,
         broadcast=True,
     )
+    project = cast(dict[str, Any], sync.get("project") or project)
     return jsonify(
         {
             "ok": True,
@@ -1220,7 +1348,7 @@ async def save_studio_project():
 async def reset_studio_demo():
     await _json_payload()
     project = save_project(default_project())
-    sync = await _sync_project_to_host(
+    sync = await _sync_saved_project_to_host(
         project,
         broadcast=True,
     )
@@ -1247,7 +1375,7 @@ async def start_audio_host():
 
     sync = None
     if data.get("sync", True):
-        sync = await _sync_project_to_host(load_project(), broadcast=True)
+        sync = await _sync_saved_project_to_host(load_project(), broadcast=True)
     await reconcile_dashboard_audio_streaming()
     return jsonify({"ok": True, "host": _host_snapshot(), "sync": sync})
 
@@ -1309,7 +1437,7 @@ async def studio_plugin_parameters(track_id: int):
             409,
         )
     if track.get("host_track_id") is None:
-        sync = await _sync_project_to_host(project, broadcast=True)
+        sync = await _sync_saved_project_to_host(project, broadcast=True)
         project = sync.get("project", project)
         track = find_track(project, track_id)
     host_track_id = track.get("host_track_id")
@@ -1368,7 +1496,7 @@ async def studio_set_plugin_parameter():
             409,
         )
     if track.get("host_track_id") is None:
-        sync = await _sync_project_to_host(project, broadcast=True)
+        sync = await _sync_saved_project_to_host(project, broadcast=True)
         project = sync.get("project", project)
         track = find_track(project, track_id)
     host_track_id = track.get("host_track_id")
@@ -1524,7 +1652,7 @@ async def studio_transport():
 async def sync_studio_project():
     data = await _json_payload()
     project, state_capture = await _capture_and_save_plugin_states()
-    sync = await _sync_project_to_host(
+    sync = await _sync_saved_project_to_host(
         project,
         broadcast=bool(data.get("broadcast", False)),
     )
@@ -1544,7 +1672,7 @@ async def studio_midi_write():
         )
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
@@ -1555,7 +1683,7 @@ async def studio_midi_diff():
         project, summary = midi_diff(int(data.get("track_id", 1)), data.get("operations") or [])
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
@@ -1566,7 +1694,7 @@ async def studio_clip_diff():
         project, summary = clip_diff(data.get("operations") or [])
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
@@ -1605,7 +1733,7 @@ async def studio_automation_write():
     except (TypeError, ValueError) as e:
         message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
         return jsonify({"error": message}), 400
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
@@ -1628,7 +1756,7 @@ async def studio_global_automation_write():
     except (TypeError, ValueError) as e:
         message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
         return jsonify({"error": message}), 400
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
@@ -1639,7 +1767,7 @@ async def studio_automation_diff(track_id: int):
         project, summary = automation_diff(track_id, data.get("operations") or [])
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
@@ -1652,7 +1780,7 @@ async def studio_automation_retarget(track_id: int):
         project, summary = automation_retarget(track_id, target)
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
 
 
@@ -1765,7 +1893,7 @@ async def _studio_export_payload(data: dict[str, Any]) -> tuple[dict[str, Any], 
             start, end = _bridge_seconds_range_from_beats(project, host_context, bridge_beat_range)
         else:
             start, end = _export_time_range(project, data)
-        sync = await _sync_project_to_host(project, broadcast=False)
+        sync = await _sync_saved_project_to_host(project, broadcast=False)
         if not sync.get("host_running"):
             raise StudioExportError("host process not running", 409)
         project = cast(dict[str, Any], sync.get("project") or project)
@@ -2520,7 +2648,7 @@ async def studio_import_dawproject_file():
     project = save_project_as_archive(project, activate=True)
     sync = None
     if data.get("sync", True) is not False:
-        sync = await _sync_project_to_host(project, broadcast=True)
+        sync = await _sync_saved_project_to_host(project, broadcast=True)
         project = sync.get("project", project)
     else:
         await _broadcast_project(project)
@@ -2575,7 +2703,7 @@ async def _finish_audio_import(
         _delete_audio_import_file(saved_path)
         return jsonify({"error": str(e)}), 400
 
-    sync = await _sync_project_to_host(project, broadcast=False)
+    sync = await _sync_saved_project_to_host(project, broadcast=False)
     audio_error = _sync_audio_clip_error(sync)
     if audio_error:
         _delete_audio_import_file(saved_path)
@@ -2585,7 +2713,10 @@ async def _finish_audio_import(
         except (KeyError, TypeError, ValueError):
             pass
         if rollback_project is not None:
-            await _sync_project_to_host(rollback_project, broadcast=True)
+            await _sync_saved_project_to_host(
+                rollback_project,
+                broadcast=True,
+            )
         return _audio_type_error(audio_error, sync=sync)
 
     project = sync.get("project", project)
@@ -2619,7 +2750,7 @@ async def studio_create_track():
     routing_updates = {key: data[key] for key in ("output_bus_id", "sends") if key in data}
     if routing_updates:
         project, track = update_project_track(int(track["id"]), routing_updates)
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
 
 
@@ -2630,7 +2761,7 @@ async def studio_update_track(track_id: int):
         project, track = update_project_track(track_id, data)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
 
 
@@ -2645,7 +2776,7 @@ async def studio_delete_track(track_id: int):
         message = str(e)
         status = 400 if message == "cannot delete the last track" else 404
         return jsonify({"error": message}), status
-    sync = await _sync_project_to_host(project, broadcast=True)
+    sync = await _sync_saved_project_to_host(project, broadcast=True)
     return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
 
 
@@ -2664,7 +2795,7 @@ async def studio_set_track_plugin(track_id: int):
     sync = None
     host = _host_manager()
     if host.is_running and track.get("host_track_id") is None:
-        sync = await _sync_project_to_host(project, broadcast=False)
+        sync = await _sync_saved_project_to_host(project, broadcast=False)
         project = sync.get("project", project)
         track = find_track(project, track_id)
 

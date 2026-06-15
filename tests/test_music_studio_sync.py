@@ -954,6 +954,114 @@ async def test_studio_project_route_returns_project_revision(tmp_path, monkeypat
     assert len(body["revision"]) == 64
 
 
+async def test_studio_project_put_rejects_stale_base_revision(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(music, "_host_manager", lambda: StoppedStudioHost())
+    original = music.save_project(
+        {
+            "title": "Original",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "tracks": [{"id": 1, "type": "instrument", "name": "Lead", "notes": []}],
+        }
+    )
+    stale_revision = music._project_revision(original)
+    newer = deepcopy(original)
+    newer["title"] = "Agent Edit"
+    music.save_project(newer)
+
+    stale_dashboard_project = deepcopy(original)
+    stale_dashboard_project["tracks"][0]["name"] = "Dashboard Edit"
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.put(
+        "/api/music/studio/project",
+        json={"project": stale_dashboard_project, "base_revision": stale_revision},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 409
+    assert body["ok"] is False
+    assert body["error"] == "project changed since loaded"
+    assert body["project"]["title"] == "Agent Edit"
+    assert music.load_project()["title"] == "Agent Edit"
+    assert music.load_project()["tracks"][0]["name"] == "Lead"
+
+
+async def test_studio_project_put_returns_synced_project_revision(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    original = music.save_project(
+        {
+            "title": "Original",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "tracks": [{"id": 1, "type": "instrument", "name": "Lead", "notes": []}],
+        }
+    )
+    base_revision = music._project_revision(original)
+
+    async def fake_sync(project, *, broadcast=True):
+        synced = deepcopy(project)
+        synced["tracks"][0]["host_track_id"] = 41
+        return {
+            "host_running": True,
+            "broadcast": broadcast,
+            "project": synced,
+            "revision": music._project_revision(synced),
+        }
+
+    monkeypatch.setattr(music, "_sync_project_to_host", fake_sync)
+    app = Quart(__name__)
+    app.register_blueprint(music.bp)
+    client = app.test_client()
+
+    response = await client.put(
+        "/api/music/studio/project",
+        json={"project": original, "base_revision": base_revision},
+    )
+    body = await response.get_json()
+
+    assert response.status_code == 200
+    assert body["project"]["tracks"][0]["host_track_id"] == 41
+    assert body["revision"] == music._project_revision(body["project"])
+    assert body["revision"] == body["sync"]["revision"]
+
+
+async def test_sync_project_to_host_when_stopped_does_not_resave_stale_project(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(music, "_host_manager", lambda: StoppedStudioHost())
+    original = music.save_project(
+        {
+            "title": "Original",
+            "tempo": 120,
+            "time_signature": [4, 4],
+            "length_beats": 16,
+            "tracks": [{"id": 1, "type": "instrument", "name": "Lead", "notes": []}],
+        }
+    )
+    stale_project = deepcopy(original)
+    newer = deepcopy(original)
+    newer["title"] = "Agent Edit"
+    music.save_project(newer)
+
+    sync = await music._sync_project_to_host(
+        stale_project,
+        broadcast=False,
+        persist_unsaved=False,
+    )
+
+    assert sync["host_running"] is False
+    assert sync["project"]["title"] == "Agent Edit"
+    assert music.load_project()["title"] == "Agent Edit"
+
+
 async def test_sync_project_to_host_samples_midi_controller_curve_segments(monkeypatch):
     host = FakeStudioHost()
     monkeypatch.setattr(music, "_host_manager", lambda: host)

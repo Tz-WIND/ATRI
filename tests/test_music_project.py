@@ -1,5 +1,8 @@
+import threading
+
 import pytest
 
+from core.music import project_repository
 from core.music_project import (
     active_project_archive_id,
     automation_diff,
@@ -95,6 +98,53 @@ def test_project_archives_keep_multiple_host_projects(tmp_path, monkeypatch):
 
     assert restored["title"] == "First Idea"
     assert load_project()["title"] == "First Idea"
+
+
+def test_project_update_serializes_concurrent_load_modify_save(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project({"title": "Base", "tracks": [{"id": 1, "name": "Lead", "notes": []}]})
+
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    errors: list[BaseException] = []
+
+    def slow_rename(project):
+        project["title"] = "Renamed"
+        first_entered.set()
+        if not release_first.wait(timeout=5):
+            raise AssertionError("timed out waiting to release first project update")
+        return project
+
+    def rename_track(project):
+        second_entered.set()
+        project["tracks"][0]["name"] = "Lead Updated"
+        return project
+
+    def run_update(mutator):
+        try:
+            project_repository.update_project(mutator)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=run_update, args=(slow_rename,))
+    first.start()
+    assert first_entered.wait(timeout=5)
+
+    second = threading.Thread(target=run_update, args=(rename_track,))
+    second.start()
+    assert not second_entered.wait(timeout=0.2)
+
+    release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    project = load_project()
+    assert project["title"] == "Renamed"
+    assert project["tracks"][0]["name"] == "Lead Updated"
 
 
 def test_create_track_supports_bus_tracks_and_output_routing(tmp_path, monkeypatch):
