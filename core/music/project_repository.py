@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -17,8 +18,10 @@ from uuid import uuid4
 
 from core.utils import atomic_write_text
 
-if os.name == "nt":
+if sys.platform == "win32":
     import msvcrt
+else:
+    import fcntl
 
 PROJECT_PATH = Path("data/music_workstation/project.json")
 PROJECTS_DIR = Path("data/music_workstation/projects")
@@ -65,24 +68,18 @@ def _lock_file(lock_file: BufferedRandom) -> None:
         lock_file.write(b"\0")
         lock_file.flush()
     lock_file.seek(0)
-    if os.name == "nt":
+    if sys.platform == "win32":
         msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, _PROJECT_LOCK_BYTES)
     else:
-        posix_fcntl = _posix_fcntl()
-        posix_fcntl.flock(lock_file.fileno(), posix_fcntl.LOCK_EX)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
 
 
 def _unlock_file(lock_file: BufferedRandom) -> None:
     lock_file.seek(0)
-    if os.name == "nt":
+    if sys.platform == "win32":
         msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, _PROJECT_LOCK_BYTES)
     else:
-        posix_fcntl = _posix_fcntl()
-        posix_fcntl.flock(lock_file.fileno(), posix_fcntl.LOCK_UN)
-
-
-def _posix_fcntl() -> Any:
-    return __import__("fcntl")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def load_project(path: Path | str = PROJECT_PATH) -> dict[str, Any]:
