@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -1298,6 +1299,8 @@ def test_neo4j_graph_client_builds_source_index_nodes_for_fact_source_ids():
     client.upsert_facts([fact])
 
     queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert re.search(r"(?m)^\s*CALL\s+\{", queries) is None
+    assert "CALL (fact_node, source_ids) {" in queries
     assert (
         "CREATE CONSTRAINT graph_source_id IF NOT EXISTS "
         "FOR (source:GraphSource) REQUIRE source.source_id IS UNIQUE"
@@ -1363,6 +1366,8 @@ def test_neo4j_graph_client_uses_source_index_nodes_for_single_hop_source_seed()
         for call in driver.session_obj.calls
         if "RETURN s.name AS subject" in call["query"]
     )
+    assert re.search(r"(?m)^\s*CALL\s+\{", retrieve_query) is None
+    assert "CALL () {" in retrieve_query
     assert "MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)" in (
         retrieve_query
     )
@@ -1395,6 +1400,8 @@ def test_neo4j_graph_client_uses_source_index_nodes_for_multihop_source_seeds():
     multihop_query = next(
         call["query"] for call in driver.session_obj.calls if "FACT*1..2" in call["query"]
     )
+    assert re.search(r"(?m)^\s*CALL\s+\{", multihop_query) is None
+    assert "CALL () {" in multihop_query
     assert "MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)" in (
         multihop_query
     )
@@ -1717,8 +1724,15 @@ def test_neo4j_graph_client_multihop_expands_from_fulltext_seeds():
 
     call = next(call for call in driver.session_obj.calls if "FACT*1..3" in call["query"])
     query = call["query"]
+    assert re.search(r"(?m)^\s*CALL\s+\{", query) is None
+    assert "CALL () {" in query
     assert "db.index.fulltext.queryNodes" in query
     assert "db.index.fulltext.queryRelationships" in query
+    assert (
+        "UNWIND fact_seeds AS seed\n          WITH seed, score\n          WHERE seed:Entity"
+        in query
+    )
+    assert "UNWIND fact_seeds AS seed\n          WHERE seed:Entity" not in query
     assert "WITH seed, max(seed_score) AS seed_score" in query
     assert "MATCH path = (seed)-[:FACT*1..3]" in query
     assert "MATCH path = (s:Entity)-[:FACT*1..3]->(o:Entity)" not in query

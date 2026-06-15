@@ -601,7 +601,7 @@
                 </div>
                 <button
                   class="btn btn-secondary"
-                  :disabled="manualGraphIngestRunning || (!manualGraphIngestForm.content.trim() && !manualGraphIngestFile)"
+                  :disabled="manualGraphIngestRunning || (!manualGraphIngestForm.content.trim() && !manualGraphIngestFiles.length)"
                   @click="runManualGraphIngest"
                 >
                   {{ manualGraphIngestRunning ? 'Ingesting' : 'Ingest' }}
@@ -612,15 +612,16 @@
                 <span>File</span>
                 <input
                   type="file"
+                  multiple
                   :accept="documentAccept"
                   @change="handleManualGraphFile"
                 >
               </label>
               <div
-                v-if="selectedManualGraphFileName"
+                v-if="selectedManualGraphFileLabel"
                 class="graph-status"
               >
-                {{ selectedManualGraphFileName }}
+                {{ selectedManualGraphFileLabel }}
               </div>
 
               <label class="setting-field full">
@@ -982,10 +983,15 @@ const manualGraphIngestStatus = ref('')
 const manualGraphIngestForm = ref({
   content: '',
 })
-const manualGraphIngestFile = ref(null)
-const selectedManualGraphFileName = computed(() => (
-  manualGraphIngestFile.value?.name ? `Selected ${manualGraphIngestFile.value.name}` : ''
-))
+const manualGraphIngestFiles = ref([])
+const selectedManualGraphFileLabel = computed(() => {
+  const files = manualGraphIngestFiles.value
+  if (!files.length) return ''
+  if (files.length === 1) return `Selected ${files[0].name}`
+  const visibleNames = files.slice(0, 3).map(file => file.name).join(', ')
+  const moreCount = files.length - 3
+  return `Selected ${files.length} files: ${visibleNames}${moreCount > 0 ? `, +${moreCount} more` : ''}`
+})
 const latestGraphTask = ref(null)
 const audioDevices = ref([])
 const audioDeviceOptions = computed(() => (
@@ -1312,32 +1318,51 @@ async function runGraphQuery() {
 }
 
 function onManualGraphContentInput() {
-  manualGraphIngestFile.value = null
+  manualGraphIngestFiles.value = []
 }
 
 async function handleManualGraphFile(event) {
-  const file = event.target.files?.[0]
-  if (!file) return
+  const files = Array.from(event.target.files || [])
+  if (!files.length) return
   manualGraphIngestError.value = ''
   manualGraphIngestStatus.value = ''
-  manualGraphIngestFile.value = file
+  manualGraphIngestFiles.value = files
   manualGraphIngestForm.value.content = ''
   event.target.value = ''
 }
 
 async function runManualGraphIngest() {
   const content = manualGraphIngestForm.value.content.trim()
-  const file = manualGraphIngestFile.value
-  if (manualGraphIngestRunning.value || (!content && !file)) return
+  const files = manualGraphIngestFiles.value
+  if (manualGraphIngestRunning.value || (!content && !files.length)) return
   manualGraphIngestRunning.value = true
   manualGraphIngestError.value = ''
   manualGraphIngestStatus.value = ''
   try {
-    const result = file
-      ? await api.ingestKnowledgeGraph({ file })
-      : await api.ingestKnowledgeGraph({ content })
-    manualGraphIngestStatus.value = `Queued ${result.task_id || 'manual graph ingest'}`
-    manualGraphIngestFile.value = null
+    if (files.length) {
+      const queued = []
+      const failed = []
+      const failedFiles = []
+      for (const file of files) {
+        try {
+          const result = await api.ingestKnowledgeGraph({ file })
+          queued.push(result.task_id || file.name)
+        } catch (err) {
+          failedFiles.push(file)
+          failed.push(`${file.name}: ${err.message || 'failed'}`)
+        }
+      }
+      if (queued.length) {
+        manualGraphIngestStatus.value = `Queued ${queued.length} graph ingest task${queued.length === 1 ? '' : 's'}: ${queued.join(', ')}`
+      }
+      if (failed.length) {
+        manualGraphIngestError.value = `Failed ${failed.length} file${failed.length === 1 ? '' : 's'}: ${failed.join('; ')}`
+      }
+      manualGraphIngestFiles.value = failedFiles
+    } else {
+      const result = await api.ingestKnowledgeGraph({ content })
+      manualGraphIngestStatus.value = `Queued ${result.task_id || 'manual graph ingest'}`
+    }
     await loadLatestGraphTask()
   } catch (err) {
     manualGraphIngestError.value = err.message || 'Manual graph ingest failed'

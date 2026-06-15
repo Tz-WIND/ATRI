@@ -50,8 +50,8 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "manualGraphIngestForm" in source
     assert "runManualGraphIngest" in source
     assert "handleManualGraphFile" in source
-    assert "manualGraphIngestFile" in source
-    assert "selectedManualGraphFileName" in source
+    assert "manualGraphIngestFiles" in source
+    assert "selectedManualGraphFileLabel" in source
     assert "useDocumentSupport" in source
     assert "await loadDocumentSupport()" in source
     assert ':accept="documentAccept"' in source
@@ -84,6 +84,25 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "sources.length <= 1" in source
     assert "extraction_model" in source
     assert "extraction_provider" in source
+
+
+def test_manual_graph_ingest_supports_batch_file_selection():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+
+    assert "multiple" in source
+    assert "Array.from(event.target.files || [])" in source
+    assert "for (const file of files)" in source
+    assert "queued.push(result.task_id || file.name)" in source
+    assert "Queued ${queued.length} graph ingest task${queued.length === 1 ? '' : 's'}" in source
+    assert "manualGraphIngestFiles.value = []" in source
+
+
+def test_manual_graph_ingest_retains_only_failed_files_for_retry():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+
+    assert "const failedFiles = []" in source
+    assert "failedFiles.push(file)" in source
+    assert "manualGraphIngestFiles.value = failedFiles" in source
 
 
 def test_workspace_and_music_directory_saves_confirm_external_trust():

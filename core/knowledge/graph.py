@@ -280,8 +280,7 @@ class Neo4jGraphClient:
         MERGE (fact_node)-[:FACT_SUBJECT]->(s)
         MERGE (fact_node)-[:FACT_OBJECT]->(o)
         WITH r, fact_node, source_ids
-        CALL {
-          WITH fact_node, source_ids
+        CALL (fact_node, source_ids) {
           UNWIND source_ids AS source_id
           WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
           WHERE source_id <> ''
@@ -342,7 +341,7 @@ class Neo4jGraphClient:
         )
         if fulltext_query:
             single_hop_seed_cypher = """
-        CALL {
+        CALL () {
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
           MATCH (s:Entity)-[r:FACT]->(o:Entity)
@@ -374,7 +373,7 @@ class Neo4jGraphClient:
             """
         elif terms:
             single_hop_seed_cypher = """
-        CALL {
+        CALL () {
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
           MATCH (s:Entity)-[r:FACT]->(o:Entity)
@@ -488,7 +487,7 @@ class Neo4jGraphClient:
             multi_hop_scan_seed_cypher = ""
             if fulltext_query:
                 multi_hop_seed_cypher = f"""
-        CALL {{
+        CALL () {{
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
           MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
@@ -510,6 +509,7 @@ class Neo4jGraphClient:
           YIELD relationship AS r, score
           WITH [startNode(r), endNode(r)] AS fact_seeds, score
           UNWIND fact_seeds AS seed
+          WITH seed, score
           WHERE seed:Entity
           RETURN seed, score AS seed_score
         }}
@@ -573,7 +573,7 @@ class Neo4jGraphClient:
                 """
             else:
                 multi_hop_seed_cypher = f"""
-        CALL {{
+        CALL () {{
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
           MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
