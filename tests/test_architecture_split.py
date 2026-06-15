@@ -17,7 +17,8 @@ from core.music import (
     waveform_model,
 )
 from dashboard import music as music_routes
-from dashboard.studio import bridge_context, export_options
+from dashboard import music_streaming
+from dashboard.studio import bridge_context, export_options, host_projection, plugin_state
 
 
 def _import_music_module(name: str):
@@ -271,12 +272,101 @@ def test_dashboard_bridge_context_api_is_extracted_from_music_routes():
     )
 
 
+def test_dashboard_bridge_export_context_helpers_are_extracted_from_music_routes():
+    assert (
+        music_routes._bridge_context_for_export_payload.__module__
+        == "dashboard.studio.bridge_context"
+    )
+    assert (
+        music_routes._bridge_midi_scope_for_payload.__module__ == "dashboard.studio.bridge_context"
+    )
+    assert music_routes._bridge_selection_summary.__module__ == "dashboard.studio.bridge_context"
+
+
 def test_dashboard_export_options_are_extracted_from_music_routes():
     assert music_routes._normalize_export_format.__module__ == "dashboard.studio.export_options"
     assert music_routes._export_time_range.__module__ == "dashboard.studio.export_options"
     assert music_routes.StudioExportError.__module__ == "dashboard.studio.export_options"
 
 
+def test_dashboard_music_library_helpers_are_extracted_from_music_routes():
+    assert music_routes._read_metadata.__module__ == "dashboard.music_library"
+    assert music_routes._get_cover_bytes.__module__ == "dashboard.music_library"
+    assert music_routes._find_lyrics.__module__ == "dashboard.music_library"
+
+
+def test_dashboard_music_streaming_helpers_are_extracted_from_music_routes():
+    assert music_routes._stream_audio_response.__module__ == "dashboard.music_streaming"
+    assert music_routes._stream_audio_response is music_streaming.stream_audio_response
+
+
+def test_dashboard_host_projection_helpers_are_extracted_from_music_routes():
+    assert music_routes._is_automation_track.__module__ == "dashboard.studio.host_projection"
+    assert music_routes._midi_events_for_host.__module__ == "dashboard.studio.host_projection"
+    assert music_routes._automation_lanes_for_host.__module__ == "dashboard.studio.host_projection"
+    assert music_routes._route_output_for_host.__module__ == "dashboard.studio.host_projection"
+    assert music_routes._master_bus_for_host.__module__ == "dashboard.studio.host_projection"
+    assert music_routes._midi_events_for_host is host_projection.midi_events_for_host
+
+
+def test_dashboard_plugin_state_helpers_are_extracted_from_music_routes():
+    assert music_routes._track_slot.__module__ == "dashboard.studio.plugin_state"
+    assert music_routes._slot_index.__module__ == "dashboard.studio.plugin_state"
+    assert music_routes._load_track_slot.__module__ == "dashboard.studio.plugin_state"
+    assert music_routes._load_track_slots.__module__ == "dashboard.studio.plugin_state"
+    assert (
+        music_routes._captured_parameter_for_project.__module__ == "dashboard.studio.plugin_state"
+    )
+    assert music_routes._track_slot is plugin_state.track_slot
+
+
+def test_dashboard_music_route_facade_does_not_reexport_dead_extraction_helpers():
+    dead_names = {
+        "AUDIO_EXTS",
+        "EXPORT_BIT_DEPTHS",
+        "EXPORT_SAMPLE_RATES",
+        "EXPORT_BITRATES",
+        "BRIDGE_DEFAULT_CONTEXT_KEY",
+        "BRIDGE_MAX_CONTEXT_INSTANCES",
+        "BRIDGE_CONTEXT_TTL_SECONDS",
+        "_bridge_range_from_value",
+        "_bridge_selection_track_ids",
+        "_bridge_project_track_ids",
+        "_bridge_project_track_ids_from_host_ids",
+        "_beat_to_seconds",
+        "_bridge_context_tempo",
+        "_project_tempo",
+        "_midi_track_ids_for_payload",
+        "_export_midi_beat_range",
+        "_payload_has_explicit_midi_beat_range",
+        "_file_id",
+        "_instrument_slot",
+        "_restore_slot_state",
+        "_slot_id_from_index",
+        "_HostAutomationPoint",
+        "_host_track_id_for_project_target",
+        "_host_track_id_for_project_track",
+        "_curve_amount",
+        "_curve_sample_beats",
+        "_curve_value",
+        "_midi_curve_lane_key",
+        "_midi_curve_value_field",
+        "_midi_curve_bounds",
+        "_midi_curve_value",
+        "HOST_MIDI_EVENT_KEYS",
+        "_host_midi_event",
+        "_automation_points_for_host",
+        "CURVE_SAMPLE_STEP_BEATS",
+        "CURVE_MAX_SAMPLES_PER_SEGMENT",
+    }
+
+    exported_names = vars(music_routes)
+
+    assert dead_names.isdisjoint(exported_names), sorted(dead_names & exported_names.keys())
+
+
 def test_dashboard_studio_modules_do_not_depend_on_music_route_facade():
     assert "dashboard.music" not in inspect.getsource(export_options)
     assert "dashboard.music" not in inspect.getsource(bridge_context)
+    assert "dashboard.music" not in inspect.getsource(host_projection)
+    assert "dashboard.music" not in inspect.getsource(plugin_state)

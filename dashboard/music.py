@@ -7,17 +7,14 @@ import hashlib
 import json
 import logging
 import mimetypes
-import os
 import re
 import shutil
 import subprocess
 import zipfile
 from copy import deepcopy
-from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -64,9 +61,8 @@ from core.music_project import (
 from core.music_project import (
     update_track as update_project_track,
 )
-from core.platform.daw_agent import normalize_daw_host_context
 from core.utils import atomic_write_text
-from dashboard import host_dawproject_sync
+from dashboard import host_dawproject_sync, music_library, music_streaming
 from dashboard.host_dawproject_sync import (
     dawproject_snapshot_status,
     request_host_dawproject_snapshot_export,
@@ -78,7 +74,7 @@ from dashboard.routes._helpers import (
     untrusted_external_directories,
 )
 from dashboard.studio import bridge_context as bridge_context_service
-from dashboard.studio import export_options
+from dashboard.studio import export_options, host_projection, plugin_state
 
 # Re-exported for routes/tests that patch `dashboard.music`.
 host_project_sync_prompt_context = host_dawproject_sync.host_project_sync_prompt_context
@@ -89,34 +85,20 @@ sync_latest_host_dawproject_for_daw_agent = (
 if TYPE_CHECKING:
     from core.lifecycle import Lifecycle
 
-AUDIO_EXTS = {
-    ".mp3",
-    ".flac",
-    ".wav",
-    ".ogg",
-    ".m4a",
-    ".aac",
-    ".wma",
-    ".aiff",
-    ".alac",
-    ".ape",
-    ".dsf",
-    ".dff",
-}
 HOST_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".wav"}
 EXPORT_FORMATS = export_options.EXPORT_FORMATS
-EXPORT_BIT_DEPTHS = export_options.EXPORT_BIT_DEPTHS
-EXPORT_SAMPLE_RATES = export_options.EXPORT_SAMPLE_RATES
-EXPORT_BITRATES = export_options.EXPORT_BITRATES
 RAW_HOST_COMMAND_DENYLIST = {"bounce", "render_wav"}
 BRIDGE_API_VERSION = 1
 BRIDGE_LATEST_EXPORT_FILENAME = "atri-bridge-latest-export.json"
-BRIDGE_DEFAULT_CONTEXT_KEY = bridge_context_service.BRIDGE_DEFAULT_CONTEXT_KEY
-BRIDGE_MAX_CONTEXT_INSTANCES = bridge_context_service.BRIDGE_MAX_CONTEXT_INSTANCES
-BRIDGE_CONTEXT_TTL_SECONDS = bridge_context_service.BRIDGE_CONTEXT_TTL_SECONDS
 _bridge_export_instance_id = bridge_context_service.bridge_export_instance_id
 record_bridge_host_context = bridge_context_service.record_bridge_host_context
 bridge_host_context_for_instance = bridge_context_service.bridge_host_context_for_instance
+_bridge_context_for_export_payload = bridge_context_service.export_context_for_payload
+_bridge_beat_range_for_context = bridge_context_service.beat_range_for_context
+_bridge_midi_scope_for_payload = bridge_context_service.midi_scope_for_payload
+_bridge_selection_summary = bridge_context_service.selection_summary
+_bridge_seconds_range_from_beats = bridge_context_service.seconds_range_from_beats
+_bridge_created_at = bridge_context_service.created_at
 StudioExportError = export_options.StudioExportError
 _safe_export_stem = export_options.safe_export_stem
 _normalize_export_format = export_options.normalize_export_format
@@ -128,9 +110,23 @@ _normalize_export_bitrate = export_options.normalize_export_bitrate
 _normalize_export_consumer = export_options.normalize_export_consumer
 _project_length_seconds = export_options.project_length_seconds
 _export_time_range = export_options.export_time_range
-_export_midi_beat_range = export_options.export_midi_beat_range
-_payload_has_explicit_midi_beat_range = export_options.payload_has_explicit_midi_beat_range
 _payload_has_explicit_time_range = export_options.payload_has_explicit_time_range
+_read_metadata = music_library.read_metadata
+_get_cover_bytes = music_library.get_cover_bytes
+_find_lyrics = music_library.find_lyrics
+_stream_audio_response = music_streaming.stream_audio_response
+_track_slot = plugin_state.track_slot
+_slot_index = plugin_state.slot_index
+_load_track_slot = plugin_state.load_track_slot
+_load_track_slots = plugin_state.load_track_slots
+_captured_parameter_for_project = plugin_state.captured_parameter_for_project
+_is_automation_track = host_projection.is_automation_track
+_route_kind_for_host = host_projection.route_kind_for_host
+_route_output_for_host = host_projection.route_output_for_host
+_route_sends_for_host = host_projection.route_sends_for_host
+_master_bus_for_host = host_projection.master_bus_for_host
+_midi_events_for_host = host_projection.midi_events_for_host
+_automation_lanes_for_host = host_projection.automation_lanes_for_host
 
 bp = Blueprint("music", __name__, url_prefix="/api/music")
 
@@ -142,16 +138,6 @@ _host_sync_fingerprints: WeakKeyDictionary[object, dict[str, str]] = WeakKeyDict
 _host_sync_fingerprints_by_id: dict[int, dict[str, str]] = {}
 
 logger = logging.getLogger(__name__)
-
-CURVE_SAMPLE_STEP_BEATS = 1.0 / 64.0
-CURVE_MAX_SAMPLES_PER_SEGMENT = 4096
-
-
-class _HostAutomationPoint(TypedDict):
-    beat: float
-    value: float
-    curve: str
-    curve_amount: Any
 
 
 def init_music(lifecycle: Lifecycle):
@@ -242,185 +228,6 @@ def _delete_export_file(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def _bridge_context_for_export_payload(payload: dict[str, Any], consumer: str) -> dict[str, Any]:
-    if consumer != "bridge":
-        return {}
-
-    context = bridge_host_context_for_instance(_bridge_export_instance_id(payload))
-    raw_context = payload.get("host_context")
-    if isinstance(raw_context, dict):
-        try:
-            explicit_context = normalize_daw_host_context(raw_context, strict=True)
-        except ValueError as exc:
-            raise StudioExportError(str(exc), 400) from exc
-        context = {**context, **explicit_context}
-    return context
-
-
-def _bridge_beat_range_for_context(
-    payload: dict[str, Any],
-    host_context: dict[str, Any],
-) -> tuple[tuple[float, float] | None, str]:
-    explicit = _export_midi_beat_range(payload)
-    if explicit is not None:
-        return explicit, "explicit"
-
-    selection = host_context.get("selection")
-    if isinstance(selection, dict):
-        selection_range = _bridge_range_from_value(selection.get("range_beats"))
-        if selection_range:
-            return selection_range, "selection"
-
-    if host_context.get("loop_active") is True:
-        loop_range = _bridge_range_from_value(host_context.get("loop_range_beats"))
-        if loop_range:
-            return loop_range, "loop"
-
-    return None, "project"
-
-
-def _bridge_range_from_value(value: Any) -> tuple[float, float] | None:
-    if not isinstance(value, (list, tuple)) or len(value) < 2:
-        return None
-    try:
-        start = max(0.0, float(value[0]))
-        end = float(value[1])
-    except (TypeError, ValueError):
-        return None
-    if end <= start:
-        return None
-    return start, end
-
-
-def _bridge_midi_scope_for_payload(
-    project: dict[str, Any],
-    payload: dict[str, Any],
-    target: str,
-    consumer: str,
-    host_context: dict[str, Any],
-) -> tuple[str, list[int] | None]:
-    explicit_track_ids = isinstance(payload.get("track_ids"), list) and bool(
-        payload.get("track_ids")
-    )
-    target_was_explicit = "target" in payload or "scope" in payload
-    if consumer == "bridge" and not explicit_track_ids:
-        selection_track_ids = _bridge_selection_track_ids(project, host_context)
-        if selection_track_ids and (not target_was_explicit or target == "selected_tracks"):
-            return "selected_tracks", selection_track_ids
-    return target, _midi_track_ids_for_payload(project, payload, target)
-
-
-def _bridge_selection_track_ids(
-    project: dict[str, Any],
-    host_context: dict[str, Any],
-) -> list[int] | None:
-    selection = host_context.get("selection")
-    if not isinstance(selection, dict):
-        return None
-    project_track_ids = _bridge_project_track_ids(project, selection.get("project_track_ids"))
-    if project_track_ids:
-        return project_track_ids
-    return _bridge_project_track_ids_from_host_ids(project, selection.get("host_track_ids"))
-
-
-def _bridge_project_track_ids(project: dict[str, Any], raw_ids: Any) -> list[int] | None:
-    if not isinstance(raw_ids, list) or not raw_ids:
-        return None
-    track_ids: list[int] = []
-    for raw_id in raw_ids:
-        try:
-            track = find_track(project, int(raw_id))
-        except (TypeError, ValueError):
-            continue
-        if _is_automation_track(track):
-            continue
-        track_ids.append(int(track["id"]))
-    return list(dict.fromkeys(track_ids)) or None
-
-
-def _bridge_project_track_ids_from_host_ids(
-    project: dict[str, Any],
-    raw_host_ids: Any,
-) -> list[int] | None:
-    if not isinstance(raw_host_ids, list) or not raw_host_ids:
-        return None
-    wanted = {str(item) for item in raw_host_ids}
-    track_ids: list[int] = []
-    for track in project.get("tracks", []):
-        if not isinstance(track, dict) or _is_automation_track(track):
-            continue
-        host_id = track.get("host_track_id")
-        if host_id is None:
-            continue
-        if str(host_id) in wanted:
-            try:
-                track_ids.append(int(track["id"]))
-            except (TypeError, ValueError):
-                continue
-    return list(dict.fromkeys(track_ids)) or None
-
-
-def _bridge_selection_summary(
-    payload: dict[str, Any],
-    host_context: dict[str, Any],
-    *,
-    track_ids: list[int] | None,
-    beat_range: tuple[float, float] | None,
-    range_source: str,
-) -> dict[str, Any] | None:
-    raw_summary = payload.get("selection_summary")
-    summary = deepcopy(raw_summary) if isinstance(raw_summary, dict) else {}
-    selection = host_context.get("selection")
-    if isinstance(selection, dict):
-        summary.update(deepcopy(selection))
-    if beat_range and range_source in {"selection", "explicit"}:
-        summary.setdefault("range_beats", [float(beat_range[0]), float(beat_range[1])])
-    if track_ids:
-        summary.setdefault("project_track_ids", [int(track_id) for track_id in track_ids])
-    return summary or None
-
-
-def _beat_to_seconds(
-    project: dict[str, Any],
-    beat: float,
-    host_context: dict[str, Any],
-) -> float:
-    """Convert musical beats to seconds using a single constant tempo."""
-    tempo = _bridge_context_tempo(host_context) or _project_tempo(project)
-    return max(0.0, float(beat)) * 60.0 / tempo
-
-
-def _bridge_seconds_range_from_beats(
-    project: dict[str, Any],
-    host_context: dict[str, Any],
-    beat_range: tuple[float, float],
-) -> tuple[float, float]:
-    return (
-        _beat_to_seconds(project, beat_range[0], host_context),
-        _beat_to_seconds(project, beat_range[1], host_context),
-    )
-
-
-def _bridge_context_tempo(host_context: dict[str, Any]) -> float | None:
-    try:
-        tempo = float(host_context.get("tempo_bpm") or 0.0)
-    except (TypeError, ValueError):
-        return None
-    return tempo if tempo > 0 else None
-
-
-def _project_tempo(project: dict[str, Any]) -> float:
-    try:
-        tempo = float(project.get("tempo", 120.0) or 120.0)
-    except (TypeError, ValueError):
-        tempo = 120.0
-    return max(1.0, tempo)
-
-
-def _bridge_created_at() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _non_automation_tracks(project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -586,213 +393,7 @@ def _export_download_url(path: Path) -> str:
 
 
 def _is_in_music_dirs(filepath: str) -> bool:
-    """Validate that a file path is within one of the configured music directories."""
-    dirs = _music_dirs()
-    if not dirs:
-        return False
-    try:
-        resolved = Path(filepath).resolve()
-    except (OSError, RuntimeError):
-        return False
-    for d in dirs:
-        try:
-            d_resolved = Path(d).resolve()
-            if os.path.commonpath([resolved, d_resolved]) == str(d_resolved):
-                return True
-        except (OSError, ValueError):
-            continue
-    return False
-
-
-def _file_id(filepath: str) -> str:
-    return hashlib.md5(filepath.encode("utf-8")).hexdigest()  # noqa: S324
-
-
-def _read_metadata(filepath: str) -> dict | None:
-    try:
-        import mutagen
-        from mutagen.easyid3 import EasyID3
-        from mutagen.flac import FLAC
-        from mutagen.mp4 import MP4
-        from mutagen.oggvorbis import OggVorbis
-        from mutagen.wave import WAVE
-    except ImportError:
-        return None
-
-    p = Path(filepath)
-    if not p.exists() or p.suffix.lower() not in AUDIO_EXTS:
-        return None
-
-    try:
-        audio = mutagen.File(filepath)
-        if audio is None:
-            return None
-
-        info = {
-            "id": _file_id(filepath),
-            "path": filepath.replace("\\", "/"),
-            "filename": p.name,
-            "title": p.stem,
-            "artist": "Unknown Artist",
-            "album": "Unknown Album",
-            "duration": 0,
-            "track_number": 0,
-            "year": "",
-            "genre": "",
-            "format": p.suffix.lstrip(".").upper(),
-            "sample_rate": 0,
-            "bit_depth": 0,
-            "bitrate": 0,
-            "channels": 0,
-            "has_cover": False,
-            "lossless": p.suffix.lower()
-            in {".flac", ".wav", ".aiff", ".alac", ".ape", ".dsf", ".dff"},
-        }
-
-        if audio.info:
-            info["duration"] = round(audio.info.length, 2) if hasattr(audio.info, "length") else 0
-            info["sample_rate"] = getattr(audio.info, "sample_rate", 0)
-            info["channels"] = getattr(audio.info, "channels", 0)
-            info["bitrate"] = getattr(audio.info, "bitrate", 0)
-            info["bit_depth"] = getattr(audio.info, "bits_per_sample", 0)
-
-        ext = p.suffix.lower()
-        if ext == ".flac":
-            f = FLAC(filepath)
-            info["title"] = (f.get("title") or [p.stem])[0]
-            info["artist"] = (f.get("artist") or ["Unknown Artist"])[0]
-            info["album"] = (f.get("album") or ["Unknown Album"])[0]
-            info["track_number"] = int((f.get("tracknumber") or ["0"])[0].split("/")[0] or 0)
-            info["year"] = (f.get("date") or [""])[0]
-            info["genre"] = (f.get("genre") or [""])[0]
-            info["has_cover"] = len(f.pictures) > 0
-        elif ext == ".mp3":
-            try:
-                tags = EasyID3(filepath)
-                info["title"] = (tags.get("title") or [p.stem])[0]
-                info["artist"] = (tags.get("artist") or ["Unknown Artist"])[0]
-                info["album"] = (tags.get("album") or ["Unknown Album"])[0]
-                info["track_number"] = int((tags.get("tracknumber") or ["0"])[0].split("/")[0] or 0)
-                info["year"] = (tags.get("date") or [""])[0]
-                info["genre"] = (tags.get("genre") or [""])[0]
-            except Exception:
-                logger.debug("Music: MP3 EasyID3 tag read error", exc_info=True)
-            from mutagen.id3 import ID3
-
-            try:
-                id3 = ID3(filepath)
-                info["has_cover"] = any(k.startswith("APIC") for k in id3.keys())
-            except Exception:
-                logger.debug("Music: MP3 ID3 cover check error", exc_info=True)
-        elif ext in (".m4a", ".aac"):
-            try:
-                m4 = MP4(filepath)
-                tags = m4.tags if m4.tags is not None else {}  # type: ignore[assignment]
-                info["title"] = (tags.get("\xa9nam") or [p.stem])[0]
-                info["artist"] = (tags.get("\xa9ART") or ["Unknown Artist"])[0]
-                info["album"] = (tags.get("\xa9alb") or ["Unknown Album"])[0]
-                tn = tags.get("trkn")
-                info["track_number"] = tn[0][0] if tn else 0
-                info["year"] = (tags.get("\xa9day") or [""])[0]
-                info["genre"] = (tags.get("\xa9gen") or [""])[0]
-                info["has_cover"] = "covr" in tags
-            except Exception:
-                logger.debug("Music: M4A tag read error", exc_info=True)
-        elif ext == ".ogg":
-            try:
-                ogg = OggVorbis(filepath)
-                info["title"] = (ogg.get("title") or [p.stem])[0]
-                info["artist"] = (ogg.get("artist") or ["Unknown Artist"])[0]
-                info["album"] = (ogg.get("album") or ["Unknown Album"])[0]
-                info["track_number"] = int((ogg.get("tracknumber") or ["0"])[0].split("/")[0] or 0)
-                info["year"] = (ogg.get("date") or [""])[0]
-                info["genre"] = (ogg.get("genre") or [""])[0]
-            except Exception:
-                logger.debug("Music: OGG tag read error", exc_info=True)
-        elif ext == ".wav":
-            try:
-                w = WAVE(filepath)
-                if w.tags:
-                    info["title"] = str(w.tags.get("TIT2", p.stem))
-            except Exception:
-                logger.debug("Music: WAV tag read error", exc_info=True)
-
-        return info
-    except Exception:
-        return None
-
-
-def _get_cover_bytes(filepath: str) -> tuple[bytes, str] | None:
-    try:
-        from mutagen.flac import FLAC
-        from mutagen.id3 import ID3
-        from mutagen.mp4 import MP4
-    except ImportError:
-        return None
-
-    p = Path(filepath)
-    ext = p.suffix.lower()
-
-    try:
-        if ext == ".flac":
-            f = FLAC(filepath)
-            if f.pictures:
-                pic = f.pictures[0]
-                return pic.data, pic.mime
-        elif ext == ".mp3":
-            id3 = ID3(filepath)
-            for key in id3.keys():
-                if key.startswith("APIC"):
-                    frame = id3[key]
-                    return frame.data, frame.mime
-        elif ext in (".m4a", ".aac"):
-            m4 = MP4(filepath)
-            m4_tags: dict[str, Any] = cast("dict[str, Any]", m4.tags or {})
-            covr = m4_tags.get("covr")
-            if covr:
-                return bytes(covr[0]), "image/jpeg"
-    except Exception:
-        logger.debug("Music: embedded cover extraction error", exc_info=True)
-
-    for name in ("cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"):
-        cover_file = p.parent / name
-        if cover_file.exists():
-            mime = "image/jpeg" if name.endswith(".jpg") else "image/png"
-            return cover_file.read_bytes(), mime
-
-    return None
-
-
-def _find_lyrics(filepath: str) -> str | None:
-    p = Path(filepath)
-    for ext in (".lrc", ".LRC"):
-        lrc = p.with_suffix(ext)
-        if lrc.exists():
-            try:
-                return lrc.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                logger.debug("Music: lyrics file read error", exc_info=True)
-
-    try:
-        ext = p.suffix.lower()
-        if ext == ".mp3":
-            from mutagen.id3 import ID3
-
-            id3 = ID3(filepath)
-            for key in id3.keys():
-                if key.startswith("USLT"):
-                    return str(id3[key])
-        elif ext == ".flac":
-            from mutagen.flac import FLAC
-
-            f = FLAC(filepath)
-            lyrics = f.get("lyrics") or f.get("LYRICS") or f.get("unsyncedlyrics")
-            if lyrics:
-                return str(lyrics[0])
-    except Exception:
-        logger.debug("Music: embedded lyrics read error", exc_info=True)
-
-    return None
+    return music_library.is_in_music_dirs(filepath, _music_dirs())
 
 
 # ── Routes ──
@@ -826,35 +427,7 @@ async def save_dirs():
 
 @bp.route("/scan", methods=["POST"])
 async def scan_library():
-    dirs = _music_dirs()
-    songs = []
-    seen = set()
-
-    for d in dirs:
-        dp = Path(d)
-        if not dp.exists() or not dp.is_dir():  # noqa: ASYNC240
-            continue
-        for root, _, files in os.walk(dp):
-            for fname in files:
-                fpath = os.path.join(root, fname)
-                if Path(fname).suffix.lower() not in AUDIO_EXTS:
-                    continue
-                fid = _file_id(fpath)
-                if fid in seen:
-                    continue
-                seen.add(fid)
-                meta = _read_metadata(fpath)
-                if meta:
-                    songs.append(meta)
-
-    songs.sort(
-        key=lambda s: (
-            s["artist"].lower(),
-            s["album"].lower(),
-            s["track_number"],
-            s["title"].lower(),
-        )
-    )
+    songs = music_library.scan_music_directories(_music_dirs())
 
     try:
         _cache_path().write_text(json.dumps(songs, ensure_ascii=False), encoding="utf-8")
@@ -894,59 +467,7 @@ async def stream_audio(song_id: str):
     if not Path(filepath).exists():  # noqa: ASYNC240
         return jsonify({"error": "file not found"}), 404
 
-    mime = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
-    file_size = os.path.getsize(filepath)  # noqa: ASYNC240
-
-    range_header = request.headers.get("Range")
-    if range_header:
-        match = re.match(r"bytes=(\d+)-(\d*)", range_header)
-        if match:
-            start = int(match.group(1))
-            end = int(match.group(2)) if match.group(2) else file_size - 1
-            end = min(end, file_size - 1)
-            length = end - start + 1
-
-            def generate():
-                with open(filepath, "rb") as f:
-                    f.seek(start)
-                    remaining = length
-                    while remaining > 0:
-                        chunk_size = min(65536, remaining)
-                        data = f.read(chunk_size)
-                        if not data:
-                            break
-                        remaining -= len(data)
-                        yield data
-
-            return Response(
-                generate(),
-                status=206,
-                content_type=mime,
-                headers={
-                    "Content-Range": f"bytes {start}-{end}/{file_size}",
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(length),
-                    "Cache-Control": "public, max-age=86400",
-                },
-            )
-
-    def generate_full():
-        with open(filepath, "rb") as f:
-            while True:
-                data = f.read(65536)
-                if not data:
-                    break
-                yield data
-
-    return Response(
-        generate_full(),
-        content_type=mime,
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(file_size),
-            "Cache-Control": "public, max-age=86400",
-        },
-    )
+    return _stream_audio_response(filepath, request.headers.get("Range"))
 
 
 @bp.route("/cover/<song_id>")
@@ -1030,546 +551,21 @@ def _sync_audio_clip_error(sync: dict[str, Any]) -> str | None:
     return None
 
 
-def _track_slot(track: dict[str, Any], slot_id: str) -> dict[str, Any]:
-    for slot in track.get("plugin_slots", []):
-        if isinstance(slot, dict) and slot.get("id") == slot_id:
-            return cast(dict[str, Any], slot)
-    if slot_id == "instrument":
-        return {
-            "id": "instrument",
-            "type": "builtin",
-            "name": track.get("instrument") or "ATRI Basic Synth",
-        }
-    return {"id": slot_id, "type": "empty", "name": "Empty"}
-
-
-def _instrument_slot(track: dict[str, Any]) -> dict[str, Any]:
-    return _track_slot(track, "instrument")
-
-
-def _slot_index(slot_id: str) -> int:
-    if slot_id == "instrument":
-        return 0
-    match = re.fullmatch(r"insert_(\d+)", slot_id)
-    if match:
-        return min(255, max(1, int(match.group(1))))
-    return 255
-
-
-def _is_automation_track(track: dict[str, Any]) -> bool:
-    return str(track.get("type") or "").strip().lower() == "automation"
-
-
-def _host_track_id_for_project_target(
-    project: dict[str, Any],
-    target_track_id: Any,
-) -> int | None:
-    try:
-        track = find_track(project, int(target_track_id))
-    except (TypeError, ValueError):
-        return None
-    host_track_id = track.get("host_track_id")
-    if host_track_id is None:
-        return None
-    return int(host_track_id)
-
-
-def _host_track_id_for_project_track(
-    project: dict[str, Any],
-    project_track_id: object,
-) -> int | None:
-    try:
-        wanted = int(cast(Any, project_track_id))
-    except (TypeError, ValueError):
-        return None
-    for track in project.get("tracks", []):
-        if not isinstance(track, dict):
-            continue
-        try:
-            track_id = int(cast(Any, track.get("id", -1)))
-        except (TypeError, ValueError):
-            continue
-        if track_id != wanted:
-            continue
-        host_track_id = track.get("host_track_id")
-        if host_track_id is None:
-            return None
-        return int(host_track_id)
-    return None
-
-
-def _route_kind_for_host(track: dict[str, Any]) -> str:
-    return "bus" if str(track.get("type") or "").strip().lower() == "bus" else "track"
-
-
-def _route_output_for_host(
-    project: dict[str, Any],
-    track: dict[str, Any],
-) -> tuple[int | None, dict[str, Any] | None]:
-    output_bus_id = track.get("output_bus_id")
-    if output_bus_id is None:
-        return None, None
-    host_output_id = _host_track_id_for_project_track(project, output_bus_id)
-    if host_output_id is not None:
-        return host_output_id, None
-    return None, {
-        "track_id": track.get("id"),
-        "output_bus_id": output_bus_id,
-        "reason": "output bus is not synced",
-    }
-
-
-def _route_sends_for_host(
-    project: dict[str, Any],
-    track: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    sends: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for send in track.get("sends", []):
-        if not isinstance(send, dict):
-            continue
-        target_bus_id = send.get("target_bus_id")
-        host_target_id = _host_track_id_for_project_track(project, target_bus_id)
-        if host_target_id is None:
-            skipped.append(
-                {
-                    "track_id": track.get("id"),
-                    "send_id": send.get("id"),
-                    "target_bus_id": target_bus_id,
-                    "reason": "send target bus is not synced",
-                }
-            )
-            continue
-        sends.append(
-            {
-                "target_track_id": host_target_id,
-                "level": float(send.get("level", 1.0) or 0.0),
-                "enabled": bool(send.get("enabled", True)),
-            }
-        )
-    return sends, skipped
-
-
-def _master_bus_for_host(project: dict[str, Any]) -> dict[str, Any] | None:
-    master_bus = project.get("master_bus")
-    if not isinstance(master_bus, dict):
-        return None
-    master_bus["type"] = "bus"
-    master_bus["name"] = str(master_bus.get("name") or "Master Bus")
-    master_bus.setdefault("volume", 1.0)
-    master_bus.setdefault("pan", 0.0)
-    master_bus.setdefault("mute", False)
-    master_bus.setdefault("solo", False)
-    master_bus.setdefault("plugin_slots", [])
-    master_bus.setdefault("notes", [])
-    master_bus.setdefault("midi_events", [])
-    master_bus.setdefault("clips", [])
-    master_bus.setdefault("sends", [])
-    return master_bus
-
-
-def _curve_amount(value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if not parsed or parsed != parsed:
-        return 0.0
-    return round(max(-1.0, min(1.0, parsed)), 6)
-
-
-def _curve_sample_beats(start: float, end: float) -> list[float]:
-    if end <= start:
-        return []
-    step = CURVE_SAMPLE_STEP_BEATS
-    estimated = int((end - start) / step)
-    if estimated > CURVE_MAX_SAMPLES_PER_SEGMENT:
-        step = (end - start) / CURVE_MAX_SAMPLES_PER_SEGMENT
-    beats: list[float] = []
-    beat = start + step
-    while beat < end - 1e-9:
-        beats.append(round(beat, 6))
-        beat += step
-    return beats
-
-
-def _curve_value(
-    start_value: float,
-    end_value: float,
-    beat: float,
-    start_beat: float,
-    end_beat: float,
-    curve_amount: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    value_range = max(1e-9, maximum - minimum)
-    position = max(0.0, min(1.0, (beat - start_beat) / max(1e-9, end_beat - start_beat)))
-    start_unit = max(0.0, min(1.0, (start_value - minimum) / value_range))
-    end_unit = max(0.0, min(1.0, (end_value - minimum) / value_range))
-    linear_unit = start_unit + (end_unit - start_unit) * position
-    bend = 4.0 * position * (1.0 - position) * _curve_amount(curve_amount)
-    return minimum + max(0.0, min(1.0, linear_unit + bend)) * value_range
-
-
-def _midi_curve_lane_key(event: dict[str, Any]) -> tuple[Any, ...] | None:
-    event_type = str(event.get("type") or event.get("kind") or "").strip().lower()
-    event_type = event_type.replace("-", "_").replace(" ", "_")
-    if event_type in {"cc", "controller"}:
-        event_type = "control_change"
-    elif event_type in {"pitchbend"}:
-        event_type = "pitch_bend"
-    elif event_type in {"aftertouch", "after_touch"}:
-        event_type = "channel_pressure"
-    if event_type == "control_change":
-        return (event_type, int(event.get("channel", 0) or 0), int(event.get("controller", 0) or 0))
-    if event_type in {"pitch_bend", "channel_pressure"}:
-        return (event_type, int(event.get("channel", 0) or 0))
-    if event_type == "polyphonic_key_pressure":
-        return (
-            event_type,
-            int(event.get("channel", 0) or 0),
-            int(event.get("pitch", 60) or 60),
-        )
-    return None
-
-
-def _midi_curve_value_field(event: dict[str, Any]) -> str:
-    event_type = str(event.get("type") or "").strip().lower()
-    return "pressure" if event_type in {"channel_pressure", "polyphonic_key_pressure"} else "value"
-
-
-def _midi_curve_bounds(event: dict[str, Any]) -> tuple[float, float]:
-    return (-8192.0, 8191.0) if str(event.get("type") or "") == "pitch_bend" else (0.0, 127.0)
-
-
-def _midi_curve_value(event: dict[str, Any]) -> float:
-    field = _midi_curve_value_field(event)
-    return float(event.get(field, event.get("value", 0)) or 0)
-
-
-HOST_MIDI_EVENT_KEYS = (
-    "type",
-    "start",
-    "channel",
-    "pitch",
-    "velocity",
-    "controller",
-    "value",
-    "program",
-    "pressure",
-    "data_b64",
-)
-
-
-def _host_midi_event(event: dict[str, Any]) -> dict[str, Any]:
-    return {key: event[key] for key in HOST_MIDI_EVENT_KEYS if key in event}
-
-
-def _midi_events_for_host(track: dict[str, Any]) -> list[dict[str, Any]]:
-    events = [
-        {**_host_midi_event(event), "curve_amount": event.get("curve_amount")}
-        for event in track.get("midi_events", [])
-        if isinstance(event, dict)
-    ]
-    expanded = [_host_midi_event(event) for event in events]
-    lane_events: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-    for event in events:
-        lane_key = _midi_curve_lane_key(event)
-        if lane_key is not None:
-            lane_events.setdefault(lane_key, []).append(event)
-
-    for lane in lane_events.values():
-        lane.sort(key=lambda event: float(event.get("start", 0.0) or 0.0))
-        occupied = {round(float(event.get("start", 0.0) or 0.0), 6) for event in lane}
-        for left, right in pairwise(lane):
-            start = float(left.get("start", 0.0) or 0.0)
-            end = float(right.get("start", 0.0) or 0.0)
-            curve_amount = _curve_amount(left.get("curve_amount"))
-            if end <= start or (
-                abs(_midi_curve_value(left) - _midi_curve_value(right)) < 1e-9
-                and abs(curve_amount) < 1e-9
-            ):
-                continue
-            minimum, maximum = _midi_curve_bounds(left)
-            value_field = _midi_curve_value_field(left)
-            for beat in _curve_sample_beats(start, end):
-                if beat in occupied:
-                    continue
-                value = round(
-                    _curve_value(
-                        _midi_curve_value(left),
-                        _midi_curve_value(right),
-                        beat,
-                        start,
-                        end,
-                        curve_amount,
-                        minimum,
-                        maximum,
-                    )
-                )
-                sampled = _host_midi_event(left)
-                sampled["start"] = beat
-                sampled[value_field] = int(max(minimum, min(maximum, value)))
-                expanded.append(sampled)
-
-    return sorted(
-        expanded,
-        key=lambda event: (
-            float(event.get("start", 0.0) or 0.0),
-            str(event.get("type") or ""),
-            int(event.get("controller", event.get("pitch", -1)) or -1),
-        ),
-    )
-
-
-def _automation_points_for_host(track: dict[str, Any]) -> list[dict[str, Any]]:
-    automation = track.get("automation", {})
-    value_min = float(automation.get("value_min", 0.0) or 0.0)
-    value_max = float(automation.get("value_max", 1.0) or 1.0)
-    if value_max < value_min:
-        value_min, value_max = value_max, value_min
-    raw_points: list[_HostAutomationPoint] = [
-        {
-            "beat": float(point.get("beat", 0.0) or 0.0),
-            "value": float(point.get("value", 0.0) or 0.0),
-            "curve": str(point.get("curve") or "linear"),
-            "curve_amount": point.get("curve_amount"),
-        }
-        for point in automation.get("points", [])
-        if isinstance(point, dict)
-    ]
-    raw_points.sort(key=lambda point: point["beat"])
-    points: list[dict[str, Any]] = [
-        {"beat": point["beat"], "value": point["value"], "curve": point["curve"]}
-        for point in raw_points
-    ]
-    for left, right in pairwise(raw_points):
-        curve_amount = _curve_amount(left.get("curve_amount"))
-        if abs(curve_amount) < 1e-9 or left["curve"] == "hold" or right["beat"] <= left["beat"]:
-            continue
-        for beat in _curve_sample_beats(left["beat"], right["beat"]):
-            points.append(
-                {
-                    "beat": beat,
-                    "value": round(
-                        _curve_value(
-                            left["value"],
-                            right["value"],
-                            beat,
-                            left["beat"],
-                            right["beat"],
-                            curve_amount,
-                            value_min,
-                            value_max,
-                        ),
-                        6,
-                    ),
-                    "curve": "linear",
-                }
-            )
-    return sorted(points, key=lambda point: point["beat"])
-
-
-def _automation_lanes_for_host(
-    project: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    lanes: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    for track in project.get("tracks", []):
-        if not isinstance(track, dict) or not _is_automation_track(track):
-            continue
-        target_payload = track.get("target")
-        target: dict[str, Any] = target_payload if isinstance(target_payload, dict) else {}
-        kind = str(target.get("kind") or "")
-        host_target: dict[str, Any]
-        if kind == "tempo_bpm":
-            host_target = {"kind": kind}
-        else:
-            host_track_id = _host_track_id_for_project_target(project, target.get("track_id"))
-            if host_track_id is None:
-                skipped.append(
-                    {"track_id": track.get("id"), "reason": "target track is not synced"}
-                )
-                continue
-            if kind == "plugin_parameter":
-                host_target = {
-                    "kind": "plugin_parameter",
-                    "track_id": host_track_id,
-                    "slot_index": _slot_index(str(target.get("slot_id") or "instrument")),
-                    "param_index": int(target.get("param_index", 0) or 0),
-                }
-            elif kind in {"track_volume", "track_pan"}:
-                host_target = {"kind": kind, "track_id": host_track_id}
-            else:
-                skipped.append(
-                    {"track_id": track.get("id"), "reason": "unsupported automation target"}
-                )
-                continue
-        lanes.append(
-            {
-                "target": host_target,
-                "points": _automation_points_for_host(track),
-                "muted": bool(track.get("mute", False)),
-            }
-        )
-    return lanes, skipped
-
-
-async def _load_track_slot(
-    host,
-    host_track_id: int,
-    slot: dict[str, Any],
-) -> dict[str, Any]:
-    slot_id = str(slot.get("id") or "instrument")
-    slot_index = _slot_index(slot_id)
-    slot_type = str(slot.get("type") or "empty")
-
-    if slot.get("type") == "vst3" and slot.get("path"):
-        response = cast(
-            dict[str, Any],
-            await host.send_command(
-                "load_vst3",
-                {
-                    "track_id": int(host_track_id),
-                    "slot_index": slot_index,
-                    "path": str(slot.get("path") or ""),
-                    "name": str(slot.get("name") or "") or None,
-                },
-            ),
-        )
-        return await _restore_slot_state(host, host_track_id, slot_index, slot, response)
-    if slot_type == "vst2":
-        clear_response = await host.send_command(
-            "clear_processor_slot",
-            {"track_id": int(host_track_id), "slot_index": slot_index},
-        )
-        return {
-            "type": "error",
-            "cmd": "load_vst2",
-            "slot_id": slot_id,
-            "slot_index": slot_index,
-            "message": "VST2 scan is available, but VST2 loading is not implemented yet",
-            "clear": clear_response,
-        }
-    if slot_id == "instrument":
-        response = cast(
-            dict[str, Any],
-            await host.send_command(
-                "load_builtin_synth",
-                {"track_id": int(host_track_id), "slot_index": slot_index},
-            ),
-        )
-        return await _restore_slot_state(host, host_track_id, slot_index, slot, response)
-    return cast(
-        dict[str, Any],
-        await host.send_command(
-            "clear_processor_slot",
-            {"track_id": int(host_track_id), "slot_index": slot_index},
-        ),
-    )
-
-
-async def _restore_slot_state(
-    host,
-    host_track_id: int,
-    slot_index: int,
-    slot: dict[str, Any],
-    load_response: dict[str, Any],
-) -> dict[str, Any]:
-    state_b64 = str(slot.get("state_b64") or "")
-    if not state_b64:
-        return load_response
-    state_response = cast(
-        dict[str, Any],
-        await host.send_command(
-            "set_plugin_state",
-            {
-                "track_id": int(host_track_id),
-                "slot_index": int(slot_index),
-                "state_b64": state_b64,
-            },
-        ),
-    )
-    return {**load_response, "state": state_response}
-
-
-async def _load_track_slots(
-    host,
-    host_track_id: int,
-    track: dict[str, Any],
-) -> list[dict[str, Any]]:
-    if track.get("type") == "audio":
-        return []
-    raw_slots = track.get("plugin_slots")
-    if track.get("type") == "bus":
-        slots = raw_slots if isinstance(raw_slots, list) else []
-    else:
-        slots = (
-            raw_slots if isinstance(raw_slots, list) and raw_slots else [_instrument_slot(track)]
-        )
-    commands = []
-    for slot in slots:
-        if isinstance(slot, dict):
-            commands.append(await _load_track_slot(host, host_track_id, slot))
-    return commands
-
-
 async def _capture_plugin_states(
     project: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    host = _host_manager()
-    if not host.is_running:
-        return project, []
-
-    responses: list[dict[str, Any]] = []
-    for track in project.get("tracks", []):
-        if not isinstance(track, dict):
-            continue
-        if track.get("type") == "audio":
-            continue
-        host_track_id = track.get("host_track_id")
-        if host_track_id is None:
-            continue
-        slots = track.get("plugin_slots")
-        if not isinstance(slots, list):
-            slots = []
-        for slot in slots:
-            if not isinstance(slot, dict):
-                continue
-            if slot.get("type") in {"empty", "vst2"}:
-                continue
-            slot_id = str(slot.get("id") or "instrument")
-            slot_index = _slot_index(slot_id)
-            response = await host.send_command(
-                "get_plugin_state",
-                {"track_id": int(host_track_id), "slot_index": slot_index},
-            )
-            responses.append(
-                {
-                    "track_id": track.get("id"),
-                    "host_track_id": int(host_track_id),
-                    "slot_id": slot_id,
-                    "slot_index": slot_index,
-                    "response": response,
-                }
-            )
-            data = response.get("data") if isinstance(response.get("data"), dict) else {}
-            state_b64 = str(data.get("state_b64") or "")
-            if state_b64:
-                slot["state_b64"] = state_b64
-
-    return project, responses
+    return await plugin_state.capture_plugin_states(project, host_manager=_host_manager)
 
 
 async def _capture_and_save_plugin_states(
     project: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    project = project if isinstance(project, dict) else load_project()
-    project, responses = await _capture_plugin_states(project)
-    if responses:
-        project = save_project(project)
-    return project, responses
+    return await plugin_state.capture_and_save_plugin_states(
+        project,
+        host_manager=_host_manager,
+        load_project=load_project,
+        save_project=save_project,
+    )
 
 
 async def open_plugin_editor_for_track(
@@ -1577,59 +573,15 @@ async def open_plugin_editor_for_track(
     *,
     slot_id: str = "instrument",
 ) -> tuple[dict[str, Any], int]:
-    project = load_project()
-    try:
-        track = find_track(project, track_id)
-    except ValueError as e:
-        return {"ok": False, "error": str(e), "host": _host_snapshot()}, 404
-
-    host = _host_manager()
-    if not host.is_running:
-        return {"ok": False, "error": "host process not running", "host": _host_snapshot()}, 409
-
-    sync = None
-    if track.get("host_track_id") is None:
-        sync = await _sync_project_to_host(project, broadcast=True)
-        project = sync.get("project", project)
-        track = find_track(project, track_id)
-
-    host_track_id = track.get("host_track_id")
-    if host_track_id is None:
-        return {
-            "ok": False,
-            "error": "track is not synced to the host",
-            "host": _host_snapshot(),
-            "sync": sync,
-        }, 409
-
-    slot = _track_slot(track, slot_id)
-    if slot.get("type") in {"empty", "vst2"}:
-        return {
-            "ok": False,
-            "error": "selected plugin slot does not have a native editor",
-            "host": _host_snapshot(),
-            "plugin": slot,
-            "sync": sync,
-        }, 409
-
-    slot_index = _slot_index(slot_id)
-    response = await host.send_command(
-        "open_plugin_editor",
-        {"track_id": int(host_track_id), "slot_index": slot_index},
+    return await plugin_state.open_plugin_editor_for_track(
+        track_id,
+        slot_id=slot_id,
+        load_project=load_project,
+        find_track=find_track,
+        host_manager=_host_manager,
+        host_snapshot=_host_snapshot,
+        sync_project_to_host=_sync_project_to_host,
     )
-    ok = response.get("type") == "ack"
-    status = 200 if ok else 409
-    return {
-        "ok": ok,
-        "project_track_id": int(track_id),
-        "host_track_id": int(host_track_id),
-        "slot_id": slot_id,
-        "slot_index": slot_index,
-        "plugin": slot,
-        "response": response,
-        "sync": sync,
-        "host": _host_snapshot(),
-    }, status
 
 
 def _json_pointer_path(path: str, token: object) -> str:
@@ -2457,64 +1409,6 @@ async def studio_set_plugin_parameter():
     )
 
 
-def _slot_id_from_index(slot_index: int) -> str:
-    if slot_index <= 0:
-        return "instrument"
-    return f"insert_{slot_index}"
-
-
-def _captured_parameter_for_project(
-    project: dict[str, Any],
-    captured: dict[str, Any],
-) -> dict[str, Any] | None:
-    host_track_id_raw = captured.get("track_id")
-    if host_track_id_raw is None or host_track_id_raw == "":
-        return None
-    try:
-        host_track_id = int(str(host_track_id_raw))
-    except (TypeError, ValueError):
-        return None
-    project_track = next(
-        (
-            track
-            for track in project.get("tracks", [])
-            if isinstance(track, dict)
-            and track.get("host_track_id") is not None
-            and int(track.get("host_track_id", -1)) == host_track_id
-        ),
-        None,
-    )
-    if not project_track:
-        return None
-    slot_index = int(captured.get("slot_index", 0) or 0)
-    slot_id = _slot_id_from_index(slot_index)
-    slot = _track_slot(project_track, slot_id)
-    param_index = int(captured.get("param_index", captured.get("index", 0)) or 0)
-    param_name = str(captured.get("name") or f"Parameter {param_index}")
-    target: dict[str, Any] = {
-        "kind": "plugin_parameter",
-        "track_id": int(project_track["id"]),
-        "slot_id": slot_id,
-        "param_index": param_index,
-        "label": param_name,
-    }
-    param_id = captured.get("param_id")
-    if param_id is not None and param_id != "":
-        target["param_id"] = int(str(param_id))
-    return {
-        "target": target,
-        "source": {
-            "track_name": str(project_track.get("name") or f"Track {project_track['id']}"),
-            "slot_id": slot_id,
-            "slot_label": "Instrument" if slot_id == "instrument" else f"Insert {slot_index}",
-            "plugin_name": str(captured.get("plugin_name") or slot.get("name") or "Plugin"),
-            "param_name": param_name,
-            "units": str(captured.get("units") or ""),
-        },
-        "value": float(captured.get("value", 0.0) or 0.0),
-    }
-
-
 @bp.route("/studio/plugin/captured-parameters", methods=["GET"])
 async def studio_captured_plugin_parameters():
     project = load_project()
@@ -3321,28 +2215,6 @@ def _perform_dawproject_export(
         if selection_summary:
             export["selection_summary"] = selection_summary
     return export
-
-
-def _midi_track_ids_for_payload(
-    project: dict[str, Any],
-    payload: dict[str, Any],
-    target: str,
-) -> list[int] | None:
-    if target == "entire_project":
-        return None
-    raw_track_ids = payload.get("track_ids")
-    if not isinstance(raw_track_ids, list) or not raw_track_ids:
-        raise StudioExportError("track_ids is required for selected_tracks export")
-    track_ids: list[int] = []
-    for raw_track_id in raw_track_ids:
-        try:
-            track = find_track(project, int(raw_track_id))
-        except (TypeError, ValueError) as exc:
-            raise StudioExportError(f"track not found: {raw_track_id}", 404) from exc
-        if _is_automation_track(track):
-            raise StudioExportError(f"track is not exportable: {raw_track_id}", 400)
-        track_ids.append(int(track["id"]))
-    return track_ids
 
 
 async def _perform_studio_export(
