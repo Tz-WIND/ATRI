@@ -3149,6 +3149,39 @@ def test_neo4j_graph_client_multihop_query_keeps_path_rels_until_edge_unwind():
     assert "WITH rels, s, r, o, hop, chain_path_score" in query
 
 
+def test_neo4j_graph_client_multihop_query_keeps_chain_path_flags_until_scoring():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="complete 4 hop causal chain",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=4,
+        ranking_policy="hybrid",
+    )
+
+    query = driver.session_obj.calls[-1]["query"]
+    assert (
+        "WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop, chain_path,\n"
+        "             chain_order_path, seed_score,"
+    ) in query
+    assert (
+        "WITH rels, s, r, o, hop, chain_path, chain_order_path, seed_score, fact_source_ids,"
+    ) in query
+    assert "CASE WHEN chain_path THEN 1.5 ELSE 0.0 END AS chain_path_score" in query
+    assert "CASE WHEN chain_order_path THEN 1.0 ELSE 0.0 END AS chain_order_score" in query
+
+
 def test_graph_query_terms_include_cjk_ngrams_for_unsegmented_queries():
     terms = _query_terms("我之前请求截图的时候失败过是什么原因")
 

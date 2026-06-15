@@ -755,14 +755,15 @@ class Neo4jGraphClient:
              END AS chain_order_path
         WITH rels, rels[size(rels) - 1] AS r, hop, chain_path, chain_order_path, seed_score,
              path_term_match_score
-        WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop, seed_score,
+        WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop, chain_path,
+             chain_order_path, seed_score,
              path_term_match_score,
              CASE
                WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
                WHEN r.source_id IS NULL THEN []
                ELSE [r.source_id]
              END AS fact_source_ids
-        WITH rels, s, r, o, hop, seed_score, fact_source_ids,
+        WITH rels, s, r, o, hop, chain_path, chain_order_path, seed_score, fact_source_ids,
              path_term_match_score,
              CASE WHEN EXISTS {{
                MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
