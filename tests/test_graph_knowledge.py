@@ -225,6 +225,20 @@ def test_chain_order_separator_is_shared_and_parameterized_in_cypher():
     assert "timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS" in graph_source
 
 
+def test_graph_enumeration_terms_are_shared_between_process_and_query_expansion():
+    import core.knowledge.graph as graph_module
+    import core.pipeline.stages.process as process_stage_module
+    from core.knowledge.graph_constants import GRAPH_QUERY_ENUMERATION_TERMS
+
+    terms = tuple(GRAPH_QUERY_ENUMERATION_TERMS)
+
+    assert len(terms) >= 10
+    assert process_stage_module.GRAPH_QUERY_ENUMERATION_TERMS == terms
+    assert graph_module.GRAPH_QUERY_ENUMERATION_TERMS == terms
+    assert all(process_stage_module._is_enumeration_graph_query(f"请{term}项目") for term in terms)
+    assert all("count" in _query_terms(f"请{term}项目") for term in terms)
+
+
 def test_normalize_extracted_facts_filters_and_deduplicates_graph_tuples():
     facts = normalize_extracted_facts(
         {
@@ -1877,6 +1891,39 @@ def test_neo4j_graph_client_multihop_rescues_non_seeded_path_term_matches():
     )
 
 
+def test_neo4j_graph_client_multihop_scan_filters_use_weighted_query_terms():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme Neo4j",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=3,
+    )
+
+    scan_call = next(
+        call
+        for call in driver.session_obj.calls
+        if "MATCH path = (s:Entity)-[:FACT*1..3]->(o:Entity)" in call["query"]
+    )
+    scan_query = scan_call["query"]
+    assert "any(term_row IN $term_rows WHERE" in scan_query
+    assert "toLower(node.name) CONTAINS term_row.term" in scan_query
+    assert "toLower(rel.predicate) CONTAINS term_row.term" in scan_query
+    assert "any(term IN $terms WHERE" not in scan_query
+    assert scan_call["params"]["term_rows"]
+
+
 def test_neo4j_graph_client_logs_retrieval_metrics(caplog):
     caplog.set_level(logging.INFO, logger="atri")
     driver = FakeNeo4jDriver()
@@ -2902,6 +2949,47 @@ def test_neo4j_graph_client_uses_hybrid_ranking_score_before_limit():
     assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "hybrid"
 
 
+def test_neo4j_graph_client_adds_vector_source_score_to_graph_ranking():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice",
+        source_ids=["chunk-strong", "chunk-weak"],
+        source_scores={"chunk-strong": 0.8, "chunk-weak": 0.2},
+        max_facts=4,
+        retrieval_depth=2,
+        ranking_policy="hybrid",
+    )
+
+    single_hop_call = next(
+        call for call in driver.session_obj.calls if "RETURN s.name AS subject" in call["query"]
+    )
+    multi_hop_call = next(
+        call
+        for call in driver.session_obj.calls
+        if "RETURN startNode(r).name AS subject" in call["query"]
+    )
+    assert single_hop_call["params"]["source_score_rows"] == [
+        {"source_id": "chunk-strong", "score": 1.0},
+        {"source_id": "chunk-weak", "score": 0.25},
+    ]
+    assert "source_vector_score" in single_hop_call["query"]
+    assert "+ source_vector_score * 2.0" in single_hop_call["query"]
+    assert "source_vector_score" in multi_hop_call["query"]
+    assert "+ source_vector_score * 2.0" in multi_hop_call["query"]
+    assert "3.0 + source_vector_score * 2.0 AS seed_score" in multi_hop_call["query"]
+
+
 def test_neo4j_graph_client_latest_ranking_preserves_recency_order():
     driver = FakeNeo4jDriver()
     client = Neo4jGraphClient(
@@ -3077,6 +3165,80 @@ def test_graph_query_terms_expand_assistant_aliases():
     assert "助手" in atri_terms
     assert "assistant" in atri_terms
     assert "atri" in assistant_terms
+
+
+def test_graph_query_terms_preserve_cjk_phrases_and_expand_relation_predicates():
+    terms = _query_terms("夜间维护策略变更导致了哪些故障")
+
+    assert "夜间维护策略变更" in terms
+    assert "策略变更" in terms
+    assert "故障" in terms
+    assert "causes" in terms
+    assert "triggered_by" in terms
+    assert "root_cause" in terms
+
+
+def test_graph_query_terms_do_not_expand_negated_relation_triggers():
+    terms = _query_terms("Alice 不属于 Beta 项目")
+
+    assert "belongs_to" not in terms
+    assert "part_of" not in terms
+    assert "member_of" not in terms
+
+
+def test_graph_query_terms_keep_longer_causal_trigger_priority():
+    terms = _query_terms("根本原因是什么")
+
+    assert "root_cause" in terms
+    assert "causes" in terms
+
+
+def test_graph_query_terms_expand_dependency_once_without_use_predicates():
+    terms = _query_terms("Alice 依赖 Neo4j 图检索")
+
+    assert "depends_on" in terms
+    assert "uses" not in terms
+    assert "built_with" not in terms
+
+    use_terms = _query_terms("Alice 使用 Neo4j")
+    assert "uses" in use_terms
+    assert "built_with" in use_terms
+    assert "depends_on" not in use_terms
+
+
+def test_neo4j_graph_client_uses_weighted_query_terms_for_graph_scoring():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="谁负责 Neo4j 图检索",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=1,
+        ranking_policy="hybrid",
+    )
+
+    call = next(
+        call for call in driver.session_obj.calls if "RETURN s.name AS subject" in call["query"]
+    )
+    assert "term_row IN $term_rows" in call["query"]
+    assert "term_row.term" in call["query"]
+    assert "term_row.weight" in call["query"]
+
+    term_rows = call["params"]["term_rows"]
+    assert any(row["term"] == "responsible_for" for row in term_rows)
+    assert any(row["term"] == "owner" for row in term_rows)
+    assert next(row for row in term_rows if row["term"] == "负责")["weight"] >= 1.0
+    assert all(row["weight"] > 0 for row in term_rows)
 
 
 def test_neo4j_graph_client_reconnects_when_connection_config_changes():
@@ -3362,6 +3524,7 @@ class FakeGraphClient:
         *,
         query,
         source_ids=None,
+        source_scores=None,
         max_facts=8,
         retrieval_depth=1,
         ranking_policy="hybrid",
@@ -3376,6 +3539,8 @@ class FakeGraphClient:
             "ranking_policy": ranking_policy,
             "expansion_candidate_limit": expansion_candidate_limit,
         }
+        if source_scores:
+            call["source_scores"] = source_scores
         if include_entity_types:
             call["include_entity_types"] = True
         self.retrieve_calls.append(call)
@@ -4151,6 +4316,47 @@ async def test_graph_manager_passes_retrieval_depth_to_graph_client(tmp_path):
                 "source_ids": [],
                 "max_facts": 5,
                 "retrieval_depth": 7,
+                "ranking_policy": "hybrid",
+                "expansion_candidate_limit": 40,
+            }
+        ]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_passes_source_scores_to_graph_client(tmp_path):
+    store = TaskStore(tmp_path / "runtime")
+    graph = FakeGraphClient()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, FakeExtractor()),
+        task_store=store,
+    )
+    try:
+        context = await manager.retrieve_context(
+            query="Alice",
+            source_ids=["chunk-1"],
+            source_scores={"chunk-1": 0.82},
+            max_facts=5,
+        )
+
+        assert context == format_graph_context(["- Alice -[works_at]-> Acme"])
+        assert graph.retrieve_calls == [
+            {
+                "query": "Alice",
+                "source_ids": ["chunk-1"],
+                "source_scores": {"chunk-1": 0.82},
+                "max_facts": 5,
+                "retrieval_depth": 3,
                 "ranking_policy": "hybrid",
                 "expansion_candidate_limit": 40,
             }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -14,6 +15,7 @@ from core.knowledge.graph_constants import (
     CHAIN_ORDER_KEY_SEPARATOR,
     GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_QUERY_ENUMERATION_TERMS,
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
     HYPER_ROLE_PREDICATE,
@@ -26,6 +28,92 @@ _DEFAULT_MULTIHOP_EXPANSION_LIMIT = 40
 _VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
 _ENTITY_FULLTEXT_INDEX = "entity_text"
 _FACT_FULLTEXT_INDEX = "fact_text"
+_QUERY_RELATION_EXPANSIONS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        ("根本原因", "导致", "造成", "引起", "触发", "原因", "为什么", "为何"),
+        ("caused_by", "causes", "triggered_by", "leads_to", "root_cause", "trigger"),
+    ),
+    (
+        ("影响", "依赖", "关联"),
+        ("affects", "impacts", "depends_on", "related_to"),
+    ),
+    (
+        ("负责", "负责人", "归谁", "谁管"),
+        ("owner", "responsible_for", "has_owner"),
+    ),
+    (
+        ("属于", "归属", "隶属", "组成", "部分"),
+        ("belongs_to", "part_of", "member_of"),
+    ),
+    (
+        ("使用", "用到", "基于"),
+        ("uses", "built_with"),
+    ),
+    (
+        GRAPH_QUERY_ENUMERATION_TERMS,
+        (
+            "count",
+            "contains",
+            "has",
+            "includes",
+            "member_of",
+            "part_of",
+            "has_attribute",
+            "related_to",
+        ),
+    ),
+)
+_CJK_LEADING_QUERY_FILLERS = (
+    "有哪些",
+    "有多少",
+    "多少个",
+    "分别",
+    "各自",
+    "每个",
+    "逐个",
+    "列出",
+    "哪些",
+    "哪个",
+    "什么",
+    "几个",
+    "数量",
+    "总共",
+    "一共",
+    "请",
+    "帮我",
+    "了",
+    "的",
+    "是",
+    "谁",
+)
+_CJK_TRAILING_QUERY_FILLERS = (
+    "是什么原因",
+    "有哪些",
+    "是什么",
+    "分别",
+    "各自",
+    "哪些",
+    "什么",
+    "原因",
+    "吗",
+    "呢",
+    "么",
+    "了",
+    "的",
+)
+_QUERY_TRIGGER_NEGATION_PREFIXES = (
+    "没有",
+    "无需",
+    "不是",
+    "并非",
+    "并不",
+    "不再",
+    "不",
+    "非",
+    "未",
+    "无",
+    "没",
+)
 T = TypeVar("T")
 
 
@@ -306,6 +394,7 @@ class Neo4jGraphClient:
         *,
         query: str,
         source_ids: list[str] | None = None,
+        source_scores: dict[str, float] | None = None,
         max_facts: int = 8,
         retrieval_depth: int = GRAPH_RETRIEVAL_DEFAULT_DEPTH,
         ranking_policy: str = "hybrid",
@@ -318,11 +407,13 @@ class Neo4jGraphClient:
         self.initialize()
         if self.driver is None:
             return ""
-        terms = _query_terms(query)
+        term_rows = _query_term_rows(query)
+        terms = [str(row["term"]) for row in term_rows]
         if not terms and not source_ids:
             return ""
         depth = _retrieval_depth(retrieval_depth)
         policy = _ranking_policy(ranking_policy)
+        source_score_rows = _source_score_rows(source_ids or [], source_scores or {})
         fulltext_query = _fulltext_query(terms) if self._fulltext_indexes_ready else ""
         single_hop_order_by = (
             "ORDER BY structural_role ASC, r.updated_at DESC"
@@ -406,26 +497,44 @@ class Neo4jGraphClient:
         single_hop_cypher = f"""
         {single_hop_seed_cypher}
         WITH s, r, o, index_score,
+             CASE
+               WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
+               WHEN r.source_id IS NULL THEN []
+               ELSE [r.source_id]
+             END AS fact_source_ids
+        WITH s, r, o, index_score, fact_source_ids,
              CASE WHEN EXISTS {{
                MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
                WHERE source_node.source_id IN $source_ids
                  AND fact_node.fact_key = r.fact_key
              }} THEN 3.0 ELSE 0.0 END AS source_match_score,
-             reduce(term_score = 0.0, term IN $terms |
+             reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
+               CASE
+                 WHEN source_score.source_id IN fact_source_ids
+                      AND coalesce(toFloat(source_score.score), 0.0) > source_vector_score
+                   THEN coalesce(toFloat(source_score.score), 0.0)
+                 ELSE source_vector_score
+               END
+             ) AS source_vector_score,
+             reduce(term_score = 0.0, term_row IN $term_rows |
                term_score
-               + CASE WHEN toLower(coalesce(s.name, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(o.name, '')) CONTAINS term THEN 2.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r[$hyper_event_property], '')) CONTAINS term
-                      THEN 2.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term
-                      THEN 1.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r[$chain_id_property], '')) CONTAINS term
-                      THEN 0.5 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(s.name, '')) CONTAINS term_row.term
+                      THEN 2.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(o.name, '')) CONTAINS term_row.term
+                      THEN 2.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term_row.term
+                      THEN 1.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term_row.term
+                      THEN 0.5 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$hyper_event_property], '')) CONTAINS term_row.term
+                      THEN 2.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term_row.term
+                      THEN 1.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$chain_id_property], '')) CONTAINS term_row.term
+                      THEN 0.5 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
                + CASE WHEN any(chain_id IN coalesce(r[$chain_ids_property], [])
-                         WHERE toLower(toString(chain_id)) CONTAINS term)
-                      THEN 0.5
+                         WHERE toLower(toString(chain_id)) CONTAINS term_row.term)
+                      THEN 0.5 * coalesce(toFloat(term_row.weight), 1.0)
                       ELSE 0.0
                  END
              ) AS term_match_score,
@@ -455,7 +564,8 @@ class Neo4jGraphClient:
              END AS structural_role_score
         WITH s, r, o, confidence_score, source_count_score, recency_score,
              structural_role,
-             source_match_score + term_match_score + confidence_score + source_count_score
+             source_match_score + source_vector_score * 2.0
+             + term_match_score + confidence_score + source_count_score
              + structural_role_score + coalesce(toFloat(index_score), 0.0)
              AS relevance_score
         WITH s, r, o, structural_role,
@@ -491,7 +601,16 @@ class Neo4jGraphClient:
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
           MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
-          RETURN seed, 3.0 AS seed_score
+          WITH seed,
+               reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
+                 CASE
+                   WHEN source_score.source_id = source_node.source_id
+                        AND coalesce(toFloat(source_score.score), 0.0) > source_vector_score
+                     THEN coalesce(toFloat(source_score.score), 0.0)
+                   ELSE source_vector_score
+                 END
+               ) AS source_vector_score
+          RETURN seed, 3.0 + source_vector_score * 2.0 AS seed_score
           UNION
           CALL db.index.fulltext.queryNodes(
             $entity_text_index,
@@ -532,16 +651,16 @@ class Neo4jGraphClient:
                   AND fact_node.fact_key = rel.fact_key
               }})
           )
-          OR any(term IN $terms WHERE
-              any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term)
+          OR any(term_row IN $term_rows WHERE
+              any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term_row.term)
               OR any(rel IN relationships(path) WHERE
-                toLower(rel.predicate) CONTAINS term
-                OR toLower(coalesce(rel.evidence, '')) CONTAINS term
-                OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term
-                OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term
-                OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term
+                toLower(rel.predicate) CONTAINS term_row.term
+                OR toLower(coalesce(rel.evidence, '')) CONTAINS term_row.term
+                OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term_row.term
+                OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term_row.term
+                OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term_row.term
                 OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
-                       WHERE toLower(toString(chain_id)) CONTAINS term)))
+                       WHERE toLower(toString(chain_id)) CONTAINS term_row.term)))
         WITH path, relationships(path) AS rels, length(path) AS hop, 0.0 AS seed_score
         WHERE hop > 1
                 """
@@ -558,16 +677,16 @@ class Neo4jGraphClient:
                   AND fact_node.fact_key = rel.fact_key
               }})
           )
-          OR any(term IN $terms WHERE
-              any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term)
+          OR any(term_row IN $term_rows WHERE
+              any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term_row.term)
               OR any(rel IN relationships(path) WHERE
-                toLower(rel.predicate) CONTAINS term
-                OR toLower(coalesce(rel.evidence, '')) CONTAINS term
-                OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term
-                OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term
-                OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term
+                toLower(rel.predicate) CONTAINS term_row.term
+                OR toLower(coalesce(rel.evidence, '')) CONTAINS term_row.term
+                OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term_row.term
+                OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term_row.term
+                OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term_row.term
                 OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
-                       WHERE toLower(toString(chain_id)) CONTAINS term)))
+                       WHERE toLower(toString(chain_id)) CONTAINS term_row.term)))
         WITH path, relationships(path) AS rels, length(path) AS hop, 0.0 AS seed_score
         WHERE hop > 1
                 """
@@ -577,7 +696,16 @@ class Neo4jGraphClient:
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
           MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
-          RETURN seed, 3.0 AS seed_score
+          WITH seed,
+               reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
+                 CASE
+                   WHEN source_score.source_id = source_node.source_id
+                        AND coalesce(toFloat(source_score.score), 0.0) > source_vector_score
+                     THEN coalesce(toFloat(source_score.score), 0.0)
+                   ELSE source_vector_score
+                 END
+               ) AS source_vector_score
+          RETURN seed, 3.0 + source_vector_score * 2.0 AS seed_score
         }}
         WITH seed, max(seed_score) AS seed_score
         ORDER BY seed_score DESC
@@ -591,17 +719,17 @@ class Neo4jGraphClient:
                 return f"""
         {seed_cypher}
         WITH rels, hop, seed_score,
-             reduce(path_term_score = 0.0, term IN $terms |
+             reduce(path_term_score = 0.0, term_row IN $term_rows |
                path_term_score
                + CASE WHEN any(rel IN rels WHERE
-                   toLower(coalesce(rel.predicate, '')) CONTAINS term
-                   OR toLower(coalesce(rel.evidence, '')) CONTAINS term
-                   OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term
-                   OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term
-                   OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term
+                   toLower(coalesce(rel.predicate, '')) CONTAINS term_row.term
+                   OR toLower(coalesce(rel.evidence, '')) CONTAINS term_row.term
+                   OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term_row.term
+                   OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term_row.term
+                   OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term_row.term
                    OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
-                          WHERE toLower(toString(chain_id)) CONTAINS term))
-                 THEN 0.5
+                          WHERE toLower(toString(chain_id)) CONTAINS term_row.term))
+                 THEN 0.5 * coalesce(toFloat(term_row.weight), 1.0)
                  ELSE 0.0
                  END
              ) AS path_term_match_score,
@@ -629,32 +757,51 @@ class Neo4jGraphClient:
              path_term_match_score
         WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop, seed_score,
              path_term_match_score,
+             CASE
+               WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
+               WHEN r.source_id IS NULL THEN []
+               ELSE [r.source_id]
+             END AS fact_source_ids
+        WITH rels, s, r, o, hop, seed_score, fact_source_ids,
+             path_term_match_score,
              CASE WHEN EXISTS {{
                MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
                WHERE source_node.source_id IN $source_ids
                  AND fact_node.fact_key = r.fact_key
              }} THEN 3.0 ELSE 0.0 END AS source_match_score,
-             reduce(term_score = 0.0, term IN $terms |
+             reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
+               CASE
+                 WHEN source_score.source_id IN fact_source_ids
+                      AND coalesce(toFloat(source_score.score), 0.0) > source_vector_score
+                   THEN coalesce(toFloat(source_score.score), 0.0)
+                 ELSE source_vector_score
+               END
+             ) AS source_vector_score,
+             reduce(term_score = 0.0, term_row IN $term_rows |
                term_score
                + CASE
-                   WHEN toLower(coalesce(startNode(r).name, '')) CONTAINS term THEN 2.0
+                   WHEN toLower(coalesce(startNode(r).name, '')) CONTAINS term_row.term
+                     THEN 2.0 * coalesce(toFloat(term_row.weight), 1.0)
                    ELSE 0.0
                  END
                + CASE
-                   WHEN toLower(coalesce(endNode(r).name, '')) CONTAINS term THEN 2.0
+                   WHEN toLower(coalesce(endNode(r).name, '')) CONTAINS term_row.term
+                     THEN 2.0 * coalesce(toFloat(term_row.weight), 1.0)
                    ELSE 0.0
                  END
-               + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term THEN 1.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term THEN 0.5 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r[$hyper_event_property], '')) CONTAINS term
-                      THEN 2.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term
-                      THEN 1.0 ELSE 0.0 END
-               + CASE WHEN toLower(coalesce(r[$chain_id_property], '')) CONTAINS term
-                      THEN 0.5 ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r.predicate, '')) CONTAINS term_row.term
+                      THEN 1.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r.evidence, '')) CONTAINS term_row.term
+                      THEN 0.5 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$hyper_event_property], '')) CONTAINS term_row.term
+                      THEN 2.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term_row.term
+                      THEN 1.0 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
+               + CASE WHEN toLower(coalesce(r[$chain_id_property], '')) CONTAINS term_row.term
+                      THEN 0.5 * coalesce(toFloat(term_row.weight), 1.0) ELSE 0.0 END
                + CASE WHEN any(chain_id IN coalesce(r[$chain_ids_property], [])
-                         WHERE toLower(toString(chain_id)) CONTAINS term)
-                      THEN 0.5
+                         WHERE toLower(toString(chain_id)) CONTAINS term_row.term)
+                      THEN 0.5 * coalesce(toFloat(term_row.weight), 1.0)
                       ELSE 0.0
                  END
              ) AS term_match_score,
@@ -687,7 +834,8 @@ class Neo4jGraphClient:
              END AS structural_role_score
         WITH rels, s, r, o, hop, confidence_score, source_count_score, recency_score, hop_score,
              chain_path_score, chain_order_score, structural_role, path_term_match_score,
-             source_match_score + term_match_score + confidence_score
+             source_match_score + source_vector_score * 2.0
+             + term_match_score + confidence_score
              + source_count_score + hop_score + chain_path_score + chain_order_score
              + structural_role_score + path_term_match_score
              + coalesce(toFloat(seed_score), 0.0)
@@ -739,7 +887,9 @@ class Neo4jGraphClient:
                     session.run(
                         query,
                         source_ids=source_ids or [],
+                        source_score_rows=source_score_rows,
                         terms=terms,
+                        term_rows=term_rows,
                         fulltext_query=fulltext_query,
                         limit=limit,
                         seed_limit=seed_limit,
@@ -898,28 +1048,50 @@ def _is_retryable_neo4j_connection_error(exc: Exception) -> bool:
 
 
 def _query_terms(query: str) -> list[str]:
-    terms: list[str] = []
-    for raw in str(query or "").lower().replace("_", " ").split():
-        term = "".join(char for char in raw if char.isalnum() or "\u4e00" <= char <= "\u9fff")
-        _append_query_term(terms, term)
+    return [str(row["term"]) for row in _query_term_rows(query)]
+
+
+def _query_term_rows(query: str) -> list[dict[str, str | float]]:
+    rows: list[dict[str, str | float]] = []
+    normalized = str(query or "").lower().replace("_", " ")
+    raw_terms = []
+    for raw in normalized.split():
+        term = _clean_query_token(raw)
+        if term:
+            raw_terms.append(term)
+    compact_query = _clean_query_token(normalized)
+
+    for term in raw_terms:
+        _append_query_term_row(rows, term, weight=1.0, kind="token")
         if term in ASSISTANT_ENTITY_ALIAS_KEYS:
             for alias in ASSISTANT_ENTITY_ALIAS_KEYS:
-                _append_query_term(terms, alias)
+                _append_query_term_row(rows, alias, weight=1.0, kind="alias")
+        if len(rows) >= _MAX_QUERY_TERMS:
+            return rows
+
+    _append_relation_query_terms(rows, [compact_query, *raw_terms])
+
+    for term in raw_terms:
         for run in _cjk_runs(term):
             for size in (2, 3, 4):
                 if len(run) < size:
                     continue
                 for index in range(0, len(run) - size + 1):
-                    _append_query_term(terms, run[index : index + size])
-                    if len(terms) >= _MAX_QUERY_TERMS:
+                    _append_query_term_row(
+                        rows,
+                        run[index : index + size],
+                        weight=0.35,
+                        kind="cjk_ngram",
+                    )
+                    if len(rows) >= _MAX_QUERY_TERMS:
                         break
-                if len(terms) >= _MAX_QUERY_TERMS:
+                if len(rows) >= _MAX_QUERY_TERMS:
                     break
-            if len(terms) >= _MAX_QUERY_TERMS:
+            if len(rows) >= _MAX_QUERY_TERMS:
                 break
-        if len(terms) >= _MAX_QUERY_TERMS:
+        if len(rows) >= _MAX_QUERY_TERMS:
             break
-    return terms
+    return rows
 
 
 def _fulltext_query(terms: list[str]) -> str:
@@ -928,6 +1100,42 @@ def _fulltext_query(terms: list[str]) -> str:
 
 def _escape_fulltext_term(term: str) -> str:
     return str(term).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _source_score_rows(
+    source_ids: list[str],
+    source_scores: dict[str, float],
+) -> list[dict[str, float | str]]:
+    if not source_ids or not isinstance(source_scores, dict):
+        return []
+    rows: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    max_score = 0.0
+    for source_id in source_ids:
+        source_id = str(source_id or "").strip()
+        if not source_id or source_id in seen:
+            continue
+        seen.add(source_id)
+        raw_score = source_scores.get(source_id)
+        if raw_score is None:
+            continue
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score) or score <= 0:
+            continue
+        rows.append((source_id, score))
+        max_score = max(max_score, score)
+    if max_score <= 0:
+        return []
+    return [
+        {
+            "source_id": source_id,
+            "score": score / max_score,
+        }
+        for source_id, score in rows
+    ]
 
 
 def _canonical_retrieved_entity_name(value: Any) -> str:
@@ -1123,6 +1331,143 @@ def _retrieved_fact_descendant_stats(
         descendant_count += 1 + child_count
         descendant_depth = max(descendant_depth, 1 + child_depth)
     return (descendant_count, descendant_depth)
+
+
+def _clean_query_token(value: str, *, allow_underscore: bool = False) -> str:
+    return "".join(
+        char
+        for char in str(value or "")
+        if char.isalnum() or "\u4e00" <= char <= "\u9fff" or (allow_underscore and char == "_")
+    )
+
+
+def _append_query_term_row(
+    rows: list[dict[str, str | float]],
+    term: str,
+    *,
+    weight: float,
+    kind: str,
+) -> None:
+    cleaned = _clean_query_token(term, allow_underscore=kind == "predicate")
+    if len(cleaned) <= 1:
+        return
+    for row in rows:
+        if row["term"] != cleaned:
+            continue
+        if float(row["weight"]) < weight:
+            row["weight"] = weight
+            row["kind"] = kind
+        return
+    if len(rows) < _MAX_QUERY_TERMS:
+        rows.append({"term": cleaned, "weight": weight, "kind": kind})
+
+
+def _append_relation_query_terms(
+    rows: list[dict[str, str | float]],
+    values: list[str],
+) -> None:
+    seen_values = []
+    for value in values:
+        if value and value not in seen_values:
+            seen_values.append(value)
+    for value in seen_values:
+        for triggers, expansions in _QUERY_RELATION_EXPANSIONS:
+            matched_triggers = _matching_relation_triggers(value, triggers)
+            if not matched_triggers:
+                continue
+            for trigger in matched_triggers:
+                _append_query_term_row(rows, trigger, weight=1.2, kind="predicate")
+            for phrase in _relation_query_phrases(value, matched_triggers):
+                _append_query_term_row(rows, phrase, weight=1.8, kind="phrase")
+            for expansion in expansions:
+                _append_query_term_row(rows, expansion, weight=1.35, kind="predicate")
+            if len(rows) >= _MAX_QUERY_TERMS:
+                return
+
+
+def _matching_relation_triggers(value: str, triggers: tuple[str, ...]) -> list[str]:
+    matched: list[tuple[int, int, str]] = []
+    for trigger in sorted(triggers, key=len, reverse=True):
+        start = 0
+        while start < len(value):
+            index = value.find(trigger, start)
+            if index < 0:
+                break
+            end = index + len(trigger)
+            start = index + 1
+            if _trigger_has_word_fragment_boundary(value, index, end):
+                continue
+            if _trigger_has_negation_prefix(value, index):
+                continue
+            overlaps_longer_trigger = any(
+                index < matched_end and end > matched_start
+                for matched_start, matched_end, _ in matched
+            )
+            if overlaps_longer_trigger:
+                continue
+            matched.append((index, end, trigger))
+            break
+    return [trigger for _, _, trigger in sorted(matched)]
+
+
+def _trigger_has_word_fragment_boundary(value: str, start: int, end: int) -> bool:
+    trigger = value[start:end]
+    if not trigger.isascii() or not trigger.isalnum():
+        return False
+    if start > 0 and value[start - 1].isalnum():
+        return True
+    return end < len(value) and value[end].isalnum()
+
+
+def _trigger_has_negation_prefix(value: str, start: int) -> bool:
+    prefix = value[max(0, start - 3) : start]
+    return any(prefix.endswith(marker) for marker in _QUERY_TRIGGER_NEGATION_PREFIXES)
+
+
+def _relation_query_phrases(value: str, triggers: list[str]) -> list[str]:
+    phrases: list[str] = []
+    for trigger in sorted(triggers, key=len, reverse=True):
+        if trigger not in value:
+            continue
+        before, _, after = value.partition(trigger)
+        for phrase in (_clean_cjk_query_phrase(before), _clean_cjk_query_phrase(after)):
+            _append_phrase(phrases, phrase)
+            if _has_cjk(phrase) and len(phrase) > 4:
+                _append_phrase(phrases, phrase[-4:])
+                _append_phrase(phrases, phrase[:4])
+    return phrases
+
+
+def _clean_cjk_query_phrase(value: str) -> str:
+    phrase = _clean_query_token(value)
+    changed = True
+    while changed:
+        changed = False
+        for filler in _CJK_LEADING_QUERY_FILLERS:
+            if phrase.startswith(filler) and len(phrase) > len(filler):
+                phrase = phrase[len(filler) :]
+                changed = True
+                break
+    changed = True
+    while changed:
+        changed = False
+        for filler in _CJK_TRAILING_QUERY_FILLERS:
+            if phrase.endswith(filler) and len(phrase) > len(filler):
+                phrase = phrase[: -len(filler)]
+                changed = True
+                break
+    if phrase in _CJK_LEADING_QUERY_FILLERS or phrase in _CJK_TRAILING_QUERY_FILLERS:
+        return ""
+    return phrase
+
+
+def _append_phrase(phrases: list[str], phrase: str) -> None:
+    if len(phrase) > 1 and phrase not in phrases:
+        phrases.append(phrase)
+
+
+def _has_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
 
 
 def _append_query_term(terms: list[str], term: str) -> None:

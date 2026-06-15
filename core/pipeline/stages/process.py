@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import math
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -24,7 +25,10 @@ from core.agent.llm import LLM
 from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.agent.session import SessionStore
 from core.config_schema import CHAT_MODEL_CONFIG_DEFAULT
-from core.knowledge.graph_constants import GRAPH_RETRIEVAL_DEFAULT_DEPTH
+from core.knowledge.graph_constants import (
+    GRAPH_QUERY_ENUMERATION_TERMS,
+    GRAPH_RETRIEVAL_DEFAULT_DEPTH,
+)
 from core.pipeline.stage import Stage, register_stage
 from core.platform.daw_agent import normalize_daw_host_context
 from core.platform.message import Image, MessageEvent, MessageType, Plain, resolve_session_id
@@ -34,6 +38,11 @@ from core.tools.bash import CONFIRM_MARKER
 from core.utils import clean_optional_str
 
 _GRAPH_SOURCE_ANCHOR_WAIT_SECONDS = 0.05
+_GRAPH_SOURCE_ANCHOR_MAX_WAIT_SECONDS = 0.25
+_GRAPH_SOURCE_ANCHOR_WAIT_MARGIN_SECONDS = 0.02
+_GRAPH_SOURCE_ANCHOR_LATENCY_ALPHA = 0.35
+_GRAPH_ENUMERATION_RETRIEVAL_DEPTH_FLOOR = 3
+_GRAPH_ENUMERATION_EXPANSION_CANDIDATE_FLOOR = 120
 
 if TYPE_CHECKING:
     pass
@@ -311,6 +320,7 @@ class ProcessStage(Stage):
         self.knowledge: dict = dict(ctx.get("knowledge", {}) or {})
         self.knowledge_manager = ctx.get("knowledge_manager")
         self.graph_manager = ctx.get("graph_manager")
+        self._graph_source_anchor_vector_latency_seconds: float | None = None
         self.mode_controller = AgentModeController(
             ctx.get("agent_mode", "agent"),
             on_change=self._on_agent_mode_changed,
@@ -695,28 +705,43 @@ class ProcessStage(Stage):
         retrieval_result: dict | None = None
         graph_context = ""
         graph_source_ids: list[str] = []
+        graph_source_scores: dict[str, float] = {}
         graph_retry = False
         graph_elapsed_ms = 0.0
+        vector_result_loaded = False
+
+        async def await_vector_result() -> dict | None:
+            nonlocal vector_result_loaded
+            result = await vector_task
+            if not vector_result_loaded:
+                vector_result_loaded = True
+                self._record_graph_source_anchor_vector_latency(
+                    time.perf_counter() - vector_started_at
+                )
+            return result
+
         try:
             if self._graph_retrieval_available():
                 done, _ = await asyncio.wait(
                     {vector_task},
-                    timeout=_GRAPH_SOURCE_ANCHOR_WAIT_SECONDS,
+                    timeout=self._graph_source_anchor_wait_seconds(),
                 )
                 if vector_task in done:
-                    retrieval_result = await vector_task
+                    retrieval_result = await await_vector_result()
                     graph_source_ids = _retrieval_source_ids(retrieval_result or {})
+                    graph_source_scores = _retrieval_source_scores(retrieval_result or {})
                 graph_started_at = time.perf_counter()
                 graph_task = asyncio.create_task(
                     self._graph_context_for_event(
                         event,
                         query,
                         source_ids=graph_source_ids,
+                        source_scores=graph_source_scores,
                     )
                 )
 
-            if retrieval_result is None:
-                retrieval_result = await vector_task
+            if not vector_result_loaded:
+                retrieval_result = await await_vector_result()
             vector_elapsed_ms = (time.perf_counter() - vector_started_at) * 1000
 
             if graph_task is not None:
@@ -724,13 +749,15 @@ class ProcessStage(Stage):
                 graph_elapsed_ms += (time.perf_counter() - graph_started_at) * 1000
 
             source_ids = _retrieval_source_ids(retrieval_result or {})
-            if graph_task is not None and source_ids and not graph_source_ids:
+            source_scores = _retrieval_source_scores(retrieval_result or {})
+            if graph_task is not None and source_ids and not graph_source_ids and not graph_context:
                 graph_retry = True
                 graph_retry_started_at = time.perf_counter()
                 anchored_graph_context = await self._graph_context_for_event(
                     event,
                     query,
                     source_ids=source_ids,
+                    source_scores=source_scores,
                 )
                 graph_elapsed_ms += (time.perf_counter() - graph_retry_started_at) * 1000
                 if anchored_graph_context:
@@ -774,6 +801,31 @@ class ProcessStage(Stage):
             return False
         return getattr(self, "graph_manager", None) is not None
 
+    def _graph_source_anchor_wait_seconds(self) -> float:
+        observed = getattr(self, "_graph_source_anchor_vector_latency_seconds", None)
+        if observed is None:
+            return _GRAPH_SOURCE_ANCHOR_WAIT_SECONDS
+        return min(
+            _GRAPH_SOURCE_ANCHOR_MAX_WAIT_SECONDS,
+            max(
+                _GRAPH_SOURCE_ANCHOR_WAIT_SECONDS,
+                float(observed) + _GRAPH_SOURCE_ANCHOR_WAIT_MARGIN_SECONDS,
+            ),
+        )
+
+    def _record_graph_source_anchor_vector_latency(self, elapsed_seconds: float) -> None:
+        if elapsed_seconds <= 0:
+            return
+        elapsed_seconds = min(float(elapsed_seconds), _GRAPH_SOURCE_ANCHOR_MAX_WAIT_SECONDS)
+        observed = getattr(self, "_graph_source_anchor_vector_latency_seconds", None)
+        if observed is None:
+            self._graph_source_anchor_vector_latency_seconds = elapsed_seconds
+            return
+        self._graph_source_anchor_vector_latency_seconds = (
+            float(observed) * (1.0 - _GRAPH_SOURCE_ANCHOR_LATENCY_ALPHA)
+            + elapsed_seconds * _GRAPH_SOURCE_ANCHOR_LATENCY_ALPHA
+        )
+
     async def _vector_context_for_event(self, knowledge: object, query: str) -> dict | None:
         if not isinstance(knowledge, dict) or not knowledge.get("enabled"):
             return None
@@ -800,6 +852,7 @@ class ProcessStage(Stage):
         event: MessageEvent,
         query: str,
         source_ids: list[str] | None = None,
+        source_scores: dict[str, float] | None = None,
     ) -> str:
         knowledge = getattr(self, "knowledge", {})
         graph_cfg = knowledge.get("graph", {}) if isinstance(knowledge, dict) else {}
@@ -810,18 +863,18 @@ class ProcessStage(Stage):
         graph_manager = getattr(self, "graph_manager", None)
         if graph_manager is None:
             return ""
+        retrieval_options = _planned_graph_retrieval_options(query, graph_cfg)
         try:
             return cast(
                 str,
                 await graph_manager.retrieve_context(
                     query=query,
                     source_ids=source_ids or [],
-                    max_facts=int(graph_cfg.get("max_facts") or 8),
-                    retrieval_depth=int(
-                        graph_cfg.get("retrieval_depth") or GRAPH_RETRIEVAL_DEFAULT_DEPTH
-                    ),
-                    ranking_policy=str(graph_cfg.get("ranking_policy") or "hybrid"),
-                    expansion_candidate_limit=int(graph_cfg.get("expansion_candidate_limit") or 40),
+                    source_scores=source_scores or {},
+                    max_facts=retrieval_options["max_facts"],
+                    retrieval_depth=retrieval_options["retrieval_depth"],
+                    ranking_policy=retrieval_options["ranking_policy"],
+                    expansion_candidate_limit=retrieval_options["expansion_candidate_limit"],
                 ),
             )
         except Exception as e:
@@ -1605,6 +1658,72 @@ def _retrieval_source_ids(result: dict) -> list[str]:
         if chunk_id and chunk_id not in values:
             values.append(chunk_id)
     return values
+
+
+def _retrieval_source_scores(result: dict) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for item in result.get("results", []) if isinstance(result, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = str(item.get("chunk_id") or "").strip()
+        if not chunk_id:
+            continue
+        raw_score = item.get("score")
+        if raw_score is None:
+            continue
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score) or score <= 0:
+            continue
+        values[chunk_id] = max(score, values.get(chunk_id, 0.0))
+    return values
+
+
+def _planned_graph_retrieval_options(query: str, graph_cfg: dict) -> dict[str, Any]:
+    retrieval_depth = _int_with_default(
+        graph_cfg.get("retrieval_depth"),
+        GRAPH_RETRIEVAL_DEFAULT_DEPTH,
+    )
+    expansion_candidate_limit = _int_with_default(
+        graph_cfg.get("expansion_candidate_limit"),
+        40,
+    )
+    if _is_enumeration_graph_query(query):
+        retrieval_depth = max(retrieval_depth, _GRAPH_ENUMERATION_RETRIEVAL_DEPTH_FLOOR)
+        expansion_candidate_limit = max(
+            expansion_candidate_limit,
+            _GRAPH_ENUMERATION_EXPANSION_CANDIDATE_FLOOR,
+        )
+    return {
+        "max_facts": _int_with_default(graph_cfg.get("max_facts"), 8),
+        "retrieval_depth": retrieval_depth,
+        "ranking_policy": str(graph_cfg.get("ranking_policy") or "hybrid"),
+        "expansion_candidate_limit": expansion_candidate_limit,
+    }
+
+
+def _is_enumeration_graph_query(query: str) -> bool:
+    text = str(query or "").lower()
+    if not text.strip():
+        return False
+    return any(term in text for term in GRAPH_QUERY_ENUMERATION_TERMS)
+
+
+def _int_with_default(value: object, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str | bytes | bytearray):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
 
 
 def _image_components_from_extras(raw_images: object) -> list[Image]:

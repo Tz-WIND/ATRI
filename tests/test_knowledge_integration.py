@@ -42,21 +42,23 @@ class FakeGraphManager:
         *,
         query,
         source_ids=None,
+        source_scores=None,
         max_facts=8,
         retrieval_depth=1,
         ranking_policy="hybrid",
         expansion_candidate_limit=40,
     ):
-        self.retrieve_calls.append(
-            {
-                "query": query,
-                "source_ids": source_ids,
-                "max_facts": max_facts,
-                "retrieval_depth": retrieval_depth,
-                "ranking_policy": ranking_policy,
-                "expansion_candidate_limit": expansion_candidate_limit,
-            }
-        )
+        call = {
+            "query": query,
+            "source_ids": source_ids,
+            "max_facts": max_facts,
+            "retrieval_depth": retrieval_depth,
+            "ranking_policy": ranking_policy,
+            "expansion_candidate_limit": expansion_candidate_limit,
+        }
+        if source_scores:
+            call["source_scores"] = source_scores
+        self.retrieve_calls.append(call)
         return self.context_text
 
     def enqueue_chat_turn(self, **kwargs):
@@ -201,6 +203,70 @@ async def test_process_stage_uses_default_graph_retrieval_depth():
 
 
 @pytest.mark.asyncio
+async def test_process_stage_raises_graph_depth_for_count_questions():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": False,
+        "active_bases": [],
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 1,
+            "max_facts": 2,
+            "expansion_candidate_limit": 40,
+        },
+    }
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="Alice 有多少项目?")
+
+    await stage._knowledge_context_for_event(event)
+
+    assert stage.graph_manager.retrieve_calls == [
+        {
+            "query": "Alice 有多少项目?",
+            "source_ids": [],
+            "max_facts": 2,
+            "retrieval_depth": 3,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 120,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_stage_raises_graph_candidate_limit_for_each_item_questions():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": False,
+        "active_bases": [],
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 2,
+            "max_facts": 2,
+            "expansion_candidate_limit": 64,
+        },
+    }
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="分别列出每个项目的负责人")
+
+    await stage._knowledge_context_for_event(event)
+
+    assert stage.graph_manager.retrieve_calls == [
+        {
+            "query": "分别列出每个项目的负责人",
+            "source_ids": [],
+            "max_facts": 2,
+            "retrieval_depth": 3,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 120,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_process_stage_starts_graph_retrieval_while_vector_retrieval_is_pending():
     class BlockingKnowledgeManager:
         def __init__(self):
@@ -315,6 +381,123 @@ async def test_process_stage_uses_fast_vector_source_ids_for_first_graph_retriev
 
 
 @pytest.mark.asyncio
+async def test_process_stage_passes_vector_scores_to_graph_retrieval():
+    class ScoredKnowledgeManager(FakeKnowledgeManager):
+        async def retrieve(self, *, query, kb_ids=None, kb_names=None, top_k=5):
+            self.calls.append(
+                {
+                    "query": query,
+                    "kb_ids": kb_ids,
+                    "kb_names": kb_names,
+                    "top_k": top_k,
+                }
+            )
+            return {
+                "context_text": "[Knowledge context]\n[1] Docs / notes.md#0\nSQLite stores chunks.",
+                "results": [
+                    {"chunk_id": "chunk-1", "content": "SQLite stores chunks.", "score": 0.82},
+                    {"chunk_id": "chunk-2", "content": "Graph stores facts.", "score": 0.41},
+                ],
+            }
+
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": True,
+        "active_bases": ["kb-1"],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 3,
+            "max_facts": 2,
+        },
+    }
+    stage.knowledge_manager = ScoredKnowledgeManager()
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="How does Alice use sqlite?")
+
+    await stage._knowledge_context_for_event(event)
+
+    assert stage.graph_manager.retrieve_calls == [
+        {
+            "query": "How does Alice use sqlite?",
+            "source_ids": ["chunk-1", "chunk-2"],
+            "source_scores": {"chunk-1": 0.82, "chunk-2": 0.41},
+            "max_facts": 2,
+            "retrieval_depth": 3,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 40,
+        }
+    ]
+
+
+def test_retrieval_source_scores_keep_highest_valid_score_per_chunk():
+    result = {
+        "results": [
+            {"chunk_id": "chunk-1", "score": 0.25},
+            {"chunk_id": "chunk-2", "score": "bad"},
+            {"chunk_id": "chunk-1", "score": 0.75},
+            {"chunk_id": "chunk-3", "score": -1.0},
+        ]
+    }
+
+    assert process_stage_module._retrieval_source_scores(result) == {"chunk-1": 0.75}
+
+
+@pytest.mark.asyncio
+async def test_process_stage_adapts_anchor_wait_after_observed_vector_latency():
+    class SlowKnowledgeManager(FakeKnowledgeManager):
+        async def retrieve(self, *, query, kb_ids=None, kb_names=None, top_k=5):
+            self.calls.append(
+                {
+                    "query": query,
+                    "kb_ids": kb_ids,
+                    "kb_names": kb_names,
+                    "top_k": top_k,
+                }
+            )
+            await asyncio.sleep(process_stage_module._GRAPH_SOURCE_ANCHOR_WAIT_SECONDS + 0.03)
+            return {
+                "context_text": "[Knowledge context]\n[1] Docs / notes.md#0\nSQLite stores chunks.",
+                "results": [{"chunk_id": "chunk-1", "content": "SQLite stores chunks."}],
+            }
+
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": True,
+        "active_bases": ["kb-1"],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 3,
+            "max_facts": 2,
+        },
+    }
+    stage.knowledge_manager = SlowKnowledgeManager()
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="How does Alice use sqlite?")
+
+    await stage._knowledge_context_for_event(event)
+    stage.graph_manager.retrieve_calls.clear()
+
+    await stage._knowledge_context_for_event(event)
+
+    assert stage.graph_manager.retrieve_calls == [
+        {
+            "query": "How does Alice use sqlite?",
+            "source_ids": ["chunk-1"],
+            "max_facts": 2,
+            "retrieval_depth": 3,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 40,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_process_stage_retries_empty_graph_retrieval_with_late_vector_source_ids(caplog):
     class SlowKnowledgeManager(FakeKnowledgeManager):
         def __init__(self):
@@ -404,7 +587,7 @@ async def test_process_stage_retries_empty_graph_retrieval_with_late_vector_sour
 
 
 @pytest.mark.asyncio
-async def test_process_stage_prefers_late_anchored_graph_context_over_generic_graph_context(caplog):
+async def test_process_stage_skips_late_anchored_retry_when_unanchored_graph_has_context(caplog):
     class SlowKnowledgeManager(FakeKnowledgeManager):
         def __init__(self):
             super().__init__()
@@ -468,8 +651,8 @@ async def test_process_stage_prefers_late_anchored_graph_context_over_generic_gr
     context = await asyncio.wait_for(context_task, timeout=1)
 
     assert "[Knowledge context]" in context
-    assert "- anchored graph result" in context
-    assert "- generic graph result" not in context
+    assert "- generic graph result" in context
+    assert "- anchored graph result" not in context
     assert stage.graph_manager.retrieve_calls == [
         {
             "query": "How does Alice use sqlite?",
@@ -479,16 +662,8 @@ async def test_process_stage_prefers_late_anchored_graph_context_over_generic_gr
             "ranking_policy": "hybrid",
             "expansion_candidate_limit": 40,
         },
-        {
-            "query": "How does Alice use sqlite?",
-            "source_ids": ["chunk-1"],
-            "max_facts": 2,
-            "retrieval_depth": 3,
-            "ranking_policy": "hybrid",
-            "expansion_candidate_limit": 40,
-        },
     ]
-    assert "graph_retry=True" in caplog.text
+    assert "graph_retry=False" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -568,16 +743,8 @@ async def test_process_stage_keeps_generic_graph_context_when_late_anchored_retr
             "ranking_policy": "hybrid",
             "expansion_candidate_limit": 40,
         },
-        {
-            "query": "How does Alice use sqlite?",
-            "source_ids": ["chunk-1"],
-            "max_facts": 2,
-            "retrieval_depth": 3,
-            "ranking_policy": "hybrid",
-            "expansion_candidate_limit": 40,
-        },
     ]
-    assert "graph_retry=True" in caplog.text
+    assert "graph_retry=False" in caplog.text
 
 
 @pytest.mark.asyncio
