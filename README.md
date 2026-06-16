@@ -37,7 +37,7 @@ ATRI 的设计反过来：
   Python Runtime 持有工程模型，Vue Dashboard 负责可视化编辑，Rust Audio Host 负责实时播放和插件渲染。三者围绕 `data/music_workstation/project.json` 协作，而不是各自维护一份互相漂移的状态。
 
 - **实时 Rust Audio Host**
-  `atri-host` 使用 CPAL 输出音频，支持 transport 同步、内置 Basic Synth、VST3 扫描与加载、插件 state、原生插件编辑器窗口和音频设备配置。AI 写入的 MIDI 可以直接在本地 Host 中播放。
+  `atri-host` 使用 CPAL 输出音频，支持 transport 同步、内置 Basic Synth、VST3 扫描与加载、插件 state、原生插件编辑器窗口和音频设备配置。AI 写入的 MIDI 可以直接在本地 Host 中播放。Windows 下原生插件编辑器窗口通过 WebView2 承载。
 
 - **面向音乐制作的 Agent 工具链**
   除了常规文件、终端、搜索、MCP、Skills 等 coding-agent 能力，ATRI 还提供音乐专用工具：MIDI 查询、分页 inspect、精确 diff、批量 controller 编辑、音乐库播放控制、钢琴可演奏性检查、piano lane 写入等。
@@ -46,7 +46,7 @@ ATRI 的设计反过来：
   `atri-bridge-vst3` 以 VST3 插件形式加载到 Studio One 等宿主中，向 Dashboard 上报 transport、拍号、循环区间、选区等 host context，并在插件内提供精简的 DAW Agent 对话面。支持 `atri_studio` 与 `host_project` 两种 workspace，后者可通过 DAWproject 快照与外部 DAW 工程同步。
 
 - **可选 Neo4j 知识图谱**
-  除向量检索外，Knowledge 还可把文档与聊天中的结构化事实写入 Neo4j，按 hybrid / relevance / latest 策略检索，并注入 Agent 上下文。
+  除向量检索外，Knowledge 还可把文档与聊天中的结构化事实写入 Neo4j，按 hybrid / relevance / latest 策略检索，并注入 Agent 上下文。支持 entity / fact 全文索引检索、可配置的检索深度与 ranking policy，也可在 Dashboard 中手动上传文件或粘贴文本，把内容直接喂给图谱抽取流水线。
 
 - **可扩展的本地工作台**
   Dashboard 包含 Chat、Studio、Music、Workspace、Knowledge、MCP、Skills、Adapters、Settings。它既是 AI 对话入口，也是 DAW、音乐库、知识库和工具管理界面。
@@ -79,7 +79,7 @@ ATRI 可以生成完整段落，但它更重要的价值是嵌入细碎的制作
 - **AI DAW / Studio**：支持轨道、MIDI clip、audio clip 占位、piano roll、tempo / meter、controller lane、automation、mixer、插件 rack、transport 和工程持久化。
 - **Rust Audio Host**：基于 CPAL 的本地实时音频 Host，支持内置 Basic Synth、VST3 扫描 / 加载、VST2 扫描信息、插件 state、原生插件编辑器窗口和音频设备配置。
 - **音乐库与播放器**：扫描本地音乐目录，读取元数据、封面、歌词，支持搜索、队列、播放控制和全屏播放器。
-- **Knowledge**：本地知识库导入、切分、embedding、rerank、检索和 Chat 上下文注入；可选 Neo4j 图谱抽取与检索。
+- **Knowledge**：本地知识库导入、切分、embedding、rerank、检索和 Chat 上下文注入；可选 Neo4j 图谱抽取与检索，支持手动导入内容（上传文件或粘贴文本）、全文索引检索和可配置的 ranking policy。
 - **工程导入 / 导出**：Studio 支持导出 WAV / FLAC / MP3 / MIDI / DAWproject，也可从 `.dawproject` 导入外部 DAW 工程；Host Project 工作区通过快照目录与宿主 DAW 协作。
 - **平台接入**：内置 WebChat、OneBot11 和 DAW Agent（VST3 Bridge）适配，可用于 Dashboard 对话、QQ / Napcat 反向 WebSocket，或宿主 DAW 内嵌 Agent。
 
@@ -120,7 +120,7 @@ MIDI 工具默认使用工程时间线上的 absolute beat。只有显式传入 
 | Chat | Agent 对话、工具卡片、thinking block、会话切换、文件上下文 |
 | Studio | DAW 工程编辑、MIDI / audio clip、插件、自动化和 Rust Host 控制 |
 | Music | 本地音乐库、搜索、播放队列、歌词、封面和播放器 |
-| Knowledge | 知识库、文档导入、切分、向量检索、可选 Neo4j 图谱与上下文注入 |
+| Knowledge | 知识库、文档导入、切分、向量检索、可选 Neo4j 图谱、手动图谱导入与上下文注入 |
 | Workspace | Agent 文件工作区浏览和编辑 |
 | Adapters | WebChat / OneBot11 接入配置 |
 | MCP | MCP server 管理、校验和热加载 |
@@ -183,6 +183,7 @@ http://localhost:6185
 | `providers` / `active_models` | 聊天模型 Provider 与可用模型池 |
 | `embedding_model` / `rerank_model` | Knowledge 检索使用的 embedding 和 rerank 模型 |
 | `knowledge.graph` | Neo4j 连接、事实抽取、图谱检索与 ranking policy（`hybrid` / `relevance` / `latest`） |
+| `trusted_directories` | workspace 与音乐目录的受信任路径白名单，首次访问未受信目录时会要求确认 |
 | `image_transcription` | 图片输入转录模型，用于把截图、谱面、错误图等转成文本上下文 |
 | `novelai` | NovelAI 图片生成工具配置 |
 | `dashboard` | Web UI 开关、监听地址、端口和账号 |
