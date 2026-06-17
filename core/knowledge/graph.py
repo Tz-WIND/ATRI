@@ -588,7 +588,10 @@ class Neo4jGraphClient:
                r[$hyper_event_property] AS hyper_event,
                r[$hyper_role_property] AS hyper_role,
                r[$chain_order_property] AS chain_order,
-               r.confidence AS confidence
+               r.confidence AS confidence,
+               r.updated_at AS updated_at,
+               structural_role AS structural_role,
+               graph_score AS graph_score
         {single_hop_order_by}
         LIMIT $limit
         """
@@ -869,6 +872,9 @@ class Neo4jGraphClient:
                r[$hyper_role_property] AS hyper_role,
                r[$chain_order_property] AS chain_order,
                r.confidence AS confidence,
+               r.updated_at AS updated_at,
+               structural_role AS structural_role,
+               graph_score AS graph_score,
                hop AS hop
         {multi_hop_edge_order_by}
         """
@@ -939,7 +945,7 @@ class Neo4jGraphClient:
         format_started_at = time.perf_counter()
         entries: list[dict[str, Any]] = []
         seen_positions = set()
-        for row in rows:
+        for row in _rank_retrieved_rows(rows):
             subject = _canonical_retrieved_entity_name(row.get("subject"))
             subject_type = str(row.get("subject_type") or "").strip()
             predicate = str(row.get("predicate") or "").strip()
@@ -1157,6 +1163,53 @@ def _source_score_rows(
         }
         for source_id, score in rows
     ]
+
+
+def _rank_retrieved_rows(rows: list[Any]) -> list[Any]:
+    if not any(_has_retrieval_rank_metadata(row) for row in rows):
+        return list(rows)
+    indexed_rows = list(enumerate(rows))
+    indexed_rows.sort(key=lambda item: _retrieved_row_sort_key(item[1], item[0]))
+    return [row for _, row in indexed_rows]
+
+
+def _has_retrieval_rank_metadata(row: Any) -> bool:
+    return any(
+        _row_value(row, key) is not None for key in ("graph_score", "updated_at", "structural_role")
+    )
+
+
+def _retrieved_row_sort_key(row: Any, index: int) -> tuple[Any, ...]:
+    return (
+        _row_int(row, "structural_role", 0),
+        -_row_float(row, "graph_score", 0.0),
+        -_row_float(row, "updated_at", 0.0),
+        -_row_float(row, "confidence", 0.0),
+        _row_int(row, "hop", 1),
+        index,
+    )
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        return row.get(key, default)
+    except AttributeError:
+        return default
+
+
+def _row_float(row: Any, key: str, default: float = 0.0) -> float:
+    try:
+        value = float(_row_value(row, key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) else default
+
+
+def _row_int(row: Any, key: str, default: int = 0) -> int:
+    try:
+        return int(_row_value(row, key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _canonical_retrieved_entity_name(value: Any) -> str:

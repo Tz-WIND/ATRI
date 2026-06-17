@@ -1716,6 +1716,80 @@ def test_neo4j_graph_client_retrieves_limited_multihop_context():
     )
 
 
+def test_neo4j_graph_client_global_reranks_merged_single_and_multihop_rows():
+    class MergedRankingSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "Low-confidence single-hop evidence.",
+                        "confidence": 0.2,
+                        "graph_score": 0.1,
+                    }
+                ]
+            if "RETURN startNode(r).name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "High-confidence path evidence.",
+                        "confidence": 0.95,
+                        "graph_score": 9.0,
+                        "hop": 1,
+                    },
+                    {
+                        "subject": "Acme",
+                        "subject_type": "Company",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "object_type": "Tool",
+                        "evidence": "Acme uses Neo4j.",
+                        "confidence": 0.8,
+                        "graph_score": 8.0,
+                        "hop": 2,
+                    },
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = MergedRankingSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Alice",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    assert context == format_graph_context(
+        [
+            (
+                "- [1-hop] Alice -[works_at]-> Acme (High-confidence path evidence.) "
+                "| linked: [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"
+            )
+        ]
+    )
+
+
 def test_neo4j_graph_client_multihop_expands_from_fulltext_seeds():
     driver = FakeNeo4jDriver()
     client = Neo4jGraphClient(
