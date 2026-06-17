@@ -131,6 +131,7 @@ class Neo4jGraphClient:
         self.driver: Any = None
         self._constraints_ready = False
         self._fulltext_indexes_ready = False
+        self._fulltext_index_unavailable_reason: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -159,6 +160,7 @@ class Neo4jGraphClient:
             self.driver = None
         self._constraints_ready = False
         self._fulltext_indexes_ready = False
+        self._fulltext_index_unavailable_reason = None
 
     def test_connection(self, config: dict[str, Any] | None = None) -> dict:
         cfg = {**self.config, **(config or {}), "enabled": True}
@@ -229,7 +231,7 @@ class Neo4jGraphClient:
             "r.chain_id, r.chain_ids_text]",
         ]
         fulltext_ready = True
-        fulltext_warning_emitted = False
+        fulltext_unavailable_reasons: list[str] = []
         with self._session() as session:
             for statement in statements:
                 is_fulltext_index = "CREATE FULLTEXT INDEX" in statement
@@ -238,17 +240,22 @@ class Neo4jGraphClient:
                 except Exception as e:
                     if is_fulltext_index:
                         fulltext_ready = False
-                        if not fulltext_warning_emitted:
-                            logger.warning(
-                                "Neo4j graph fulltext index skipped; "
-                                "falling back to scan retrieval: %s",
-                                e,
-                            )
-                            fulltext_warning_emitted = True
+                        index_name = _fulltext_index_name(statement)
+                        error_text = str(e) or e.__class__.__name__
+                        fulltext_unavailable_reasons.append(f"{index_name}: {error_text}")
+                        logger.warning(
+                            "Neo4j graph fulltext index %s skipped; "
+                            "falling back to scan retrieval: %s",
+                            index_name,
+                            e,
+                        )
                     else:
                         logger.debug("Neo4j graph constraint skipped: %s", e)
         self._constraints_ready = True
         self._fulltext_indexes_ready = fulltext_ready
+        self._fulltext_index_unavailable_reason = (
+            None if fulltext_ready else "; ".join(fulltext_unavailable_reasons)
+        )
 
     def upsert_facts(self, facts: list[dict]) -> int:
         if not facts or not self.enabled:
@@ -417,6 +424,12 @@ class Neo4jGraphClient:
         policy = _ranking_policy(ranking_policy)
         source_score_rows = _source_score_rows(source_ids or [], source_scores or {})
         fulltext_query = _fulltext_query(terms) if self._fulltext_indexes_ready else ""
+        if terms and not self._fulltext_indexes_ready:
+            logger.warning(
+                "Neo4j graph fulltext index unavailable; using scan fallback "
+                "for graph retrieval: %s",
+                self._fulltext_index_unavailable_reason or "fulltext indexes are not ready",
+            )
         single_hop_order_by = (
             "ORDER BY structural_role ASC, r.updated_at DESC"
             if policy == "latest"
@@ -1047,6 +1060,14 @@ def _default_driver_factory(uri: str, auth: tuple[str, str]):
     except ImportError as e:
         raise RuntimeError("neo4j package is required for graph knowledge") from e
     return GraphDatabase.driver(uri, auth=auth)
+
+
+def _fulltext_index_name(statement: str) -> str:
+    if f"CREATE FULLTEXT INDEX {_ENTITY_FULLTEXT_INDEX}" in statement:
+        return _ENTITY_FULLTEXT_INDEX
+    if f"CREATE FULLTEXT INDEX {_FACT_FULLTEXT_INDEX}" in statement:
+        return _FACT_FULLTEXT_INDEX
+    return "unknown"
 
 
 def _is_retryable_neo4j_connection_error(exc: Exception) -> bool:

@@ -1524,12 +1524,62 @@ def test_neo4j_graph_client_falls_back_when_fulltext_index_creation_fails(caplog
         for call in driver.session_obj.calls
         if "RETURN s.name AS subject" in call["query"]
     )
-    assert "Neo4j graph fulltext index skipped" in caplog.text
+    assert "Neo4j graph fulltext index entity_text skipped" in caplog.text
+    assert "Neo4j graph fulltext index fact_text skipped" in caplog.text
+    assert "Neo4j graph fulltext index unavailable; using scan fallback" in caplog.text
+    assert "entity_text: fulltext indexes are not allowed" in caplog.text
+    assert "fact_text: fulltext indexes are not allowed" in caplog.text
     assert "db.index.fulltext" not in query
     assert "toLower(s.name) CONTAINS term" in query
     assert context == format_graph_context(
         ["- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)"]
     )
+
+
+@pytest.mark.parametrize("failing_index", ["entity_text", "fact_text"])
+def test_neo4j_graph_client_logs_specific_fulltext_index_creation_failure(caplog, failing_index):
+    class PartiallyUnsupportedFulltextSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if f"CREATE FULLTEXT INDEX {failing_index}" in query:
+                raise RuntimeError(f"{failing_index} index is unavailable")
+            if "db.index.fulltext" in query:
+                raise AssertionError("fulltext retrieval should be disabled")
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "Alice works at Acme.",
+                        "confidence": 0.9,
+                    }
+                ]
+            return []
+
+    caplog.set_level(logging.WARNING, logger="atri")
+    driver = FakeNeo4jDriver()
+    driver.session_obj = PartiallyUnsupportedFulltextSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2)
+
+    assert f"Neo4j graph fulltext index {failing_index} skipped" in caplog.text
+    assert (
+        "Neo4j graph fulltext index unavailable; using scan fallback "
+        f"for graph retrieval: {failing_index}: {failing_index} index is unavailable"
+    ) in caplog.text
 
 
 def test_neo4j_graph_client_keeps_same_name_different_types_separate():
