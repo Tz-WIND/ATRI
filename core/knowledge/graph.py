@@ -5,7 +5,9 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import math
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -29,6 +31,19 @@ _DEFAULT_MULTIHOP_EXPANSION_LIMIT = 40
 _VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
 _ENTITY_FULLTEXT_INDEX = "entity_text"
 _FACT_FULLTEXT_INDEX = "fact_text"
+_GRAPH_CACHE_TTL_SECONDS = 600.0
+_MULTI_HOP_EXPANSION_CACHE_VERSION = "multi_hop_expansion:v1"
+_MULTI_HOP_EXPANSION_CACHE_TRAVERSAL_MODE = "variable_length"
+_MULTI_HOP_EXPANSION_CACHE_DIRECTION = "undirected"
+_MULTI_HOP_EXPANSION_CACHE_RELATION_TYPES = ("FACT",)
+_DEFAULT_MULTIHOP_EXPANSION_CACHE_PATH_LIMIT = GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT
+_DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT = 4
+_DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT = 200
+_GRAPH_CACHE_LIMITS = {
+    "final_context": 256,
+    "fulltext_seed": 512,
+    "multi_hop_expansion": 512,
+}
 _QUERY_RELATION_EXPANSIONS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (
         ("根本原因", "导致", "造成", "引起", "触发", "原因", "为什么", "为何"),
@@ -118,6 +133,49 @@ _QUERY_TRIGGER_NEGATION_PREFIXES = (
 T = TypeVar("T")
 
 
+class GraphRetrievalCache:
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = _GRAPH_CACHE_TTL_SECONDS,
+        limits: dict[str, int] | None = None,
+    ) -> None:
+        self.ttl_seconds = max(0.0, float(ttl_seconds))
+        self.limits = dict(limits or _GRAPH_CACHE_LIMITS)
+        self._stores: dict[str, OrderedDict[Any, tuple[float, Any]]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, namespace: str, key: Any) -> Any | None:
+        if self.ttl_seconds <= 0:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            store = self._stores.get(namespace)
+            if not store or key not in store:
+                return None
+            stored_at, value = store[key]
+            if now - stored_at > self.ttl_seconds:
+                del store[key]
+                return None
+            store.move_to_end(key)
+            return value
+
+    def set(self, namespace: str, key: Any, value: Any) -> None:
+        if self.ttl_seconds <= 0:
+            return
+        limit = max(1, int(self.limits.get(namespace, 1)))
+        with self._lock:
+            store = self._stores.setdefault(namespace, OrderedDict())
+            store[key] = (time.monotonic(), value)
+            store.move_to_end(key)
+            while len(store) > limit:
+                store.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._stores.clear()
+
+
 class Neo4jGraphClient:
     """Small synchronous Neo4j client used from the async graph worker via to_thread."""
 
@@ -133,6 +191,8 @@ class Neo4jGraphClient:
         self._constraints_ready = False
         self._fulltext_indexes_ready = False
         self._fulltext_index_unavailable_reason: str | None = None
+        self._graph_revision = 0
+        self._retrieval_cache = GraphRetrievalCache()
 
     @property
     def enabled(self) -> bool:
@@ -142,6 +202,7 @@ class Neo4jGraphClient:
         new_config = dict(config or {})
         if _connection_signature(self.config) != _connection_signature(new_config):
             self.close()
+            self._bump_graph_revision()
         self.config = new_config
 
     def initialize(self) -> None:
@@ -159,9 +220,249 @@ class Neo4jGraphClient:
         if self.driver is not None:
             self.driver.close()
             self.driver = None
+        self._retrieval_cache.clear()
         self._constraints_ready = False
         self._fulltext_indexes_ready = False
         self._fulltext_index_unavailable_reason = None
+
+    def _bump_graph_revision(self) -> None:
+        self._graph_revision += 1
+        self._retrieval_cache.clear()
+
+    def _cached_fulltext_seed_rows(
+        self,
+        fulltext_query: str,
+        seed_limit: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not fulltext_query:
+            return {"entity_seed_rows": [], "fact_seed_rows": []}
+        key = (
+            self._graph_revision,
+            _ENTITY_FULLTEXT_INDEX,
+            _FACT_FULLTEXT_INDEX,
+            str(fulltext_query),
+            int(seed_limit),
+        )
+        cached = self._retrieval_cache.get("fulltext_seed", key)
+        if cached is not None:
+            return cached
+
+        def load_seed_rows(session: Any) -> dict[str, list[dict[str, Any]]]:
+            entity_rows = session.run(
+                """
+                CALL db.index.fulltext.queryNodes(
+                  $entity_text_index,
+                  $fulltext_query,
+                  {limit: $seed_limit}
+                )
+                YIELD node AS seed, score
+                RETURN elementId(seed) AS element_id, score
+                """,
+                entity_text_index=_ENTITY_FULLTEXT_INDEX,
+                fulltext_query=fulltext_query,
+                seed_limit=seed_limit,
+                timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+            )
+            fact_rows = session.run(
+                """
+                CALL db.index.fulltext.queryRelationships(
+                  $fact_text_index,
+                  $fulltext_query,
+                  {limit: $seed_limit}
+                )
+                YIELD relationship AS r, score
+                RETURN elementId(r) AS element_id, score
+                """,
+                fact_text_index=_FACT_FULLTEXT_INDEX,
+                fulltext_query=fulltext_query,
+                seed_limit=seed_limit,
+                timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+            )
+            return {
+                "entity_seed_rows": _cached_seed_rows(entity_rows),
+                "fact_seed_rows": _cached_seed_rows(fact_rows),
+            }
+
+        rows = self._run_with_reconnect(load_seed_rows)
+        self._retrieval_cache.set("fulltext_seed", key, rows)
+        return rows
+
+    def _multi_hop_seed_rows(
+        self,
+        *,
+        source_ids: list[str],
+        source_score_rows: list[dict[str, float | str]],
+        entity_seed_rows: list[dict[str, Any]],
+        fact_seed_rows: list[dict[str, Any]],
+        seed_limit: int,
+    ) -> list[dict[str, Any]]:
+        if not source_ids and not entity_seed_rows and not fact_seed_rows:
+            return []
+        query = """
+        CALL () {
+          MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
+          WHERE source_node.source_id IN $source_ids
+          MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
+          WITH seed,
+               reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
+                 CASE
+                   WHEN source_score.source_id = source_node.source_id
+                        AND coalesce(toFloat(source_score.score), 0.0) > source_vector_score
+                     THEN coalesce(toFloat(source_score.score), 0.0)
+                   ELSE source_vector_score
+                 END
+               ) AS source_vector_score
+          RETURN elementId(seed) AS element_id, 3.0 + source_vector_score * 2.0 AS seed_score
+          UNION
+          UNWIND $entity_seed_rows AS entity_seed
+          RETURN entity_seed.element_id AS element_id,
+                 coalesce(toFloat(entity_seed.score), 0.0) AS seed_score
+          UNION
+          UNWIND $fact_seed_rows AS fact_seed
+          MATCH ()-[r:FACT]-()
+          WHERE elementId(r) = fact_seed.element_id
+          WITH [startNode(r), endNode(r)] AS fact_seeds, fact_seed
+          UNWIND fact_seeds AS seed
+          WITH seed, fact_seed
+          WHERE seed:Entity
+          RETURN elementId(seed) AS element_id,
+                 coalesce(toFloat(fact_seed.score), 0.0) AS seed_score
+        }
+        WITH element_id, max(seed_score) AS seed_score
+        ORDER BY seed_score DESC
+        LIMIT $seed_limit
+        RETURN element_id, seed_score
+        """
+        rows = self._run_with_reconnect(
+            lambda session: list(
+                session.run(
+                    query,
+                    source_ids=source_ids,
+                    source_score_rows=source_score_rows,
+                    entity_seed_rows=entity_seed_rows,
+                    fact_seed_rows=fact_seed_rows,
+                    seed_limit=seed_limit,
+                    timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                )
+            )
+        )
+        return _cached_multi_hop_seed_rows(rows)
+
+    def _cached_multi_hop_expansion_paths(
+        self,
+        *,
+        seed_element_ids: list[str],
+        depth: int,
+        path_limit: int,
+        load_misses: bool = True,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        normalized_seed_ids = _unique_text_values(seed_element_ids)
+        if not normalized_seed_ids:
+            return [], True
+
+        cached_by_seed: dict[str, dict[str, Any]] = {}
+        missed_seed_ids = []
+        for seed_element_id in normalized_seed_ids:
+            key = _multi_hop_expansion_cache_key(
+                revision=self._graph_revision,
+                seed_element_id=seed_element_id,
+                depth=depth,
+                path_limit=path_limit,
+            )
+            cached = self._retrieval_cache.get("multi_hop_expansion", key)
+            if cached is None:
+                missed_seed_ids.append(seed_element_id)
+                continue
+            cached_by_seed[seed_element_id] = dict(cached)
+
+        if missed_seed_ids and load_misses:
+            loaded_by_seed = self._load_multi_hop_expansion_paths(
+                seed_element_ids=missed_seed_ids,
+                depth=depth,
+                path_limit=path_limit,
+            )
+            for seed_element_id in missed_seed_ids:
+                value = loaded_by_seed.get(
+                    seed_element_id,
+                    {"complete": True, "paths": []},
+                )
+                key = _multi_hop_expansion_cache_key(
+                    revision=self._graph_revision,
+                    seed_element_id=seed_element_id,
+                    depth=depth,
+                    path_limit=path_limit,
+                )
+                self._retrieval_cache.set("multi_hop_expansion", key, value)
+                cached_by_seed[seed_element_id] = value
+
+        expansion_rows: list[dict[str, Any]] = []
+        complete = not missed_seed_ids or load_misses
+        for seed_element_id in normalized_seed_ids:
+            value = cached_by_seed.get(seed_element_id) or {"complete": True, "paths": []}
+            if not bool(value.get("complete", True)):
+                complete = False
+                continue
+            paths = value.get("paths")
+            if not isinstance(paths, list):
+                continue
+            for path_index, path in enumerate(paths):
+                cached_path = _multi_hop_expansion_cache_path_row(
+                    seed_element_id,
+                    path_index,
+                    path,
+                )
+                if cached_path is not None:
+                    expansion_rows.append(cached_path)
+        return expansion_rows, complete
+
+    def _load_multi_hop_expansion_paths(
+        self,
+        *,
+        seed_element_ids: list[str],
+        depth: int,
+        path_limit: int,
+    ) -> dict[str, dict[str, Any]]:
+        if not seed_element_ids:
+            return {}
+        query = f"""
+        UNWIND $seed_element_ids AS seed_element_id
+        MATCH (seed:Entity)
+        WHERE elementId(seed) = seed_element_id
+        CALL (seed) {{
+          MATCH path = (seed)-[:FACT*1..{depth}]-(o:Entity)
+          WITH relationships(path) AS rels, length(path) AS hop
+          WHERE hop > 1
+          WITH rels, hop
+          LIMIT $path_limit_plus_one
+          RETURN collect({{
+            hop: hop,
+            rel_ids: [rel_index IN range(0, size(rels) - 1) |
+              {{element_id: elementId(rels[rel_index]), rel_index: rel_index}}]
+          }}) AS paths
+        }}
+        RETURN seed_element_id, paths, size(paths) > $path_limit AS incomplete
+        """
+        rows = self._run_with_reconnect(
+            lambda session: list(
+                session.run(
+                    query,
+                    seed_element_ids=seed_element_ids,
+                    path_limit=path_limit,
+                    path_limit_plus_one=path_limit + 1,
+                    timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                )
+            )
+        )
+        loaded: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            seed_element_id = str(_row_value(row, "seed_element_id") or "").strip()
+            if not seed_element_id:
+                continue
+            incomplete = bool(_row_value(row, "incomplete", False))
+            raw_paths = _row_value(row, "paths", []) or []
+            paths = [] if incomplete else _normalized_multi_hop_expansion_paths(raw_paths)
+            loaded[seed_element_id] = {"complete": not incomplete, "paths": paths}
+        return loaded
 
     def test_connection(self, config: dict[str, Any] | None = None) -> dict:
         cfg = {**self.config, **(config or {}), "enabled": True}
@@ -395,7 +696,10 @@ class Neo4jGraphClient:
                 )
             )
         )
-        return _result_count(result, len(rows))
+        count = _result_count(result, len(rows))
+        if count > 0:
+            self._bump_graph_revision()
+        return count
 
     def retrieve_context(
         self,
@@ -424,6 +728,22 @@ class Neo4jGraphClient:
         depth = _retrieval_depth(retrieval_depth)
         policy = _ranking_policy(ranking_policy)
         source_score_rows = _source_score_rows(source_ids or [], source_scores or {})
+        query_limit = max(1, int(max_facts or 8))
+        expansion_query_limit = _expansion_candidate_limit(
+            expansion_candidate_limit
+            if expansion_candidate_limit is not None
+            else self.config.get("expansion_candidate_limit")
+        )
+        expansion_cache_path_limit = _multi_hop_expansion_cache_path_limit(
+            self.config.get("multi_hop_expansion_cache_path_limit")
+        )
+        expansion_cache_preload_seed_limit = _multi_hop_expansion_cache_preload_seed_limit(
+            self.config.get("multi_hop_expansion_cache_preload_seed_limit")
+        )
+        expansion_cache_preload_path_limit = _multi_hop_expansion_cache_preload_path_limit(
+            self.config.get("multi_hop_expansion_cache_preload_path_limit")
+        )
+        seed_limit = max(query_limit, expansion_query_limit)
         fulltext_query = _fulltext_query(terms) if self._fulltext_indexes_ready else ""
         if terms and not self._fulltext_indexes_ready:
             logger.warning(
@@ -431,6 +751,41 @@ class Neo4jGraphClient:
                 "for graph retrieval: %s",
                 self._fulltext_index_unavailable_reason or "fulltext indexes are not ready",
             )
+        final_cache_key = _final_context_cache_key(
+            revision=self._graph_revision,
+            query=query,
+            source_ids=source_ids or [],
+            source_score_rows=source_score_rows,
+            max_facts=query_limit,
+            retrieval_depth=depth,
+            ranking_policy=policy,
+            expansion_candidate_limit=expansion_query_limit,
+            include_entity_types=include_entity_types,
+            fulltext_ready=self._fulltext_indexes_ready,
+        )
+        cached_context = self._retrieval_cache.get("final_context", final_cache_key)
+        if cached_context is not None:
+            _record_timing(timings, "graph_total_ms", started_at)
+            _set_timing(timings, "graph_single_hop_ms", 0.0)
+            _set_timing(timings, "graph_multi_hop_ms", 0.0)
+            _set_timing(timings, "graph_scan_fallback_ms", 0.0)
+            _set_timing(timings, "graph_format_ms", 0.0)
+            _record_count(timings, "graph_rows", 0)
+            _record_count(
+                timings,
+                "graph_returned_facts",
+                _graph_context_fact_count(cached_context),
+            )
+            _set_bool(timings, "graph_used_fulltext", bool(fulltext_query))
+            _set_bool(timings, "graph_used_scan_fallback", False)
+            _set_bool(timings, "graph_cache_hit", True)
+            return str(cached_context)
+        _set_bool(timings, "graph_cache_hit", False)
+        fulltext_seed_rows = self._cached_fulltext_seed_rows(fulltext_query, seed_limit)
+        entity_seed_rows = fulltext_seed_rows["entity_seed_rows"]
+        fact_seed_rows = fulltext_seed_rows["fact_seed_rows"]
+        cached_expansion_paths: list[dict[str, Any]] = []
+        cached_expansion_seed_rows: list[dict[str, Any]] = []
         single_hop_order_by = (
             "ORDER BY structural_role ASC, r.updated_at DESC"
             if policy == "latest"
@@ -455,26 +810,20 @@ class Neo4jGraphClient:
           WHERE r.fact_key = fact_node.fact_key
           RETURN s, r, o, 3.0 AS index_score
           UNION
-          CALL db.index.fulltext.queryNodes(
-            $entity_text_index,
-            $fulltext_query,
-            {limit: $seed_limit}
-          )
-          YIELD node AS seed, score
+          UNWIND $entity_seed_rows AS entity_seed
+          MATCH (seed:Entity)
+          WHERE elementId(seed) = entity_seed.element_id
           MATCH (seed)-[r:FACT]-(other:Entity)
-          WITH startNode(r) AS s, r, endNode(r) AS o, score
+          WITH startNode(r) AS s, r, endNode(r) AS o, entity_seed
           WHERE s:Entity AND o:Entity
-          RETURN s, r, o, score AS index_score
+          RETURN s, r, o, coalesce(toFloat(entity_seed.score), 0.0) AS index_score
           UNION
-          CALL db.index.fulltext.queryRelationships(
-            $fact_text_index,
-            $fulltext_query,
-            {limit: $seed_limit}
-          )
-          YIELD relationship AS r, score
-          WITH startNode(r) AS s, r, endNode(r) AS o, score
+          UNWIND $fact_seed_rows AS fact_seed
+          MATCH ()-[r:FACT]-()
+          WHERE elementId(r) = fact_seed.element_id
+          WITH startNode(r) AS s, r, endNode(r) AS o, fact_seed
           WHERE s:Entity AND o:Entity
-          RETURN s, r, o, score AS index_score
+          RETURN s, r, o, coalesce(toFloat(fact_seed.score), 0.0) AS index_score
         }
         WITH s, r, o, max(index_score) AS index_score
             """
@@ -631,25 +980,19 @@ class Neo4jGraphClient:
                ) AS source_vector_score
           RETURN seed, 3.0 + source_vector_score * 2.0 AS seed_score
           UNION
-          CALL db.index.fulltext.queryNodes(
-            $entity_text_index,
-            $fulltext_query,
-            {{limit: $seed_limit}}
-          )
-          YIELD node AS seed, score
-          RETURN seed, score AS seed_score
+          UNWIND $entity_seed_rows AS entity_seed
+          MATCH (seed:Entity)
+          WHERE elementId(seed) = entity_seed.element_id
+          RETURN seed, coalesce(toFloat(entity_seed.score), 0.0) AS seed_score
           UNION
-          CALL db.index.fulltext.queryRelationships(
-            $fact_text_index,
-            $fulltext_query,
-            {{limit: $seed_limit}}
-          )
-          YIELD relationship AS r, score
-          WITH [startNode(r), endNode(r)] AS fact_seeds, score
+          UNWIND $fact_seed_rows AS fact_seed
+          MATCH ()-[r:FACT]-()
+          WHERE elementId(r) = fact_seed.element_id
+          WITH [startNode(r), endNode(r)] AS fact_seeds, fact_seed
           UNWIND fact_seeds AS seed
-          WITH seed, score
+          WITH seed, fact_seed
           WHERE seed:Entity
-          RETURN seed, score AS seed_score
+          RETURN seed, coalesce(toFloat(fact_seed.score), 0.0) AS seed_score
         }}
         WITH seed, max(seed_score) AS seed_score
         ORDER BY seed_score DESC
@@ -876,6 +1219,8 @@ class Neo4jGraphClient:
         LIMIT $limit
         UNWIND range(0, size(rels) - 1) AS rel_index
         WITH rels[rel_index] AS r, rel_index + 1 AS hop, graph_score, structural_role
+        WITH r, hop, max(graph_score) AS graph_score,
+             min(structural_role) AS structural_role
         RETURN startNode(r).name AS subject,
                startNode(r).type AS subject_type,
                r.predicate AS predicate,
@@ -893,23 +1238,78 @@ class Neo4jGraphClient:
         {multi_hop_edge_order_by}
         """
 
+            if fulltext_query or not terms:
+                expansion_cache_seed_probe_limit = min(
+                    seed_limit,
+                    expansion_cache_preload_seed_limit + 1,
+                )
+                cached_expansion_seed_rows = self._multi_hop_seed_rows(
+                    source_ids=source_ids or [],
+                    source_score_rows=source_score_rows,
+                    entity_seed_rows=entity_seed_rows,
+                    fact_seed_rows=fact_seed_rows,
+                    seed_limit=expansion_cache_seed_probe_limit,
+                )
+                if (
+                    cached_expansion_seed_rows
+                    and len(cached_expansion_seed_rows) <= expansion_cache_preload_seed_limit
+                ):
+                    preload_path_limit = min(
+                        expansion_cache_path_limit,
+                        max(
+                            1,
+                            expansion_cache_preload_path_limit // len(cached_expansion_seed_rows),
+                        ),
+                    )
+                    cached_expansion_paths, expansion_cache_complete = (
+                        self._cached_multi_hop_expansion_paths(
+                            seed_element_ids=[
+                                str(row["element_id"]) for row in cached_expansion_seed_rows
+                            ],
+                            depth=depth,
+                            path_limit=preload_path_limit,
+                            load_misses=True,
+                        )
+                    )
+                    if expansion_cache_complete:
+                        multi_hop_seed_cypher = """
+        UNWIND $cached_expansion_paths AS cached_path
+        WITH cached_path,
+             reduce(seed_score = 0.0, seed_row IN $cached_expansion_seed_rows |
+               CASE
+                 WHEN seed_row.element_id = cached_path.seed_element_id
+                   THEN coalesce(toFloat(seed_row.seed_score), 0.0)
+                 ELSE seed_score
+               END
+             ) AS seed_score
+        WHERE size(coalesce(cached_path.rel_ids, [])) > 1
+        UNWIND cached_path.rel_ids AS rel_ref
+        MATCH ()-[rel:FACT]->()
+        WHERE elementId(rel) = rel_ref.element_id
+        WITH cached_path.path_key AS path_key,
+             coalesce(toInteger(cached_path.hop), size(cached_path.rel_ids)) AS hop,
+             seed_score,
+             coalesce(toInteger(rel_ref.rel_index), 0) AS rel_index,
+             rel
+        ORDER BY path_key ASC, rel_index ASC
+        WITH path_key, hop, seed_score, collect(rel) AS rels
+        WHERE hop > 1 AND size(rels) = hop
+                    """
+
             cypher = build_multi_hop_cypher(multi_hop_seed_cypher)
             if multi_hop_scan_seed_cypher:
                 multi_hop_scan_cypher = build_multi_hop_cypher(multi_hop_scan_seed_cypher)
-        query_limit = max(1, int(max_facts or 8))
-        expansion_query_limit = _expansion_candidate_limit(
-            expansion_candidate_limit
-            if expansion_candidate_limit is not None
-            else self.config.get("expansion_candidate_limit")
-        )
 
         def run_session_query(session: Any, query: str, *, limit: int) -> list[Any]:
-            seed_limit = max(limit, query_limit, expansion_query_limit)
             return list(
                 session.run(
                     query,
                     source_ids=source_ids or [],
                     source_score_rows=source_score_rows,
+                    entity_seed_rows=entity_seed_rows,
+                    fact_seed_rows=fact_seed_rows,
+                    cached_expansion_paths=cached_expansion_paths,
+                    cached_expansion_seed_rows=cached_expansion_seed_rows,
                     terms=terms,
                     term_rows=term_rows,
                     fulltext_query=fulltext_query,
@@ -1079,7 +1479,9 @@ class Neo4jGraphClient:
             used_scan_fallback,
             policy,
         )
-        return format_graph_context(lines)
+        context = format_graph_context(lines)
+        self._retrieval_cache.set("final_context", final_cache_key, context)
+        return context
 
     def _session(self):
         if self.driver is None:
@@ -1140,6 +1542,169 @@ def _is_retryable_neo4j_connection_error(exc: Exception) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _final_context_cache_key(
+    *,
+    revision: int,
+    query: str,
+    source_ids: list[str],
+    source_score_rows: list[dict[str, float | str]],
+    max_facts: int,
+    retrieval_depth: int,
+    ranking_policy: str,
+    expansion_candidate_limit: int,
+    include_entity_types: bool,
+    fulltext_ready: bool,
+) -> tuple[Any, ...]:
+    return (
+        "v1",
+        int(revision),
+        _cache_query_text(query),
+        tuple(_source_ids_cache_key(source_ids)),
+        tuple(_source_score_rows_cache_key(source_score_rows)),
+        int(max_facts),
+        int(retrieval_depth),
+        str(ranking_policy),
+        int(expansion_candidate_limit),
+        bool(include_entity_types),
+        bool(fulltext_ready),
+    )
+
+
+def _multi_hop_expansion_cache_key(
+    *,
+    revision: int,
+    seed_element_id: str,
+    depth: int,
+    path_limit: int,
+) -> tuple[Any, ...]:
+    return (
+        _MULTI_HOP_EXPANSION_CACHE_VERSION,
+        int(revision),
+        str(seed_element_id),
+        int(depth),
+        _MULTI_HOP_EXPANSION_CACHE_TRAVERSAL_MODE,
+        _MULTI_HOP_EXPANSION_CACHE_RELATION_TYPES,
+        _MULTI_HOP_EXPANSION_CACHE_DIRECTION,
+        int(path_limit),
+    )
+
+
+def _cache_query_text(query: str) -> str:
+    return " ".join(str(query or "").strip().lower().split())
+
+
+def _unique_text_values(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _source_ids_cache_key(source_ids: list[str]) -> list[str]:
+    result: list[str] = []
+    for source_id in source_ids:
+        text = str(source_id or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _source_score_rows_cache_key(
+    source_score_rows: list[dict[str, float | str]],
+) -> list[tuple[str, float]]:
+    return [
+        (str(row.get("source_id") or ""), round(float(row.get("score") or 0.0), 12))
+        for row in source_score_rows
+    ]
+
+
+def _cached_seed_rows(rows: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        element_id = str(_row_value(row, "element_id") or "").strip()
+        if not element_id:
+            continue
+        result.append(
+            {
+                "element_id": element_id,
+                "score": _row_float(row, "score", 0.0),
+            }
+        )
+    return result
+
+
+def _cached_multi_hop_seed_rows(rows: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        element_id = str(_row_value(row, "element_id") or "").strip()
+        if not element_id or element_id in seen:
+            continue
+        seen.add(element_id)
+        result.append(
+            {
+                "element_id": element_id,
+                "seed_score": _row_float(row, "seed_score", 0.0),
+            }
+        )
+    return result
+
+
+def _normalized_multi_hop_expansion_paths(paths: Any) -> list[dict[str, Any]]:
+    if not isinstance(paths, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for path in paths:
+        normalized = _normalized_multi_hop_expansion_path(path)
+        if normalized is not None:
+            result.append(normalized)
+    return result
+
+
+def _normalized_multi_hop_expansion_path(path: Any) -> dict[str, Any] | None:
+    hop = _row_int(path, "hop", 0)
+    rel_ids = _row_value(path, "rel_ids", []) or []
+    if hop <= 1 or not isinstance(rel_ids, list):
+        return None
+    rel_refs: list[dict[str, Any]] = []
+    for fallback_index, rel_ref in enumerate(rel_ids):
+        element_id = str(_row_value(rel_ref, "element_id") or "").strip()
+        if not element_id:
+            continue
+        rel_refs.append(
+            {
+                "element_id": element_id,
+                "rel_index": _row_int(rel_ref, "rel_index", fallback_index),
+            }
+        )
+    rel_refs.sort(key=lambda ref: int(ref["rel_index"]))
+    if len(rel_refs) != hop:
+        return None
+    return {"hop": hop, "rel_ids": rel_refs}
+
+
+def _multi_hop_expansion_cache_path_row(
+    seed_element_id: str,
+    path_index: int,
+    path: Any,
+) -> dict[str, Any] | None:
+    normalized = _normalized_multi_hop_expansion_path(path)
+    if normalized is None:
+        return None
+    return {
+        "seed_element_id": seed_element_id,
+        "path_key": f"{seed_element_id}:{path_index}",
+        "hop": normalized["hop"],
+        "rel_ids": normalized["rel_ids"],
+    }
+
+
+def _graph_context_fact_count(context: Any) -> int:
+    return sum(1 for line in str(context or "").splitlines() if line.lstrip().startswith("- "))
 
 
 def _query_terms(query: str) -> list[str]:
@@ -1651,6 +2216,30 @@ def _expansion_candidate_limit(value: Any) -> int:
     except (TypeError, ValueError):
         parsed = _DEFAULT_MULTIHOP_EXPANSION_LIMIT
     return max(1, min(GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT, parsed))
+
+
+def _multi_hop_expansion_cache_path_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = _DEFAULT_MULTIHOP_EXPANSION_CACHE_PATH_LIMIT
+    return max(1, min(10_000, parsed))
+
+
+def _multi_hop_expansion_cache_preload_seed_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = _DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT
+    return max(0, min(16, parsed))
+
+
+def _multi_hop_expansion_cache_preload_path_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = _DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT
+    return max(1, min(1_000, parsed))
 
 
 def _fact_source_ids(fact: dict[str, Any]) -> list[str]:

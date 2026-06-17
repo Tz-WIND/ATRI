@@ -1568,8 +1568,17 @@ def test_neo4j_graph_client_uses_fulltext_seeded_single_hop_retrieval():
         call for call in driver.session_obj.calls if "RETURN s.name AS subject" in call["query"]
     )
     query = call["query"]
-    assert "db.index.fulltext.queryNodes" in query
-    assert "db.index.fulltext.queryRelationships" in query
+    seed_queries = [
+        seed_call["query"]
+        for seed_call in driver.session_obj.calls
+        if "db.index.fulltext.queryNodes" in seed_call["query"]
+        or "db.index.fulltext.queryRelationships" in seed_call["query"]
+    ]
+    assert len(seed_queries) == 2
+    assert "UNWIND $entity_seed_rows AS entity_seed" in query
+    assert "UNWIND $fact_seed_rows AS fact_seed" in query
+    assert "db.index.fulltext.queryNodes" not in query
+    assert "db.index.fulltext.queryRelationships" not in query
     assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" in query
     assert call["params"]["fulltext_query"] == '"alice" OR "acme"'
     assert call["params"]["seed_limit"] >= call["params"]["limit"]
@@ -1954,10 +1963,19 @@ def test_neo4j_graph_client_multihop_expands_from_fulltext_seeds():
     query = call["query"]
     assert re.search(r"(?m)^\s*CALL\s+\{", query) is None
     assert "CALL () {" in query
-    assert "db.index.fulltext.queryNodes" in query
-    assert "db.index.fulltext.queryRelationships" in query
+    seed_queries = [
+        seed_call["query"]
+        for seed_call in driver.session_obj.calls
+        if "db.index.fulltext.queryNodes" in seed_call["query"]
+        or "db.index.fulltext.queryRelationships" in seed_call["query"]
+    ]
+    assert len(seed_queries) == 2
+    assert "UNWIND $entity_seed_rows AS entity_seed" in query
+    assert "UNWIND $fact_seed_rows AS fact_seed" in query
+    assert "db.index.fulltext.queryNodes" not in query
+    assert "db.index.fulltext.queryRelationships" not in query
     assert (
-        "UNWIND fact_seeds AS seed\n          WITH seed, score\n          WHERE seed:Entity"
+        "UNWIND fact_seeds AS seed\n          WITH seed, fact_seed\n          WHERE seed:Entity"
         in query
     )
     assert "UNWIND fact_seeds AS seed\n          WHERE seed:Entity" not in query
@@ -2203,6 +2221,423 @@ def test_neo4j_graph_client_records_retrieval_timing_segments():
     assert timings["graph_used_fulltext"] is True
 
 
+def test_neo4j_graph_client_reuses_final_context_cache_until_graph_revision_changes():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+    retrieve_count = len(_retrieve_calls(driver.session_obj.calls))
+
+    cached_context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+
+    assert cached_context == context
+    assert len(_retrieve_calls(driver.session_obj.calls)) == retrieve_count
+
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Carol",
+                "subject_type": "Person",
+                "predicate": "uses",
+                "object": "Redis",
+                "object_type": "Tool",
+            }
+        ],
+        source_id="chunk-cache-bust",
+        source_kind="document",
+    )[0]
+    client.upsert_facts([fact])
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+
+    assert len(_retrieve_calls(driver.session_obj.calls)) > retrieve_count
+
+
+def test_neo4j_graph_client_caches_fulltext_seed_rows_across_context_cache_misses():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+    seed_call_count = sum(
+        1
+        for call in driver.session_obj.calls
+        if "db.index.fulltext.queryNodes" in call["query"]
+        or "db.index.fulltext.queryRelationships" in call["query"]
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+
+    assert seed_call_count == 2
+    assert (
+        sum(
+            1
+            for call in driver.session_obj.calls
+            if "db.index.fulltext.queryNodes" in call["query"]
+            or "db.index.fulltext.queryRelationships" in call["query"]
+        )
+        == seed_call_count
+    )
+
+
+def test_neo4j_graph_client_caches_multihop_expansion_across_context_cache_misses():
+    class ExpansionCacheSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "db.index.fulltext.queryNodes" in query:
+                return [{"element_id": "seed-alice", "score": 4.0}]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [{"element_id": "seed-alice", "seed_score": 4.0}]
+            if "RETURN seed_element_id, paths" in query:
+                return [
+                    {
+                        "seed_element_id": "seed-alice",
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {"element_id": "rel-alice-acme", "rel_index": 0},
+                                    {"element_id": "rel-acme-neo4j", "rel_index": 1},
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    }
+                ]
+            if "RETURN startNode(r).name AS subject" in query:
+                return [
+                    {
+                        "subject": "Acme",
+                        "subject_type": "Company",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "object_type": "Tool",
+                        "evidence": "Acme uses Neo4j.",
+                        "confidence": 0.8,
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "Alice works at Acme.",
+                        "confidence": 0.9,
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ExpansionCacheSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    first_context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+    second_context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+
+    assert second_context == first_context
+    expansion_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "RETURN seed_element_id, paths" in call["query"]
+    ]
+    cached_retrieval_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "UNWIND $cached_expansion_paths AS cached_path" in call["query"]
+        and "RETURN startNode(r).name AS subject" in call["query"]
+    ]
+    direct_expansion_retrieval_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "MATCH path = (seed)-[:FACT*1..2]" in call["query"]
+        and "RETURN startNode(r).name AS subject" in call["query"]
+    ]
+
+    assert len(expansion_calls) == 1
+    assert len(cached_retrieval_calls) == 2
+    assert direct_expansion_retrieval_calls == []
+    assert cached_retrieval_calls[0]["params"]["cached_expansion_seed_rows"] == [
+        {"element_id": "seed-alice", "seed_score": 4.0}
+    ]
+    assert cached_retrieval_calls[0]["params"]["cached_expansion_paths"] == [
+        {
+            "seed_element_id": "seed-alice",
+            "path_key": "seed-alice:0",
+            "hop": 2,
+            "rel_ids": [
+                {"element_id": "rel-alice-acme", "rel_index": 0},
+                {"element_id": "rel-acme-neo4j", "rel_index": 1},
+            ],
+        }
+    ]
+
+
+def test_neo4j_graph_client_skips_multihop_expansion_preload_when_seed_count_is_large():
+    class LargeSeedExpansionSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "db.index.fulltext.queryNodes" in query:
+                return [
+                    {"element_id": f"seed-{index}", "score": 4.0 - index * 0.1}
+                    for index in range(5)
+                ]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [
+                    {"element_id": f"seed-{index}", "seed_score": 4.0 - index * 0.1}
+                    for index in range(5)
+                ]
+            if "RETURN seed_element_id, paths" in query:
+                raise AssertionError("large seed misses should not preload expansion paths")
+            if "MATCH path = (seed)-[:FACT*1..2]" in query:
+                return [
+                    {
+                        "subject": "Acme",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Acme uses Neo4j.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = LargeSeedExpansionSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    assert context == format_graph_context(["- [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"])
+    seed_probe_call = next(
+        call
+        for call in driver.session_obj.calls
+        if "RETURN element_id, seed_score" in call["query"]
+    )
+    assert seed_probe_call["params"]["seed_limit"] == 5
+    retrieve_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    assert "MATCH path = (seed)-[:FACT*1..2]" in retrieve_call["query"]
+    assert "UNWIND $cached_expansion_paths AS cached_path" not in retrieve_call["query"]
+
+
+def test_neo4j_graph_client_caps_multihop_expansion_preload_with_global_budget():
+    class BudgetedExpansionSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "db.index.fulltext.queryNodes" in query:
+                return [
+                    {"element_id": "seed-alice", "score": 4.0},
+                    {"element_id": "seed-acme", "score": 3.0},
+                ]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [
+                    {"element_id": "seed-alice", "seed_score": 4.0},
+                    {"element_id": "seed-acme", "seed_score": 3.0},
+                ]
+            if "RETURN seed_element_id, paths" in query:
+                return []
+            if "RETURN startNode(r).name AS subject" in query:
+                return []
+            if "RETURN s.name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = BudgetedExpansionSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2, retrieval_depth=2)
+
+    expansion_call = next(
+        call
+        for call in driver.session_obj.calls
+        if "RETURN seed_element_id, paths" in call["query"]
+    )
+    assert expansion_call["params"]["path_limit"] == 100
+    assert expansion_call["params"]["path_limit_plus_one"] == 101
+    assert expansion_call["params"]["seed_element_ids"] == ["seed-alice", "seed-acme"]
+
+
+def test_neo4j_graph_client_invalidates_multihop_expansion_cache_after_upsert():
+    class ExpansionCacheInvalidationSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "db.index.fulltext.queryNodes" in query:
+                return [{"element_id": "seed-alice", "score": 4.0}]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [{"element_id": "seed-alice", "seed_score": 4.0}]
+            if "RETURN seed_element_id, paths" in query:
+                return [
+                    {
+                        "seed_element_id": "seed-alice",
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {"element_id": "rel-alice-acme", "rel_index": 0},
+                                    {"element_id": "rel-acme-neo4j", "rel_index": 1},
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    }
+                ]
+            if "RETURN startNode(r).name AS subject" in query:
+                return [
+                    {
+                        "subject": "Acme",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Acme uses Neo4j.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "evidence": "Alice works at Acme.",
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ExpansionCacheInvalidationSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2, retrieval_depth=2)
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Carol",
+                "subject_type": "Person",
+                "predicate": "uses",
+                "object": "Redis",
+                "object_type": "Tool",
+            }
+        ],
+        source_id="chunk-cache-bust",
+        source_kind="document",
+    )[0]
+    client.upsert_facts([fact])
+    client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2, retrieval_depth=2)
+
+    assert (
+        sum(
+            1
+            for call in driver.session_obj.calls
+            if "RETURN seed_element_id, paths" in call["query"]
+        )
+        == 2
+    )
+
+
 def test_neo4j_graph_client_runs_single_and_multi_hop_queries_concurrently_and_merges_order():
     state = ParallelRetrievalState()
     driver = ParallelRetrievalDriver(state)
@@ -2308,18 +2743,14 @@ def test_neo4j_graph_client_multihop_preserves_one_hop_context_and_dedupes():
         "MATCH (s:Entity)-[r:FACT]->(o:Entity)"
         in _single_hop_retrieve_call(retrieve_calls)["query"]
     )
-    seeded_multi_hop_call = next(
-        call
-        for call in retrieve_calls
-        if "RETURN startNode(r).name AS subject" in call["query"]
-        and "db.index.fulltext.queryNodes" in call["query"]
-    )
+    seeded_multi_hop_call = _multi_hop_retrieve_call(retrieve_calls)
     scan_fallback_call = next(
         call
         for call in retrieve_calls
         if "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" in call["query"]
     )
     assert "FACT*1..2" in seeded_multi_hop_call["query"]
+    assert "UNWIND $entity_seed_rows AS entity_seed" in seeded_multi_hop_call["query"]
     assert "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" in scan_fallback_call["query"]
     assert context == format_graph_context(
         [
@@ -3379,6 +3810,38 @@ def test_neo4j_graph_client_multihop_query_returns_each_path_edge_for_stitching(
     assert "UNWIND range(0, size(rels) - 1) AS rel_index" in query
     assert "rels[rel_index] AS r" in query
     assert "rel_index + 1 AS hop" in query
+
+
+def test_neo4j_graph_client_multihop_query_dedupes_unwound_edges_by_hop():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="complete 4 hop causal chain",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=4,
+        ranking_policy="hybrid",
+    )
+
+    query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
+    limit_index = query.index("LIMIT $limit")
+    unwind_index = query.index("UNWIND range(0, size(rels) - 1) AS rel_index")
+    dedupe_index = query.index("WITH r, hop, max(graph_score) AS graph_score")
+    return_index = query.index("RETURN startNode(r).name AS subject")
+    assert limit_index < unwind_index
+    assert unwind_index < dedupe_index
+    assert dedupe_index < return_index
+    assert "min(structural_role) AS structural_role" in query
 
 
 def test_neo4j_graph_client_multihop_query_limits_paths_before_unwinding_edges():

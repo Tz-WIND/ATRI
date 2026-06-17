@@ -403,6 +403,7 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
         "enabled": True,
         "active_bases": ["kb-1"],
         "top_k": 3,
+        "embedding_cache_max_size": 20000,
         "graph": {
             "enabled": False,
             "uri": "neo4j://localhost:7687",
