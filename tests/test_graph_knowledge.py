@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -1202,6 +1203,99 @@ class FakeNeo4jDriver:
         self.closed = True
 
 
+class ParallelRetrievalState:
+    def __init__(self):
+        self.single_started = threading.Event()
+        self.multi_started = threading.Event()
+        self.single_saw_multi_started = False
+        self.calls = []
+        self.lock = threading.Lock()
+
+
+class ParallelRetrievalSession:
+    def __init__(self, state: ParallelRetrievalState):
+        self.state = state
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+    def run(self, query, **params):
+        with self.state.lock:
+            self.state.calls.append({"query": query, "params": params})
+        if "RETURN s.name AS subject" in query:
+            self.state.single_started.set()
+            self.state.single_saw_multi_started = self.state.multi_started.wait(timeout=0.5)
+            return [
+                {
+                    "subject": "Alice",
+                    "subject_type": "Person",
+                    "predicate": "works_at",
+                    "object": "Acme",
+                    "object_type": "Company",
+                    "evidence": "Alice works at Acme.",
+                    "confidence": 0.9,
+                }
+            ]
+        if "RETURN startNode(r).name AS subject" in query:
+            self.state.multi_started.set()
+            return [
+                {
+                    "subject": "Bob",
+                    "subject_type": "Person",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Bob uses Neo4j.",
+                    "confidence": 0.8,
+                    "hop": 2,
+                }
+            ]
+        return []
+
+
+class ParallelRetrievalDriver:
+    def __init__(self, state: ParallelRetrievalState):
+        self.state = state
+        self.closed = False
+        self.verified = False
+
+    def verify_connectivity(self):
+        self.verified = True
+
+    def session(self, database=None):
+        self.database = database
+        return ParallelRetrievalSession(self.state)
+
+    def close(self):
+        self.closed = True
+
+
+def _retrieve_calls(calls):
+    return [
+        call
+        for call in calls
+        if "RETURN s.name AS subject" in call["query"]
+        or "RETURN startNode(r).name AS subject" in call["query"]
+    ]
+
+
+def _single_hop_retrieve_call(calls):
+    return next(
+        call for call in _retrieve_calls(calls) if "RETURN s.name AS subject" in call["query"]
+    )
+
+
+def _multi_hop_retrieve_call(calls):
+    return next(
+        call
+        for call in _retrieve_calls(calls)
+        if "RETURN startNode(r).name AS subject" in call["query"]
+    )
+
+
 class FailingOnceRetrieveSession(FakeNeo4jSession):
     def __init__(self, error: Exception):
         super().__init__()
@@ -1747,15 +1841,11 @@ def test_neo4j_graph_client_retrieves_limited_multihop_context():
         retrieval_depth=2,
     )
 
-    retrieve_calls = [
-        call
-        for call in driver.session_obj.calls
-        if "RETURN s.name AS subject" in call["query"]
-        or "RETURN startNode(r).name AS subject" in call["query"]
-    ]
-    assert retrieve_calls[0]["params"]["limit"] == 4
-    assert "FACT*1..2" in retrieve_calls[1]["query"]
-    assert retrieve_calls[1]["params"]["limit"] == 40
+    single_hop_call = _single_hop_retrieve_call(driver.session_obj.calls)
+    multi_hop_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    assert single_hop_call["params"]["limit"] == 4
+    assert "FACT*1..2" in multi_hop_call["query"]
+    assert multi_hop_call["params"]["limit"] == 40
     assert context == format_graph_context(
         [
             (
@@ -2113,6 +2203,36 @@ def test_neo4j_graph_client_records_retrieval_timing_segments():
     assert timings["graph_used_fulltext"] is True
 
 
+def test_neo4j_graph_client_runs_single_and_multi_hop_queries_concurrently_and_merges_order():
+    state = ParallelRetrievalState()
+    driver = ParallelRetrievalDriver(state)
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Alice Neo4j",
+        source_ids=[],
+        max_facts=4,
+        retrieval_depth=2,
+    )
+
+    assert state.single_saw_multi_started is True
+    assert context == format_graph_context(
+        [
+            "- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)",
+            "- [2-hop] Bob -[uses]-> Neo4j (Bob uses Neo4j.)",
+        ]
+    )
+
+
 def test_neo4j_graph_client_multihop_preserves_one_hop_context_and_dedupes():
     class PreserveOneHopSession(FakeNeo4jSession):
         def run(self, query, **params):
@@ -2182,17 +2302,25 @@ def test_neo4j_graph_client_multihop_preserves_one_hop_context_and_dedupes():
         retrieval_depth=2,
     )
 
-    retrieve_calls = [
-        call
-        for call in driver.session_obj.calls
-        if "RETURN s.name AS subject" in call["query"]
-        or "RETURN startNode(r).name AS subject" in call["query"]
-    ]
+    retrieve_calls = _retrieve_calls(driver.session_obj.calls)
     assert len(retrieve_calls) == 3
-    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" in retrieve_calls[0]["query"]
-    assert "FACT*1..2" in retrieve_calls[1]["query"]
-    assert "db.index.fulltext.queryNodes" in retrieve_calls[1]["query"]
-    assert "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" in retrieve_calls[2]["query"]
+    assert (
+        "MATCH (s:Entity)-[r:FACT]->(o:Entity)"
+        in _single_hop_retrieve_call(retrieve_calls)["query"]
+    )
+    seeded_multi_hop_call = next(
+        call
+        for call in retrieve_calls
+        if "RETURN startNode(r).name AS subject" in call["query"]
+        and "db.index.fulltext.queryNodes" in call["query"]
+    )
+    scan_fallback_call = next(
+        call
+        for call in retrieve_calls
+        if "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" in call["query"]
+    )
+    assert "FACT*1..2" in seeded_multi_hop_call["query"]
+    assert "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" in scan_fallback_call["query"]
     assert context == format_graph_context(
         [
             (
@@ -3171,12 +3299,13 @@ def test_neo4j_graph_client_latest_ranking_preserves_recency_order():
         retrieval_depth=2,
     )
 
-    query = driver.session_obj.calls[-1]["query"]
+    multi_hop_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    query = multi_hop_call["query"]
     assert (
         "ORDER BY structural_role ASC, chain_path_score DESC, "
         "chain_order_score DESC, hop DESC, r.updated_at DESC"
     ) in query
-    assert driver.session_obj.calls[-1]["params"]["ranking_policy"] == "latest"
+    assert multi_hop_call["params"]["ranking_policy"] == "latest"
 
 
 def test_neo4j_graph_client_multihop_retrieval_uses_hyper_chain_metadata():
@@ -3200,7 +3329,8 @@ def test_neo4j_graph_client_multihop_retrieval_uses_hyper_chain_metadata():
         ranking_policy="hybrid",
     )
 
-    query = driver.session_obj.calls[-1]["query"]
+    multi_hop_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    query = multi_hop_call["query"]
     assert "rel[$hyper_event_property]" in query
     assert "rel[$hyper_role_property]" in query
     assert "rel[$chain_id_property]" in query
@@ -3217,9 +3347,7 @@ def test_neo4j_graph_client_multihop_retrieval_uses_hyper_chain_metadata():
     assert "split(right_key, $chain_order_separator)[0]" in query
     assert "split(left_key, $chain_order_separator)[0]" in query
     assert "toInteger(split(right_key, $chain_order_separator)[1])" in query
-    assert (
-        driver.session_obj.calls[-1]["params"]["chain_order_separator"] == CHAIN_ORDER_KEY_SEPARATOR
-    )
+    assert multi_hop_call["params"]["chain_order_separator"] == CHAIN_ORDER_KEY_SEPARATOR
     assert "toLower(coalesce(r[$hyper_role_property], '')) CONTAINS term" in query
     assert "r[$hyper_role_property] AS hyper_role" in query
     assert "rel.hyper_role" not in query
@@ -3247,7 +3375,7 @@ def test_neo4j_graph_client_multihop_query_returns_each_path_edge_for_stitching(
         ranking_policy="hybrid",
     )
 
-    query = driver.session_obj.calls[-1]["query"]
+    query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
     assert "UNWIND range(0, size(rels) - 1) AS rel_index" in query
     assert "rels[rel_index] AS r" in query
     assert "rel_index + 1 AS hop" in query
@@ -3274,7 +3402,7 @@ def test_neo4j_graph_client_multihop_query_limits_paths_before_unwinding_edges()
         ranking_policy="hybrid",
     )
 
-    query = driver.session_obj.calls[-1]["query"]
+    query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
     limit_index = query.index("LIMIT $limit")
     unwind_index = query.index("UNWIND range(0, size(rels) - 1) AS rel_index")
     deep_path_order_index = query.index("hop DESC")
@@ -3303,7 +3431,7 @@ def test_neo4j_graph_client_multihop_query_keeps_path_rels_until_edge_unwind():
         ranking_policy="hybrid",
     )
 
-    query = driver.session_obj.calls[-1]["query"]
+    query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
     assert "WITH rels, startNode(r) AS s" in query
     assert "WITH rels, s, r, o, hop, confidence_score" in query
     assert "WITH rels, s, r, o, hop, chain_path_score" in query
@@ -3330,7 +3458,7 @@ def test_neo4j_graph_client_multihop_query_keeps_chain_path_flags_until_scoring(
         ranking_policy="hybrid",
     )
 
-    query = driver.session_obj.calls[-1]["query"]
+    query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
     assert (
         "WITH rels, startNode(r) AS s, r, endNode(r) AS o, hop, chain_path,\n"
         "             chain_order_path, seed_score,"

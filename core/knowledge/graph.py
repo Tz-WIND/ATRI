@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import math
 import time
@@ -902,44 +903,90 @@ class Neo4jGraphClient:
             else self.config.get("expansion_candidate_limit")
         )
 
-        def run_context_query(query: str, *, limit: int) -> list[Any]:
+        def run_session_query(session: Any, query: str, *, limit: int) -> list[Any]:
             seed_limit = max(limit, query_limit, expansion_query_limit)
-            return self._run_with_reconnect(
-                lambda session: list(
-                    session.run(
-                        query,
-                        source_ids=source_ids or [],
-                        source_score_rows=source_score_rows,
-                        terms=terms,
-                        term_rows=term_rows,
-                        fulltext_query=fulltext_query,
-                        limit=limit,
-                        seed_limit=seed_limit,
-                        ranking_policy=policy,
-                        entity_text_index=_ENTITY_FULLTEXT_INDEX,
-                        fact_text_index=_FACT_FULLTEXT_INDEX,
-                        chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
-                        hyper_role_predicate=HYPER_ROLE_PREDICATE,
-                        chain_id_property="chain_id",
-                        chain_ids_property="chain_ids",
-                        chain_order_property="chain_order",
-                        chain_order_keys_property="chain_order_keys",
-                        hyper_event_property="hyper_event",
-                        hyper_role_property="hyper_role",
-                        structural_property="structural",
-                        timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
-                    )
+            return list(
+                session.run(
+                    query,
+                    source_ids=source_ids or [],
+                    source_score_rows=source_score_rows,
+                    terms=terms,
+                    term_rows=term_rows,
+                    fulltext_query=fulltext_query,
+                    limit=limit,
+                    seed_limit=seed_limit,
+                    ranking_policy=policy,
+                    entity_text_index=_ENTITY_FULLTEXT_INDEX,
+                    fact_text_index=_FACT_FULLTEXT_INDEX,
+                    chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
+                    hyper_role_predicate=HYPER_ROLE_PREDICATE,
+                    chain_id_property="chain_id",
+                    chain_ids_property="chain_ids",
+                    chain_order_property="chain_order",
+                    chain_order_keys_property="chain_order_keys",
+                    hyper_event_property="hyper_event",
+                    hyper_role_property="hyper_role",
+                    structural_property="structural",
+                    timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
                 )
             )
 
+        def run_context_query_once(query: str, *, limit: int) -> list[Any]:
+            with self._session() as session:
+                return run_session_query(session, query, limit=limit)
+
+        def run_context_query(query: str, *, limit: int) -> list[Any]:
+            return self._run_with_reconnect(
+                lambda session: run_session_query(session, query, limit=limit)
+            )
+
+        def run_timed_context_query_once(query: str, *, limit: int) -> tuple[list[Any], float]:
+            query_started_at = time.perf_counter()
+            rows = run_context_query_once(query, limit=limit)
+            return rows, (time.perf_counter() - query_started_at) * 1000
+
+        def run_parallel_context_queries(
+            queries: list[tuple[str, int]],
+        ) -> list[tuple[list[Any], float]]:
+            results: list[tuple[list[Any], float] | None] = [None] * len(queries)
+            errors: list[Exception] = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(queries)) as pool:
+                futures = [
+                    pool.submit(run_timed_context_query_once, query, limit=limit)
+                    for query, limit in queries
+                ]
+                for index, future in enumerate(futures):
+                    try:
+                        results[index] = future.result()
+                    except Exception as e:
+                        errors.append(e)
+            if errors:
+                first_error = errors[0]
+                if _is_retryable_neo4j_connection_error(first_error):
+                    logger.warning(
+                        "Neo4j graph parallel retrieval connection lost; "
+                        "reconnecting and retrying serially once: %s",
+                        first_error,
+                    )
+                    self.close()
+                    self.initialize()
+                    return [
+                        run_timed_context_query_once(query, limit=limit) for query, limit in queries
+                    ]
+                raise first_error
+            return [result or ([], 0.0) for result in results]
+
         if depth > 1:
             used_scan_fallback = False
-            single_hop_started_at = time.perf_counter()
-            single_hop_rows = run_context_query(single_hop_cypher, limit=query_limit)
-            _record_timing(timings, "graph_single_hop_ms", single_hop_started_at)
-            multi_hop_started_at = time.perf_counter()
-            multi_hop_rows = run_context_query(cypher, limit=expansion_query_limit)
-            _record_timing(timings, "graph_multi_hop_ms", multi_hop_started_at)
+            parallel_results = run_parallel_context_queries(
+                [
+                    (single_hop_cypher, query_limit),
+                    (cypher, expansion_query_limit),
+                ]
+            )
+            (single_hop_rows, single_hop_ms), (multi_hop_rows, multi_hop_ms) = parallel_results
+            _set_timing(timings, "graph_single_hop_ms", single_hop_ms)
+            _set_timing(timings, "graph_multi_hop_ms", multi_hop_ms)
             rows = [*single_hop_rows, *multi_hop_rows]
             if multi_hop_scan_cypher and len(rows) < query_limit:
                 used_scan_fallback = True
