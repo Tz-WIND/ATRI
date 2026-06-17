@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -253,29 +254,40 @@ class KnowledgeBaseManager:
         kb_ids: list[str] | None = None,
         kb_names: list[str] | None = None,
         top_k: int = 5,
+        timings: dict[str, Any] | None = None,
     ) -> dict:
+        started_at = time.perf_counter()
         if self.retriever is None:
             raise RuntimeError("knowledge manager is not initialized")
         top_k = _int_at_least(top_k, "top_k", 1)
         kb_records = self._resolve_retrieval_kbs(kb_ids or [], kb_names or [])
         kb_records = [self._with_rerank_provider_config(kb) for kb in kb_records]
         query_vectors = {}
+        embed_ms = 0.0
         for kb in kb_records:
             selection = self._selection_from_kb(kb)
+            embed_started_at = time.perf_counter()
             vectors = await self.embedding_client.embed_texts(selection, [query])
+            embed_ms += (time.perf_counter() - embed_started_at) * 1000
             query_vectors[kb["kb_id"]] = vectors[0]
+        _set_timing(timings, "vector_embed_ms", embed_ms)
         hits = await self.retriever.retrieve(
             query=query,
             kb_records=kb_records,
             query_vectors=query_vectors,
             top_k=top_k,
+            timings=timings,
         )
+        format_started_at = time.perf_counter()
         results = [hit.to_dict() for hit in hits]
+        context_text = format_context(results)
+        _record_timing(timings, "vector_format_ms", format_started_at)
+        _record_timing(timings, "vector_total_ms", started_at)
         return {
             "query": query,
             "results": results,
             "total": len(results),
-            "context_text": format_context(results),
+            "context_text": context_text,
         }
 
     async def get_task(self, task_id: str) -> dict:
@@ -440,3 +452,19 @@ def _int_at_least(value: object, field: str, minimum: int) -> int:
     if parsed < minimum:
         raise ValueError(f"{field} must be >= {minimum}")
     return parsed
+
+
+def _record_timing(
+    timings: dict[str, Any] | None,
+    key: str,
+    started_at: float,
+) -> None:
+    if timings is None:
+        return
+    timings[key] = (time.perf_counter() - started_at) * 1000
+
+
+def _set_timing(timings: dict[str, Any] | None, key: str, elapsed_ms: float) -> None:
+    if timings is None:
+        return
+    timings[key] = float(elapsed_ms)

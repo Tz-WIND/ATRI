@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import inspect
 import json
 import math
 import threading
@@ -698,9 +699,23 @@ class ProcessStage(Stage):
         if not query.strip():
             return ""
 
+        vector_enabled = self._vector_retrieval_available(knowledge)
+        graph_enabled = self._graph_retrieval_available()
+        if not vector_enabled and not graph_enabled:
+            return ""
+        retrieval_mode = _knowledge_retrieval_mode(vector_enabled, graph_enabled)
         total_started_at = time.perf_counter()
         vector_started_at = time.perf_counter()
-        vector_task = asyncio.create_task(self._vector_context_for_event(knowledge, query))
+        vector_timings: dict[str, Any] = {}
+        graph_timings: dict[str, Any] = {}
+        graph_retry_timings: dict[str, Any] = {}
+        vector_task = (
+            asyncio.create_task(
+                self._vector_context_for_event(knowledge, query, timings=vector_timings)
+            )
+            if vector_enabled
+            else None
+        )
         graph_task: asyncio.Task[str] | None = None
         retrieval_result: dict | None = None
         graph_context = ""
@@ -712,6 +727,8 @@ class ProcessStage(Stage):
 
         async def await_vector_result() -> dict | None:
             nonlocal vector_result_loaded
+            if vector_task is None:
+                return None
             result = await vector_task
             if not vector_result_loaded:
                 vector_result_loaded = True
@@ -721,15 +738,16 @@ class ProcessStage(Stage):
             return result
 
         try:
-            if self._graph_retrieval_available():
-                done, _ = await asyncio.wait(
-                    {vector_task},
-                    timeout=self._graph_source_anchor_wait_seconds(),
-                )
-                if vector_task in done:
-                    retrieval_result = await await_vector_result()
-                    graph_source_ids = _retrieval_source_ids(retrieval_result or {})
-                    graph_source_scores = _retrieval_source_scores(retrieval_result or {})
+            if graph_enabled:
+                if vector_task is not None:
+                    done, _ = await asyncio.wait(
+                        {vector_task},
+                        timeout=self._graph_source_anchor_wait_seconds(),
+                    )
+                    if vector_task in done or vector_task.done():
+                        retrieval_result = await await_vector_result()
+                        graph_source_ids = _retrieval_source_ids(retrieval_result or {})
+                        graph_source_scores = _retrieval_source_scores(retrieval_result or {})
                 graph_started_at = time.perf_counter()
                 graph_task = asyncio.create_task(
                     self._graph_context_for_event(
@@ -737,12 +755,15 @@ class ProcessStage(Stage):
                         query,
                         source_ids=graph_source_ids,
                         source_scores=graph_source_scores,
+                        timings=graph_timings,
                     )
                 )
 
-            if not vector_result_loaded:
+            if vector_task is not None and not vector_result_loaded:
                 retrieval_result = await await_vector_result()
-            vector_elapsed_ms = (time.perf_counter() - vector_started_at) * 1000
+            vector_elapsed_ms = (
+                (time.perf_counter() - vector_started_at) * 1000 if vector_task is not None else 0.0
+            )
 
             if graph_task is not None:
                 graph_context = await graph_task
@@ -750,7 +771,13 @@ class ProcessStage(Stage):
 
             source_ids = _retrieval_source_ids(retrieval_result or {})
             source_scores = _retrieval_source_scores(retrieval_result or {})
-            if graph_task is not None and source_ids and not graph_source_ids and not graph_context:
+            if (
+                graph_task is not None
+                and vector_task is not None
+                and source_ids
+                and not graph_source_ids
+                and not graph_context
+            ):
                 graph_retry = True
                 graph_retry_started_at = time.perf_counter()
                 anchored_graph_context = await self._graph_context_for_event(
@@ -758,6 +785,7 @@ class ProcessStage(Stage):
                     query,
                     source_ids=source_ids,
                     source_scores=source_scores,
+                    timings=graph_retry_timings,
                 )
                 graph_elapsed_ms += (time.perf_counter() - graph_retry_started_at) * 1000
                 if anchored_graph_context:
@@ -769,18 +797,59 @@ class ProcessStage(Stage):
             if graph_context:
                 parts.append(graph_context)
             source_ids_count = len(_retrieval_source_ids(retrieval_result or {}))
+            total_elapsed_ms = (time.perf_counter() - total_started_at) * 1000
+            vector_results_count = (
+                len(retrieval_result.get("results", [])) if retrieval_result else 0
+            )
             logger.info(
                 "Knowledge context retrieval done: total_ms=%.1f vector_ms=%.1f "
                 "graph_ms=%.1f source_ids_count=%d graph_anchored=%s graph_retry=%s "
-                "vector_results=%d graph_context=%s",
-                (time.perf_counter() - total_started_at) * 1000,
+                "vector_results=%d graph_context=%s retrieval_mode=%s "
+                "vector_enabled=%s graph_enabled=%s",
+                total_elapsed_ms,
                 vector_elapsed_ms,
                 graph_elapsed_ms,
                 source_ids_count,
                 bool(graph_source_ids),
                 graph_retry,
-                len(retrieval_result.get("results", [])) if retrieval_result else 0,
+                vector_results_count,
                 bool(graph_context),
+                retrieval_mode,
+                vector_enabled,
+                graph_enabled,
+            )
+            graph_combined_timings = _combine_graph_timings(graph_timings, graph_retry_timings)
+            logger.debug(
+                "GRAG retrieval timings: total_ms=%.1f vector_total_ms=%.1f "
+                "vector_embed_ms=%.1f vector_store_ms=%.1f vector_dense_ms=%.1f "
+                "vector_sparse_ms=%.1f vector_fuse_ms=%.1f vector_rerank_ms=%.1f "
+                "vector_limit_ms=%.1f graph_total_ms=%.1f graph_wall_ms=%.1f "
+                "graph_single_hop_ms=%.1f graph_multi_hop_ms=%.1f "
+                "graph_scan_fallback_ms=%.1f graph_format_ms=%.1f vector_hits=%d "
+                "graph_rows=%d graph_returned_facts=%d graph_retry=%s retrieval_mode=%s "
+                "vector_enabled=%s graph_enabled=%s",
+                total_elapsed_ms,
+                _timing_float(vector_timings, "vector_total_ms", vector_elapsed_ms),
+                _timing_float(vector_timings, "vector_embed_ms"),
+                _timing_float(vector_timings, "vector_store_ms"),
+                _timing_float(vector_timings, "vector_dense_ms"),
+                _timing_float(vector_timings, "vector_sparse_ms"),
+                _timing_float(vector_timings, "vector_fuse_ms"),
+                _timing_float(vector_timings, "vector_rerank_ms"),
+                _timing_float(vector_timings, "vector_limit_ms"),
+                _timing_float(graph_combined_timings, "graph_total_ms", graph_elapsed_ms),
+                graph_elapsed_ms,
+                _timing_float(graph_combined_timings, "graph_single_hop_ms"),
+                _timing_float(graph_combined_timings, "graph_multi_hop_ms"),
+                _timing_float(graph_combined_timings, "graph_scan_fallback_ms"),
+                _timing_float(graph_combined_timings, "graph_format_ms"),
+                _timing_int(vector_timings, "vector_returned_hits", vector_results_count),
+                _timing_int(graph_combined_timings, "graph_rows"),
+                _timing_int(graph_combined_timings, "graph_returned_facts"),
+                graph_retry,
+                retrieval_mode,
+                vector_enabled,
+                graph_enabled,
             )
             return "\n\n".join(part for part in parts if part.strip())
         finally:
@@ -800,6 +869,15 @@ class ProcessStage(Stage):
         if not graph_cfg.get("enabled") or not graph_cfg.get("retrieval_enabled", True):
             return False
         return getattr(self, "graph_manager", None) is not None
+
+    def _vector_retrieval_available(self, knowledge: object) -> bool:
+        if not isinstance(knowledge, dict) or not knowledge.get("enabled"):
+            return False
+        manager = getattr(self, "knowledge_manager", None)
+        active_bases = knowledge.get("active_bases", [])
+        if manager is None or not isinstance(active_bases, list):
+            return False
+        return any(str(item or "").strip() for item in active_bases)
 
     def _graph_source_anchor_wait_seconds(self) -> float:
         observed = getattr(self, "_graph_source_anchor_vector_latency_seconds", None)
@@ -826,7 +904,13 @@ class ProcessStage(Stage):
             + elapsed_seconds * _GRAPH_SOURCE_ANCHOR_LATENCY_ALPHA
         )
 
-    async def _vector_context_for_event(self, knowledge: object, query: str) -> dict | None:
+    async def _vector_context_for_event(
+        self,
+        knowledge: object,
+        query: str,
+        *,
+        timings: dict[str, Any] | None = None,
+    ) -> dict | None:
         if not isinstance(knowledge, dict) or not knowledge.get("enabled"):
             return None
         manager = getattr(self, "knowledge_manager", None)
@@ -834,14 +918,17 @@ class ProcessStage(Stage):
         if manager is None or not isinstance(active_bases, list) or not active_bases:
             return None
         try:
+            retrieve_kwargs: dict[str, Any] = {
+                "query": query,
+                "kb_ids": [str(item) for item in active_bases if str(item or "").strip()],
+                "kb_names": [],
+                "top_k": int(knowledge.get("top_k") or 5),
+            }
+            if timings is not None and _accepts_keyword(manager.retrieve, "timings"):
+                retrieve_kwargs["timings"] = timings
             return cast(
                 dict,
-                await manager.retrieve(
-                    query=query,
-                    kb_ids=[str(item) for item in active_bases if str(item or "").strip()],
-                    kb_names=[],
-                    top_k=int(knowledge.get("top_k") or 5),
-                ),
+                await manager.retrieve(**retrieve_kwargs),
             )
         except Exception as e:
             logger.warning(f"Knowledge retrieval skipped: {e}")
@@ -853,6 +940,7 @@ class ProcessStage(Stage):
         query: str,
         source_ids: list[str] | None = None,
         source_scores: dict[str, float] | None = None,
+        timings: dict[str, Any] | None = None,
     ) -> str:
         knowledge = getattr(self, "knowledge", {})
         graph_cfg = knowledge.get("graph", {}) if isinstance(knowledge, dict) else {}
@@ -865,17 +953,20 @@ class ProcessStage(Stage):
             return ""
         retrieval_options = _planned_graph_retrieval_options(query, graph_cfg)
         try:
+            retrieve_kwargs: dict[str, Any] = {
+                "query": query,
+                "source_ids": source_ids or [],
+                "source_scores": source_scores or {},
+                "max_facts": retrieval_options["max_facts"],
+                "retrieval_depth": retrieval_options["retrieval_depth"],
+                "ranking_policy": retrieval_options["ranking_policy"],
+                "expansion_candidate_limit": retrieval_options["expansion_candidate_limit"],
+            }
+            if timings is not None and _accepts_keyword(graph_manager.retrieve_context, "timings"):
+                retrieve_kwargs["timings"] = timings
             return cast(
                 str,
-                await graph_manager.retrieve_context(
-                    query=query,
-                    source_ids=source_ids or [],
-                    source_scores=source_scores or {},
-                    max_facts=retrieval_options["max_facts"],
-                    retrieval_depth=retrieval_options["retrieval_depth"],
-                    ranking_policy=retrieval_options["ranking_policy"],
-                    expansion_candidate_limit=retrieval_options["expansion_candidate_limit"],
-                ),
+                await graph_manager.retrieve_context(**retrieve_kwargs),
             )
         except Exception as e:
             logger.warning(f"Graph knowledge retrieval skipped: {e}")
@@ -1679,6 +1770,61 @@ def _retrieval_source_scores(result: dict) -> dict[str, float]:
             continue
         values[chunk_id] = max(score, values.get(chunk_id, 0.0))
     return values
+
+
+def _knowledge_retrieval_mode(vector_enabled: bool, graph_enabled: bool) -> str:
+    if vector_enabled and graph_enabled:
+        return "hybrid"
+    if vector_enabled:
+        return "vector_only"
+    if graph_enabled:
+        return "graph_only"
+    return "disabled"
+
+
+def _accepts_keyword(method: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _combine_graph_timings(*timing_sets: dict[str, Any]) -> dict[str, Any]:
+    combined: dict[str, Any] = {}
+    additive_float_keys = {
+        "graph_total_ms",
+        "graph_single_hop_ms",
+        "graph_multi_hop_ms",
+        "graph_scan_fallback_ms",
+        "graph_format_ms",
+    }
+    additive_int_keys = {"graph_rows", "graph_returned_facts"}
+    for timings in timing_sets:
+        for key in additive_float_keys:
+            if key in timings:
+                combined[key] = _timing_float(combined, key) + _timing_float(timings, key)
+        for key in additive_int_keys:
+            if key in timings:
+                combined[key] = _timing_int(combined, key) + _timing_int(timings, key)
+    return combined
+
+
+def _timing_float(timings: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(timings.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _timing_int(timings: dict[str, Any], key: str, default: int = 0) -> int:
+    try:
+        return int(timings.get(key, default))
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _planned_graph_retrieval_options(query: str, graph_cfg: dict) -> dict[str, Any]:

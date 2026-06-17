@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -51,30 +52,54 @@ class HybridRetriever:
         kb_records: list[dict],
         query_vectors: dict[str, list[float]],
         top_k: int,
+        timings: dict[str, Any] | None = None,
     ) -> list[RetrievalHit]:
+        started_at = time.perf_counter()
         kb_ids = [kb["kb_id"] for kb in kb_records]
         if not query.strip() or not kb_ids:
+            _record_timing(timings, "vector_retriever_ms", started_at)
             return []
 
         options = {kb["kb_id"]: kb for kb in kb_records}
-        dense_ranked = self._dense_rank(kb_ids, query_vectors, options)
+        dense_started_at = time.perf_counter()
+        dense_ranked = self._dense_rank(kb_ids, query_vectors, options, timings=timings)
+        _record_timing(timings, "vector_dense_ms", dense_started_at)
+        sparse_started_at = time.perf_counter()
         sparse_ranked = self.store.keyword_search(
             query,
             kb_ids,
             max(_positive_limit(kb.get("top_k_sparse"), 30) for kb in kb_records),
         )
+        _record_timing(timings, "vector_sparse_ms", sparse_started_at)
+        _record_count(timings, "vector_sparse_rows", len(sparse_ranked))
+        fuse_started_at = time.perf_counter()
         fused = self._fuse(dense_ranked, sparse_ranked)
+        _record_timing(timings, "vector_fuse_ms", fuse_started_at)
+        _record_count(timings, "vector_fused_rows", len(fused))
         hits = [self._hit_from_row(row, score) for row, score in fused]
+        rerank_started_at = time.perf_counter()
         hits = await self._maybe_rerank(query, kb_records, hits)
-        return self._apply_final_limits(hits, kb_records, top_k)
+        _record_timing(timings, "vector_rerank_ms", rerank_started_at)
+        _record_count(timings, "vector_reranked_hits", len(hits))
+        limit_started_at = time.perf_counter()
+        limited = self._apply_final_limits(hits, kb_records, top_k)
+        _record_timing(timings, "vector_limit_ms", limit_started_at)
+        _record_count(timings, "vector_returned_hits", len(limited))
+        _record_timing(timings, "vector_retriever_ms", started_at)
+        return limited
 
     def _dense_rank(
         self,
         kb_ids: list[str],
         query_vectors: dict[str, list[float]],
         options: dict[str, dict],
+        *,
+        timings: dict[str, Any] | None = None,
     ) -> list[dict]:
+        store_started_at = time.perf_counter()
         rows = self.store.vector_chunks(kb_ids)
+        _record_timing(timings, "vector_store_ms", store_started_at)
+        _record_count(timings, "vector_rows", len(rows))
         scored = []
         for row in rows:
             vector = query_vectors.get(row["kb_id"])
@@ -95,6 +120,7 @@ class HybridRetriever:
                 continue
             counts[kb_id] = counts.get(kb_id, 0) + 1
             limited.append(row)
+        _record_count(timings, "vector_dense_rows", len(limited))
         return limited
 
     def _fuse(self, dense_rows: list[dict], sparse_rows: list[dict]) -> list[tuple[dict, float]]:
@@ -203,3 +229,19 @@ def _positive_limit(value: object, default: int) -> int:
     except (TypeError, ValueError):
         parsed = default
     return max(1, parsed)
+
+
+def _record_timing(
+    timings: dict[str, Any] | None,
+    key: str,
+    started_at: float,
+) -> None:
+    if timings is None:
+        return
+    timings[key] = (time.perf_counter() - started_at) * 1000
+
+
+def _record_count(timings: dict[str, Any] | None, key: str, value: int) -> None:
+    if timings is None:
+        return
+    timings[key] = int(value)

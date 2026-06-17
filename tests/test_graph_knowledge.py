@@ -1953,6 +1953,42 @@ def test_neo4j_graph_client_logs_retrieval_metrics(caplog):
     assert "used_fulltext=True" in caplog.text
 
 
+def test_neo4j_graph_client_records_retrieval_timing_segments():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    timings: dict[str, Any] = {}
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+        timings=timings,
+    )
+
+    for key in (
+        "graph_total_ms",
+        "graph_single_hop_ms",
+        "graph_multi_hop_ms",
+        "graph_scan_fallback_ms",
+        "graph_format_ms",
+    ):
+        assert key in timings
+        assert timings[key] >= 0
+    assert timings["graph_rows"] >= 1
+    assert timings["graph_returned_facts"] >= 1
+    assert timings["graph_used_fulltext"] is True
+
+
 def test_neo4j_graph_client_multihop_preserves_one_hop_context_and_dedupes():
     class PreserveOneHopSession(FakeNeo4jSession):
         def run(self, query, **params):
@@ -4438,6 +4474,121 @@ async def test_graph_manager_logs_retrieval_metrics(caplog, tmp_path):
         assert "depth=3" in caplog.text
         assert "source_ids_count=1" in caplog.text
         assert "max_facts=5" in caplog.text
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_logs_graph_timing_segments_for_direct_retrieval(caplog, tmp_path):
+    class TimedGraphClient(FakeGraphClient):
+        def retrieve_context(
+            self,
+            *,
+            query,
+            source_ids=None,
+            source_scores=None,
+            max_facts=8,
+            retrieval_depth=1,
+            ranking_policy="hybrid",
+            expansion_candidate_limit=40,
+            include_entity_types=False,
+            timings=None,
+        ):
+            if timings is not None:
+                timings.update(
+                    {
+                        "graph_total_ms": 13.7,
+                        "graph_single_hop_ms": 4.1,
+                        "graph_multi_hop_ms": 8.2,
+                        "graph_scan_fallback_ms": 0.0,
+                        "graph_format_ms": 1.4,
+                        "graph_rows": 1686,
+                        "graph_returned_facts": 75,
+                    }
+                )
+            return super().retrieve_context(
+                query=query,
+                source_ids=source_ids,
+                source_scores=source_scores,
+                max_facts=max_facts,
+                retrieval_depth=retrieval_depth,
+                ranking_policy=ranking_policy,
+                expansion_candidate_limit=expansion_candidate_limit,
+                include_entity_types=include_entity_types,
+            )
+
+    caplog.set_level(logging.DEBUG, logger="atri")
+    store = TaskStore(tmp_path / "runtime")
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                    "retrieval_depth": 3,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, TimedGraphClient()),
+        extractor=cast(Any, FakeExtractor()),
+        task_store=store,
+    )
+    try:
+        await manager.retrieve_context(
+            query="Alice",
+            source_ids=[],
+            max_facts=75,
+        )
+
+        assert "Graph knowledge retrieval done" in caplog.text
+        for field in (
+            "graph_total_ms=13.7",
+            "graph_single_hop_ms=4.1",
+            "graph_multi_hop_ms=8.2",
+            "graph_scan_fallback_ms=0.0",
+            "graph_format_ms=1.4",
+            "graph_rows=1686",
+            "graph_returned_facts=75",
+        ):
+            assert field in caplog.text
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_graph_manager_passes_timing_dict_to_var_keyword_graph_client(tmp_path):
+    class KwargsTimedGraphClient(FakeGraphClient):
+        def retrieve_context(self, **kwargs):
+            timings = kwargs.pop("timings", None)
+            if timings is not None:
+                timings["graph_total_ms"] = 9.9
+            return super().retrieve_context(**kwargs)
+
+    store = TaskStore(tmp_path / "runtime")
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                    "retrieval_depth": 3,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, KwargsTimedGraphClient()),
+        extractor=cast(Any, FakeExtractor()),
+        task_store=store,
+    )
+    timings: dict[str, Any] = {}
+    try:
+        await manager.retrieve_context(
+            query="Alice",
+            source_ids=[],
+            max_facts=5,
+            timings=timings,
+        )
+
+        assert timings["graph_total_ms"] == 9.9
     finally:
         store.close()
 

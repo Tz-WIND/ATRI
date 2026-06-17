@@ -47,7 +47,9 @@ class FakeGraphManager:
         retrieval_depth=1,
         ranking_policy="hybrid",
         expansion_candidate_limit=40,
+        timings=None,
     ):
+        _ = timings
         call = {
             "query": query,
             "source_ids": source_ids,
@@ -790,6 +792,159 @@ async def test_process_stage_logs_knowledge_context_retrieval_metrics(caplog):
 
 
 @pytest.mark.asyncio
+async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
+    class TimedKnowledgeManager(FakeKnowledgeManager):
+        async def retrieve(self, *, query, kb_ids=None, kb_names=None, top_k=5, timings=None):
+            result = await super().retrieve(
+                query=query,
+                kb_ids=kb_ids,
+                kb_names=kb_names,
+                top_k=top_k,
+            )
+            result["results"] = [{"chunk_id": "chunk-1", "score": 0.82, "content": "SQLite"}]
+            if timings is not None:
+                timings.update(
+                    {
+                        "vector_total_ms": 12.3,
+                        "vector_embed_ms": 1.1,
+                        "vector_store_ms": 2.2,
+                        "vector_dense_ms": 3.3,
+                        "vector_sparse_ms": 4.4,
+                        "vector_fuse_ms": 0.5,
+                        "vector_rerank_ms": 0.6,
+                        "vector_limit_ms": 0.7,
+                        "vector_returned_hits": 1,
+                    }
+                )
+            return result
+
+    class TimedGraphManager(FakeGraphManager):
+        async def retrieve_context(
+            self,
+            *,
+            query,
+            source_ids=None,
+            source_scores=None,
+            max_facts=8,
+            retrieval_depth=1,
+            ranking_policy="hybrid",
+            expansion_candidate_limit=40,
+            timings=None,
+        ):
+            context = await super().retrieve_context(
+                query=query,
+                source_ids=source_ids,
+                source_scores=source_scores,
+                max_facts=max_facts,
+                retrieval_depth=retrieval_depth,
+                ranking_policy=ranking_policy,
+                expansion_candidate_limit=expansion_candidate_limit,
+            )
+            if timings is not None:
+                timings.update(
+                    {
+                        "graph_total_ms": 23.4,
+                        "graph_single_hop_ms": 5.5,
+                        "graph_multi_hop_ms": 6.6,
+                        "graph_scan_fallback_ms": 0.0,
+                        "graph_format_ms": 1.2,
+                        "graph_rows": 2,
+                        "graph_returned_facts": 2,
+                    }
+                )
+            return context
+
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": True,
+        "active_bases": ["kb-1"],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 3,
+            "max_facts": 2,
+        },
+    }
+    stage.knowledge_manager = TimedKnowledgeManager()
+    stage.graph_manager = TimedGraphManager()
+    event = MessageEvent(message_str="How does Alice use sqlite?")
+
+    caplog.set_level(logging.INFO, logger="atri")
+    await stage._knowledge_context_for_event(event)
+    assert "GRAG retrieval timings" not in caplog.text
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG, logger="atri")
+    await stage._knowledge_context_for_event(event)
+
+    assert "GRAG retrieval timings" in caplog.text
+    for field in (
+        "total_ms=",
+        "vector_total_ms=12.3",
+        "vector_embed_ms=1.1",
+        "vector_dense_ms=3.3",
+        "vector_sparse_ms=4.4",
+        "graph_total_ms=23.4",
+        "graph_single_hop_ms=5.5",
+        "graph_multi_hop_ms=6.6",
+        "graph_scan_fallback_ms=0.0",
+        "graph_format_ms=1.2",
+        "vector_hits=1",
+        "graph_rows=2",
+        "graph_retry=False",
+    ):
+        assert field in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_process_stage_passes_graph_timings_to_var_keyword_manager(caplog):
+    class KwargsTimedGraphManager(FakeGraphManager):
+        async def retrieve_context(self, **kwargs):
+            timings = kwargs.pop("timings", None)
+            context = await super().retrieve_context(**kwargs)
+            if timings is not None:
+                timings.update(
+                    {
+                        "graph_total_ms": 31.2,
+                        "graph_single_hop_ms": 7.8,
+                        "graph_multi_hop_ms": 0.0,
+                        "graph_scan_fallback_ms": 0.0,
+                        "graph_format_ms": 1.1,
+                        "graph_rows": 4,
+                        "graph_returned_facts": 2,
+                    }
+                )
+            return context
+
+    caplog.set_level(logging.DEBUG, logger="atri")
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": False,
+        "active_bases": [],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 2,
+            "max_facts": 2,
+        },
+    }
+    stage.knowledge_manager = FakeKnowledgeManager()
+    stage.graph_manager = KwargsTimedGraphManager()
+    event = MessageEvent(message_str="How does Alice use sqlite?")
+
+    await stage._knowledge_context_for_event(event)
+
+    assert "GRAG retrieval timings" in caplog.text
+    assert "graph_total_ms=31.2" in caplog.text
+    assert "graph_single_hop_ms=7.8" in caplog.text
+    assert "graph_rows=4" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_process_stage_cancels_pending_retrieval_tasks_when_context_is_cancelled():
     class BlockingKnowledgeManager:
         def __init__(self):
@@ -891,6 +1046,36 @@ async def test_process_stage_injects_graph_context_when_vector_knowledge_is_disa
             "expansion_candidate_limit": 40,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_stage_graph_only_mode_skips_vector_anchor_flow_when_vector_disabled(caplog):
+    caplog.set_level(logging.DEBUG, logger="atri")
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": False,
+        "active_bases": ["kb-1"],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 2,
+            "max_facts": 2,
+        },
+    }
+    stage.knowledge_manager = FakeKnowledgeManager()
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="How does Alice use sqlite?")
+
+    context = await stage._knowledge_context_for_event(event)
+
+    assert "[Graph context]" in context
+    assert stage.knowledge_manager.calls == []
+    assert not hasattr(stage, "_graph_source_anchor_vector_latency_seconds")
+    assert "retrieval_mode=graph_only" in caplog.text
+    assert "vector_enabled=False" in caplog.text
+    assert "graph_enabled=True" in caplog.text
 
 
 def test_process_stage_chat_turn_enqueue_is_non_blocking():

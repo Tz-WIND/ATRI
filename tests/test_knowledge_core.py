@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from core.knowledge.chunking import RecursiveTextChunker
@@ -123,6 +125,56 @@ async def test_knowledge_manager_imports_and_retrieves_with_selected_models(tmp_
     assert result["results"][0]["doc_name"] == "notes.md"
     assert "SQLite stores knowledge chunks" in result["results"][0]["content"]
     assert result["context_text"].startswith("[Knowledge context]")
+
+
+@pytest.mark.asyncio
+async def test_knowledge_manager_records_retrieval_timing_segments(tmp_path):
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config=_config(),
+        embedding_client=FakeEmbeddingClient(),
+        rerank_client=FakeRerankClient(),
+    )
+    await manager.initialize()
+
+    kb = await manager.create_knowledge_base(
+        name="Timed Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        rerank_provider="Local",
+        rerank_model="rerank-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    await manager.import_document(
+        kb["kb_id"],
+        file_name="timed.txt",
+        content="SQLite stores knowledge chunks. Python agents use tools.",
+    )
+
+    timings: dict[str, Any] = {}
+    await manager.retrieve(
+        query="sqlite retrieval",
+        kb_ids=[kb["kb_id"]],
+        top_k=2,
+        timings=timings,
+    )
+
+    for key in (
+        "vector_total_ms",
+        "vector_embed_ms",
+        "vector_store_ms",
+        "vector_dense_ms",
+        "vector_sparse_ms",
+        "vector_fuse_ms",
+        "vector_rerank_ms",
+        "vector_limit_ms",
+    ):
+        assert key in timings
+        assert timings[key] >= 0
+    assert timings["vector_rows"] >= 1
+    assert timings["vector_sparse_rows"] >= 0
+    assert timings["vector_returned_hits"] >= 1
 
 
 @pytest.mark.asyncio

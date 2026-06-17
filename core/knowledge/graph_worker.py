@@ -222,6 +222,7 @@ class GraphKnowledgeManager:
         retrieval_depth: int | None = None,
         ranking_policy: str | None = None,
         expansion_candidate_limit: int | None = None,
+        timings: dict[str, Any] | None = None,
     ) -> str:
         if not self.graph_config.get("enabled") or not self.graph_config.get("retrieval_enabled"):
             return ""
@@ -238,20 +239,32 @@ class GraphKnowledgeManager:
         )
         started_at = time.perf_counter()
         try:
+            retrieval_timings = timings if timings is not None else {}
+            retrieve_kwargs: dict[str, Any] = {
+                "query": query,
+                "source_ids": source_ids or [],
+                "source_scores": source_scores or {},
+                "max_facts": max_facts,
+                "retrieval_depth": depth,
+                "ranking_policy": policy,
+                "expansion_candidate_limit": candidate_limit,
+            }
+            if _accepts_keyword(
+                self.graph_client.retrieve_context,
+                "timings",
+            ):
+                retrieve_kwargs["timings"] = retrieval_timings
             context = await asyncio.to_thread(
                 self.graph_client.retrieve_context,
-                query=query,
-                source_ids=source_ids or [],
-                source_scores=source_scores or {},
-                max_facts=max_facts,
-                retrieval_depth=depth,
-                ranking_policy=policy,
-                expansion_candidate_limit=candidate_limit,
+                **retrieve_kwargs,
             )
             logger.debug(
                 "Graph knowledge retrieval done: elapsed_ms=%.1f depth=%d max_facts=%d "
                 "source_ids_count=%d expansion_candidate_limit=%d ranking_policy=%s "
-                "context_chars=%d returned_context=%s",
+                "context_chars=%d returned_context=%s graph_total_ms=%.1f "
+                "graph_single_hop_ms=%.1f graph_multi_hop_ms=%.1f "
+                "graph_scan_fallback_ms=%.1f graph_format_ms=%.1f graph_rows=%d "
+                "graph_returned_facts=%d",
                 (time.perf_counter() - started_at) * 1000,
                 depth,
                 max_facts,
@@ -260,6 +273,13 @@ class GraphKnowledgeManager:
                 policy,
                 len(context),
                 bool(context),
+                _timing_float(retrieval_timings, "graph_total_ms"),
+                _timing_float(retrieval_timings, "graph_single_hop_ms"),
+                _timing_float(retrieval_timings, "graph_multi_hop_ms"),
+                _timing_float(retrieval_timings, "graph_scan_fallback_ms"),
+                _timing_float(retrieval_timings, "graph_format_ms"),
+                _timing_int(retrieval_timings, "graph_rows"),
+                _timing_int(retrieval_timings, "graph_returned_facts"),
             )
             return context
         except Exception as e:
@@ -756,6 +776,31 @@ def _accepts_existing_graph_context(method: Any) -> bool:
         or parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in parameters
     )
+
+
+def _accepts_keyword(method: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _timing_float(timings: dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(timings.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _timing_int(timings: dict[str, Any], key: str, default: int = 0) -> int:
+    try:
+        return int(timings.get(key, default))
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _chat_turn_text(user_text: str, assistant_text: str) -> str:

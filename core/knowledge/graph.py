@@ -400,6 +400,7 @@ class Neo4jGraphClient:
         ranking_policy: str = "hybrid",
         expansion_candidate_limit: int | None = None,
         include_entity_types: bool = False,
+        timings: dict[str, Any] | None = None,
     ) -> str:
         if not self.enabled:
             return ""
@@ -410,6 +411,7 @@ class Neo4jGraphClient:
         term_rows = _query_term_rows(query)
         terms = [str(row["term"]) for row in term_rows]
         if not terms and not source_ids:
+            _record_timing(timings, "graph_total_ms", started_at)
             return ""
         depth = _retrieval_depth(retrieval_depth)
         policy = _ranking_policy(ranking_policy)
@@ -913,16 +915,28 @@ class Neo4jGraphClient:
 
         if depth > 1:
             used_scan_fallback = False
-            rows = [
-                *run_context_query(single_hop_cypher, limit=query_limit),
-                *run_context_query(cypher, limit=expansion_query_limit),
-            ]
+            single_hop_started_at = time.perf_counter()
+            single_hop_rows = run_context_query(single_hop_cypher, limit=query_limit)
+            _record_timing(timings, "graph_single_hop_ms", single_hop_started_at)
+            multi_hop_started_at = time.perf_counter()
+            multi_hop_rows = run_context_query(cypher, limit=expansion_query_limit)
+            _record_timing(timings, "graph_multi_hop_ms", multi_hop_started_at)
+            rows = [*single_hop_rows, *multi_hop_rows]
             if multi_hop_scan_cypher and len(rows) < query_limit:
                 used_scan_fallback = True
+                scan_fallback_started_at = time.perf_counter()
                 rows.extend(run_context_query(multi_hop_scan_cypher, limit=expansion_query_limit))
+                _record_timing(timings, "graph_scan_fallback_ms", scan_fallback_started_at)
+            else:
+                _set_timing(timings, "graph_scan_fallback_ms", 0.0)
         else:
             used_scan_fallback = False
+            single_hop_started_at = time.perf_counter()
             rows = run_context_query(cypher, limit=query_limit)
+            _record_timing(timings, "graph_single_hop_ms", single_hop_started_at)
+            _set_timing(timings, "graph_multi_hop_ms", 0.0)
+            _set_timing(timings, "graph_scan_fallback_ms", 0.0)
+        format_started_at = time.perf_counter()
         entries: list[dict[str, Any]] = []
         seen_positions = set()
         for row in rows:
@@ -979,6 +993,12 @@ class Neo4jGraphClient:
                 }
             )
         lines = _format_retrieved_fact_lines(entries, depth=depth, limit=query_limit)
+        _record_timing(timings, "graph_format_ms", format_started_at)
+        _record_count(timings, "graph_rows", len(rows))
+        _record_count(timings, "graph_returned_facts", len(lines))
+        _set_bool(timings, "graph_used_fulltext", bool(fulltext_query))
+        _set_bool(timings, "graph_used_scan_fallback", used_scan_fallback)
+        _record_timing(timings, "graph_total_ms", started_at)
         logger.info(
             "Neo4j graph retrieval done: elapsed_ms=%.1f depth=%d max_facts=%d "
             "source_ids_count=%d row_count=%d returned_facts=%d used_fulltext=%s "
@@ -1590,3 +1610,31 @@ def _result_count(result: list[Any], fallback: int) -> int:
         return int(result[0].get("count", fallback))
     except (TypeError, ValueError, AttributeError):
         return fallback
+
+
+def _record_timing(
+    timings: dict[str, Any] | None,
+    key: str,
+    started_at: float,
+) -> None:
+    if timings is None:
+        return
+    timings[key] = (time.perf_counter() - started_at) * 1000
+
+
+def _set_timing(timings: dict[str, Any] | None, key: str, elapsed_ms: float) -> None:
+    if timings is None:
+        return
+    timings[key] = float(elapsed_ms)
+
+
+def _record_count(timings: dict[str, Any] | None, key: str, value: int) -> None:
+    if timings is None:
+        return
+    timings[key] = int(value)
+
+
+def _set_bool(timings: dict[str, Any] | None, key: str, value: bool) -> None:
+    if timings is None:
+        return
+    timings[key] = bool(value)
