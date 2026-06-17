@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from heapq import heappush, heapreplace
@@ -239,7 +240,7 @@ def _cosine(
 
 
 def _vector_norm(vector: list[float]) -> float:
-    return sum(item * item for item in vector) ** 0.5
+    return math.sqrt(sum(item * item for item in vector))
 
 
 def _positive_limit(value: object, default: int) -> int:

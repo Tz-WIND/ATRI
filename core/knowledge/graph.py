@@ -9,7 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from core import logger
 from core.knowledge.graph_constants import (
@@ -245,7 +245,7 @@ class Neo4jGraphClient:
         )
         cached = self._retrieval_cache.get("fulltext_seed", key)
         if cached is not None:
-            return cached
+            return cast(dict[str, list[dict[str, Any]]], cached)
 
         def load_seed_rows(session: Any) -> dict[str, list[dict[str, Any]]]:
             entity_rows = session.run(
