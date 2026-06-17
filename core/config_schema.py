@@ -11,6 +11,7 @@ from core.knowledge.graph_constants import (
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
+from core.knowledge.store import DEFAULT_EMBEDDING_CACHE_MAX_SIZE
 
 DEFAULT_IMAGE_TRANSCRIPTION_PROMPT = (
     "Transcribe and describe the attached image for a downstream coding agent. "
@@ -72,6 +73,11 @@ CONFIG_SCHEMA: dict[str, Any] = {
                 "enabled": {"type": "boolean", "default": False},
                 "active_bases": {"type": "array", "default": []},
                 "top_k": {"type": "integer", "default": 5, "minimum": 1},
+                "embedding_cache_max_size": {
+                    "type": "integer",
+                    "default": DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
+                    "minimum": 0,
+                },
                 "graph": {
                     "type": "object",
                     "properties": {

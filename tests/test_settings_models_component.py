@@ -30,6 +30,20 @@ def test_settings_page_preserves_knowledge_config_when_saving():
     assert "knowledge:" in source
     assert "normalizeKnowledge" in source
     assert "form.value.knowledge" in source
+    assert "const knowledge = normalizeKnowledge(form.value.knowledge)" in source
+    assert "knowledge," in source
+
+
+def test_settings_page_exposes_vector_knowledge_cache_limit():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+
+    assert "id: 'retrieval'" in source
+    assert "Knowledge Retrieval" in source
+    assert "Vector Retrieval" in source
+    assert "Embedding Cache Limit" in source
+    assert "form.knowledge.embedding_cache_max_size" in source
+    assert "normalizeEmbeddingCacheMaxSize" in source
+    assert "embedding_cache_max_size: normalizeEmbeddingCacheMaxSize" in source
 
 
 def test_settings_page_exposes_graph_knowledge_settings():

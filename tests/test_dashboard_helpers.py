@@ -397,6 +397,27 @@ def test_dashboard_masks_and_merges_novelai_config():
     assert merged["model"] == "nai-new"
 
 
+def test_dashboard_masks_and_merges_vector_knowledge_cache_limit():
+    existing = {
+        "enabled": True,
+        "active_bases": ["kb-1"],
+        "top_k": 5,
+        "embedding_cache_max_size": 20000,
+        "graph": {"enabled": False, "password": "secret"},
+    }
+
+    merged = models._merge_knowledge_config(
+        existing,
+        {"embedding_cache_max_size": "0", "top_k": "7"},
+    )
+    masked = models._mask_knowledge_config(merged)
+
+    assert merged["embedding_cache_max_size"] == 0
+    assert merged["top_k"] == 7
+    assert masked["embedding_cache_max_size"] == 0
+    assert masked["graph"]["password"] == models._MASKED_SECRET
+
+
 @pytest.mark.asyncio
 async def test_dashboard_status_includes_embedding_and_rerank_model_pools(monkeypatch, tmp_path):
     dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)

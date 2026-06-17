@@ -63,6 +63,7 @@ knowledge:
   enabled: false
   active_bases: []
   top_k: 5
+  embedding_cache_max_size: 20000
 
 # Optional image transcription model. When enabled, image attachments are
 # transcribed here before the main chat model receives the request.

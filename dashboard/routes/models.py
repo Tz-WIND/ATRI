@@ -18,6 +18,7 @@ from core.knowledge.graph_constants import (
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
+from core.knowledge.store import DEFAULT_EMBEDDING_CACHE_MAX_SIZE
 from core.tools.novelai_image import mask_novelai_config, merge_novelai_config, set_novelai_config
 
 if TYPE_CHECKING:
@@ -92,6 +93,16 @@ def _positive_int(value: Any, field: str) -> int:
     return parsed
 
 
+def _nonnegative_int(value: Any, field: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{field} must be a non-negative integer") from e
+    if parsed < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
+    return parsed
+
+
 def _bounded_positive_int(value: Any, field: str, maximum: int) -> int:
     return min(maximum, _positive_int(value, field))
 
@@ -135,6 +146,11 @@ def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
         ]
     if "top_k" in incoming:
         merged["top_k"] = _positive_int(incoming["top_k"], "knowledge.top_k")
+    if "embedding_cache_max_size" in incoming:
+        merged["embedding_cache_max_size"] = _nonnegative_int(
+            incoming["embedding_cache_max_size"],
+            "knowledge.embedding_cache_max_size",
+        )
     if "graph" in incoming:
         merged["graph"] = _merge_graph_knowledge_config(
             merged.get("graph", {}),
@@ -144,6 +160,7 @@ def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
     merged.setdefault("enabled", False)
     merged.setdefault("active_bases", [])
     merged.setdefault("top_k", 5)
+    merged.setdefault("embedding_cache_max_size", DEFAULT_EMBEDDING_CACHE_MAX_SIZE)
     merged.setdefault("graph", _merge_graph_knowledge_config({}, {}))
     return merged
 
@@ -240,6 +257,10 @@ def _mask_knowledge_config(cfg: dict | None) -> dict:
         if isinstance(cfg.get("active_bases"), list)
         else [],
         "top_k": int(cfg.get("top_k") or 5),
+        "embedding_cache_max_size": _nonnegative_int(
+            cfg.get("embedding_cache_max_size", DEFAULT_EMBEDDING_CACHE_MAX_SIZE),
+            "knowledge.embedding_cache_max_size",
+        ),
         "graph": graph,
     }
 

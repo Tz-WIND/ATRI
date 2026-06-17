@@ -1219,17 +1219,19 @@ class ProcessStage(Stage):
                 "embedding_provider",
                 "rerank_model",
                 "rerank_provider",
+                "knowledge",
             )
         ):
             knowledge_manager.update_config(
                 {
-                    "providers": self.providers,
-                    "active_embedding_models": self.active_embedding_models,
-                    "active_rerank_models": self.active_rerank_models,
-                    "embedding_model": self.embedding_model,
-                    "embedding_provider": self.embedding_provider,
-                    "rerank_model": self.rerank_model,
-                    "rerank_provider": self.rerank_provider,
+                    "providers": getattr(self, "providers", {}),
+                    "active_embedding_models": getattr(self, "active_embedding_models", []),
+                    "active_rerank_models": getattr(self, "active_rerank_models", []),
+                    "embedding_model": getattr(self, "embedding_model", ""),
+                    "embedding_provider": getattr(self, "embedding_provider", ""),
+                    "rerank_model": getattr(self, "rerank_model", ""),
+                    "rerank_provider": getattr(self, "rerank_provider", ""),
+                    "knowledge": getattr(self, "knowledge", {}),
                 }
             )
         if "agent_mode" in kwargs:

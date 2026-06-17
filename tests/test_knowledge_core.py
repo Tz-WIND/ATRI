@@ -2,9 +2,11 @@ from typing import Any
 
 import pytest
 
+import core.knowledge.store as store_module
 from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.manager import KnowledgeBaseManager
 from core.knowledge.rerank import OpenAIRerankClient
+from core.knowledge.store import KnowledgeStore
 
 
 class FakeEmbeddingClient:
@@ -175,6 +177,178 @@ async def test_knowledge_manager_records_retrieval_timing_segments(tmp_path):
     assert timings["vector_rows"] >= 1
     assert timings["vector_sparse_rows"] >= 0
     assert timings["vector_returned_hits"] >= 1
+
+
+def test_store_reuses_decoded_embeddings_between_vector_scans(tmp_path, monkeypatch):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Cached Vectors",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+    original_loads = store_module.json.loads
+    embedding_decode_count = 0
+
+    def counting_loads(value, *args, **kwargs):
+        nonlocal embedding_decode_count
+        if isinstance(value, str) and value.startswith("["):
+            embedding_decode_count += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.json, "loads", counting_loads)
+
+    first_rows = store.vector_chunks([kb["kb_id"]])
+    second_rows = store.vector_chunks([kb["kb_id"]])
+
+    assert [row["embedding"] for row in first_rows] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    assert [row["embedding"] for row in second_rows] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    assert embedding_decode_count == 2
+
+
+def test_keyword_fallback_search_does_not_decode_embeddings(tmp_path, monkeypatch):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Keyword Fallback",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "keywords.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+    store.fts_available = False
+    original_loads = store_module.json.loads
+    embedding_decode_count = 0
+
+    def counting_loads(value, *args, **kwargs):
+        nonlocal embedding_decode_count
+        if isinstance(value, str) and value.startswith("["):
+            embedding_decode_count += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.json, "loads", counting_loads)
+
+    rows = store.keyword_search("sqlite", [kb["kb_id"]], limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["content"] == "SQLite retrieval chunk"
+    assert rows[0]["doc_name"] == "keywords.txt"
+    assert rows[0]["kb_name"] == "Keyword Fallback"
+    assert rows[0]["sparse_score"] == 1.0
+    assert embedding_decode_count == 0
+
+
+def test_store_can_disable_decoded_embedding_cache(tmp_path, monkeypatch):
+    store = KnowledgeStore(tmp_path / "knowledge.db", embedding_cache_max_size=0)
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Uncached Vectors",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+    original_loads = store_module.json.loads
+    embedding_decode_count = 0
+
+    def counting_loads(value, *args, **kwargs):
+        nonlocal embedding_decode_count
+        if isinstance(value, str) and value.startswith("["):
+            embedding_decode_count += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.json, "loads", counting_loads)
+
+    store.vector_chunks([kb["kb_id"]])
+    store.vector_chunks([kb["kb_id"]])
+
+    assert embedding_decode_count == 4
+    assert len(store._embedding_cache) == 0
+
+
+def test_store_trims_decoded_embedding_cache_to_configured_limit(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db", embedding_cache_max_size=1)
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Trimmed Vectors",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+
+    store.vector_chunks([kb["kb_id"]])
+    assert len(store._embedding_cache) == 1
+
+    store.set_embedding_cache_max_size(0)
+    assert store.embedding_cache_max_size == 0
+    assert len(store._embedding_cache) == 0
+
+
+def test_knowledge_manager_applies_embedding_cache_limit_from_config(tmp_path):
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config={**_config(), "knowledge": {"embedding_cache_max_size": 3}},
+        embedding_client=FakeEmbeddingClient(),
+    )
+
+    assert manager.store.embedding_cache_max_size == 3
+
+    manager.update_config({"knowledge": {"embedding_cache_max_size": 0}})
+
+    assert manager.store.embedding_cache_max_size == 0
 
 
 @pytest.mark.asyncio

@@ -364,6 +364,64 @@
           </section>
 
           <section
+            v-else-if="activeTab === 'retrieval'"
+            class="settings-section"
+          >
+            <div class="section-heading-row">
+              <div>
+                <h3>Knowledge Retrieval</h3>
+                <p class="section-desc">
+                  Vector context retrieval settings used before each agent response.
+                </p>
+              </div>
+              <button
+                type="button"
+                class="switch-field"
+                :class="{ active: form.knowledge.enabled }"
+                role="switch"
+                :aria-checked="form.knowledge.enabled"
+                @click="form.knowledge.enabled = !form.knowledge.enabled"
+              >
+                <span class="switch-track">
+                  <span class="switch-thumb" />
+                </span>
+              </button>
+            </div>
+
+            <div class="settings-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
+                    Vector Retrieval
+                  </div>
+                  <p class="section-desc compact">
+                    Dense and keyword retrieval limits for active knowledge bases.
+                  </p>
+                </div>
+              </div>
+
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Top K</span>
+                  <input
+                    v-model.number="form.knowledge.top_k"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Embedding Cache Limit</span>
+                  <input
+                    v-model.number="form.knowledge.embedding_cache_max_size"
+                    type="number"
+                    min="0"
+                  >
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section
             v-else-if="activeTab === 'graph'"
             class="settings-section"
           >
@@ -901,6 +959,7 @@ const settingsGroups = [
   {
     label: 'Library',
     tabs: [
+      { id: 'retrieval', label: 'Retrieval', description: 'Vector knowledge context and cache settings.', icon: icon.search },
       { id: 'graph', label: 'Graph', description: 'Neo4j graph knowledge and tuple extraction.', icon: icon.graph },
       { id: 'music', label: 'Music', description: 'Directories scanned by the music library.', icon: icon.music },
       { id: 'audio', label: 'Audio', description: 'Audio engine, sample rate, and bit depth settings.', icon: icon.audio },
@@ -937,6 +996,7 @@ const form = ref({
     enabled: false,
     active_bases: [],
     top_k: 5,
+    embedding_cache_max_size: 20000,
     graph: {
       enabled: false,
       uri: 'neo4j://localhost:7687',
@@ -1136,8 +1196,17 @@ function normalizeKnowledge(value = {}) {
     enabled: Boolean(value.enabled),
     active_bases: activeBases.map(item => String(item).trim()).filter(Boolean),
     top_k: Number(value.top_k || 5),
+    embedding_cache_max_size: normalizeEmbeddingCacheMaxSize(
+      value.embedding_cache_max_size,
+    ),
     graph: normalizeGraphKnowledge(value.graph),
   }
+}
+
+function normalizeEmbeddingCacheMaxSize(value) {
+  const parsed = Number(value ?? 20000)
+  if (!Number.isFinite(parsed)) return 20000
+  return Math.max(0, Math.trunc(parsed))
 }
 
 function normalizeGraphSources(value) {
@@ -1395,9 +1464,15 @@ async function saveSettings() {
   saving.value = true
   try {
     const latest = await api.getSettings().catch(() => ({}))
+    const knowledge = normalizeKnowledge(form.value.knowledge)
     const graph = normalizeGraphKnowledge(form.value.knowledge.graph)
     form.value.knowledge = {
       ...normalizeKnowledge(latest.knowledge || form.value.knowledge),
+      enabled: knowledge.enabled,
+      top_k: knowledge.top_k,
+      embedding_cache_max_size: normalizeEmbeddingCacheMaxSize(
+        knowledge.embedding_cache_max_size,
+      ),
       graph,
     }
     await api.saveSettings({

@@ -66,6 +66,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["active_rerank_models"] == []
     assert config["image_transcription"] == DEFAULT_CONFIG["image_transcription"]
     assert config["novelai"] == DEFAULT_CONFIG["novelai"]
+    assert config["knowledge"]["embedding_cache_max_size"] == 20000
     assert config["knowledge"]["graph"] == EXPECTED_GRAPH_KNOWLEDGE_DEFAULT
     assert config["onebot11"]["enabled"] is False
     assert config["onebot11"]["ws_reverse_port"] == 6200
@@ -127,6 +128,9 @@ def test_normalize_config_coerces_graph_knowledge_settings():
     config, changed = normalize_config(
         {
             "knowledge": {
+                "enabled": "true",
+                "top_k": "9",
+                "embedding_cache_max_size": "64",
                 "graph": {
                     "enabled": "true",
                     "uri": "bolt://localhost:7687",
@@ -143,12 +147,15 @@ def test_normalize_config_coerces_graph_knowledge_settings():
                     "expansion_candidate_limit": "64",
                     "ranking_policy": "RELEVANCE",
                     "queue_max_size": "50",
-                }
+                },
             }
         }
     )
 
     assert changed is True
+    assert config["knowledge"]["enabled"] is True
+    assert config["knowledge"]["top_k"] == 9
+    assert config["knowledge"]["embedding_cache_max_size"] == 64
     assert config["knowledge"]["graph"] == {
         "enabled": True,
         "uri": "bolt://localhost:7687",
@@ -228,6 +235,10 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         (
             {"knowledge": {"graph": {"expansion_candidate_limit": 0}}},
             "knowledge.graph.expansion_candidate_limit must be >= 1",
+        ),
+        (
+            {"knowledge": {"embedding_cache_max_size": -1}},
+            "knowledge.embedding_cache_max_size must be >= 0",
         ),
         ([], "config root must be an object"),
     ],

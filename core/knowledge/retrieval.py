@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from heapq import heappush, heapreplace
 from typing import Any, cast
 
 from core import logger
@@ -100,26 +101,33 @@ class HybridRetriever:
         rows = self.store.vector_chunks(kb_ids)
         _record_timing(timings, "vector_store_ms", store_started_at)
         _record_count(timings, "vector_rows", len(rows))
-        scored = []
-        for row in rows:
-            vector = query_vectors.get(row["kb_id"])
+        query_norms = {kb_id: _vector_norm(vector) for kb_id, vector in query_vectors.items()}
+        heaps: dict[str, list[tuple[float, int, dict]]] = {}
+        sequence = 0
+        for raw_row in rows:
+            kb_id = raw_row["kb_id"]
+            vector = query_vectors.get(kb_id)
             if not vector:
                 continue
-            similarity = _cosine(vector, row["embedding"], row["embedding_norm"])
-            row = dict(row)
+            similarity = _cosine(
+                vector,
+                raw_row["embedding"],
+                raw_row["embedding_norm"],
+                query_norm=query_norms.get(kb_id, 0.0),
+            )
+            row = dict(raw_row)
             row["dense_score"] = similarity
-            scored.append(row)
-        scored.sort(key=lambda item: item["dense_score"], reverse=True)
-
-        limited = []
-        counts: dict[str, int] = {}
-        for row in scored:
-            kb_id = row["kb_id"]
             limit = _positive_limit(options[kb_id].get("top_k_dense"), 30)
-            if counts.get(kb_id, 0) >= limit:
-                continue
-            counts[kb_id] = counts.get(kb_id, 0) + 1
-            limited.append(row)
+            heap = heaps.setdefault(kb_id, [])
+            entry = (similarity, -sequence, row)
+            if len(heap) < limit:
+                heappush(heap, entry)
+            elif entry > heap[0]:
+                heapreplace(heap, entry)
+            sequence += 1
+        limited_entries = [entry for heap in heaps.values() for entry in heap]
+        limited_entries.sort(key=lambda item: (-item[0], -item[1]))
+        limited = [row for _, _, row in limited_entries]
         _record_count(timings, "vector_dense_rows", len(limited))
         return limited
 
@@ -213,14 +221,25 @@ class HybridRetriever:
         )
 
 
-def _cosine(query_vector: list[float], doc_vector: list[float], doc_norm: float) -> float:
+def _cosine(
+    query_vector: list[float],
+    doc_vector: list[float],
+    doc_norm: float,
+    *,
+    query_norm: float | None = None,
+) -> float:
     if not query_vector or not doc_vector or doc_norm <= 0:
         return 0.0
     dot = sum(left * right for left, right in zip(query_vector, doc_vector, strict=False))
-    query_norm = sum(item * item for item in query_vector) ** 0.5
+    if query_norm is None:
+        query_norm = _vector_norm(query_vector)
     if query_norm <= 0:
         return 0.0
     return float(dot / (query_norm * doc_norm))
+
+
+def _vector_norm(vector: list[float]) -> float:
+    return sum(item * item for item in vector) ** 0.5
 
 
 def _positive_limit(value: object, default: int) -> int:

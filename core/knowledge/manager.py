@@ -16,7 +16,7 @@ from core.knowledge.embedding import (
 )
 from core.knowledge.rerank import OpenAIRerankClient, RerankClient
 from core.knowledge.retrieval import HybridRetriever
-from core.knowledge.store import KnowledgeStore
+from core.knowledge.store import DEFAULT_EMBEDDING_CACHE_MAX_SIZE, KnowledgeStore
 
 
 class KnowledgeBaseManager:
@@ -35,7 +35,10 @@ class KnowledgeBaseManager:
         self.embedding_client = embedding_client or OpenAIEmbeddingClient()
         self.rerank_client = rerank_client or OpenAIRerankClient()
         self.graph_manager = graph_manager
-        self.store = KnowledgeStore(self.db_path)
+        self.store = KnowledgeStore(
+            self.db_path,
+            embedding_cache_max_size=_embedding_cache_max_size_from_config(self.config),
+        )
         self.retriever: HybridRetriever | None = None
 
     async def initialize(self) -> None:
@@ -49,6 +52,7 @@ class KnowledgeBaseManager:
         merged = dict(self.config)
         merged.update(config)
         self.config = merged
+        self.store.set_embedding_cache_max_size(_embedding_cache_max_size_from_config(self.config))
 
     async def create_knowledge_base(
         self,
@@ -452,6 +456,17 @@ def _int_at_least(value: object, field: str, minimum: int) -> int:
     if parsed < minimum:
         raise ValueError(f"{field} must be >= {minimum}")
     return parsed
+
+
+def _embedding_cache_max_size_from_config(config: dict[str, Any]) -> int:
+    knowledge = config.get("knowledge", {}) if isinstance(config, dict) else {}
+    if not isinstance(knowledge, dict):
+        return DEFAULT_EMBEDDING_CACHE_MAX_SIZE
+    try:
+        parsed = int(cast(Any, knowledge.get("embedding_cache_max_size")))
+    except (TypeError, ValueError):
+        parsed = DEFAULT_EMBEDDING_CACHE_MAX_SIZE
+    return max(0, parsed)
 
 
 def _record_timing(

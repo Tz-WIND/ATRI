@@ -86,6 +86,7 @@ def test_normalize_config_adds_knowledge_defaults():
         "enabled": False,
         "active_bases": [],
         "top_k": 5,
+        "embedding_cache_max_size": 20000,
         "graph": {
             "enabled": False,
             "uri": "neo4j://localhost:7687",
@@ -483,6 +484,10 @@ async def test_process_stage_adapts_anchor_wait_after_observed_vector_latency():
     event = MessageEvent(message_str="How does Alice use sqlite?")
 
     await stage._knowledge_context_for_event(event)
+    assert getattr(stage, "_graph_source_anchor_vector_latency_seconds", None) is not None
+    stage._graph_source_anchor_vector_latency_seconds = (
+        process_stage_module._GRAPH_SOURCE_ANCHOR_MAX_WAIT_SECONDS
+    )
     stage.graph_manager.retrieve_calls.clear()
 
     await stage._knowledge_context_for_event(event)
@@ -1101,6 +1106,26 @@ def test_process_stage_chat_turn_enqueue_is_non_blocking():
             },
         }
     ]
+
+
+def test_process_stage_pushes_knowledge_config_updates_to_manager():
+    class ConfigRecordingKnowledgeManager:
+        def __init__(self):
+            self.configs = []
+
+        def update_config(self, config):
+            self.configs.append(config)
+
+    stage = ProcessStage()
+    manager = ConfigRecordingKnowledgeManager()
+    stage.knowledge_manager = manager
+
+    stage.update_config(knowledge={"enabled": True, "embedding_cache_max_size": 12})
+
+    assert manager.configs[-1]["knowledge"] == {
+        "enabled": True,
+        "embedding_cache_max_size": 12,
+    }
 
 
 @pytest.mark.asyncio

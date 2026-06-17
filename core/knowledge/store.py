@@ -6,8 +6,11 @@ import json
 import sqlite3
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
+
+DEFAULT_EMBEDDING_CACHE_MAX_SIZE = 20_000
 
 
 def utc_timestamp() -> float:
@@ -17,10 +20,20 @@ def utc_timestamp() -> float:
 class KnowledgeStore:
     """Small SQLite data access layer for knowledge metadata and vectors."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        embedding_cache_max_size: int = DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
+    ) -> None:
         self.db_path = Path(db_path)
         self.conn: sqlite3.Connection | None = None
         self.fts_available = False
+        self._embedding_cache: OrderedDict[str, tuple[float, tuple[float, ...]]] = OrderedDict()
+        self.embedding_cache_max_size = _nonnegative_int(
+            embedding_cache_max_size,
+            DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
+        )
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,6 +48,14 @@ class KnowledgeStore:
         if self.conn is not None:
             self.conn.close()
             self.conn = None
+        self._embedding_cache.clear()
+
+    def set_embedding_cache_max_size(self, value: object) -> None:
+        self.embedding_cache_max_size = _nonnegative_int(
+            value,
+            DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
+        )
+        self._trim_embedding_cache()
 
     def _create_schema(self) -> None:
         conn = self._conn()
@@ -197,6 +218,7 @@ class KnowledgeStore:
         ]
         for doc_id in doc_ids:
             self._delete_fts_doc(doc_id)
+        self._delete_embedding_cache_for_kb(kb_id)
         cur = self._conn().execute("DELETE FROM knowledge_bases WHERE kb_id=?", (kb_id,))
         self._conn().commit()
         return cur.rowcount > 0
@@ -275,6 +297,7 @@ class KnowledgeStore:
         if not doc:
             return False
         self._delete_fts_doc(doc_id)
+        self._delete_embedding_cache_for_doc(doc_id)
         cur = self._conn().execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
         self._conn().commit()
         self.refresh_counts(doc["kb_id"])
@@ -310,6 +333,7 @@ class KnowledgeStore:
             return False
         if self.fts_available:
             self._conn().execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
+        self._embedding_cache.pop(chunk_id, None)
         cur = self._conn().execute("DELETE FROM chunks WHERE chunk_id=?", (chunk_id,))
         self._conn().commit()
         self.refresh_counts(row["kb_id"], row["doc_id"])
@@ -345,7 +369,9 @@ class KnowledgeStore:
                         self._conn()
                         .execute(
                             """
-                        SELECT c.*, d.doc_name, kb.name AS kb_name, bm25(chunks_fts) AS rank
+                        SELECT c.chunk_id, c.kb_id, c.doc_id, c.chunk_index, c.content,
+                               c.char_count, c.created_at, d.doc_name, kb.name AS kb_name,
+                               bm25(chunks_fts) AS rank
                         FROM chunks_fts
                         JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
                         JOIN documents d ON d.doc_id = c.doc_id
@@ -359,7 +385,8 @@ class KnowledgeStore:
                         .fetchall()
                     )
                     return [
-                        self._decode_chunk(row, sparse_score=-float(row["rank"])) for row in rows
+                        self._decode_search_chunk(row, sparse_score=-float(row["rank"]))
+                        for row in rows
                     ]
                 except sqlite3.OperationalError:
                     pass
@@ -369,7 +396,23 @@ class KnowledgeStore:
             return []
         terms = [term.strip("%").lower() for term in like_terms]
         matches = []
-        for row in self.vector_chunks(kb_ids):
+        rows = (
+            self._conn()
+            .execute(
+                """
+            SELECT c.chunk_id, c.kb_id, c.doc_id, c.chunk_index, c.content,
+                   c.char_count, c.created_at, d.doc_name, kb.name AS kb_name
+            FROM chunks c
+            JOIN documents d ON d.doc_id = c.doc_id
+            JOIN knowledge_bases kb ON kb.kb_id = c.kb_id
+            WHERE c.kb_id IN (SELECT value FROM json_each(?))
+            """,
+                (json.dumps(kb_ids),),
+            )
+            .fetchall()
+        )
+        for raw_row in rows:
+            row = self._decode_search_chunk(raw_row)
             content = row["content"].lower()
             if any(term in content for term in terms):
                 row["sparse_score"] = 1.0
@@ -441,6 +484,28 @@ class KnowledgeStore:
         if self.fts_available:
             self._conn().execute("DELETE FROM chunks_fts WHERE doc_id=?", (doc_id,))
 
+    def _delete_embedding_cache_for_doc(self, doc_id: str) -> None:
+        chunk_ids = [
+            row["chunk_id"]
+            for row in self._conn().execute(
+                "SELECT chunk_id FROM chunks WHERE doc_id=?",
+                (doc_id,),
+            )
+        ]
+        for chunk_id in chunk_ids:
+            self._embedding_cache.pop(chunk_id, None)
+
+    def _delete_embedding_cache_for_kb(self, kb_id: str) -> None:
+        chunk_ids = [
+            row["chunk_id"]
+            for row in self._conn().execute(
+                "SELECT chunk_id FROM chunks WHERE kb_id=?",
+                (kb_id,),
+            )
+        ]
+        for chunk_id in chunk_ids:
+            self._embedding_cache.pop(chunk_id, None)
+
     def _decode_kb(self, row: sqlite3.Row) -> dict:
         data = dict(row)
         data["embedding_config"] = json.loads(data.get("embedding_config") or "{}")
@@ -449,9 +514,36 @@ class KnowledgeStore:
 
     def _decode_chunk(self, row: sqlite3.Row, sparse_score: float = 0.0) -> dict:
         data = dict(row)
-        data["embedding"] = json.loads(data.get("embedding") or "[]")
+        data["embedding"] = self._decode_embedding(row)
         data["sparse_score"] = sparse_score
         return data
+
+    def _decode_search_chunk(self, row: sqlite3.Row, sparse_score: float = 0.0) -> dict:
+        data = dict(row)
+        data["sparse_score"] = sparse_score
+        return data
+
+    def _decode_embedding(self, row: sqlite3.Row) -> list[float]:
+        chunk_id = str(row["chunk_id"])
+        created_at = float(row["created_at"])
+        if self.embedding_cache_max_size <= 0:
+            return list(json.loads(row["embedding"] or "[]"))
+        cached = self._embedding_cache.get(chunk_id)
+        if cached is not None and cached[0] == created_at:
+            self._embedding_cache.move_to_end(chunk_id)
+            return list(cached[1])
+        decoded = tuple(json.loads(row["embedding"] or "[]"))
+        self._embedding_cache[chunk_id] = (created_at, decoded)
+        self._embedding_cache.move_to_end(chunk_id)
+        self._trim_embedding_cache()
+        return list(decoded)
+
+    def _trim_embedding_cache(self) -> None:
+        if self.embedding_cache_max_size <= 0:
+            self._embedding_cache.clear()
+            return
+        while len(self._embedding_cache) > self.embedding_cache_max_size:
+            self._embedding_cache.popitem(last=False)
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
@@ -480,6 +572,14 @@ def _fts_query(query: str) -> str:
 
 def _int_or_default(value: object, default: int) -> int:
     return default if value is None else int(cast(Any, value))
+
+
+def _nonnegative_int(value: object, default: int) -> int:
+    try:
+        parsed = int(cast(Any, value))
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0, parsed)
 
 
 def _friendly_integrity_error(error: sqlite3.IntegrityError) -> ValueError:
