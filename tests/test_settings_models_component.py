@@ -77,6 +77,16 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "/api/knowledge/document-support" in api_source
     assert "Source Name" not in source
     assert "graph-query-result" in source
+    assert "graphQueryDiagnostics" in source
+    assert "graphQueryDiagnosticItems" in source
+    assert "graph-query-diagnostics" in source
+    assert "graph-query-metric" in source
+    assert "graph_cache_hit" in source
+    assert "graph_used_fulltext" in source
+    assert "graph_used_scan_fallback" in source
+    assert "graph_total_ms" in source
+    assert "graph_multi_hop_ms" in source
+    assert "result.diagnostics || null" in source
     assert "Extraction Model" in source
     assert "graphExtractionModelOptions" in source
     assert "graph-extraction-model-field" in source

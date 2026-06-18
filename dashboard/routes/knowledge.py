@@ -204,25 +204,31 @@ def register(dashboard: Dashboard) -> None:
         if not query:
             return jsonify({"error": "query is required"}), 400
         try:
+            max_facts = _int_at_least(data.get("max_facts"), 8, "max_facts", 1)
+            retrieval_depth = _int_at_least(
+                data.get("retrieval_depth"),
+                GRAPH_RETRIEVAL_DEFAULT_DEPTH,
+                "retrieval_depth",
+                1,
+                maximum=GRAPH_RETRIEVAL_MAX_DEPTH,
+            )
+            ranking_policy = _ranking_policy(data.get("ranking_policy"))
+            expansion_candidate_limit = _int_at_least(
+                data.get("expansion_candidate_limit"),
+                40,
+                "expansion_candidate_limit",
+                1,
+                maximum=GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+            )
+            timings: dict[str, Any] = {}
             context_text = await graph_manager.retrieve_context(
                 query=query,
                 source_ids=_str_list(data.get("source_ids")),
-                max_facts=_int_at_least(data.get("max_facts"), 8, "max_facts", 1),
-                retrieval_depth=_int_at_least(
-                    data.get("retrieval_depth"),
-                    GRAPH_RETRIEVAL_DEFAULT_DEPTH,
-                    "retrieval_depth",
-                    1,
-                    maximum=GRAPH_RETRIEVAL_MAX_DEPTH,
-                ),
-                ranking_policy=_ranking_policy(data.get("ranking_policy")),
-                expansion_candidate_limit=_int_at_least(
-                    data.get("expansion_candidate_limit"),
-                    40,
-                    "expansion_candidate_limit",
-                    1,
-                    maximum=GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
-                ),
+                max_facts=max_facts,
+                retrieval_depth=retrieval_depth,
+                ranking_policy=ranking_policy,
+                expansion_candidate_limit=expansion_candidate_limit,
+                timings=timings,
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -233,6 +239,13 @@ def register(dashboard: Dashboard) -> None:
                 "query": query,
                 "context_text": context_text,
                 "has_context": bool(str(context_text or "").strip()),
+                "diagnostics": _graph_retrieval_diagnostics(
+                    timings,
+                    max_facts=max_facts,
+                    retrieval_depth=retrieval_depth,
+                    ranking_policy=ranking_policy,
+                    expansion_candidate_limit=expansion_candidate_limit,
+                ),
             }
         )
 
@@ -340,6 +353,55 @@ def _ranking_policy(value: object) -> str:
     if policy not in {"hybrid", "relevance", "latest"}:
         raise ValueError("ranking_policy must be one of: hybrid, relevance, latest")
     return policy
+
+
+def _graph_retrieval_diagnostics(
+    timings: dict[str, Any],
+    *,
+    max_facts: int,
+    retrieval_depth: int,
+    ranking_policy: str,
+    expansion_candidate_limit: int,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+    for key in (
+        "graph_total_ms",
+        "graph_single_hop_ms",
+        "graph_multi_hop_ms",
+        "graph_scan_fallback_ms",
+        "graph_format_ms",
+    ):
+        if key in timings:
+            diagnostics[key] = _float_diagnostic(timings[key])
+    for key in ("graph_rows", "graph_returned_facts"):
+        if key in timings:
+            diagnostics[key] = _int_diagnostic(timings[key])
+    for key in ("graph_cache_hit", "graph_used_fulltext", "graph_used_scan_fallback"):
+        if key in timings:
+            diagnostics[key] = bool(timings[key])
+    diagnostics.update(
+        {
+            "max_facts": max_facts,
+            "retrieval_depth": retrieval_depth,
+            "ranking_policy": ranking_policy,
+            "expansion_candidate_limit": expansion_candidate_limit,
+        }
+    )
+    return diagnostics
+
+
+def _float_diagnostic(value: object) -> float:
+    try:
+        return float(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _int_diagnostic(value: object) -> int:
+    try:
+        return int(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _graph_connection_error(error: Exception, data: dict[str, Any]) -> str:

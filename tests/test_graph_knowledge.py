@@ -38,6 +38,21 @@ from core.knowledge.graph_worker import (
 from core.runtime.tasks import TaskStore
 
 
+def test_graph_module_split_keeps_compatibility_imports():
+    from core.knowledge.graph import Neo4jGraphClient as CompatNeo4jGraphClient
+    from core.knowledge.graph import _query_terms as compat_query_terms
+    from core.knowledge.graph_cache import GraphRetrievalCache
+    from core.knowledge.graph_format import _format_retrieved_fact_lines
+    from core.knowledge.graph_query import _query_terms as split_query_terms
+    from core.knowledge.graph_values import _retrieval_depth
+
+    assert CompatNeo4jGraphClient is Neo4jGraphClient
+    assert compat_query_terms is split_query_terms
+    assert GraphRetrievalCache(ttl_seconds=0).get("x", "y") is None
+    assert _retrieval_depth(99) == 7
+    assert _format_retrieved_fact_lines([], depth=1, limit=3) == []
+
+
 def test_build_extraction_prompt_documents_segmented_input():
     prompt = build_extraction_prompt("document")
 

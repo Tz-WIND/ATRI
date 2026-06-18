@@ -739,6 +739,22 @@
               >
                 {{ graphQueryError }}
               </div>
+              <div
+                v-if="graphQueryDiagnosticItems.length"
+                class="graph-query-diagnostics"
+                aria-label="Graph query diagnostics"
+              >
+                <div
+                  v-for="item in graphQueryDiagnosticItems"
+                  :key="item.label"
+                  class="graph-query-metric"
+                >
+                  <span>{{ item.label }}</span>
+                  <strong :class="{ active: item.active, muted: item.muted }">
+                    {{ item.value }}
+                  </strong>
+                </div>
+              </div>
               <pre
                 v-if="graphQueryResult"
                 class="graph-query-result"
@@ -1036,6 +1052,7 @@ const graphConnectionStatus = ref(null)
 const graphQueryRunning = ref(false)
 const graphQueryError = ref('')
 const graphQueryResult = ref('')
+const graphQueryDiagnostics = ref(null)
 const graphQueryForm = ref({ query: '' })
 const manualGraphIngestRunning = ref(false)
 const manualGraphIngestError = ref('')
@@ -1051,6 +1068,38 @@ const selectedManualGraphFileLabel = computed(() => {
   const visibleNames = files.slice(0, 3).map(file => file.name).join(', ')
   const moreCount = files.length - 3
   return `Selected ${files.length} files: ${visibleNames}${moreCount > 0 ? `, +${moreCount} more` : ''}`
+})
+const graphQueryDiagnosticItems = computed(() => {
+  const diagnostics = graphQueryDiagnostics.value
+  if (!diagnostics) return []
+  return [
+    { label: 'Total', value: graphDiagnosticMs(diagnostics.graph_total_ms) },
+    { label: 'Single', value: graphDiagnosticMs(diagnostics.graph_single_hop_ms) },
+    { label: 'Multi', value: graphDiagnosticMs(diagnostics.graph_multi_hop_ms) },
+    { label: 'Format', value: graphDiagnosticMs(diagnostics.graph_format_ms) },
+    { label: 'Rows', value: graphDiagnosticCount(diagnostics.graph_rows) },
+    { label: 'Facts', value: graphDiagnosticCount(diagnostics.graph_returned_facts) },
+    {
+      label: 'Cache',
+      value: graphDiagnosticFlag(diagnostics.graph_cache_hit),
+      active: diagnostics.graph_cache_hit === true,
+      muted: diagnostics.graph_cache_hit === false,
+    },
+    {
+      label: 'Fulltext',
+      value: graphDiagnosticFlag(diagnostics.graph_used_fulltext),
+      active: diagnostics.graph_used_fulltext === true,
+      muted: diagnostics.graph_used_fulltext === false,
+    },
+    {
+      label: 'Fallback',
+      value: graphDiagnosticFlag(diagnostics.graph_used_scan_fallback),
+      active: diagnostics.graph_used_scan_fallback === true,
+      muted: diagnostics.graph_used_scan_fallback === false,
+    },
+    { label: 'Depth', value: graphDiagnosticCount(diagnostics.retrieval_depth) },
+    { label: 'Policy', value: String(diagnostics.ranking_policy || '').trim() },
+  ].filter(item => item.value)
 })
 const latestGraphTask = ref(null)
 const audioDevices = ref([])
@@ -1364,6 +1413,7 @@ async function runGraphQuery() {
   graphQueryRunning.value = true
   graphQueryError.value = ''
   graphQueryResult.value = ''
+  graphQueryDiagnostics.value = null
   try {
     const result = await api.retrieveKnowledgeGraph({
       query,
@@ -1379,11 +1429,31 @@ async function runGraphQuery() {
       ),
     })
     graphQueryResult.value = result.context_text || '(no graph context)'
+    graphQueryDiagnostics.value = result.diagnostics || null
   } catch (err) {
     graphQueryError.value = err.message || 'Graph query failed'
   } finally {
     graphQueryRunning.value = false
   }
+}
+
+function graphDiagnosticMs(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return ''
+  if (number >= 100) return `${Math.round(number)} ms`
+  return `${number.toFixed(1)} ms`
+}
+
+function graphDiagnosticCount(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return ''
+  return `${Math.trunc(number)}`
+}
+
+function graphDiagnosticFlag(value) {
+  if (value === true) return 'yes'
+  if (value === false) return 'no'
+  return ''
 }
 
 function onManualGraphContentInput() {
@@ -2000,6 +2070,47 @@ onBeforeUnmount(() => {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   background: rgba(24, 24, 24, 0.42);
+}
+
+.graph-query-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.graph-query-metric {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(24, 24, 24, 0.42);
+  padding: 8px 9px;
+}
+
+.graph-query-metric span {
+  display: block;
+  color: var(--t3);
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.graph-query-metric strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--t1);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.graph-query-metric strong.active {
+  color: var(--green);
+}
+
+.graph-query-metric strong.muted {
+  color: var(--t3);
 }
 
 .graph-query-result {

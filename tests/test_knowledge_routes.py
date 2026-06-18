@@ -120,7 +120,23 @@ class _FakeGraphManager:
         retrieval_depth=1,
         ranking_policy="hybrid",
         expansion_candidate_limit=40,
+        timings=None,
     ):
+        if timings is not None:
+            timings.update(
+                {
+                    "graph_total_ms": 13.7,
+                    "graph_single_hop_ms": 3.1,
+                    "graph_multi_hop_ms": 8.2,
+                    "graph_scan_fallback_ms": 0.0,
+                    "graph_format_ms": 1.4,
+                    "graph_rows": 42,
+                    "graph_returned_facts": 4,
+                    "graph_cache_hit": False,
+                    "graph_used_fulltext": True,
+                    "graph_used_scan_fallback": False,
+                }
+            )
         self.retrieve_calls.append(
             {
                 "query": query,
@@ -612,6 +628,22 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
         "query": "ATRI",
         "context_text": "[Graph context]\n- ATRI -[can_help_with]-> 写代码",
         "has_context": True,
+        "diagnostics": {
+            "graph_total_ms": 13.7,
+            "graph_single_hop_ms": 3.1,
+            "graph_multi_hop_ms": 8.2,
+            "graph_scan_fallback_ms": 0.0,
+            "graph_format_ms": 1.4,
+            "graph_rows": 42,
+            "graph_returned_facts": 4,
+            "graph_cache_hit": False,
+            "graph_used_fulltext": True,
+            "graph_used_scan_fallback": False,
+            "max_facts": 4,
+            "retrieval_depth": 7,
+            "ranking_policy": "relevance",
+            "expansion_candidate_limit": 72,
+        },
     }
     assert dashboard.lifecycle.graph_manager.retrieve_calls == [
         {
