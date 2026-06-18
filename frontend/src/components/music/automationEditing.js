@@ -22,6 +22,7 @@ export function createAutomationEditing(context) {
     curveHandleMinSegmentPx,
     diffAutomationTrack,
     drawAll,
+    onAutomationPersistError = () => {},
     project,
     selectedAutomationPoint,
     tracks,
@@ -128,11 +129,18 @@ export function createAutomationEditing(context) {
     const drag = automationDrag
     automationDrag = null
     unbindAutomationDrag()
-    await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId), {
-      previousPoints: drag.originalPoints,
-      snapBeats: drag.type !== 'automation-curve',
-    })
-    drawAll()
+    try {
+      const persisted = await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId), {
+        previousPoints: drag.originalPoints,
+        snapBeats: drag.type !== 'automation-curve',
+      })
+      if (!persisted) throw new Error('Failed to apply automation edit')
+    } catch (error) {
+      restoreAutomationTrackPoints(drag.trackId, drag.originalPoints)
+      onAutomationPersistError(error)
+    } finally {
+      drawAll()
+    }
   }
 
   function automationTrackPoints(trackId) {
@@ -151,6 +159,11 @@ export function createAutomationEditing(context) {
 
   function cloneAutomationPoints(points = []) {
     return (points || []).map(point => ({ ...point }))
+  }
+
+  function restoreAutomationTrackPoints(trackId, points = []) {
+    const target = automationTrackPoints(trackId)
+    target.splice(0, target.length, ...cloneAutomationPoints(points))
   }
 
   function automationValueRange(track) {
@@ -320,7 +333,9 @@ export function createAutomationEditing(context) {
       .map(point => normalizeAutomationPoint(track, point, options))
       .sort(sortAutomationPoints)
     const operations = buildAutomationReplaceRangeOperations(previous, normalized)
-    await diffAutomationTrack(trackId, operations)
+    if (!operations.length) return true
+    const result = await diffAutomationTrack(trackId, operations)
+    return result !== null && result !== false
   }
 
   function automationCurveHandlePoint(track, left, right, trackIndex) {

@@ -1668,6 +1668,9 @@ const {
   curveHandleMinSegmentPx,
   diffAutomationTrack,
   drawAll,
+  onAutomationPersistError: (error) => {
+    if (!hostError.value) hostError.value = error?.message || 'Failed to apply automation edit'
+  },
   project,
   selectedAutomationPoint,
   tracks,

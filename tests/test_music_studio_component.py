@@ -1,7 +1,13 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STUDIO_COMPONENT = ROOT / "frontend" / "src" / "components" / "music" / "MusicStudio.vue"
+STUDIO_MUSIC_DIR = ROOT / "frontend" / "src" / "components" / "music"
+STUDIO_COMPONENT = STUDIO_MUSIC_DIR / "MusicStudio.vue"
+ARRANGEMENT_RENDERER = STUDIO_MUSIC_DIR / "arrangementRenderer.js"
+AUTOMATION_EDITING = STUDIO_MUSIC_DIR / "automationEditing.js"
+CANVAS_UTILS = STUDIO_MUSIC_DIR / "canvasUtils.js"
+PIANO_ROLL_RENDERER = STUDIO_MUSIC_DIR / "pianoRollRenderer.js"
+RULER_RENDERER = STUDIO_MUSIC_DIR / "rulerRenderer.js"
 STUDIO_EXPORT_DIALOG = (
     ROOT / "frontend" / "src" / "components" / "music" / "studio" / "StudioExportDialog.vue"
 )
@@ -25,6 +31,17 @@ def _read(path: Path) -> str:
 
 def _read_many(*paths: Path) -> str:
     return "\n".join(_read(path) for path in paths)
+
+
+def _read_studio_runtime_sources() -> str:
+    return _read_many(
+        STUDIO_COMPONENT,
+        ARRANGEMENT_RENDERER,
+        AUTOMATION_EDITING,
+        CANVAS_UTILS,
+        PIANO_ROLL_RENDERER,
+        RULER_RENDERER,
+    )
 
 
 def test_music_studio_exposes_track_context_delete_control():
@@ -165,7 +182,7 @@ def test_music_studio_exposes_bus_track_creation_and_output_selector():
 
 
 def test_music_studio_supports_external_audio_drop_import():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
@@ -279,7 +296,7 @@ def test_music_studio_piano_toolbar_removes_visible_copy_paste_and_clear_buttons
 
 
 def test_music_studio_arrangement_displays_project_level_piano_subtracks():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "const arrangementVisibleSubtracks = computed(" in studio_text
     assert "function arrangementSubtrackTop(subtrackId)" in studio_text
@@ -312,7 +329,7 @@ def test_music_studio_meter_beats_respects_time_signature_denominator():
 def test_music_studio_beat_numbering_uses_meter_event_positions():
     """Position and ruler labels use the same meter event helper so 6/8 and
     later meter changes count beat-within-bar from the active meter segment."""
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "meterPositionAtBeat(project.value, visualPositionBeats.value)" in studio_text
     assert "meterPositionAtBeat(project.value, absoluteBeat)" in studio_text
@@ -322,30 +339,31 @@ def test_music_studio_beat_numbering_uses_meter_event_positions():
 def test_music_studio_arrangement_grid_follows_meter_events():
     """The main arrangement grid must use the same meter event map as the
     piano meter lane, so bar lines move after a 3/4 or 5/8 marker."""
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "function paintGrid(ctx, width, height, offsetX, offsetY)" in studio_text
     assert "for (const line of meterBarLinesBetween(project.value, 0, beats))" in studio_text
     assert "const barX = offsetX + line.beat * scale" in studio_text
     assert "for (let bar = 0; bar * barLen <= beats; bar++)" not in studio_text
-    # paintControllerGrid still overlays clip-local bar lines.
-    assert "barLen * pianoPxPerBeat.value" in studio_text
+    assert "function paintControllerGrid(ctx, width, clip)" in studio_text
+    assert "barLen * pianoPxPerBeat.value" not in studio_text
     assert (
         "for (const line of meterBarLinesBetween(project.value, clipStart, endBeat))"
     ) in studio_text
+    assert "const barX = pianoKeyW + (line.beat - clipStart) * pianoPxPerBeat.value" in studio_text
 
 
 def test_music_studio_piano_and_arrangement_rulers_share_decimal_beat_labels():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "function rulerBeatLabel(absoluteBeat)" in studio_text
     assert "function drawBeatRulerLabels(ctx, {" in studio_text
     assert (
         "return position.beat === 1 ? String(position.bar) : `${position.bar}.${position.beat}`"
     ) in studio_text
-    assert "drawBeatRulerLabels(ctx, {\n    startBeat: 0," in studio_text
+    assert "drawBeatRulerLabels(ctx, {\n      startBeat: 0," in studio_text
     assert "originX: 0," in studio_text
-    assert "drawBeatRulerLabels(ctx, {\n    startBeat: clipStart," in studio_text
+    assert "drawBeatRulerLabels(ctx, {\n      startBeat: clipStart," in studio_text
     assert "originX: pianoKeyW," in studio_text
     assert (
         "const shouldDrawBeatLabel = metrics.shouldLabel && "
@@ -355,7 +373,7 @@ def test_music_studio_piano_and_arrangement_rulers_share_decimal_beat_labels():
 
 
 def test_music_studio_rulers_draw_scaled_tick_marks_from_quantize_step():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "const rulerMajorTickRatio = 1 / 3" in studio_text
     assert "const rulerMinorTickRatio = rulerMajorTickRatio / 2" in studio_text
@@ -371,9 +389,7 @@ def test_music_studio_rulers_draw_scaled_tick_marks_from_quantize_step():
     assert "ctx.lineWidth = metrics.lineWidth" in studio_text
     assert "ctx.moveTo(x, tickBottom - tickHeight)" in studio_text
     assert "const labelX = Math.max(originX + rulerLabelGap, x + rulerLabelGap)" in studio_text
-    assert (
-        "for (\n    let absoluteBeat = firstMultipleAtOrAfter(startBeat, tickStep);" in studio_text
-    )
+    assert "let absoluteBeat = firstMultipleAtOrAfter(startBeat, tickStep);" in studio_text
 
 
 def test_music_studio_audio_drop_matches_host_supported_import_formats():
@@ -398,7 +414,7 @@ def test_music_studio_keeps_arrangement_track_list_fixed_while_scrolling():
 
 
 def test_music_studio_arrangement_ruler_and_subtracks_stay_sticky_while_tracks_scroll():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert 'ref="arrangementHeaderCanvas"' in studio_text
     assert 'class="editor-canvas arrangement-header-canvas"' in studio_text
@@ -419,7 +435,7 @@ def test_music_studio_arrangement_ruler_and_subtracks_stay_sticky_while_tracks_s
 
 
 def test_music_studio_track_list_sidebar_can_be_resized():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert 'class="track-list-resize-handle"' in studio_text
     assert 'aria-label="Resize track list"' in studio_text
@@ -499,7 +515,7 @@ def test_music_studio_arrangement_body_wheel_uses_shift_for_horizontal_scroll():
 
 
 def test_music_studio_audio_waveform_uses_track_color_background():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert (
         "ctx.fillStyle = hexToRgba(clip.color || track.color, track.mute ? 0.22 : 0.72)"
@@ -511,7 +527,7 @@ def test_music_studio_audio_waveform_uses_track_color_background():
 
 
 def test_music_studio_exposes_automation_tracks_and_context_creation():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
@@ -590,7 +606,7 @@ def test_music_studio_has_mutually_exclusive_piano_and_mixer_lower_windows():
 
 
 def test_music_studio_piano_roll_extends_from_low_c_to_c9():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "const minPitch = 0" in studio_text
     assert "const maxPitch = 120" in studio_text
@@ -600,7 +616,7 @@ def test_music_studio_piano_roll_extends_from_low_c_to_c9():
 
 
 def test_music_studio_piano_ruler_and_subtracks_stay_sticky_while_notes_scroll():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert 'ref="pianoHeaderCanvas"' in studio_text
     assert 'class="editor-canvas piano-header-canvas"' in studio_text
@@ -758,7 +774,7 @@ def test_music_studio_master_bus_uses_editable_strip_controls_without_sends():
 
 
 def test_music_studio_automation_tracks_can_be_drawn_like_controller_lanes():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "startAutomationDrag(track, point, event.pointerId)" in studio_text
     assert "function onAutomationPointerMove(event)" in studio_text
@@ -771,7 +787,7 @@ def test_music_studio_automation_tracks_can_be_drawn_like_controller_lanes():
 
 
 def test_music_studio_automation_points_can_be_selected_and_dragged_without_redrawing():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "const selectedAutomationPoint = ref({ trackId: null, index: -1 })" in studio_text
     assert (
@@ -813,16 +829,17 @@ def test_music_studio_persists_piano_notes_and_controller_events_with_midi_diff(
 
 def test_music_studio_persists_automation_points_with_automation_diff():
     studio_text = _read(STUDIO_COMPONENT)
+    automation_text = _read(AUTOMATION_EDITING)
     host_text = _read(DAW_HOST)
 
     assert "async function diffAutomationTrack(trackId, operations)" in host_text
     assert "const res = await api.studioAutomationDiff(trackId, operations)" in host_text
     assert "diffAutomationTrack," in studio_text
 
-    automation_persist = studio_text[
-        studio_text.index("async function persistAutomationTrackPoints") : studio_text.index(
-            "function syncArrangementScroll"
-        )
+    automation_persist = automation_text[
+        automation_text.index(
+            "async function persistAutomationTrackPoints"
+        ) : automation_text.index("function automationCurveHandlePoint")
     ]
     assert "buildAutomationReplaceRangeOperations(previous, normalized)" in automation_persist
     assert "await diffAutomationTrack(trackId, operations)" in automation_persist
@@ -841,7 +858,7 @@ def test_music_studio_persists_arrangement_clips_with_clip_diff():
 
     arrangement_up = studio_text[
         studio_text.index("async function onArrangementPointerUp") : studio_text.index(
-            "function startAutomationDrag"
+            "async function onPianoPointerDown"
         )
     ]
     assert "buildClipDiffOperations(drag.originals, nextRecords)" in arrangement_up
@@ -867,7 +884,7 @@ def test_music_studio_persists_arrangement_clips_with_clip_diff():
 
 
 def test_music_studio_controller_events_can_be_selected_and_dragged_without_redrawing():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "const selectedControllerEventId = ref(null)" in studio_text
     assert "const hit = hitTestControllerEvent(definition, point.x, point.y)" in studio_text
@@ -880,7 +897,7 @@ def test_music_studio_controller_events_can_be_selected_and_dragged_without_redr
 
 
 def test_music_studio_controller_events_have_draggable_curve_handles():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "controllerCurveHandleHitRadius" in studio_text
     assert "curveHandleMinSegmentPx" in studio_text
@@ -913,7 +930,7 @@ def test_music_studio_controller_events_have_draggable_curve_handles():
 
 
 def test_music_studio_automation_points_have_draggable_curve_handles():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "automationCurveHandleHitRadius" in studio_text
     assert "curveHandleMinSegmentPx" in studio_text
@@ -951,7 +968,7 @@ def test_music_studio_automation_points_have_draggable_curve_handles():
 
 
 def test_music_studio_piano_roll_has_dedicated_meter_lane():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert 'class="piano-subtrack-select"' in studio_text
     assert "pianoSubtrackCreateValue" in studio_text
@@ -988,7 +1005,7 @@ def test_music_studio_piano_meter_lane_can_collapse_without_deleting_events():
 
 
 def test_music_studio_piano_harmony_lane_persists_agent_visible_markers():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert (
         "{ id: 'harmony', label: '和声轨', disabled: pianoHarmonyLaneVisible.value }" in studio_text
@@ -1020,7 +1037,7 @@ def test_music_studio_piano_subtracks_resync_when_project_subtrack_data_changes(
 
 
 def test_music_studio_piano_meter_label_opens_editor_and_playhead_uses_visible_piano_length():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert 'ref="pianoMeterEditorRoot"' in studio_text
     assert 'class="piano-meter-popover"' in studio_text
@@ -1046,7 +1063,7 @@ def test_music_studio_top_right_meter_change_writes_event_at_cursor_or_global_at
 
 
 def test_music_studio_piano_ruler_uses_meter_segments_for_fractional_beat_ticks():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "meterSegments(project.value, clipStart, endBeat)" in studio_text
     assert "firstMultipleAtOrAfter(segment.start, unit, segment.anchor)" in studio_text
@@ -1153,7 +1170,7 @@ def test_music_studio_separates_host_audio_ws_and_pcm_streaming_statuses():
 
 
 def test_music_studio_audio_waveform_uses_zrythm_region_style():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_studio_runtime_sources()
 
     assert "function waveformPointMetrics(point)" in studio_text
     assert (
