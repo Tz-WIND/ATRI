@@ -23,6 +23,13 @@ def test_piano_playability_marks_tenth_to_twelfth_span_warning_and_wider_error(
                             "duration": 4,
                             "notes": [
                                 {
+                                    "id": "left_anchor_warning",
+                                    "pitch": 48,
+                                    "start": 0,
+                                    "duration": 1,
+                                    "velocity": 82,
+                                },
+                                {
                                     "id": "warning_low",
                                     "pitch": 64,
                                     "start": 0,
@@ -35,6 +42,13 @@ def test_piano_playability_marks_tenth_to_twelfth_span_warning_and_wider_error(
                                     "start": 0,
                                     "duration": 1,
                                     "velocity": 90,
+                                },
+                                {
+                                    "id": "left_anchor_error",
+                                    "pitch": 48,
+                                    "start": 2,
+                                    "duration": 1,
+                                    "velocity": 82,
                                 },
                                 {
                                     "id": "error_low",
@@ -149,7 +163,7 @@ def test_piano_playability_marks_too_many_simultaneous_notes_for_one_hand_error(
                                     "duration": 1,
                                     "velocity": 88,
                                 }
-                                for pitch in [60, 62, 64, 65, 67, 69]
+                                for pitch in [60, 64, 67, 72, 76, 91]
                             ],
                         }
                     ],
@@ -169,12 +183,90 @@ def test_piano_playability_marks_too_many_simultaneous_notes_for_one_hand_error(
             "end": 1.0,
             "hand": "right",
             "note_count": 6,
-            "notes": ["rh_60", "rh_62", "rh_64", "rh_65", "rh_67", "rh_69"],
+            "notes": ["rh_60", "rh_64", "rh_67", "rh_72", "rh_76", "rh_91"],
             "message": "Right hand has 6 simultaneous notes.",
             "suggestion": "Remove a note, roll the chord, or redistribute notes between hands.",
         }
     ]
     assert result["summary"]["playability"] == "likely_unplayable"
+
+
+def test_piano_playability_does_not_mark_two_hand_cluster_as_single_hand_problem(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Piano",
+                    "clips": [
+                        {
+                            "id": "clip_1",
+                            "type": "midi",
+                            "start": 0,
+                            "duration": 1,
+                            "notes": [
+                                {
+                                    "id": f"shared_{pitch}",
+                                    "pitch": pitch,
+                                    "start": 0,
+                                    "duration": 1,
+                                    "velocity": 88,
+                                }
+                                for pitch in [60, 64, 67, 72, 76, 79]
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    result = piano_playability_check(track_id=1)
+
+    assert result["issues"] == []
+    assert result["summary"]["playability"] == "playable"
+
+
+def test_piano_playability_does_not_mark_mixed_two_hand_cluster_as_right_hand_problem(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Piano",
+                    "clips": [
+                        {
+                            "id": "clip_1",
+                            "type": "midi",
+                            "start": 0,
+                            "duration": 1,
+                            "notes": [
+                                {
+                                    "id": f"shared_{pitch}",
+                                    "pitch": pitch,
+                                    "start": 0,
+                                    "duration": 1,
+                                    "velocity": 88,
+                                }
+                                for pitch in [48, 60, 62, 64, 65, 67, 69]
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    result = piano_playability_check(track_id=1)
+
+    assert result["issues"] == []
+    assert result["summary"]["playability"] == "playable"
 
 
 def test_piano_playability_allows_left_hand_above_right_when_right_hand_is_blocked(
@@ -214,6 +306,13 @@ def test_piano_playability_allows_left_hand_above_right_when_right_hand_is_block
                                     "start": 0,
                                     "duration": 2,
                                     "velocity": 84,
+                                },
+                                {
+                                    "id": "left_setup",
+                                    "pitch": 48,
+                                    "start": 0.5,
+                                    "duration": 0.25,
+                                    "velocity": 78,
                                 },
                                 {
                                     "id": "left_crosses_above",
@@ -271,6 +370,13 @@ def test_piano_playability_warns_when_left_hand_crosses_without_blocked_right_ha
                                     "velocity": 84,
                                 },
                                 {
+                                    "id": "left_setup",
+                                    "pitch": 48,
+                                    "start": 0.5,
+                                    "duration": 0.25,
+                                    "velocity": 78,
+                                },
+                                {
                                     "id": "left_crosses_above",
                                     "pitch": 79,
                                     "start": 1,
@@ -302,6 +408,104 @@ def test_piano_playability_warns_when_left_hand_crosses_without_blocked_right_ha
         }
     ]
     assert result["summary"]["max_problem_severity"] == "warning"
+
+
+def test_piano_playability_does_not_warn_about_high_note_without_left_hand_context(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Piano",
+                    "clips": [
+                        {
+                            "id": "clip_1",
+                            "type": "midi",
+                            "start": 0,
+                            "duration": 4,
+                            "notes": [
+                                {
+                                    "id": "rh_hold",
+                                    "pitch": 67,
+                                    "start": 0,
+                                    "duration": 2,
+                                    "velocity": 84,
+                                },
+                                {
+                                    "id": "rh_top_note",
+                                    "pitch": 79,
+                                    "start": 1,
+                                    "duration": 0.5,
+                                    "velocity": 92,
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    result = piano_playability_check(track_id=1)
+
+    assert result["issues"] == []
+    assert result["summary"]["playability"] == "playable"
+
+
+def test_piano_playability_does_not_label_blocked_right_hand_melody_as_left_crossing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    save_project(
+        {
+            "tracks": [
+                {
+                    "id": 1,
+                    "name": "Piano",
+                    "clips": [
+                        {
+                            "id": "clip_1",
+                            "type": "midi",
+                            "start": 0,
+                            "duration": 4,
+                            "notes": [
+                                {
+                                    "id": "rh_hold_low",
+                                    "pitch": 67,
+                                    "start": 0,
+                                    "duration": 2,
+                                    "velocity": 84,
+                                },
+                                {
+                                    "id": "rh_hold_mid",
+                                    "pitch": 71,
+                                    "start": 0,
+                                    "duration": 2,
+                                    "velocity": 84,
+                                },
+                                {
+                                    "id": "rh_top_melody",
+                                    "pitch": 79,
+                                    "start": 1,
+                                    "duration": 0.5,
+                                    "velocity": 92,
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    result = piano_playability_check(track_id=1)
+
+    assert result["issues"] == []
+    assert result["difficulty_notes"] == []
+    assert result["summary"]["playability"] == "playable"
 
 
 def test_piano_playability_warns_about_dense_extreme_register_clusters(tmp_path, monkeypatch):

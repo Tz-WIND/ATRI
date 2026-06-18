@@ -17,6 +17,7 @@ RAPID_REPOSITION_SEMITONES = 12
 LOW_EXTREME_MAX_PITCH = 36
 HIGH_EXTREME_MIN_PITCH = 96
 EXTREME_REGISTER_DENSE_NOTES = 3
+HAND_CROSSING_CONTEXT_WINDOW_BEATS = 0.75
 
 
 def piano_playability_check(
@@ -35,8 +36,11 @@ def piano_playability_check(
     clusters = _note_start_clusters(notes)
     for cluster in clusters:
         hands = _assign_cluster_hands(cluster)
+        has_playable_two_hand_split = _has_playable_two_hand_split(cluster)
         issues.extend(_extreme_register_density_issues(cluster))
         for hand, hand_notes in hands.items():
+            if has_playable_two_hand_split:
+                continue
             if len(hand_notes) >= HAND_DENSITY_WARNING_NOTES:
                 severity = "error" if len(hand_notes) >= HAND_DENSITY_ERROR_NOTES else "warning"
                 issues.append(
@@ -210,6 +214,25 @@ def _assign_cluster_hands(cluster: list[dict[str, Any]]) -> dict[str, list[dict[
     }
 
 
+def _has_playable_two_hand_split(cluster: list[dict[str, Any]]) -> bool:
+    if len(cluster) < HAND_DENSITY_WARNING_NOTES:
+        return False
+    ordered = sorted(cluster, key=lambda note: int(note["pitch"]))
+    for split_index in range(1, len(ordered)):
+        lower = ordered[:split_index]
+        upper = ordered[split_index:]
+        if _hand_group_is_comfortable(lower) and _hand_group_is_comfortable(upper):
+            return True
+    return False
+
+
+def _hand_group_is_comfortable(notes: list[dict[str, Any]]) -> bool:
+    if len(notes) >= HAND_DENSITY_WARNING_NOTES:
+        return False
+    pitches = [int(note["pitch"]) for note in notes]
+    return max(pitches) - min(pitches) < HAND_SPAN_WARNING_SEMITONES
+
+
 def _hand_span_message(hand: str, span: int) -> str:
     hand_label = "Left hand" if hand == "left" else "Right hand"
     if span > HAND_SPAN_ERROR_SEMITONES:
@@ -317,6 +340,8 @@ def _allowed_left_over_right_notes(
             continue
         if pitch <= max(int(note["pitch"]) for note in active_right_notes):
             continue
+        if not _has_left_hand_crossing_context(notes, crossing_note):
+            continue
 
         allowed.append(
             {
@@ -352,6 +377,8 @@ def _left_over_right_crossing_issues(
             continue
         if _right_hand_blocked(active_right_notes):
             continue
+        if not _has_left_hand_crossing_context(notes, crossing_note):
+            continue
 
         issues.append(
             {
@@ -366,6 +393,24 @@ def _left_over_right_crossing_issues(
             }
         )
     return issues
+
+
+def _has_left_hand_crossing_context(
+    notes: list[dict[str, Any]],
+    crossing_note: dict[str, Any],
+) -> bool:
+    start = float(crossing_note["start"])
+    end = float(crossing_note["end"])
+    for note in notes:
+        if note is crossing_note or int(note["pitch"]) >= MIDDLE_C:
+            continue
+        note_start = float(note["start"])
+        note_end = float(note["end"])
+        if note_end <= start and start - note_end <= HAND_CROSSING_CONTEXT_WINDOW_BEATS + 1e-6:
+            return True
+        if note_start >= end and note_start - end <= HAND_CROSSING_CONTEXT_WINDOW_BEATS + 1e-6:
+            return True
+    return False
 
 
 def _active_right_notes(notes: list[dict[str, Any]], beat: float) -> list[dict[str, Any]]:
