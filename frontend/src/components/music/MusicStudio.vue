@@ -1197,21 +1197,21 @@ import { useDawHost } from '@/composables/useDawHost.js'
 import MixerPanel from './studio/MixerPanel.vue'
 import StudioExportDialog from './studio/StudioExportDialog.vue'
 import TrackCreateDialog from './studio/TrackCreateDialog.vue'
+import { createArrangementRenderer } from './arrangementRenderer.js'
+import { createAutomationEditing } from './automationEditing.js'
+import { createPianoRollRenderer } from './pianoRollRenderer.js'
+import { useStudioKeyboardShortcuts } from './useStudioKeyboardShortcuts.js'
 import './studio/StudioDialogs.css'
 import {
   CONTROLLER_PRESETS,
   DEFAULT_CONTROLLER_IDS,
   DEFAULT_NOTE_VELOCITY,
   applyCurveAmount,
-  controllerCurveValueAtBeat,
   controllerDefinitionFromId,
   controllerDisplayRange,
-  controllerLaneColorStyles,
   controllerLaneStackHeight,
   controllerRenderPoints,
   controllerUnitToValue,
-  controllerValueToUnit,
-  curveUnitAtPosition,
   createDefaultControllerLanes,
   eventMatchesController,
   makeControllerEventId,
@@ -1229,7 +1229,6 @@ import {
 } from './pianoQuantize.js'
 import { pianoScrollTopForNotes } from './pianoViewport.js'
 import {
-  buildAutomationReplaceRangeOperations,
   buildClipDiffOperations,
   buildMidiEventDiffOperations,
   buildMidiNoteDiffOperations,
@@ -1240,8 +1239,6 @@ import {
 } from './tempoAutomation.js'
 import {
   effectiveMeterAtBeat,
-  meterBarLinesBetween,
-  meterSegments,
   meterPositionAtBeat,
   normalizeMeterEvents,
 } from './meterEvents.js'
@@ -1473,7 +1470,6 @@ let lowerEditorResizeDrag = null
 let trackListResizeDrag = null
 let arrangementDrag = null
 let controllerDrag = null
-let automationDrag = null
 let syncingPianoScroll = false
 let audioDecodeContext = null
 let tempoUpdateTimer = null
@@ -1648,6 +1644,166 @@ const learnedAutomationTargets = computed(() => (
     },
   }))
 ))
+
+const {
+  automationCurveHandlePoint,
+  automationCurveValueAtBeat,
+  automationPointY,
+  cancelAutomationDrag,
+  hitTestAutomationCurveHandle,
+  hitTestAutomationPoint,
+  sortAutomationPoints,
+  startAutomationCurveDrag,
+  startAutomationDrag,
+  startAutomationPointDrag,
+} = createAutomationEditing({
+  activePianoSnapStep,
+  arrangementPoint,
+  arrangementPxPerBeat,
+  arrangementTrackH,
+  arrangementTrackTop,
+  automationCurveHandleHitRadius,
+  automationPointHitRadius,
+  curveHandleDragScale,
+  curveHandleMinSegmentPx,
+  diffAutomationTrack,
+  drawAll,
+  project,
+  selectedAutomationPoint,
+  tracks,
+})
+
+const {
+  drawArrangement,
+} = createArrangementRenderer({
+  activeClipId,
+  activePianoSnapStep,
+  activeTrack,
+  arrangementCanvas,
+  arrangementEmptyBars,
+  arrangementHeaderCanvas,
+  arrangementPxPerBeat,
+  arrangementRulerH,
+  arrangementSubtrackTop,
+  arrangementTrackH,
+  arrangementTrackTop,
+  arrangementVisibleSubtracks,
+  arrangementWrap,
+  automationCurveHandlePoint,
+  automationCurveValueAtBeat,
+  automationPointY,
+  automationTargetLabel,
+  clipRect,
+  currentTrackListWidth,
+  editableHarmonyEvents,
+  isAutomationTrack,
+  meterBeats,
+  pianoSubtrackH,
+  project,
+  rulerBarLabelFont,
+  rulerBeatLabelFont,
+  rulerBeatLabelMinScale,
+  rulerFineTickRatio,
+  rulerLabelGap,
+  rulerMajorTickRatio,
+  rulerMinorTickRatio,
+  selectedAutomationPoint,
+  selectedClipIds,
+  snapStep,
+  sortAutomationPoints,
+  tracks,
+  visualPositionBeats,
+})
+
+const {
+  controllerCurveHandlePoint,
+  controllerValueToY,
+  drawControllerLanes,
+  drawPiano,
+} = createPianoRollRenderer({
+  activeMidiClip,
+  activePianoSnapStep,
+  controllerLaneBodyH,
+  controllerLaneCanvases,
+  controllerLaneH,
+  controllerLaneTabH,
+  controllerLanes,
+  controllerScrollLeft,
+  controllerWrap,
+  controllerDefinitionForLane,
+  curveHandleMinSegmentPx,
+  draftNote,
+  editableHarmonyEvents,
+  maxPitch,
+  meterBeats,
+  minPitch,
+  noteRect,
+  pianoCanvas,
+  pianoEmptyBars,
+  pianoHarmonyLaneTop,
+  pianoHarmonyLaneVisible,
+  pianoHeaderCanvas,
+  pianoKeyW,
+  pianoMeterLaneH,
+  pianoMeterLaneTop,
+  pianoMeterLaneVisible,
+  pianoNoteTop,
+  pianoPxPerBeat,
+  pianoRowH,
+  pianoRulerH,
+  pianoSubtrackH,
+  pianoTimelineWidth,
+  pianoVisible,
+  pianoVisibleSubtracks,
+  pianoWrap,
+  project,
+  rulerBarLabelFont,
+  rulerBeatLabelFont,
+  rulerBeatLabelMinScale,
+  rulerFineTickRatio,
+  rulerLabelGap,
+  rulerMajorTickRatio,
+  rulerMinorTickRatio,
+  selectedControllerEventId,
+  selectedNoteIds,
+  selectionBox,
+  snapStep,
+  visualPositionBeats,
+})
+
+const {
+  onStudioKeydown,
+  onTrackRowKeydown,
+} = useStudioKeyboardShortcuts({
+  activeMidiClip,
+  automationMenu,
+  cancelAutomationDrag,
+  clearPianoLongPressTimer,
+  closePianoHarmonyEditor,
+  closePianoMeterEditor,
+  closeTrackContextMenu,
+  controllerMenuLaneId,
+  copySelectedClips,
+  copySelectedNotes,
+  deleteSelectedClips,
+  deleteSelectedNotes,
+  draftNote,
+  drawAll,
+  noteClipboard,
+  pasteClips,
+  pasteNotes,
+  pianoQuantizeMenuOpen,
+  pianoVisible,
+  selectTrack,
+  selectedAutomationPoint,
+  selectedClipIds,
+  selectedControllerEventId,
+  selectedNoteIds,
+  selectionBox,
+  timelineQuantizeMenuOpen,
+  togglePlay,
+  tracks,
+})
 
 async function toggleProjectLibrary() {
   projectLibraryOpen.value = !projectLibraryOpen.value
@@ -2768,300 +2924,6 @@ async function onArrangementPointerUp() {
   unbindArrangementDrag()
   await diffClips(operations)
   drawAll()
-}
-
-function startAutomationDrag(track, point, pointerId) {
-  const originalPoints = cloneAutomationPoints(ensureAutomationTrackPoints(track))
-  const value = automationValueFromY(track, point.y)
-  const beat = snapAutomationBeat(point.beat)
-  upsertAutomationPointAt(track, beat, value)
-  automationDrag = {
-    type: 'automation',
-    pointerId,
-    trackId: track.id,
-    lastBeat: beat,
-    lastValue: value,
-    originalPoints,
-  }
-  bindAutomationDrag()
-  drawAll()
-}
-
-function startAutomationPointDrag(track, pointIndex, pointerId) {
-  const points = ensureAutomationTrackPoints(track)
-  const point = points[pointIndex]
-  if (!point) return
-  const originalPoints = cloneAutomationPoints(points)
-  selectedAutomationPoint.value = { trackId: track.id, index: pointIndex }
-  automationDrag = {
-    type: 'automation-point',
-    pointerId,
-    trackId: track.id,
-    pointIndex,
-    originalPoints,
-  }
-  bindAutomationDrag()
-  drawAll()
-}
-
-function startAutomationCurveDrag(track, hit, pointerY, pointerId) {
-  if (!hit?.point) return
-  const originalPoints = cloneAutomationPoints(ensureAutomationTrackPoints(track))
-  selectedAutomationPoint.value = { trackId: track.id, index: hit.index }
-  automationDrag = {
-    type: 'automation-curve',
-    pointerId,
-    trackId: track.id,
-    pointIndex: hit.index,
-    startY: pointerY,
-    startCurveAmount: Number(hit.point.curve_amount || 0),
-    originalPoints,
-  }
-  bindAutomationDrag()
-  drawAll()
-}
-
-function bindAutomationDrag() {
-  window.addEventListener('pointermove', onAutomationPointerMove)
-  window.addEventListener('pointerup', onAutomationPointerUp)
-}
-
-function unbindAutomationDrag() {
-  window.removeEventListener('pointermove', onAutomationPointerMove)
-  window.removeEventListener('pointerup', onAutomationPointerUp)
-}
-
-function onAutomationPointerMove(event) {
-  if (!automationDrag || !project.value) return
-  const track = tracks.value.find(item => Number(item.id) === Number(automationDrag.trackId))
-  const point = arrangementPoint(event)
-  if (!track || !point) return
-  event.preventDefault()
-  if (automationDrag.type === 'automation-curve') {
-    const nextCurveAmount = normalizeCurveAmount(
-      automationDrag.startCurveAmount
-        + ((automationDrag.startY - point.y) / Math.max(1, arrangementTrackH - 24)) * curveHandleDragScale
-    )
-    updateAutomationPointCurve(track, automationDrag.pointIndex, nextCurveAmount)
-    drawAll()
-    return
-  }
-  const beat = snapAutomationBeat(point.beat)
-  const value = automationValueFromY(track, point.y)
-  if (automationDrag.type === 'automation-point') {
-    automationDrag.pointIndex = moveAutomationPoint(track, automationDrag.pointIndex, beat, value)
-  } else {
-    writeAutomationDragPoints(
-      track,
-      automationDrag.lastBeat,
-      automationDrag.lastValue,
-      beat,
-      value
-    )
-    automationDrag.lastBeat = beat
-    automationDrag.lastValue = value
-  }
-  drawAll()
-}
-
-async function onAutomationPointerUp() {
-  if (!automationDrag) return
-  const drag = automationDrag
-  automationDrag = null
-  unbindAutomationDrag()
-  await persistAutomationTrackPoints(drag.trackId, automationTrackPoints(drag.trackId), {
-    previousPoints: drag.originalPoints,
-    snapBeats: drag.type !== 'automation-curve',
-  })
-  drawAll()
-}
-
-function automationTrackPoints(trackId) {
-  const track = tracks.value.find(item => Number(item.id) === Number(trackId))
-  return ensureAutomationTrackPoints(track)
-}
-
-function ensureAutomationTrackPoints(track) {
-  if (!track) return []
-  if (!track.automation || typeof track.automation !== 'object') {
-    track.automation = { points: [], value_min: 0, value_max: 1 }
-  }
-  if (!Array.isArray(track.automation.points)) track.automation.points = []
-  return track.automation.points
-}
-
-function cloneAutomationPoints(points = []) {
-  return (points || []).map(point => ({ ...point }))
-}
-
-function automationValueRange(track) {
-  const min = Number(track?.automation?.value_min ?? 0)
-  const max = Number(track?.automation?.value_max ?? 1)
-  if (!Number.isFinite(min) || !Number.isFinite(max) || Math.abs(max - min) < 0.000001) {
-    return { min: 0, max: 1 }
-  }
-  return min < max ? { min, max } : { min: max, max: min }
-}
-
-function automationValueFromY(track, y) {
-  const trackIndex = tracks.value.findIndex(item => Number(item.id) === Number(track?.id))
-  const top = arrangementTrackTop(Math.max(0, trackIndex)) + 12
-  const bodyHeight = Math.max(1, arrangementTrackH - 24)
-  const unit = 1 - clamp((Number(y || 0) - top) / bodyHeight, 0, 1)
-  const { min, max } = automationValueRange(track)
-  return roundAutomationValue(min + unit * (max - min))
-}
-
-function automationPointY(track, point, trackIndex) {
-  const { min, max } = automationValueRange(track)
-  const unit = clamp((Number(point?.value ?? min) - min) / Math.max(0.0001, max - min), 0, 1)
-  return arrangementTrackTop(trackIndex) + 12 + (1 - unit) * (arrangementTrackH - 24)
-}
-
-function snapAutomationBeat(value) {
-  return Math.max(0, snapBeatToGrid(value, activePianoSnapStep.value))
-}
-
-function roundAutomationValue(value) {
-  return Math.round(Number(value || 0) * 1000000) / 1000000
-}
-
-function normalizeAutomationPoint(track, point, options = {}) {
-  const { min, max } = automationValueRange(track)
-  const value = clamp(roundAutomationValue(point?.value), min, max)
-  const normalized = {
-    beat: options.snapBeats === false
-      ? Math.max(0, roundAutomationValue(point?.beat))
-      : snapAutomationBeat(point?.beat),
-    value,
-    curve: String(point?.curve || 'linear'),
-  }
-  if (point?.id) normalized.id = String(point.id)
-  const curveAmount = normalizeCurveAmount(point?.curve_amount ?? point?.curveAmount)
-  if (Math.abs(curveAmount) > 0.000001) {
-    normalized.curve_amount = curveAmount
-  }
-  return normalized
-}
-
-function sortAutomationPoints(a, b) {
-  return Number(a.beat || 0) - Number(b.beat || 0)
-}
-
-function findAutomationPointIndex(track, beat) {
-  const points = ensureAutomationTrackPoints(track)
-  const snapThreshold = activePianoSnapStep.value
-    ? Math.max(0.001, activePianoSnapStep.value / 3)
-    : Number.POSITIVE_INFINITY
-  const threshold = Math.min(Math.max(0.008, 3 / arrangementPxPerBeat.value), snapThreshold)
-  return points.findIndex(point => Math.abs(Number(point.beat || 0) - Number(beat || 0)) <= threshold)
-}
-
-function upsertAutomationPointAt(track, beat, value) {
-  const points = ensureAutomationTrackPoints(track)
-  const point = normalizeAutomationPoint(track, { beat, value })
-  const index = findAutomationPointIndex(track, point.beat)
-  if (index >= 0) points[index] = { ...points[index], ...point }
-  else points.push(point)
-  points.sort(sortAutomationPoints)
-}
-
-function moveAutomationPoint(track, pointIndex, beat, value) {
-  const points = ensureAutomationTrackPoints(track)
-  if (!points[pointIndex]) return pointIndex
-  const point = normalizeAutomationPoint(track, { ...points[pointIndex], beat, value })
-  points.splice(pointIndex, 1, point)
-  points.sort(sortAutomationPoints)
-  const nextIndex = points.findIndex(item => item === point)
-  selectedAutomationPoint.value = { trackId: track.id, index: nextIndex >= 0 ? nextIndex : pointIndex }
-  return selectedAutomationPoint.value.index
-}
-
-function updateAutomationPointCurve(track, pointIndex, curveAmount) {
-  const points = ensureAutomationTrackPoints(track)
-  if (!points[pointIndex]) return
-  points[pointIndex] = applyCurveAmount(points[pointIndex], curveAmount)
-  selectedAutomationPoint.value = { trackId: track.id, index: pointIndex }
-}
-
-function hitTestAutomationPoint(track, x, y, trackIndex) {
-  const points = ensureAutomationTrackPoints(track)
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    const point = points[index]
-    const px = Number(point.beat || 0) * arrangementPxPerBeat.value
-    const py = automationPointY(track, point, trackIndex)
-    if (Math.hypot(x - px, y - py) <= automationPointHitRadius) {
-      return { point, index }
-    }
-  }
-  return null
-}
-
-function hitTestAutomationCurveHandle(track, x, y, trackIndex) {
-  const indexedPoints = ensureAutomationTrackPoints(track)
-    .map((point, index) => ({ point, index }))
-    .sort((a, b) => sortAutomationPoints(a.point, b.point))
-  for (let index = indexedPoints.length - 2; index >= 0; index -= 1) {
-    const left = indexedPoints[index]
-    const right = indexedPoints[index + 1]
-    const handle = automationCurveHandlePoint(track, left.point, right.point, trackIndex)
-    if (handle && Math.hypot(x - handle.x, y - handle.y) <= automationCurveHandleHitRadius) {
-      return {
-        point: left.point,
-        index: left.index,
-        startBeat: Number(left.point.beat || 0),
-        endBeat: Number(right.point.beat || 0),
-      }
-    }
-  }
-  return null
-}
-
-function writeAutomationDragPoints(track, startBeat, startValue, endBeat, endValue) {
-  const beats = quantizedBeatsBetween(startBeat, endBeat, activePianoSnapStep.value)
-  for (const beat of beats) {
-    const value = interpolateAutomationValue(startBeat, startValue, endBeat, endValue, beat)
-    upsertAutomationPointAt(track, beat, value)
-  }
-}
-
-function interpolateAutomationValue(startBeat, startValue, endBeat, endValue, beat) {
-  const distance = Number(endBeat || 0) - Number(startBeat || 0)
-  if (Math.abs(distance) < 0.000001) return roundAutomationValue(endValue)
-  const unit = (Number(beat || 0) - Number(startBeat || 0)) / distance
-  return roundAutomationValue(Number(startValue || 0) + (Number(endValue || 0) - Number(startValue || 0)) * unit)
-}
-
-function automationCurveValueAtBeat(track, left, right, beat) {
-  if (!left || !right) return 0
-  if (String(left.curve || 'linear') === 'hold') return roundAutomationValue(left.value)
-  const startBeat = Number(left.beat || 0)
-  const endBeat = Number(right.beat || 0)
-  const span = endBeat - startBeat
-  if (span <= 0.000001) return roundAutomationValue(right.value)
-  const position = clamp((Number(beat || 0) - startBeat) / span, 0, 1)
-  const { min, max } = automationValueRange(track)
-  const range = Math.max(0.000001, max - min)
-  const startUnit = clamp((Number(left.value ?? min) - min) / range, 0, 1)
-  const endUnit = clamp((Number(right.value ?? min) - min) / range, 0, 1)
-  return roundAutomationValue(min + curveUnitAtPosition(
-    startUnit,
-    endUnit,
-    position,
-    left.curve_amount
-  ) * range)
-}
-
-async function persistAutomationTrackPoints(trackId, points, options = {}) {
-  const track = tracks.value.find(item => Number(item.id) === Number(trackId))
-  const previous = (options.previousPoints || ensureAutomationTrackPoints(track))
-    .map(point => normalizeAutomationPoint(track, point, options))
-    .sort(sortAutomationPoints)
-  const normalized = (points || [])
-    .map(point => normalizeAutomationPoint(track, point, options))
-    .sort(sortAutomationPoints)
-  const operations = buildAutomationReplaceRangeOperations(previous, normalized)
-  await diffAutomationTrack(trackId, operations)
 }
 
 function syncArrangementScroll(event) {
@@ -4574,79 +4436,6 @@ function setTimelineTool(tool) {
   timelineTool.value = tool === 'draw' ? 'draw' : 'select'
 }
 
-function isInteractiveTarget(event) {
-  const target = event.target
-  const tag = String(target?.tagName || '').toLowerCase()
-  return ['input', 'textarea', 'select', 'button', 'a'].includes(tag)
-    || Boolean(target?.closest?.('input, textarea, select, button, a'))
-}
-
-function onTrackRowKeydown(event, trackId) {
-  if (isInteractiveTarget(event)) return
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault()
-    selectTrack(trackId)
-  }
-}
-
-function onStudioKeydown(event) {
-  const tag = String(event.target?.tagName || '').toLowerCase()
-  if (['input', 'textarea', 'select', 'button'].includes(tag)) return
-  if (event.code === 'Space' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-    event.preventDefault()
-    togglePlay()
-  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
-    event.preventDefault()
-    if (pianoVisible.value && activeMidiClip.value && selectedNoteIds.value.size) {
-      copySelectedNotes()
-    } else {
-      copySelectedClips()
-    }
-  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
-    event.preventDefault()
-    if (pianoVisible.value && activeMidiClip.value && noteClipboard.value.length) {
-      pasteNotes()
-    } else {
-      pasteClips()
-    }
-  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
-    event.preventDefault()
-    if (pianoVisible.value && activeMidiClip.value) {
-      selectedNoteIds.value = new Set(activeMidiClip.value.clip.notes.map(note => note.id))
-    } else {
-      selectedClipIds.value = new Set(
-        tracks.value.flatMap(track => (track.clips || []).map(clip => clip.id))
-      )
-    }
-    drawAll()
-  } else if (event.key === 'Delete' || event.key === 'Backspace') {
-    event.preventDefault()
-    if (pianoVisible.value && activeMidiClip.value && selectedNoteIds.value.size) {
-      deleteSelectedNotes()
-    } else {
-      deleteSelectedClips()
-    }
-  } else if (event.key === 'Escape') {
-    selectedNoteIds.value = new Set()
-    selectedClipIds.value = new Set()
-    selectedAutomationPoint.value = { trackId: null, index: -1 }
-    selectedControllerEventId.value = null
-    selectionBox.value = null
-    draftNote.value = null
-    clearPianoLongPressTimer()
-    closePianoMeterEditor()
-    closePianoHarmonyEditor()
-    controllerMenuLaneId.value = null
-    timelineQuantizeMenuOpen.value = false
-    pianoQuantizeMenuOpen.value = false
-    automationDrag = null
-    unbindAutomationDrag()
-    automationMenu.value = { open: false, x: 0, y: 0, target: null, label: '' }
-    closeTrackContextMenu()
-    drawAll()
-  }
-}
-
 function snapBeat(value) {
   return Math.round(Number(value || 0) / snapStep) * snapStep
 }
@@ -4712,7 +4501,7 @@ function closePiano() {
   selectionBox.value = null
   lowerEditorResizeDrag = null
   controllerDrag = null
-  automationDrag = null
+  cancelAutomationDrag()
   controllerMenuLaneId.value = null
   clearPianoLongPressTimer()
   closePianoMeterEditor()
@@ -4720,7 +4509,6 @@ function closePiano() {
   unbindPianoDrag()
   unbindLowerEditorResize()
   unbindControllerDrag()
-  unbindAutomationDrag()
   drawAll()
 }
 
@@ -5192,1334 +4980,6 @@ function drawAll() {
   drawControllerLanes()
 }
 
-function setupCanvas(canvas, width, height) {
-  const dpr = window.devicePixelRatio || 1
-  canvas.width = Math.max(1, Math.floor(width * dpr))
-  canvas.height = Math.max(1, Math.floor(height * dpr))
-  canvas.style.width = `${width}px`
-  canvas.style.height = `${height}px`
-  const ctx = canvas.getContext('2d')
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  return ctx
-}
-
-function drawArrangement() {
-  const headerCanvas = arrangementHeaderCanvas.value
-  const canvas = arrangementCanvas.value
-  const wrap = arrangementWrap.value
-  if (!headerCanvas || !canvas || !wrap) return
-  const timelineViewportWidth = Math.max(
-    0,
-    arrangementWrap.value.clientWidth - currentTrackListWidth()
-  )
-  const width = Math.max(
-    timelineViewportWidth,
-    arrangementLengthBeats() * arrangementPxPerBeat.value + 40
-  )
-  const headerHeight = arrangementTrackTop(0)
-  const bodyHeight = Math.max(
-    220 - headerHeight,
-    Math.max(1, tracks.value.length) * arrangementTrackH
-  )
-  const headerCtx = setupCanvas(headerCanvas, width, headerHeight)
-  const bodyCtx = setupCanvas(canvas, width, bodyHeight)
-  drawArrangementHeader(headerCtx, width)
-  drawArrangementBody(bodyCtx, width, bodyHeight)
-}
-
-function drawArrangementHeader(ctx, width) {
-  const height = arrangementTrackTop(0)
-  ctx.fillStyle = '#17191c'
-  ctx.fillRect(0, 0, width, height)
-  ctx.fillStyle = '#202326'
-  ctx.fillRect(0, 0, width, arrangementRulerH)
-  drawRuler(ctx, width)
-  drawArrangementMeterLane(ctx, width, arrangementSubtrackTop('meter'))
-  drawArrangementHarmonyLane(ctx, width, arrangementSubtrackTop('harmony'))
-  drawPlayhead(ctx, height)
-}
-
-function drawArrangementBody(ctx, width, height) {
-  const logicalHeight = arrangementTrackTop(0) + height
-  ctx.save()
-  ctx.translate(0, -arrangementTrackTop(0))
-  ctx.fillStyle = '#17191c'
-  ctx.fillRect(0, arrangementTrackTop(0), width, height)
-
-  tracks.value.forEach((track, index) => {
-    const y = arrangementTrackTop(index)
-    ctx.fillStyle = activeTrack.value?.id === track.id ? 'rgba(158, 191, 255, 0.08)' : '#1b1d20'
-    ctx.fillRect(0, y, width, arrangementTrackH)
-  })
-
-  paintGrid(ctx, width, logicalHeight, 0, arrangementRulerH)
-
-  tracks.value.forEach((track, index) => {
-    const y = arrangementTrackTop(index)
-    ctx.strokeStyle = 'rgba(229, 236, 245, 0.11)'
-    ctx.beginPath()
-    ctx.moveTo(0, y + arrangementTrackH)
-    ctx.lineTo(width, y + arrangementTrackH)
-    ctx.stroke()
-  })
-
-  tracks.value.forEach((track, index) => {
-    if (isAutomationTrack(track)) {
-      drawAutomationTrack(ctx, track, index)
-      return
-    }
-    for (const clip of track.clips || []) {
-      drawArrangementClip(ctx, track, clip, index)
-    }
-  })
-  drawPlayhead(ctx, logicalHeight)
-  ctx.restore()
-}
-
-function arrangementLengthBeats() {
-  const emptyTailBeats = arrangementEmptyBars * Math.max(1, meterBeats.value)
-  const clipEnd = Math.max(
-    0,
-    ...tracks.value.flatMap(track => (track.clips || []).map((clip) => (
-      Number(clip.start || 0) + Number(clip.duration || 0)
-    )))
-  )
-  const automationEnd = Math.max(
-    0,
-    ...tracks.value.flatMap(track => (track.automation?.points || []).map(point => Number(point.beat || 0)))
-  )
-  const harmonyEnd = Math.max(
-    0,
-    ...(project.value?.harmony_events || []).map(event => Number(event.beat || 0))
-  )
-  return Math.max(
-    Number(project.value?.length_beats || 16),
-    emptyTailBeats,
-    clipEnd + 2,
-    automationEnd + 2,
-    harmonyEnd + 2
-  )
-}
-
-function pianoLengthBeats(clip) {
-  const emptyTailBeats = pianoEmptyBars * Math.max(1, meterBeats.value)
-  const clipStart = Number(clip.start || 0)
-  const noteEnd = Math.max(
-    0,
-    ...(clip.notes || []).map((note) => Number(note.start || 0) + Number(note.duration || 0))
-  )
-  const meterEventEnd = Math.max(
-    0,
-    ...(project.value?.meter_events || []).map(event => Number(event.beat || 0) - clipStart)
-  )
-  const harmonyEventEnd = Math.max(
-    0,
-    ...(project.value?.harmony_events || []).map(event => Number(event.beat || 0) - clipStart)
-  )
-  return Math.max(
-    Number(clip.duration || 4),
-    emptyTailBeats,
-    noteEnd + 2,
-    meterEventEnd + 2,
-    harmonyEventEnd + 2
-  )
-}
-
-function drawArrangementClip(ctx, track, clip, trackIndex) {
-  const rect = clipRect(clip, trackIndex)
-  const selected = selectedClipIds.value.has(clip.id)
-  const active = activeClipId.value === clip.id
-  if (clip.type === 'audio') {
-    drawZrythmAudioRegionFrame(ctx, clip, rect, track, selected, active)
-    drawClipAudioPreview(ctx, clip, rect, track)
-    drawZrythmAudioResizeHandle(ctx, rect, active)
-    return
-  }
-
-  ctx.fillStyle = hexToRgba(clip.color || track.color, track.mute ? 0.22 : 0.78)
-  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 5)
-  ctx.fill()
-  ctx.strokeStyle = active
-    ? 'rgba(240, 209, 122, 0.95)'
-    : selected ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.26)'
-  ctx.lineWidth = active ? 2 : 1
-  ctx.stroke()
-
-  ctx.fillStyle = 'rgba(15,17,19,0.76)'
-  ctx.fillRect(rect.x, rect.y, rect.w, 16)
-  ctx.fillStyle = '#f4f6f8'
-  ctx.font = '10px Cascadia Mono, Consolas, monospace'
-  ctx.fillText(
-    `${clip.type === 'audio' ? 'AUDIO' : 'MIDI'}  ${clip.name || 'Clip'}`,
-    rect.x + 7,
-    rect.y + 11
-  )
-
-  if (clip.type === 'midi') {
-    drawClipMidiPreview(ctx, clip, rect, track)
-  }
-
-  ctx.fillStyle = 'rgba(255,255,255,0.35)'
-  ctx.fillRect(rect.x + rect.w - 5, rect.y + 18, 2, rect.h - 24)
-}
-
-function drawAutomationTrack(ctx, track, trackIndex) {
-  const points = Array.isArray(track?.automation?.points)
-    ? [...track.automation.points].sort(sortAutomationPoints)
-    : []
-  const y = arrangementTrackTop(trackIndex)
-  const midY = y + arrangementTrackH * 0.5
-  const left = 0
-  const right = arrangementLengthBeats() * arrangementPxPerBeat.value
-  ctx.strokeStyle = hexToRgba(track.color, track.mute ? 0.22 : 0.74)
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  if (!points.length) {
-    ctx.moveTo(left, midY)
-    ctx.lineTo(right, midY)
-  } else {
-    drawAutomationHoldLine(ctx, track, points, trackIndex, right)
-  }
-  ctx.stroke()
-  drawAutomationCurveHandles(ctx, track, points, trackIndex)
-  for (const [index, point] of points.entries()) {
-    const x = Number(point.beat || 0) * arrangementPxPerBeat.value
-    const py = automationPointY(track, point, trackIndex)
-    const selected = Number(selectedAutomationPoint.value.trackId) === Number(track.id)
-      && selectedAutomationPoint.value.index === index
-    ctx.fillStyle = selected ? '#f0d17a' : hexToRgba(track.color, track.mute ? 0.28 : 0.95)
-    ctx.beginPath()
-    ctx.arc(x, py, selected ? 5 : 4, 0, Math.PI * 2)
-    ctx.fill()
-    if (selected) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.72)'
-      ctx.lineWidth = 1.2
-      ctx.stroke()
-    }
-  }
-  ctx.fillStyle = 'rgba(244,246,248,0.72)'
-  ctx.font = '10px Cascadia Mono, Consolas, monospace'
-  ctx.fillText(automationTargetLabel(track.target), 8, y + 16)
-}
-
-function drawAutomationSegmentPath(ctx, track, points, trackIndex, right) {
-  const first = points[0]
-  const last = points[points.length - 1]
-  const firstX = Number(first.beat || 0) * arrangementPxPerBeat.value
-  const firstY = automationPointY(track, first, trackIndex)
-  ctx.moveTo(0, firstY)
-  ctx.lineTo(firstX, firstY)
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const left = points[index]
-    const rightPoint = points[index + 1]
-    drawAutomationSegment(ctx, track, left, rightPoint, trackIndex)
-  }
-  ctx.lineTo(right, automationPointY(track, last, trackIndex))
-}
-
-function drawAutomationSegment(ctx, track, left, right, trackIndex) {
-  const startBeat = Number(left.beat || 0)
-  const endBeat = Number(right.beat || 0)
-  const rightX = endBeat * arrangementPxPerBeat.value
-  const rightY = automationPointY(track, right, trackIndex)
-  if (endBeat <= startBeat) {
-    ctx.lineTo(rightX, rightY)
-    return
-  }
-  if (String(left.curve || 'linear') === 'hold') {
-    ctx.lineTo(rightX, automationPointY(track, left, trackIndex))
-    ctx.lineTo(rightX, rightY)
-    return
-  }
-  const sampleCount = curveRenderSampleCount(startBeat, endBeat, arrangementPxPerBeat.value)
-  for (let sample = 1; sample <= sampleCount; sample += 1) {
-    const position = sample / sampleCount
-    const sampleBeat = startBeat + (endBeat - startBeat) * position
-    const value = automationCurveValueAtBeat(track, left, right, sampleBeat)
-    ctx.lineTo(
-      sampleBeat * arrangementPxPerBeat.value,
-      automationPointY(track, { beat: sampleBeat, value }, trackIndex)
-    )
-  }
-}
-
-function drawAutomationCurveHandles(ctx, track, points, trackIndex) {
-  ctx.save()
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const handle = automationCurveHandlePoint(track, points[index], points[index + 1], trackIndex)
-    if (!handle) continue
-    const selected = Number(selectedAutomationPoint.value.trackId) === Number(track.id)
-      && selectedAutomationPoint.value.index === index
-    ctx.beginPath()
-    ctx.arc(handle.x, handle.y, selected ? 4 : 3.5, 0, Math.PI * 2)
-    ctx.fillStyle = '#181b1f'
-    ctx.strokeStyle = selected ? '#f0d17a' : hexToRgba(track.color, track.mute ? 0.3 : 0.84)
-    ctx.lineWidth = selected ? 1.5 : 1.2
-    ctx.fill()
-    ctx.stroke()
-  }
-  ctx.restore()
-}
-
-function automationCurveHandlePoint(track, left, right, trackIndex) {
-  if (!left || !right || String(left.curve || 'linear') === 'hold') return null
-  const startBeat = Number(left.beat || 0)
-  const endBeat = Number(right.beat || 0)
-  if (endBeat <= startBeat) return null
-  if ((endBeat - startBeat) * arrangementPxPerBeat.value < curveHandleMinSegmentPx) return null
-  const beat = startBeat + (endBeat - startBeat) * 0.5
-  const value = automationCurveValueAtBeat(track, left, right, beat)
-  return {
-    x: beat * arrangementPxPerBeat.value,
-    y: automationPointY(track, { beat, value }, trackIndex),
-  }
-}
-
-function drawAutomationHoldLine(ctx, track, points, trackIndex, right) {
-  drawAutomationSegmentPath(ctx, track, points, trackIndex, right)
-}
-
-function drawZrythmAudioRegionFrame(ctx, clip, rect, track, selected, active) {
-  const trackColor = clip.color || track.color
-  const headerHeight = audioRegionHeaderHeight(rect)
-  const radius = 5
-
-  ctx.save()
-  ctx.beginPath()
-  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, radius)
-  ctx.clip()
-
-  ctx.fillStyle = hexToRgba(clip.color || track.color, track.mute ? 0.22 : 0.72)
-  ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
-
-  ctx.fillStyle = hexToRgba(trackColor, track.mute ? 0.18 : 0.78)
-  ctx.fillRect(rect.x, rect.y + headerHeight, rect.w, Math.max(1, rect.h - headerHeight))
-
-  ctx.fillStyle = hexToRgba(mixHexColor(trackColor, '#ffffff', 0.32), track.mute ? 0.24 : 0.72)
-  ctx.fillRect(rect.x, rect.y, rect.w, headerHeight)
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(rect.x, rect.y + headerHeight + 0.5)
-  ctx.lineTo(rect.x + rect.w, rect.y + headerHeight + 0.5)
-  ctx.stroke()
-  ctx.restore()
-
-  ctx.strokeStyle = active
-    ? 'rgba(240, 209, 122, 0.95)'
-    : selected ? 'rgba(255,255,255,0.62)' : 'rgba(0,0,0,0.32)'
-  ctx.lineWidth = active ? 2 : 1
-  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, radius)
-  ctx.stroke()
-
-  ctx.fillStyle = zrythmRegionContentColor()
-  ctx.font = '10px Cascadia Mono, Consolas, monospace'
-  ctx.fillText(`AUDIO  ${clip.name || 'Clip'}`, rect.x + 7, rect.y + headerHeight - 5)
-}
-
-function drawZrythmAudioResizeHandle(ctx, rect, active) {
-  const headerHeight = audioRegionHeaderHeight(rect)
-  ctx.fillStyle = active ? 'rgba(240, 209, 122, 0.78)' : 'rgba(255,255,255,0.42)'
-  ctx.fillRect(rect.x + rect.w - 5, rect.y + headerHeight + 3, 2, Math.max(1, rect.h - headerHeight - 8))
-}
-
-function audioRegionHeaderHeight(rect) {
-  return Math.min(18, Math.max(14, Math.floor(rect.h * 0.24)))
-}
-
-function drawClipMidiPreview(ctx, clip, rect, track) {
-  const notes = clip.notes || []
-  const minNote = Math.min(...notes.map(note => Number(note.pitch || 60)), 48)
-  const maxNote = Math.max(...notes.map(note => Number(note.pitch || 60)), 72)
-  const range = Math.max(1, maxNote - minNote)
-  ctx.fillStyle = hexToRgba(track.color, 0.96)
-  for (const note of notes) {
-    const x = rect.x + (Number(note.start || 0) / Number(clip.duration || 1)) * rect.w
-    const w = Math.max(3, (Number(note.duration || 0.25) / Number(clip.duration || 1)) * rect.w)
-    const y = rect.y + 22 + (1 - (Number(note.pitch || 60) - minNote) / range) * (rect.h - 30)
-    roundRect(ctx, x, y, Math.max(2, Math.min(w, rect.x + rect.w - x - 3)), 4, 2)
-    ctx.fill()
-  }
-}
-
-function drawClipAudioPreview(ctx, clip, rect, track) {
-  const waveform = Array.isArray(clip.waveform) ? clip.waveform : []
-  const points = waveform.map(waveformPointMetrics).filter(Boolean)
-  const trackColor = clip.color || track.color
-  const bodyTop = rect.y + audioRegionHeaderHeight(rect) + 2
-  const bodyBottom = rect.y + rect.h - 5
-  const bodyHeight = Math.max(12, bodyBottom - bodyTop)
-  const mid = bodyTop + bodyHeight * 0.5
-  const maxAmp = Math.max(4, bodyHeight * 0.46)
-  const left = rect.x + 4
-  const right = Math.max(left + 1, rect.x + rect.w - 7)
-  const bounds = {
-    left,
-    right,
-    top: bodyTop,
-    bottom: bodyBottom,
-    height: bodyHeight,
-    mid,
-    maxAmp,
-    width: Math.max(1, right - left),
-  }
-
-  ctx.save()
-  ctx.beginPath()
-  roundRect(ctx, rect.x + 3, bodyTop, Math.max(1, rect.w - 9), bodyHeight, 3)
-  ctx.clip()
-
-  ctx.fillStyle = hexToRgba(trackColor, track.mute ? 0.08 : 0.18)
-  ctx.fillRect(rect.x + 3, bodyTop, Math.max(1, rect.w - 9), bodyHeight)
-
-  if (points.length) {
-    drawZrythmWaveformEnvelope(ctx, points, bounds)
-  } else {
-    drawZrythmFallbackWaveform(ctx, bounds)
-  }
-
-  ctx.restore()
-}
-
-function waveformPointMetrics(point) {
-  if (typeof point === 'number') {
-    const peak = clamp(Math.abs(point), 0, 1)
-    return { min: -peak, max: peak, rms: peak * 0.58, peak }
-  }
-  if (!point || typeof point !== 'object') return null
-
-  let min = waveformFiniteNumber(point.min)
-  let max = waveformFiniteNumber(point.max)
-  const rawPeak = waveformFiniteNumber(point.peak)
-  const rawRms = waveformFiniteNumber(point.rms)
-  let peak = rawPeak === null ? null : clamp(Math.abs(rawPeak), 0, 1)
-  let rms = rawRms === null ? null : clamp(Math.abs(rawRms), 0, 1)
-
-  if (min === null && max === null) {
-    if (peak === null) return null
-    min = -peak
-    max = peak
-  } else {
-    const fallback = peak || 0
-    min = min === null ? -Math.max(fallback, Math.abs(max || 0)) : clamp(min, -1, 1)
-    max = max === null ? Math.max(fallback, Math.abs(min || 0)) : clamp(max, -1, 1)
-    if (min > max) {
-      const nextMin = max
-      max = min
-      min = nextMin
-    }
-  }
-
-  const envelopePeak = Math.max(Math.abs(min), Math.abs(max))
-  rms = rms === null ? envelopePeak * 0.58 : rms
-  peak = peak === null ? envelopePeak : peak
-  peak = clamp(Math.max(peak, envelopePeak, rms), 0, 1)
-  rms = Math.min(rms, peak)
-  return { min, max, rms, peak }
-}
-
-function waveformFiniteNumber(value) {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : null
-}
-
-function drawZrythmWaveformEnvelope(ctx, points, bounds) {
-  if (!points.length) return
-  ctx.save()
-  ctx.fillStyle = zrythmRegionContentColor()
-  ctx.strokeStyle = zrythmRegionOutlineColor()
-  ctx.lineWidth = 1
-  ctx.lineJoin = 'round'
-  ctx.beginPath()
-  points.forEach((point, index) => {
-    const x = waveformX(bounds, points.length, index)
-    const y = waveformY(bounds, point.min)
-    if (index === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  })
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    ctx.lineTo(waveformX(bounds, points.length, index), waveformY(bounds, points[index].max))
-  }
-  ctx.closePath()
-  ctx.fill()
-  ctx.stroke()
-  ctx.restore()
-}
-
-function drawZrythmFallbackWaveform(ctx, bounds) {
-  const count = Math.max(32, Math.floor(bounds.width))
-  const points = Array.from({ length: count }, (_, index) => {
-    const unit = index / Math.max(1, count - 1)
-    const peak = clamp(
-      0.18 + Math.abs(Math.sin(unit * 31.4)) * 0.36 + Math.abs(Math.sin(unit * 91.7)) * 0.2,
-      0,
-      1
-    )
-    return { min: -peak, max: peak, rms: peak * 0.54, peak }
-  })
-  drawZrythmWaveformEnvelope(ctx, points, bounds)
-}
-
-function waveformX(bounds, count, index) {
-  return bounds.left + (index / Math.max(1, count - 1)) * bounds.width
-}
-
-function waveformY(bounds, value) {
-  return clamp(bounds.mid + value * bounds.maxAmp, bounds.top + 1, bounds.bottom - 1)
-}
-
-function drawPiano() {
-  const headerCanvas = pianoHeaderCanvas.value
-  const canvas = pianoCanvas.value
-  const wrap = pianoWrap.value
-  if (!headerCanvas || !canvas || !wrap || !activeMidiClip.value || !pianoVisible.value) return
-  const clip = activeMidiClip.value.clip
-  const width = Math.max(
-    wrap.clientWidth,
-    pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
-  )
-  pianoTimelineWidth.value = width
-  const headerHeight = pianoNoteTop.value
-  const bodyHeight = (maxPitch - minPitch + 1) * pianoRowH
-  const headerCtx = setupCanvas(headerCanvas, width, headerHeight)
-  const bodyCtx = setupCanvas(canvas, width, bodyHeight)
-  drawPianoHeader(headerCtx, width, clip)
-  drawPianoBody(bodyCtx, width, bodyHeight, clip)
-}
-
-function drawPianoHeader(ctx, width, clip) {
-  const height = pianoNoteTop.value
-  ctx.fillStyle = '#17191c'
-  ctx.fillRect(0, 0, width, height)
-  drawPianoRuler(ctx, width, clip)
-  for (const subtrackId of pianoVisibleSubtracks.value) {
-    if (subtrackId === 'meter') {
-      drawPianoMeterLane(ctx, width, clip)
-    } else if (subtrackId === 'harmony') {
-      drawPianoHarmonyLane(ctx, width, clip, pianoHarmonyLaneTop.value)
-    }
-  }
-  drawPianoPlayhead(ctx, height, clip)
-}
-
-function drawPianoBody(ctx, width, height, clip) {
-  const logicalHeight = pianoNoteTop.value + height
-  ctx.save()
-  ctx.translate(0, -pianoNoteTop.value)
-  ctx.fillStyle = '#17191c'
-  ctx.fillRect(0, pianoNoteTop.value, width, height)
-  for (let pitch = maxPitch; pitch >= minPitch; pitch -= 1) {
-    const row = maxPitch - pitch
-    const y = pianoNoteTop.value + row * pianoRowH
-    const black = [1, 3, 6, 8, 10].includes(pitch % 12)
-    ctx.fillStyle = black ? '#111316' : '#202326'
-    ctx.fillRect(0, y, pianoKeyW, pianoRowH)
-    ctx.fillStyle = black ? 'rgba(255,255,255,0.035)' : 'rgba(255,255,255,0.018)'
-    ctx.fillRect(pianoKeyW, y, width - pianoKeyW, pianoRowH)
-    ctx.strokeStyle = black ? 'rgba(0,0,0,0.38)' : 'rgba(229,236,245,0.08)'
-    ctx.beginPath()
-    ctx.moveTo(0, y + pianoRowH)
-    ctx.lineTo(width, y + pianoRowH)
-    ctx.stroke()
-    if (pitch % 12 === 0) {
-      ctx.fillStyle = '#9aa3ad'
-      ctx.font = '10px Cascadia Mono, Consolas, monospace'
-      ctx.fillText(pitchName(pitch), 10, y + 9)
-    }
-  }
-  paintPianoGrid(ctx, width, logicalHeight, clip)
-
-  const track = activeMidiClip.value.track
-  if (track) {
-    for (const note of clip.notes || []) {
-      if (note.pitch < minPitch || note.pitch > maxPitch) continue
-      const rect = noteRect(note)
-      const selected = selectedNoteIds.value.has(note.id)
-      ctx.fillStyle = selected ? '#f0d17a' : hexToRgba(track.color, 0.82)
-      roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 3)
-      ctx.fill()
-      ctx.strokeStyle = selected ? 'rgba(255, 255, 255, 0.64)' : 'rgba(0,0,0,0.24)'
-      ctx.stroke()
-      if (rect.w > 34) {
-        ctx.fillStyle = selected ? 'rgba(20,22,24,0.9)' : 'rgba(255,255,255,0.82)'
-        ctx.font = '10px Cascadia Mono, Consolas, monospace'
-        ctx.fillText(pitchName(note.pitch), rect.x + 5, rect.y + 9)
-      }
-    }
-  }
-  if (draftNote.value) {
-    const rect = noteRect(draftNote.value)
-    ctx.fillStyle = 'rgba(240, 209, 122, 0.52)'
-    ctx.strokeStyle = 'rgba(240, 209, 122, 0.96)'
-    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 3)
-    ctx.fill()
-    ctx.stroke()
-  }
-  if (selectionBox.value) {
-    const box = selectionBox.value
-    const x = Math.min(box.x1, box.x2)
-    const y = Math.min(box.y1, box.y2)
-    const w = Math.abs(box.x2 - box.x1)
-    const h = Math.abs(box.y2 - box.y1)
-    ctx.fillStyle = 'rgba(125, 168, 232, 0.12)'
-    ctx.strokeStyle = 'rgba(125, 168, 232, 0.72)'
-    ctx.setLineDash([4, 3])
-    ctx.strokeRect(x, y, w, h)
-    ctx.fillRect(x, y, w, h)
-    ctx.setLineDash([])
-  }
-  drawPianoPlayhead(ctx, logicalHeight, clip)
-  ctx.restore()
-}
-
-function drawControllerLanes() {
-  if (!pianoVisible.value || !activeMidiClip.value || !controllerLanes.value.length) return
-  const clip = activeMidiClip.value.clip
-  controllerScrollLeft.value = controllerWrap.value?.scrollLeft || 0
-  const width = Math.max(
-    controllerWrap.value?.clientWidth || 0,
-    pianoTimelineWidth.value,
-    pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
-  )
-  pianoTimelineWidth.value = width
-  for (const lane of controllerLanes.value) {
-    const canvas = controllerLaneCanvases.get(lane.id)
-    if (!canvas) continue
-    const ctx = setupCanvas(canvas, width, controllerLaneH)
-    drawControllerLane(ctx, lane, width, clip)
-  }
-}
-
-function drawControllerLane(ctx, lane, width, clip) {
-  const definition = controllerDefinitionForLane(lane)
-  const colorStyles = controllerLaneColorStyles(activeMidiClip.value?.track?.color)
-  ctx.fillStyle = '#17191c'
-  ctx.fillRect(0, 0, width, controllerLaneH)
-  ctx.fillStyle = '#202428'
-  ctx.fillRect(0, 0, pianoKeyW, controllerLaneH)
-  ctx.fillStyle = '#202326'
-  ctx.fillRect(pianoKeyW, 0, width - pianoKeyW, controllerLaneTabH)
-  ctx.fillStyle = '#181b1f'
-  ctx.fillRect(pianoKeyW, controllerLaneTabH, width - pianoKeyW, controllerLaneBodyH)
-  paintControllerGrid(ctx, width)
-
-  if (definition.type === 'velocity') {
-    drawVelocityLane(ctx, clip, definition, colorStyles)
-  } else {
-    drawEventLane(ctx, clip, definition, colorStyles)
-  }
-  drawControllerPlayhead(ctx, controllerLaneH, clip)
-}
-
-function paintControllerGrid(ctx, width) {
-  const bodyTop = controllerLaneTabH
-  const bodyBottom = controllerLaneTabH + controllerLaneBodyH
-  const scale = pianoPxPerBeat.value
-  const snapStepWidth = activePianoSnapStep.value ? activePianoSnapStep.value * scale : 0
-  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
-  ctx.beginPath()
-  ctx.moveTo(0, bodyTop + 0.5)
-  ctx.lineTo(width, bodyTop + 0.5)
-  ctx.moveTo(0, bodyBottom - 0.5)
-  ctx.lineTo(width, bodyBottom - 0.5)
-  ctx.stroke()
-
-  for (const unit of [0.25, 0.5, 0.75]) {
-    const y = bodyTop + controllerLaneBodyH * unit
-    ctx.strokeStyle = unit === 0.5 ? 'rgba(229,236,245,0.11)' : 'rgba(229,236,245,0.055)'
-    ctx.beginPath()
-    ctx.moveTo(pianoKeyW, y)
-    ctx.lineTo(width, y)
-    ctx.stroke()
-  }
-
-  const visibleBeats = Math.ceil((width - pianoKeyW) / pianoPxPerBeat.value)
-  for (let beat = 0; beat <= visibleBeats; beat += 1) {
-    const x = pianoKeyW + beat * pianoPxPerBeat.value
-    ctx.strokeStyle = 'rgba(229,236,245,0.06)'
-    ctx.beginPath()
-    ctx.moveTo(x, bodyTop)
-    ctx.lineTo(x, bodyBottom)
-    ctx.stroke()
-
-    if (snapStepWidth >= 4 && activePianoSnapStep.value && activePianoSnapStep.value < 1) {
-      for (let subBeat = activePianoSnapStep.value; subBeat < 1; subBeat += activePianoSnapStep.value) {
-        const subX = x + subBeat * scale
-        ctx.strokeStyle = 'rgba(229,236,245,0.035)'
-        ctx.beginPath()
-        ctx.moveTo(subX, bodyTop)
-        ctx.lineTo(subX, bodyBottom)
-        ctx.stroke()
-      }
-    }
-  }
-
-  // Bar lines overlaid at bar boundaries (handles fractional barLen like 3/8=1.5)
-  const barLen = meterBeats.value
-  for (let bar = 0; bar * barLen <= visibleBeats; bar++) {
-    const barX = pianoKeyW + bar * barLen * pianoPxPerBeat.value
-    ctx.strokeStyle = 'rgba(229,236,245,0.14)'
-    ctx.beginPath()
-    ctx.moveTo(barX, bodyTop)
-    ctx.lineTo(barX, bodyBottom)
-    ctx.stroke()
-  }
-}
-
-function drawVelocityLane(ctx, clip, definition, colorStyles) {
-  const notes = clip.notes || []
-  for (const note of notes) {
-    const x = pianoKeyW + Number(note.start || 0) * pianoPxPerBeat.value
-    const value = clamp(Math.round(Number(note.velocity || definition.defaultValue)), 1, 127)
-    const y = controllerValueToY(value, definition)
-    const selected = selectedNoteIds.value.has(note.id)
-    ctx.strokeStyle = selected ? colorStyles.selectedVelocityStroke : colorStyles.velocityStroke
-    ctx.lineWidth = selected ? 3 : 2
-    ctx.beginPath()
-    ctx.moveTo(x, controllerLaneTabH + controllerLaneBodyH)
-    ctx.lineTo(x, y)
-    ctx.stroke()
-    ctx.fillStyle = selected ? colorStyles.selectedVelocityFill : colorStyles.velocityFill
-    ctx.fillRect(x - 2, y - 2, 4, 4)
-  }
-  ctx.lineWidth = 1
-}
-
-function drawEventLane(ctx, clip, definition, colorStyles) {
-  const tailBeat = Math.max(0, (pianoTimelineWidth.value - pianoKeyW) / pianoPxPerBeat.value)
-  const points = controllerRenderPoints(clip.events || [], definition, tailBeat)
-  if (!points.length) return
-
-  ctx.strokeStyle = colorStyles.eventStroke
-  ctx.fillStyle = colorStyles.eventFill
-  ctx.lineWidth = 1.4
-  ctx.beginPath()
-  drawControllerCurvePath(ctx, points, definition)
-  ctx.stroke()
-  drawControllerCurveHandles(ctx, points, definition, colorStyles)
-
-  for (const point of points) {
-    if (point.synthetic) continue
-    const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
-    const y = controllerValueToY(point.value, definition)
-    const selected = point.event?.id && point.event.id === selectedControllerEventId.value
-    ctx.beginPath()
-    ctx.arc(x, y, selected ? 5 : 4, 0, Math.PI * 2)
-    ctx.fillStyle = selected ? '#f0d17a' : colorStyles.eventFill
-    ctx.fill()
-    ctx.strokeStyle = selected ? 'rgba(255,255,255,0.72)' : colorStyles.eventPointStroke
-    ctx.stroke()
-  }
-  ctx.lineWidth = 1
-}
-
-function drawControllerCurvePath(ctx, points, definition) {
-  points.forEach((point, index) => {
-    const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
-    const y = controllerValueToY(point.value, definition)
-    if (index === 0) {
-      ctx.moveTo(x, y)
-      return
-    }
-    const left = points[index - 1]
-    if (left.event && point.event && Number(point.start || 0) > Number(left.start || 0)) {
-      drawControllerCurveSegment(ctx, left, point, definition)
-    } else {
-      ctx.lineTo(x, y)
-    }
-  })
-}
-
-function drawControllerCurveSegment(ctx, left, right, definition) {
-  const startBeat = Number(left.start || 0)
-  const endBeat = Number(right.start || 0)
-  const sampleCount = curveRenderSampleCount(startBeat, endBeat, pianoPxPerBeat.value)
-  for (let sample = 1; sample <= sampleCount; sample += 1) {
-    const position = sample / sampleCount
-    const sampleBeat = startBeat + (endBeat - startBeat) * position
-    const value = controllerCurveValueAtBeat(left.event, right.event, sampleBeat, definition)
-    ctx.lineTo(
-      pianoKeyW + sampleBeat * pianoPxPerBeat.value,
-      controllerValueToY(value, definition)
-    )
-  }
-}
-
-function drawControllerCurveHandles(ctx, points, definition, colorStyles) {
-  ctx.save()
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const handle = controllerCurveHandlePoint(points[index], points[index + 1], definition)
-    if (!handle) continue
-    const selected = points[index].event?.id && points[index].event.id === selectedControllerEventId.value
-    ctx.beginPath()
-    ctx.arc(handle.x, handle.y, selected ? 4 : 3.5, 0, Math.PI * 2)
-    ctx.fillStyle = '#181b1f'
-    ctx.strokeStyle = selected ? '#f0d17a' : colorStyles.eventStroke
-    ctx.lineWidth = selected ? 1.5 : 1.2
-    ctx.fill()
-    ctx.stroke()
-  }
-  ctx.restore()
-}
-
-function controllerCurveHandlePoint(left, right, definition) {
-  if (!left?.event || !right?.event) return null
-  const startBeat = Number(left.start || 0)
-  const endBeat = Number(right.start || 0)
-  if (endBeat <= startBeat) return null
-  if ((endBeat - startBeat) * pianoPxPerBeat.value < curveHandleMinSegmentPx) return null
-  const beat = startBeat + (endBeat - startBeat) * 0.5
-  const value = controllerCurveValueAtBeat(left.event, right.event, beat, definition)
-  return {
-    x: pianoKeyW + beat * pianoPxPerBeat.value,
-    y: controllerValueToY(value, definition),
-  }
-}
-
-function curveRenderSampleCount(startBeat, endBeat, pxPerBeat) {
-  const width = Math.abs(Number(endBeat || 0) - Number(startBeat || 0)) * Math.max(1, pxPerBeat)
-  return Math.round(clamp(Math.ceil(width / 10), 4, 64))
-}
-
-function controllerValueToY(value, definition) {
-  const unit = controllerValueToUnit(definition, value)
-  return controllerLaneTabH + (1 - unit) * controllerLaneBodyH
-}
-
-function drawControllerPlayhead(ctx, height, clip) {
-  const localBeat = visualPositionBeats.value - Number(clip.start || 0)
-  if (localBeat < 0 || localBeat > Number(clip.duration || 0)) return
-  const x = pianoKeyW + localBeat * pianoPxPerBeat.value
-  ctx.strokeStyle = 'rgba(240, 209, 122, 0.8)'
-  ctx.lineWidth = 1.3
-  ctx.beginPath()
-  ctx.moveTo(x, controllerLaneTabH)
-  ctx.lineTo(x, height)
-  ctx.stroke()
-}
-
-function drawRuler(ctx, width) {
-  const scale = arrangementPxPerBeat.value
-  const endBeat = Math.ceil(width / scale)
-  drawBeatRulerLabels(ctx, {
-    startBeat: 0,
-    endBeat,
-    originX: 0,
-    scale,
-    height: arrangementRulerH,
-    labelY: 19,
-  })
-}
-
-function drawArrangementMeterLane(ctx, width, top) {
-  if (!arrangementVisibleSubtracks.value.includes('meter')) return
-  const scale = arrangementPxPerBeat.value
-  const endBeat = Math.ceil(width / scale)
-  const bottom = top + pianoSubtrackH
-
-  ctx.fillStyle = '#191d21'
-  ctx.fillRect(0, top, width, pianoSubtrackH)
-  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
-  ctx.beginPath()
-  ctx.moveTo(0, top + 0.5)
-  ctx.lineTo(width, top + 0.5)
-  ctx.moveTo(0, bottom - 0.5)
-  ctx.lineTo(width, bottom - 0.5)
-  ctx.stroke()
-
-  for (const line of meterBarLinesBetween(project.value, 0, endBeat)) {
-    const x = line.beat * scale
-    ctx.strokeStyle = 'rgba(240, 209, 122, 0.16)'
-    ctx.beginPath()
-    ctx.moveTo(x, top)
-    ctx.lineTo(x, bottom)
-    ctx.stroke()
-  }
-
-  for (const event of normalizeMeterEvents(project.value)) {
-    if (event.beat > endBeat + 0.001) continue
-    const x = Number(event.beat || 0) * scale
-    ctx.fillStyle = 'rgba(240, 209, 122, 0.18)'
-    roundRect(ctx, x + 2, top + 4, 6, pianoSubtrackH - 8, 3)
-    ctx.fill()
-    ctx.fillStyle = '#f0d17a'
-    ctx.font = '11px Cascadia Mono, Consolas, monospace'
-    ctx.fillText(`${event.numerator}/${event.denominator}`, x + 11, top + 18)
-  }
-}
-
-function drawArrangementHarmonyLane(ctx, width, top) {
-  if (!arrangementVisibleSubtracks.value.includes('harmony')) return
-  const scale = arrangementPxPerBeat.value
-  const endBeat = Math.ceil(width / scale)
-  const bottom = top + pianoSubtrackH
-
-  ctx.fillStyle = '#181c22'
-  ctx.fillRect(0, top, width, pianoSubtrackH)
-  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
-  ctx.beginPath()
-  ctx.moveTo(0, top + 0.5)
-  ctx.lineTo(width, top + 0.5)
-  ctx.moveTo(0, bottom - 0.5)
-  ctx.lineTo(width, bottom - 0.5)
-  ctx.stroke()
-
-  for (const line of meterBarLinesBetween(project.value, 0, endBeat)) {
-    const x = line.beat * scale
-    ctx.strokeStyle = 'rgba(125, 168, 232, 0.12)'
-    ctx.beginPath()
-    ctx.moveTo(x, top)
-    ctx.lineTo(x, bottom)
-    ctx.stroke()
-  }
-
-  for (const event of editableHarmonyEvents()) {
-    if (event.beat > endBeat + 0.001) continue
-    const x = Number(event.beat || 0) * scale
-    ctx.fillStyle = 'rgba(125, 168, 232, 0.18)'
-    roundRect(ctx, x + 2, top + 4, 6, pianoSubtrackH - 8, 3)
-    ctx.fill()
-    ctx.fillStyle = '#b8d0ff'
-    ctx.font = '11px Cascadia Mono, Consolas, monospace'
-    ctx.fillText(event.text, x + 11, top + 18)
-  }
-}
-
-function isRulerBarBeat(absoluteBeat) {
-  const beat = Number(absoluteBeat || 0)
-  return meterBarLinesBetween(project.value, Math.max(0, beat - 0.0001), beat + 0.0001)
-    .some(line => Math.abs(line.beat - beat) < 0.0001)
-}
-
-function rulerBeatLabel(absoluteBeat) {
-  const position = meterPositionAtBeat(project.value, absoluteBeat)
-  return position.beat === 1 ? String(position.bar) : `${position.bar}.${position.beat}`
-}
-
-function rulerTickStep() {
-  return activePianoSnapStep.value || snapStep
-}
-
-function isRulerBeatUnitTick(absoluteBeat) {
-  const meter = effectiveMeterAtBeat(project.value, absoluteBeat)
-  const unit = 4 / meter.denominator
-  if (!Number.isFinite(unit) || unit <= 0) return false
-  const beat = Number(absoluteBeat || 0) / unit
-  return Math.abs(beat - Math.round(beat)) < 0.0001
-}
-
-function rulerTickMetrics(absoluteBeat) {
-  const isBar = isRulerBarBeat(absoluteBeat)
-  if (isBar) {
-    return {
-      isBar,
-      shouldLabel: true,
-      heightRatio: rulerMajorTickRatio,
-      lineWidth: 1.4,
-      strokeStyle: 'rgba(229, 236, 245, 0.58)',
-      fillStyle: '#d9e2ec',
-    }
-  }
-  const isBeat = isRulerBeatUnitTick(absoluteBeat)
-  if (isBeat) {
-    return {
-      isBar,
-      shouldLabel: true,
-      heightRatio: rulerMinorTickRatio,
-      lineWidth: 1,
-      strokeStyle: 'rgba(229, 236, 245, 0.38)',
-      fillStyle: '#b9c8d8',
-    }
-  }
-  return {
-    isBar,
-    shouldLabel: false,
-    heightRatio: rulerFineTickRatio,
-    lineWidth: 0.7,
-    strokeStyle: 'rgba(229, 236, 245, 0.2)',
-    fillStyle: '#95b6d8',
-  }
-}
-
-function drawBeatRulerLabels(ctx, {
-  startBeat,
-  endBeat,
-  originX,
-  scale,
-  height,
-  labelY,
-}) {
-  const tickStep = rulerTickStep()
-  if (!Number.isFinite(tickStep) || tickStep <= 0 || !Number.isFinite(scale) || scale <= 0) return
-
-  ctx.save()
-  ctx.textBaseline = 'middle'
-  ctx.fillStyle = 'rgba(32, 35, 38, 0.94)'
-  ctx.fillRect(originX, 0, Math.max(0, (endBeat - startBeat) * scale), height)
-  ctx.strokeStyle = 'rgba(229, 236, 245, 0.16)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  ctx.moveTo(originX, height - 0.5)
-  ctx.lineTo(originX + Math.max(0, (endBeat - startBeat) * scale), height - 0.5)
-  ctx.stroke()
-
-  for (
-    let absoluteBeat = firstMultipleAtOrAfter(startBeat, tickStep);
-    absoluteBeat <= endBeat + 0.001;
-    absoluteBeat += tickStep
-  ) {
-    const metrics = rulerTickMetrics(absoluteBeat)
-    const shouldDrawBeatLabel = metrics.shouldLabel && (metrics.isBar || scale >= rulerBeatLabelMinScale)
-
-    const x = originX + (absoluteBeat - startBeat) * scale
-    const tickBottom = height - 1
-    const tickHeight = Math.max(4, Math.round(height * metrics.heightRatio))
-    ctx.strokeStyle = metrics.strokeStyle
-    ctx.lineWidth = metrics.lineWidth
-    ctx.beginPath()
-    ctx.moveTo(x, tickBottom - tickHeight)
-    ctx.lineTo(x, tickBottom)
-    ctx.stroke()
-
-    if (!shouldDrawBeatLabel) continue
-    const labelX = Math.max(originX + rulerLabelGap, x + rulerLabelGap)
-    ctx.font = metrics.isBar ? rulerBarLabelFont : rulerBeatLabelFont
-    ctx.fillStyle = metrics.fillStyle
-    ctx.fillText(rulerBeatLabel(absoluteBeat), labelX, Math.min(labelY, tickBottom - tickHeight - 4))
-  }
-
-  ctx.restore()
-}
-
-function drawPianoRuler(ctx, width, clip) {
-  const scale = pianoPxPerBeat.value
-  const clipStart = Number(clip.start || 0)
-  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
-  const endBeat = clipStart + visibleBeats
-  ctx.fillStyle = '#202326'
-  ctx.fillRect(0, 0, width, pianoRulerH)
-  ctx.fillStyle = '#181b1f'
-  ctx.fillRect(0, 0, pianoKeyW, pianoRulerH)
-  ctx.strokeStyle = 'rgba(229,236,245,0.11)'
-  ctx.beginPath()
-  ctx.moveTo(0, pianoRulerH - 0.5)
-  ctx.lineTo(width, pianoRulerH - 0.5)
-  ctx.stroke()
-
-  ctx.font = '10px Cascadia Mono, Consolas, monospace'
-
-  // Quarter-note grid lines
-  const firstBeat = Math.ceil(clipStart - 0.000001)
-  for (let absoluteBeat = firstBeat; absoluteBeat <= endBeat + 0.001; absoluteBeat += 1) {
-    const x = pianoKeyW + (absoluteBeat - clipStart) * scale
-    ctx.strokeStyle = 'rgba(229,236,245,0.1)'
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, pianoRulerH)
-    ctx.stroke()
-  }
-
-  // Beat-unit tick marks (only when they fall at non-integer positions and there's room)
-  for (const segment of meterSegments(project.value, clipStart, endBeat)) {
-    const unit = segment.beatUnit
-    if (!Number.isFinite(unit) || unit <= 0 || Math.abs(unit - 1) < 0.0001 || unit * scale < 12) continue
-    for (
-      let absoluteBeat = firstMultipleAtOrAfter(segment.start, unit, segment.anchor);
-      absoluteBeat <= segment.end + 0.001;
-      absoluteBeat += unit
-    ) {
-      if (Math.abs(absoluteBeat - Math.round(absoluteBeat)) < 0.0001) continue // already drawn as quarter-note line
-      const x = pianoKeyW + (absoluteBeat - clipStart) * scale
-      ctx.strokeStyle = 'rgba(229,236,245,0.06)'
-      ctx.beginPath()
-      ctx.moveTo(x, 0)
-      ctx.lineTo(x, pianoRulerH)
-      ctx.stroke()
-    }
-  }
-
-  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
-    const barBeat = line.beat
-    const x = pianoKeyW + (barBeat - clipStart) * scale
-    ctx.strokeStyle = 'rgba(240, 209, 122, 0.28)'
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, pianoRulerH)
-    ctx.stroke()
-  }
-
-  drawBeatRulerLabels(ctx, {
-    startBeat: clipStart,
-    endBeat,
-    originX: pianoKeyW,
-    scale,
-    height: pianoRulerH,
-    labelY: 16,
-  })
-}
-
-function drawPianoMeterLane(ctx, width, clip) {
-  if (!pianoMeterLaneVisible.value) return
-  const scale = pianoPxPerBeat.value
-  const clipStart = Number(clip.start || 0)
-  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
-  const endBeat = clipStart + visibleBeats
-  const top = pianoMeterLaneTop.value
-  const bottom = top + pianoMeterLaneH
-
-  ctx.fillStyle = '#191d21'
-  ctx.fillRect(0, top, width, pianoMeterLaneH)
-  ctx.fillStyle = '#252b30'
-  ctx.fillRect(0, top, pianoKeyW, pianoMeterLaneH)
-  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
-  ctx.beginPath()
-  ctx.moveTo(0, top + 0.5)
-  ctx.lineTo(width, top + 0.5)
-  ctx.moveTo(0, bottom - 0.5)
-  ctx.lineTo(width, bottom - 0.5)
-  ctx.stroke()
-
-  ctx.fillStyle = '#aeb8c5'
-  ctx.font = '10px Cascadia Mono, Consolas, monospace'
-  ctx.fillText('Meter', 10, top + 17)
-
-  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
-    const x = pianoKeyW + (line.beat - clipStart) * scale
-    ctx.strokeStyle = 'rgba(240, 209, 122, 0.16)'
-    ctx.beginPath()
-    ctx.moveTo(x, top)
-    ctx.lineTo(x, bottom)
-    ctx.stroke()
-  }
-
-  for (const event of normalizeMeterEvents(project.value)) {
-    if (event.beat < clipStart - 0.001 || event.beat > endBeat + 0.001) continue
-    const x = pianoKeyW + (event.beat - clipStart) * scale
-    ctx.fillStyle = 'rgba(240, 209, 122, 0.18)'
-    roundRect(ctx, x - 3, top + 4, 6, pianoMeterLaneH - 8, 3)
-    ctx.fill()
-    ctx.fillStyle = '#f0d17a'
-    ctx.font = '11px Cascadia Mono, Consolas, monospace'
-    ctx.fillText(`${event.numerator}/${event.denominator}`, x + 5, top + 18)
-  }
-}
-
-function drawPianoHarmonyLane(ctx, width, clip, top) {
-  if (!pianoHarmonyLaneVisible.value) return
-  const scale = pianoPxPerBeat.value
-  const clipStart = Number(clip.start || 0)
-  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
-  const endBeat = clipStart + visibleBeats
-  const bottom = top + pianoSubtrackH
-
-  ctx.fillStyle = '#181c22'
-  ctx.fillRect(0, top, width, pianoSubtrackH)
-  ctx.fillStyle = '#252b30'
-  ctx.fillRect(0, top, pianoKeyW, pianoSubtrackH)
-  ctx.strokeStyle = 'rgba(229,236,245,0.12)'
-  ctx.beginPath()
-  ctx.moveTo(0, top + 0.5)
-  ctx.lineTo(width, top + 0.5)
-  ctx.moveTo(0, bottom - 0.5)
-  ctx.lineTo(width, bottom - 0.5)
-  ctx.stroke()
-
-  ctx.fillStyle = '#aeb8c5'
-  ctx.font = '10px Cascadia Mono, Consolas, monospace'
-  ctx.fillText('Harmony', 10, top + 17)
-
-  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
-    const x = pianoKeyW + (line.beat - clipStart) * scale
-    ctx.strokeStyle = 'rgba(125, 168, 232, 0.12)'
-    ctx.beginPath()
-    ctx.moveTo(x, top)
-    ctx.lineTo(x, bottom)
-    ctx.stroke()
-  }
-
-  for (const event of editableHarmonyEvents()) {
-    if (event.beat < clipStart - 0.001 || event.beat > endBeat + 0.001) continue
-    const x = pianoKeyW + (event.beat - clipStart) * scale
-    ctx.fillStyle = 'rgba(125, 168, 232, 0.18)'
-    roundRect(ctx, x - 3, top + 4, 6, pianoSubtrackH - 8, 3)
-    ctx.fill()
-    ctx.fillStyle = '#b8d0ff'
-    ctx.font = '11px Cascadia Mono, Consolas, monospace'
-    ctx.fillText(event.text, x + 5, top + 18)
-  }
-}
-
-function paintPianoGrid(ctx, width, height, clip) {
-  const scale = pianoPxPerBeat.value
-  const clipStart = Number(clip.start || 0)
-  const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
-  const snapStepWidth = activePianoSnapStep.value ? activePianoSnapStep.value * scale : 0
-
-  for (let beat = 0; beat <= visibleBeats; beat += 1) {
-    const x = pianoKeyW + beat * scale
-    ctx.strokeStyle = 'rgba(229,236,245,0.075)'
-    ctx.lineWidth = 0.5
-    ctx.beginPath()
-    ctx.moveTo(x, pianoNoteTop.value)
-    ctx.lineTo(x, height)
-    ctx.stroke()
-
-    if (snapStepWidth >= 4 && activePianoSnapStep.value && activePianoSnapStep.value < 1) {
-      ctx.strokeStyle = 'rgba(229,236,245,0.035)'
-      for (let subBeat = activePianoSnapStep.value; subBeat < 1; subBeat += activePianoSnapStep.value) {
-        const subX = x + subBeat * scale
-        ctx.beginPath()
-        ctx.moveTo(subX, pianoNoteTop.value)
-        ctx.lineTo(subX, height)
-        ctx.stroke()
-      }
-    }
-  }
-
-  const endBeat = clipStart + visibleBeats
-  for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
-    const barBeat = line.beat
-    const x = pianoKeyW + (barBeat - clipStart) * scale
-    ctx.strokeStyle = 'rgba(240, 209, 122, 0.24)'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(x, pianoNoteTop.value)
-    ctx.lineTo(x, height)
-    ctx.stroke()
-  }
-}
-
-function paintGrid(ctx, width, height, offsetX, offsetY) {
-  const scale = arrangementPxPerBeat.value
-  const beats = Math.ceil((width - offsetX) / scale)
-
-  for (let beat = 0; beat <= beats; beat += 1) {
-    const x = offsetX + beat * scale
-    ctx.strokeStyle = 'rgba(229,236,245,0.07)'
-    ctx.lineWidth = 0.5
-    ctx.beginPath()
-    ctx.moveTo(x, offsetY)
-    ctx.lineTo(x, height)
-    ctx.stroke()
-
-    ctx.strokeStyle = 'rgba(229,236,245,0.035)'
-    for (let div = 1; div < 4; div += 1) {
-      const subX = x + (div * scale) / 4
-      ctx.beginPath()
-      ctx.moveTo(subX, offsetY)
-      ctx.lineTo(subX, height)
-      ctx.stroke()
-    }
-  }
-
-  // Bar lines follow the project meter map so piano-roll meter changes affect the arrangement grid.
-  for (const line of meterBarLinesBetween(project.value, 0, beats)) {
-    const barX = offsetX + line.beat * scale
-    ctx.strokeStyle = 'rgba(229,236,245,0.18)'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(barX, offsetY)
-    ctx.lineTo(barX, height)
-    ctx.stroke()
-  }
-}
-
-function firstMultipleAtOrAfter(value, step, origin = 0) {
-  return origin + Math.ceil(((Number(value || 0) - origin) - 0.000001) / step) * step
-}
-
-function drawPlayhead(ctx, height, offsetX = 0) {
-  const x = offsetX + visualPositionBeats.value * arrangementPxPerBeat.value
-  ctx.strokeStyle = '#d7b66f'
-  ctx.lineWidth = 1.5
-  ctx.beginPath()
-  ctx.moveTo(x, 0)
-  ctx.lineTo(x, height)
-  ctx.stroke()
-  ctx.fillStyle = '#d7b66f'
-  ctx.beginPath()
-  ctx.moveTo(x, arrangementRulerH)
-  ctx.lineTo(x - 5, arrangementRulerH - 8)
-  ctx.lineTo(x + 5, arrangementRulerH - 8)
-  ctx.closePath()
-  ctx.fill()
-}
-
-function drawPianoPlayhead(ctx, height, clip) {
-  const localBeat = visualPositionBeats.value - Number(clip.start || 0)
-  const visibleLength = pianoLengthBeats(clip)
-  if (localBeat < 0 || localBeat > visibleLength) return
-  const x = pianoKeyW + localBeat * pianoPxPerBeat.value
-  ctx.strokeStyle = '#f0d17a'
-  ctx.lineWidth = 1.6
-  ctx.beginPath()
-  ctx.moveTo(x, 0)
-  ctx.lineTo(x, height)
-  ctx.stroke()
-  ctx.fillStyle = '#f0d17a'
-  ctx.beginPath()
-  ctx.moveTo(x, pianoRulerH)
-  ctx.lineTo(x - 5, pianoRulerH - 8)
-  ctx.lineTo(x + 5, pianoRulerH - 8)
-  ctx.closePath()
-  ctx.fill()
-}
-
-function roundRect(ctx, x, y, width, height, radius) {
-  const r = Math.min(radius, width / 2, height / 2)
-  ctx.beginPath()
-  ctx.moveTo(x + r, y)
-  ctx.arcTo(x + width, y, x + width, y + height, r)
-  ctx.arcTo(x + width, y + height, x, y + height, r)
-  ctx.arcTo(x, y + height, x, y, r)
-  ctx.arcTo(x, y, x + width, y, r)
-  ctx.closePath()
-}
-
-function zrythmRegionContentColor() {
-  return 'rgba(246, 250, 255, 0.84)'
-}
-
-function zrythmRegionOutlineColor() {
-  return 'rgba(255, 255, 255, 0.96)'
-}
-
-function hexToRgba(hex, alpha) {
-  const { r, g, b } = hexToRgb(hex)
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
-}
-
-function hexToRgb(hex) {
-  const safe = /^#[0-9a-f]{6}$/i.test(hex) ? hex : '#4e79ff'
-  const value = parseInt(safe.slice(1), 16)
-  const r = (value >> 16) & 255
-  const g = (value >> 8) & 255
-  const b = value & 255
-  return { r, g, b }
-}
-
-function mixHexColor(hex, targetHex, amount) {
-  const source = hexToRgb(hex)
-  const target = hexToRgb(targetHex)
-  const unit = clamp(amount, 0, 1)
-  const mixed = {
-    r: Math.round(source.r + (target.r - source.r) * unit),
-    g: Math.round(source.g + (target.g - source.g) * unit),
-    b: Math.round(source.b + (target.b - source.b) * unit),
-  }
-  return rgbToHex(mixed)
-}
-
-function rgbToHex({ r, g, b }) {
-  return `#${[r, g, b].map(value => value.toString(16).padStart(2, '0')).join('')}`
-}
-
-function pitchName(pitch) {
-  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-  return `${names[pitch % 12]}${Math.floor(pitch / 12) - 1}`
-}
-
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
 }
@@ -6558,7 +5018,7 @@ onUnmounted(() => {
   unbindTrackListResize()
   unbindArrangementDrag()
   unbindControllerDrag()
-  unbindAutomationDrag()
+  cancelAutomationDrag()
   if (audioDecodeContext?.close) audioDecodeContext.close()
   disconnectAudioStream()
   cancelAnimationFrame(raf)
