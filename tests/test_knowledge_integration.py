@@ -675,6 +675,105 @@ async def test_process_stage_skips_late_anchored_retry_when_unanchored_graph_has
 
 
 @pytest.mark.asyncio
+async def test_process_stage_retries_sparse_unanchored_graph_when_late_vector_anchor_is_strong(
+    caplog,
+):
+    class SlowScoredKnowledgeManager(FakeKnowledgeManager):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def retrieve(self, *, query, kb_ids=None, kb_names=None, top_k=5):
+            self.calls.append(
+                {
+                    "query": query,
+                    "kb_ids": kb_ids,
+                    "kb_names": kb_names,
+                    "top_k": top_k,
+                }
+            )
+            self.started.set()
+            await self.release.wait()
+            return {
+                "context_text": "[Knowledge context]\n[1] Docs / notes.md#0\nSQLite stores chunks.",
+                "results": [
+                    {
+                        "chunk_id": "chunk-1",
+                        "content": "Alice uses SQLite for local storage.",
+                        "score": 0.92,
+                    }
+                ],
+            }
+
+    class SparseUnanchoredGraphManager(FakeGraphManager):
+        def __init__(self):
+            super().__init__()
+            self.initial_unanchored_retrieval = asyncio.Event()
+
+        async def retrieve_context(self, **kwargs):
+            await super().retrieve_context(**kwargs)
+            if not kwargs.get("source_ids"):
+                self.initial_unanchored_retrieval.set()
+                if kwargs.get("timings") is not None:
+                    kwargs["timings"]["graph_returned_facts"] = 1
+                return "[Graph context]\n- generic graph result"
+            return "[Graph context]\n- anchored graph result"
+
+    caplog.set_level(logging.INFO, logger="atri")
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": True,
+        "active_bases": ["kb-1"],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 3,
+            "max_facts": 2,
+        },
+    }
+    stage.knowledge_manager = SlowScoredKnowledgeManager()
+    stage.graph_manager = SparseUnanchoredGraphManager()
+    event = MessageEvent(message_str="How does Alice use sqlite?")
+
+    context_task = asyncio.create_task(stage._knowledge_context_for_event(event))
+    await asyncio.wait_for(stage.knowledge_manager.started.wait(), timeout=1)
+    await asyncio.sleep(process_stage_module._GRAPH_SOURCE_ANCHOR_WAIT_SECONDS + 0.02)
+    await asyncio.wait_for(
+        stage.graph_manager.initial_unanchored_retrieval.wait(),
+        timeout=1,
+    )
+    stage.knowledge_manager.release.set()
+    context = await asyncio.wait_for(context_task, timeout=1)
+
+    assert "[Knowledge context]" in context
+    assert "- anchored graph result" in context
+    assert "- generic graph result" not in context
+    assert stage.graph_manager.retrieve_calls == [
+        {
+            "query": "How does Alice use sqlite?",
+            "source_ids": [],
+            "max_facts": 2,
+            "retrieval_depth": 3,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 40,
+        },
+        {
+            "query": "How does Alice use sqlite?",
+            "source_ids": ["chunk-1"],
+            "source_scores": {"chunk-1": 0.92},
+            "max_facts": 2,
+            "retrieval_depth": 3,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 40,
+        },
+    ]
+    assert "graph_retry=True" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_process_stage_keeps_generic_graph_context_when_late_anchored_retry_is_empty(
     caplog,
 ):

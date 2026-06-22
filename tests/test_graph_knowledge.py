@@ -32,6 +32,8 @@ from core.knowledge.graph_constants import (
 from core.knowledge.graph_worker import (
     GraphKnowledgeManager,
     _chat_turn_text,
+    _document_batch_text,
+    _document_extraction_batches,
     _extraction_text_segments,
     _graph_config_from_app_config,
     _plain_text_extraction_batches,
@@ -5505,6 +5507,28 @@ def test_plain_text_extraction_batches_overlap_increases_total_coverage():
     assert sum(len(batch) for batch in batches) > len(text)
 
 
+def test_plain_text_extraction_batches_uses_tuple_aligned_window():
+    text = ("Alpha stores one fact. " * 700).strip()
+
+    batches = _plain_text_extraction_batches(text)
+
+    assert len(text) < GRAPH_EXTRACTION_BATCH_CHARS
+    assert len(batches) > 1
+    assert all(len(batch) <= MAX_EXTRACTION_TUPLES * 400 for batch in batches)
+
+
+def test_document_extraction_batches_uses_tuple_aligned_window():
+    chunks = [
+        {"chunk_id": f"chunk-{index}", "content": ("Fact sentence. " * 70).strip()}
+        for index in range(20)
+    ]
+
+    batches = _document_extraction_batches(chunks, "doc-task")
+
+    assert len(batches) > 1
+    assert all(len(_document_batch_text(batch)) <= MAX_EXTRACTION_TUPLES * 400 for batch in batches)
+
+
 def test_build_segmented_user_content_adds_part_annotation():
     content = _build_segmented_user_content(
         "Alice works at Acme.",
@@ -5832,8 +5856,13 @@ async def test_graph_manager_skips_document_batches_after_retries_fail(tmp_path)
         events = store.events(task_id)
         assert task is not None
         assert task["status"] == "completed"
-        assert task["metadata"]["failed_extraction_count"] == 1
-        assert len(extractor.calls) == 4
+        failed_count = task["metadata"]["failed_extraction_count"]
+        assert failed_count > 1
+        assert len(extractor.calls) == 1 + failed_count * 3
+        assert all(
+            item["source_id"].startswith("chunk-2:part-")
+            for item in task["metadata"]["failed_extractions"]
+        )
         assert len(graph.facts) == 1
         assert graph.facts[0]["source_id"] == "chunk-1"
         assert any(event.event_type == "graph_extraction_skipped" for event in events)

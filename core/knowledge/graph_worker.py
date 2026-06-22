@@ -12,7 +12,7 @@ from typing import Any, cast
 from core import logger
 from core.agent.llm import LLM
 from core.knowledge.chunking import RecursiveTextChunker
-from core.knowledge.extraction import GraphTupleExtractor
+from core.knowledge.extraction import MAX_EXTRACTION_TUPLES, GraphTupleExtractor
 from core.knowledge.graph import Neo4jGraphClient
 from core.knowledge.graph_constants import (
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
@@ -28,6 +28,11 @@ from core.runtime import TaskStore
 _EXTRACTION_MAX_ATTEMPTS = 3
 _GRAPH_EXTRACTION_DEFAULT_MAX_TOKENS = 4096
 _EXTRACTION_CONTEXT_QUERY_MAX_CHARS = 2000
+_GRAPH_EXTRACTION_TARGET_CHARS_PER_TUPLE = 400
+GRAPH_EXTRACTION_TUPLE_ALIGNED_BATCH_CHARS = min(
+    GRAPH_EXTRACTION_BATCH_CHARS,
+    MAX_EXTRACTION_TUPLES * _GRAPH_EXTRACTION_TARGET_CHARS_PER_TUPLE,
+)
 
 
 @dataclass
@@ -659,7 +664,10 @@ def _expansion_candidate_limit(value: Any) -> int:
 def _document_extraction_batches(
     chunks: list[dict],
     fallback_id: str,
+    *,
+    batch_chars: int = GRAPH_EXTRACTION_TUPLE_ALIGNED_BATCH_CHARS,
 ) -> list[list[dict[str, str]]]:
+    batch_chars = max(1, min(int(batch_chars), GRAPH_EXTRACTION_BATCH_CHARS))
     batches: list[list[dict[str, str]]] = []
     current: list[dict[str, str]] = []
     for index, chunk in enumerate(chunks):
@@ -671,7 +679,7 @@ def _document_extraction_batches(
         chunk_id = str(chunk.get("chunk_id") or f"{fallback_id}:{index}").strip()
         item = {"chunk_id": chunk_id, "text": text}
         candidate = [*current, item]
-        if current and len(_document_batch_text(candidate)) > GRAPH_EXTRACTION_BATCH_CHARS:
+        if current and len(_document_batch_text(candidate)) > batch_chars:
             batches.append(current)
             current = [item]
         else:
@@ -719,12 +727,13 @@ def _extraction_text_segments(
 def _plain_text_extraction_batches(
     text: str,
     *,
-    batch_chars: int = GRAPH_EXTRACTION_BATCH_CHARS,
+    batch_chars: int = GRAPH_EXTRACTION_TUPLE_ALIGNED_BATCH_CHARS,
     overlap_chars: int = GRAPH_EXTRACTION_BATCH_OVERLAP_CHARS,
 ) -> list[str]:
     cleaned = str(text or "").strip()
     if not cleaned:
         return []
+    batch_chars = max(1, min(int(batch_chars), GRAPH_EXTRACTION_BATCH_CHARS))
     if len(cleaned) <= batch_chars:
         return [cleaned]
 

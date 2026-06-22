@@ -42,6 +42,7 @@ _GRAPH_SOURCE_ANCHOR_WAIT_SECONDS = 0.05
 _GRAPH_SOURCE_ANCHOR_MAX_WAIT_SECONDS = 0.25
 _GRAPH_SOURCE_ANCHOR_WAIT_MARGIN_SECONDS = 0.02
 _GRAPH_SOURCE_ANCHOR_LATENCY_ALPHA = 0.35
+_GRAPH_LATE_ANCHOR_RETRY_MIN_VECTOR_SCORE = 0.75
 _GRAPH_ENUMERATION_RETRIEVAL_DEPTH_FLOOR = 3
 _GRAPH_ENUMERATION_EXPANSION_CANDIDATE_FLOOR = 120
 
@@ -776,7 +777,14 @@ class ProcessStage(Stage):
                 and vector_task is not None
                 and source_ids
                 and not graph_source_ids
-                and not graph_context
+                and _should_retry_graph_with_late_vector_anchor(
+                    graph_context=graph_context,
+                    source_ids=source_ids,
+                    source_scores=source_scores,
+                    graph_timings=graph_timings,
+                    query=query,
+                    graph_cfg=(knowledge.get("graph", {}) if isinstance(knowledge, dict) else {}),
+                )
             ):
                 graph_retry = True
                 graph_retry_started_at = time.perf_counter()
@@ -1784,6 +1792,51 @@ def _retrieval_source_scores(result: dict) -> dict[str, float]:
             continue
         values[chunk_id] = max(score, values.get(chunk_id, 0.0))
     return values
+
+
+def _should_retry_graph_with_late_vector_anchor(
+    *,
+    graph_context: str,
+    source_ids: list[str],
+    source_scores: dict[str, float],
+    graph_timings: dict[str, Any],
+    query: str,
+    graph_cfg: dict,
+) -> bool:
+    if not source_ids:
+        return False
+    if not str(graph_context or "").strip():
+        return True
+    if _max_source_score(source_ids, source_scores) < _GRAPH_LATE_ANCHOR_RETRY_MIN_VECTOR_SCORE:
+        return False
+
+    options = _planned_graph_retrieval_options(
+        query,
+        graph_cfg if isinstance(graph_cfg, dict) else {},
+    )
+    returned_facts = _timing_int(
+        graph_timings,
+        "graph_returned_facts",
+        _graph_context_fact_count(graph_context),
+    )
+    return returned_facts < int(options["max_facts"]) or _timing_bool(
+        graph_timings,
+        "graph_used_scan_fallback",
+    )
+
+
+def _max_source_score(source_ids: list[str], source_scores: dict[str, float]) -> float:
+    scores = []
+    for source_id in source_ids:
+        try:
+            scores.append(float(source_scores.get(source_id, 0.0)))
+        except (TypeError, ValueError):
+            continue
+    return max(scores, default=0.0)
+
+
+def _graph_context_fact_count(context: str) -> int:
+    return sum(1 for line in str(context or "").splitlines() if line.lstrip().startswith("- "))
 
 
 def _knowledge_retrieval_mode(vector_enabled: bool, graph_enabled: bool) -> str:
