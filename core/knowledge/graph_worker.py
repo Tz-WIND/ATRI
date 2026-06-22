@@ -601,9 +601,36 @@ def _graph_config_from_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "expansion_candidate_limit": _expansion_candidate_limit(
             graph.get("expansion_candidate_limit", 40)
         ),
+        "multi_hop_expansion_cache_mode": _multi_hop_expansion_cache_mode(
+            graph.get("multi_hop_expansion_cache_mode"),
+            graph.get("persistent_multi_hop_expansion_cache_enabled"),
+        ),
         "ranking_policy": _ranking_policy(graph.get("ranking_policy")),
         "queue_max_size": int(graph.get("queue_max_size") or 1000),
     }
+
+
+def _multi_hop_expansion_cache_mode(value: Any, legacy_persistent_enabled: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"off", "memory", "persistent"}:
+        return mode
+    legacy_enabled = _legacy_persistent_cache_enabled(legacy_persistent_enabled)
+    if legacy_enabled is False:
+        return "memory"
+    return "persistent"
+
+
+def _legacy_persistent_cache_enabled(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        return bool(normalized)
+    return bool(value)
 
 
 def _retrieval_depth(value: Any) -> int:

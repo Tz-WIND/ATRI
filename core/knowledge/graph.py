@@ -66,8 +66,22 @@ _ENTITY_FULLTEXT_INDEX = "entity_text"
 _FACT_FULLTEXT_INDEX = "fact_text"
 _GRAPH_REVISION_METADATA_KEY = "graph_revision"
 _PERSISTENT_MULTI_HOP_EXPANSION_CACHE_VERSION = "persistent_multi_hop_expansion:v2"
+_MULTI_HOP_EXPANSION_CACHE_MODES = {"off", "memory", "persistent"}
 T = TypeVar("T")
 __all__ = ["GRAPH_QUERY_ENUMERATION_TERMS", "Neo4jGraphClient", "_query_terms"]
+
+
+def _legacy_persistent_cache_enabled(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        return bool(normalized)
+    return bool(value)
 
 
 class Neo4jGraphClient:
@@ -263,13 +277,15 @@ class Neo4jGraphClient:
         load_misses: bool = True,
         use_persistent_cache: bool = True,
     ) -> tuple[list[dict[str, Any]], bool, dict[str, int]]:
+        cache_mode = self._multi_hop_expansion_cache_mode()
+        use_persistent_cache = use_persistent_cache and cache_mode == "persistent"
         normalized_seed_ids = _unique_text_values(seed_element_ids)
         stats = {
             "memory_hit_count": 0,
             "persistent_hit_count": 0,
             "loaded_count": 0,
         }
-        if not normalized_seed_ids:
+        if not normalized_seed_ids or cache_mode == "off":
             return [], True, stats
 
         cached_by_seed: dict[str, dict[str, Any]] = {}
@@ -344,14 +360,14 @@ class Neo4jGraphClient:
         expansion_rows: list[dict[str, Any]] = []
         complete = True
         for seed_element_id in normalized_seed_ids:
-            value = cached_by_seed.get(seed_element_id)
-            if value is None:
+            cached_value = cached_by_seed.get(seed_element_id)
+            if cached_value is None:
                 complete = False
                 continue
-            if not bool(value.get("complete", True)):
+            if not bool(cached_value.get("complete", True)):
                 complete = False
                 continue
-            paths = value.get("paths")
+            paths = cached_value.get("paths")
             if not isinstance(paths, list):
                 continue
             for path_index, path in enumerate(paths):
@@ -534,8 +550,18 @@ class Neo4jGraphClient:
             logger.debug("Neo4j graph persistent multi-hop cache write skipped: %s", e)
 
     def _persistent_multi_hop_expansion_cache_enabled(self) -> bool:
-        enabled = _optional_bool(self.config.get("persistent_multi_hop_expansion_cache_enabled"))
-        return True if enabled is None else enabled
+        return self._multi_hop_expansion_cache_mode() == "persistent"
+
+    def _multi_hop_expansion_cache_mode(self) -> str:
+        mode = str(self.config.get("multi_hop_expansion_cache_mode") or "").strip().lower()
+        if mode in _MULTI_HOP_EXPANSION_CACHE_MODES:
+            return mode
+        enabled = _legacy_persistent_cache_enabled(
+            self.config.get("persistent_multi_hop_expansion_cache_enabled")
+        )
+        if enabled is False:
+            return "memory"
+        return "persistent"
 
     def _load_multi_hop_expansion_paths(
         self,
@@ -606,6 +632,10 @@ class Neo4jGraphClient:
         *,
         use_persistent_cache: bool = True,
     ) -> None:
+        cache_mode = self._multi_hop_expansion_cache_mode()
+        if cache_mode == "off":
+            return
+        use_persistent_cache = use_persistent_cache and cache_mode == "persistent"
         normalized_seed_ids = _unique_text_values(seed_element_ids)
         if not normalized_seed_ids:
             return
@@ -1095,6 +1125,9 @@ class Neo4jGraphClient:
         expansion_cache_preload_path_limit = _multi_hop_expansion_cache_preload_path_limit(
             self.config.get("multi_hop_expansion_cache_preload_path_limit")
         )
+        multi_hop_expansion_cache_mode = self._multi_hop_expansion_cache_mode()
+        multi_hop_expansion_cache_enabled = multi_hop_expansion_cache_mode != "off"
+        use_persistent_multi_hop_expansion_cache = multi_hop_expansion_cache_mode == "persistent"
         seed_limit = max(query_limit, expansion_query_limit)
         live_seed_limit = seed_limit if depth > 1 else 0
         multihop_live_seed_limit = live_seed_limit
@@ -1114,6 +1147,7 @@ class Neo4jGraphClient:
             retrieval_depth=depth,
             ranking_policy=policy,
             expansion_candidate_limit=expansion_query_limit,
+            multi_hop_expansion_cache_mode=multi_hop_expansion_cache_mode,
             include_entity_types=include_entity_types,
             fulltext_ready=self._fulltext_indexes_ready,
         )
@@ -1655,7 +1689,7 @@ class Neo4jGraphClient:
         }}
                 """
 
-            if fulltext_query or not terms:
+            if (fulltext_query or not terms) and multi_hop_expansion_cache_enabled:
                 expansion_cache_seed_probe_limit = min(
                     seed_limit,
                     expansion_cache_preload_seed_limit + 1,
@@ -1686,6 +1720,7 @@ class Neo4jGraphClient:
                         depth=depth,
                         path_limit=expansion_cache_path_limit,
                         load_misses=False,
+                        use_persistent_cache=use_persistent_multi_hop_expansion_cache,
                     )
                     multihop_persistent_cache_hit_count += hot_stats["persistent_hit_count"]
                     if hot_complete:
@@ -1713,6 +1748,7 @@ class Neo4jGraphClient:
                                 depth=depth,
                                 path_limit=preload_path_limit,
                                 load_misses=True,
+                                use_persistent_cache=use_persistent_multi_hop_expansion_cache,
                             )
                         )
                         multihop_persistent_cache_hit_count += load_stats["persistent_hit_count"]
@@ -2017,7 +2053,7 @@ def _persistent_multi_hop_expansion_paths(paths: Any) -> list[dict[str, Any]] | 
         return None
     persistent_paths: list[dict[str, Any]] = []
     for path in normalized_paths:
-        rel_refs = []
+        rel_refs: list[dict[str, Any]] = []
         for rel_ref in path.get("rel_ids", []):
             fact_key = str(_row_value(rel_ref, "fact_key") or "").strip()
             if not fact_key:

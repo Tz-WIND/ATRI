@@ -105,6 +105,12 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "graphExpansionCandidateMax" in source
     assert "getConfigSchema" in source
     assert "loadConfigLimits" in source
+    assert "Multi-hop Cache" in source
+    assert "multi_hop_expansion_cache_mode" in source
+    assert "normalizeGraphCacheMode" in source
+    assert "Off" in source
+    assert "Memory" in source
+    assert "Persistent" in source
     assert "Ranking Policy" in source
     assert "ranking_policy" in source
     assert "normalizeGraphRankingPolicy" in source

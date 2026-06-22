@@ -77,6 +77,7 @@ _MODEL_POOL_DEFAULT_CONFIGS = {
     "active_rerank_models": RERANK_MODEL_CONFIG_DEFAULT,
 }
 _MASKED_SECRET = "***"  # noqa: S105 - sentinel used for masked settings values
+_GRAPH_MULTI_HOP_CACHE_MODES = ("off", "memory", "persistent")
 _AUDIO_HOST_RESTART_MESSAGES = {
     "audio device and bit depth changes require restarting the audio host",
     "sample_rate and buffer_size changes require restarting the audio host",
@@ -105,6 +106,12 @@ def _nonnegative_int(value: Any, field: str) -> int:
 
 def _bounded_positive_int(value: Any, field: str, maximum: int) -> int:
     return min(maximum, _positive_int(value, field))
+
+
+def _legacy_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _merge_audio_host_config(current: dict, incoming: dict) -> tuple[dict, bool]:
@@ -210,6 +217,20 @@ def _merge_graph_knowledge_config(
             "knowledge.graph.retrieval_depth",
             GRAPH_RETRIEVAL_MAX_DEPTH,
         )
+    if "multi_hop_expansion_cache_mode" in incoming:
+        cache_mode = str(incoming.get("multi_hop_expansion_cache_mode") or "").strip().lower()
+        if cache_mode not in _GRAPH_MULTI_HOP_CACHE_MODES:
+            allowed_modes = ", ".join(_GRAPH_MULTI_HOP_CACHE_MODES)
+            raise ValueError(
+                f"knowledge.graph.multi_hop_expansion_cache_mode must be one of: {allowed_modes}"
+            )
+        merged["multi_hop_expansion_cache_mode"] = cache_mode
+    elif "persistent_multi_hop_expansion_cache_enabled" in incoming:
+        merged["multi_hop_expansion_cache_mode"] = (
+            "persistent"
+            if _legacy_bool(incoming.get("persistent_multi_hop_expansion_cache_enabled"))
+            else "memory"
+        )
     if "ranking_policy" in incoming:
         ranking_policy = str(incoming.get("ranking_policy") or "hybrid").strip().lower()
         if ranking_policy not in {"hybrid", "relevance", "latest"}:
@@ -235,6 +256,7 @@ def _merge_graph_knowledge_config(
     merged.setdefault("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
     merged.setdefault("max_facts", 8)
     merged.setdefault("expansion_candidate_limit", 40)
+    merged.setdefault("multi_hop_expansion_cache_mode", "persistent")
     merged.setdefault("ranking_policy", "hybrid")
     merged.setdefault("queue_max_size", 1000)
     if (

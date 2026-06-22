@@ -101,6 +101,7 @@ def test_normalize_config_adds_knowledge_defaults():
             "retrieval_depth": EXPECTED_GRAPH_RETRIEVAL_DEFAULT_DEPTH,
             "max_facts": 8,
             "expansion_candidate_limit": 40,
+            "multi_hop_expansion_cache_mode": "persistent",
             "ranking_policy": "hybrid",
             "queue_max_size": 1000,
         },

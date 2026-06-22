@@ -440,6 +440,7 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
             "retrieval_depth": 3,
             "max_facts": 8,
             "expansion_candidate_limit": 40,
+            "multi_hop_expansion_cache_mode": "persistent",
             "ranking_policy": "hybrid",
             "queue_max_size": 1000,
         },
@@ -476,6 +477,7 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
                     "retrieval_depth": 7,
                     "max_facts": 6,
                     "expansion_candidate_limit": 64,
+                    "multi_hop_expansion_cache_mode": "memory",
                     "queue_max_size": 25,
                 }
             }
@@ -501,6 +503,11 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
     assert dashboard.lifecycle.config["knowledge"]["graph"]["retrieval_depth"] == 7
     assert dashboard.lifecycle.config["knowledge"]["graph"]["max_facts"] == 4
     assert dashboard.lifecycle.config["knowledge"]["graph"]["expansion_candidate_limit"] == 64
+    assert (
+        dashboard.lifecycle.config["knowledge"]["graph"]["multi_hop_expansion_cache_mode"]
+        == "memory"
+    )
+    assert payload["knowledge"]["graph"]["multi_hop_expansion_cache_mode"] == "memory"
     assert process_stage.updated[-1]["knowledge"] == dashboard.lifecycle.config["knowledge"]
     assert dashboard.lifecycle.graph_manager.updated[-1] == dashboard.lifecycle.config
 
@@ -527,6 +534,26 @@ async def test_settings_route_preserves_high_graph_expansion_candidate_limit(
     assert get_response.status_code == 200
     assert dashboard.lifecycle.config["knowledge"]["graph"]["expansion_candidate_limit"] == 500
     assert payload["knowledge"]["graph"]["expansion_candidate_limit"] == 500
+
+
+@pytest.mark.asyncio
+async def test_settings_route_rejects_invalid_graph_cache_mode(monkeypatch, tmp_path):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = await dashboard.app.test_client().post(
+        "/api/settings",
+        json={"knowledge": {"graph": {"multi_hop_expansion_cache_mode": "disk"}}},
+        headers=headers,
+    )
+    payload = await response.get_json()
+
+    assert response.status_code == 400
+    assert (
+        "knowledge.graph.multi_hop_expansion_cache_mode must be one of: off, memory, persistent"
+        in payload["error"]
+    )
 
 
 @pytest.mark.asyncio

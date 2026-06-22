@@ -107,6 +107,11 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "minimum": 1,
                             "maximum": GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
                         },
+                        "multi_hop_expansion_cache_mode": {
+                            "type": "string",
+                            "default": "persistent",
+                            "enum": ["off", "memory", "persistent"],
+                        },
                         "ranking_policy": {
                             "type": "string",
                             "default": "hybrid",
@@ -598,6 +603,31 @@ def _validate_onebot11_security(config: dict[str, Any]) -> None:
     )
 
 
+def _legacy_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _migrate_graph_multi_hop_expansion_cache_mode(user_config: dict[str, Any]) -> bool:
+    knowledge = user_config.get("knowledge")
+    if not isinstance(knowledge, dict):
+        return False
+    graph = knowledge.get("graph")
+    if not isinstance(graph, dict):
+        return False
+    if "multi_hop_expansion_cache_mode" in graph:
+        return False
+    if "persistent_multi_hop_expansion_cache_enabled" not in graph:
+        return False
+    graph["multi_hop_expansion_cache_mode"] = (
+        "persistent"
+        if _legacy_bool(graph.get("persistent_multi_hop_expansion_cache_enabled"))
+        else "memory"
+    )
+    return True
+
+
 def normalize_config(
     user_config: dict[str, Any] | None,
     *,
@@ -609,7 +639,8 @@ def normalize_config(
     if not isinstance(user_config, dict):
         raise ConfigValidationError("config root must be an object")
 
-    changed = _has_missing_schema_keys(user_config, CONFIG_SCHEMA)
+    changed = _migrate_graph_multi_hop_expansion_cache_mode(user_config)
+    changed = _has_missing_schema_keys(user_config, CONFIG_SCHEMA) or changed
     config = _merge_config(DEFAULT_CONFIG, user_config)
     config, validate_changed = _validate_object(config, CONFIG_SCHEMA, "")
     changed = changed or validate_changed

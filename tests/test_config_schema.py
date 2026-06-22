@@ -32,6 +32,7 @@ EXPECTED_GRAPH_KNOWLEDGE_DEFAULT = {
     "retrieval_depth": 3,
     "max_facts": 8,
     "expansion_candidate_limit": 40,
+    "multi_hop_expansion_cache_mode": "persistent",
     "ranking_policy": "hybrid",
     "queue_max_size": 1000,
 }
@@ -145,6 +146,7 @@ def test_normalize_config_coerces_graph_knowledge_settings():
                     "retrieval_depth": "7",
                     "max_facts": "12",
                     "expansion_candidate_limit": "64",
+                    "multi_hop_expansion_cache_mode": "MEMORY",
                     "ranking_policy": "RELEVANCE",
                     "queue_max_size": "50",
                 },
@@ -170,9 +172,36 @@ def test_normalize_config_coerces_graph_knowledge_settings():
         "retrieval_depth": 7,
         "max_facts": 12,
         "expansion_candidate_limit": 64,
+        "multi_hop_expansion_cache_mode": "memory",
         "ranking_policy": "relevance",
         "queue_max_size": 50,
     }
+
+
+def test_normalize_config_maps_legacy_persistent_multihop_cache_flag():
+    disabled_config, disabled_changed = normalize_config(
+        {
+            "knowledge": {
+                "graph": {
+                    "persistent_multi_hop_expansion_cache_enabled": False,
+                }
+            }
+        }
+    )
+    enabled_config, enabled_changed = normalize_config(
+        {
+            "knowledge": {
+                "graph": {
+                    "persistent_multi_hop_expansion_cache_enabled": True,
+                }
+            }
+        }
+    )
+
+    assert disabled_changed is True
+    assert disabled_config["knowledge"]["graph"]["multi_hop_expansion_cache_mode"] == "memory"
+    assert enabled_changed is True
+    assert enabled_config["knowledge"]["graph"]["multi_hop_expansion_cache_mode"] == "persistent"
 
 
 def test_normalize_config_preserves_model_entry_config_over_defaults():
@@ -231,6 +260,11 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         (
             {"knowledge": {"graph": {"ranking_policy": "random"}}},
             "knowledge.graph.ranking_policy must be one of: hybrid, relevance, latest",
+        ),
+        (
+            {"knowledge": {"graph": {"multi_hop_expansion_cache_mode": "disk"}}},
+            "knowledge.graph.multi_hop_expansion_cache_mode must be one of: "
+            "off, memory, persistent",
         ),
         (
             {"knowledge": {"graph": {"expansion_candidate_limit": 0}}},

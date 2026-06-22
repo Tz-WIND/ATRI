@@ -592,6 +592,20 @@
                   >
                 </label>
                 <label class="setting-field">
+                  <span>Multi-hop Cache</span>
+                  <select v-model="form.knowledge.graph.multi_hop_expansion_cache_mode">
+                    <option value="off">
+                      Off
+                    </option>
+                    <option value="memory">
+                      Memory
+                    </option>
+                    <option value="persistent">
+                      Persistent
+                    </option>
+                  </select>
+                </label>
+                <label class="setting-field">
                   <span>Ranking Policy</span>
                   <select v-model="form.knowledge.graph.ranking_policy">
                     <option value="hybrid">
@@ -1027,6 +1041,7 @@ const form = ref({
       retrieval_depth: 3,
       max_facts: 8,
       expansion_candidate_limit: 40,
+      multi_hop_expansion_cache_mode: 'persistent',
       ranking_policy: 'hybrid',
       queue_max_size: 1000,
     },
@@ -1311,6 +1326,10 @@ function normalizeGraphKnowledge(value = {}) {
     expansion_candidate_limit: normalizeGraphExpansionCandidateLimit(
       value.expansion_candidate_limit,
     ),
+    multi_hop_expansion_cache_mode: normalizeGraphCacheMode(
+      value.multi_hop_expansion_cache_mode,
+      value.persistent_multi_hop_expansion_cache_enabled,
+    ),
     ranking_policy: normalizeGraphRankingPolicy(value.ranking_policy),
     queue_max_size: Number(value.queue_max_size || 1000),
   }
@@ -1329,6 +1348,26 @@ function normalizeGraphExpansionCandidateLimit(value) {
     graphExpansionCandidateMax.value,
     Math.max(1, Math.trunc(parsed)),
   )
+}
+
+function normalizeGraphCacheMode(value, legacyPersistentCacheEnabled) {
+  const mode = String(value || '').trim().toLowerCase()
+  if (['off', 'memory', 'persistent'].includes(mode)) return mode
+  if (normalizeLegacyGraphPersistentCacheEnabled(legacyPersistentCacheEnabled) === false) {
+    return 'memory'
+  }
+  return 'persistent'
+}
+
+function normalizeLegacyGraphPersistentCacheEnabled(value) {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['', '0', 'false', 'no', 'off'].includes(normalized)) return false
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+    return Boolean(normalized)
+  }
+  return Boolean(value)
 }
 
 async function loadConfigLimits() {
