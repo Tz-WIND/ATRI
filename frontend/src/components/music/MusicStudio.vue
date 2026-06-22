@@ -1200,6 +1200,7 @@ import TrackCreateDialog from './studio/TrackCreateDialog.vue'
 import { createArrangementRenderer } from './arrangementRenderer.js'
 import { createAutomationEditing } from './automationEditing.js'
 import { createPianoRollRenderer } from './pianoRollRenderer.js'
+import { createRafRedrawScheduler } from './redrawScheduler.js'
 import { useStudioKeyboardShortcuts } from './useStudioKeyboardShortcuts.js'
 import './studio/StudioDialogs.css'
 import {
@@ -1465,6 +1466,7 @@ const pianoQuantizeOptions = PIANO_QUANTIZE_OPTIONS
 let resizeObserver = null
 let raf = 0
 let lastFrame = 0
+let drawScheduler = null
 let pianoDrag = null
 let lowerEditorResizeDrag = null
 let trackListResizeDrag = null
@@ -4969,15 +4971,24 @@ function animationLoop(now) {
   lastFrame = now
   if (playing.value) {
     visualPositionBeats.value += delta * (effectiveTempoAtBeat(project.value, visualPositionBeats.value) / 60)
-  } else {
+    syncTransportDisplayFields(project.value)
+    drawAll()
+  } else if (visualPositionBeats.value !== positionBeats.value) {
     visualPositionBeats.value = positionBeats.value
+    syncTransportDisplayFields(project.value)
+    drawAll()
   }
-  syncTransportDisplayFields(project.value)
-  drawAll()
   raf = requestAnimationFrame(animationLoop)
 }
 
 function drawAll() {
+  if (!drawScheduler) {
+    drawScheduler = createRafRedrawScheduler(drawAllNow)
+  }
+  drawScheduler.request()
+}
+
+function drawAllNow() {
   drawArrangement()
   drawPiano()
   drawControllerLanes()
@@ -5024,6 +5035,7 @@ onUnmounted(() => {
   cancelAutomationDrag()
   if (audioDecodeContext?.close) audioDecodeContext.close()
   disconnectAudioStream()
+  if (drawScheduler) drawScheduler.cancel()
   cancelAnimationFrame(raf)
 })
 

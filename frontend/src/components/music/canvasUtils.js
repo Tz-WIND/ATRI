@@ -1,9 +1,13 @@
 export function setupCanvas(canvas, width, height) {
   const dpr = window.devicePixelRatio || 1
-  canvas.width = Math.max(1, Math.floor(width * dpr))
-  canvas.height = Math.max(1, Math.floor(height * dpr))
-  canvas.style.width = `${width}px`
-  canvas.style.height = `${height}px`
+  const backingWidth = Math.max(1, Math.floor(width * dpr))
+  const backingHeight = Math.max(1, Math.floor(height * dpr))
+  const styleWidth = `${width}px`
+  const styleHeight = `${height}px`
+  if (canvas.width !== backingWidth) canvas.width = backingWidth
+  if (canvas.height !== backingHeight) canvas.height = backingHeight
+  if (canvas.style.width !== styleWidth) canvas.style.width = styleWidth
+  if (canvas.style.height !== styleHeight) canvas.style.height = styleHeight
   const ctx = canvas.getContext('2d')
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   return ctx

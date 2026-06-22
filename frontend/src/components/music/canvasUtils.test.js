@@ -47,6 +47,67 @@ test('setupCanvas_scalesBackingStoreByDevicePixelRatio', () => {
   assert.deepEqual(transform, [2, 0, 0, 2, 0, 0])
 })
 
+test('setupCanvas_keepsBackingStoreWhenSizeIsUnchanged', () => {
+  const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, 'window')
+  const previousWindow = globalThis.window
+  globalThis.window = { devicePixelRatio: 2 }
+  let width = 200
+  let height = 100
+  let widthWrites = 0
+  let heightWrites = 0
+  let styleWidthWrites = 0
+  let styleHeightWrites = 0
+  const style = {}
+  Object.defineProperties(style, {
+    width: {
+      get: () => '100px',
+      set: () => { styleWidthWrites += 1 },
+    },
+    height: {
+      get: () => '50px',
+      set: () => { styleHeightWrites += 1 },
+    },
+  })
+  const ctx = {
+    setTransform() {},
+  }
+  const canvas = {
+    style,
+    get width() {
+      return width
+    },
+    set width(value) {
+      widthWrites += 1
+      width = value
+    },
+    get height() {
+      return height
+    },
+    set height(value) {
+      heightWrites += 1
+      height = value
+    },
+    getContext() {
+      return ctx
+    },
+  }
+
+  try {
+    assert.equal(setupCanvas(canvas, 100, 50), ctx)
+  } finally {
+    if (hadWindow) {
+      globalThis.window = previousWindow
+    } else {
+      delete globalThis.window
+    }
+  }
+
+  assert.equal(widthWrites, 0)
+  assert.equal(heightWrites, 0)
+  assert.equal(styleWidthWrites, 0)
+  assert.equal(styleHeightWrites, 0)
+})
+
 test('canvasColorUtils_useFallbackAndMixColors', () => {
   assert.equal(hexToRgba('#12abef', 0.5), 'rgba(18, 171, 239, 0.5)')
   assert.equal(hexToRgba('bad-color', 1), 'rgba(78, 121, 255, 1)')
