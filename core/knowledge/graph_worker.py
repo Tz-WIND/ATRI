@@ -264,7 +264,10 @@ class GraphKnowledgeManager:
                 "context_chars=%d returned_context=%s graph_total_ms=%.1f "
                 "graph_single_hop_ms=%.1f graph_multi_hop_ms=%.1f "
                 "graph_scan_fallback_ms=%.1f graph_format_ms=%.1f graph_rows=%d "
-                "graph_returned_facts=%d",
+                "graph_returned_facts=%d graph_multihop_seed_count=%d "
+                "graph_multihop_cache_hit=%s graph_multihop_cached_seed_count=%d "
+                "graph_multihop_live_seed_limit=%d graph_multihop_partial_cache_hit=%s "
+                "graph_multihop_persistent_cache_hit_count=%d",
                 (time.perf_counter() - started_at) * 1000,
                 depth,
                 max_facts,
@@ -280,6 +283,15 @@ class GraphKnowledgeManager:
                 _timing_float(retrieval_timings, "graph_format_ms"),
                 _timing_int(retrieval_timings, "graph_rows"),
                 _timing_int(retrieval_timings, "graph_returned_facts"),
+                _timing_int(retrieval_timings, "graph_multihop_seed_count"),
+                _timing_bool(retrieval_timings, "graph_multihop_cache_hit"),
+                _timing_int(retrieval_timings, "graph_multihop_cached_seed_count"),
+                _timing_int(retrieval_timings, "graph_multihop_live_seed_limit"),
+                _timing_bool(retrieval_timings, "graph_multihop_partial_cache_hit"),
+                _timing_int(
+                    retrieval_timings,
+                    "graph_multihop_persistent_cache_hit_count",
+                ),
             )
             return context
         except Exception as e:
@@ -801,6 +813,13 @@ def _timing_int(timings: dict[str, Any], key: str, default: int = 0) -> int:
         return int(timings.get(key, default))
     except (TypeError, ValueError):
         return int(default)
+
+
+def _timing_bool(timings: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = timings.get(key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _chat_turn_text(user_text: str, assistant_text: str) -> str:

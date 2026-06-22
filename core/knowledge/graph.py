@@ -34,6 +34,7 @@ from core.knowledge.graph_format import (
     _entity_alias_key,
     _format_retrieved_fact_lines,
     _rank_retrieved_rows,
+    _row_int,
     _row_value,
 )
 from core.knowledge.graph_query import _fulltext_query, _query_term_rows, _query_terms
@@ -63,6 +64,8 @@ from core.knowledge.graph_values import (
 DriverFactory = Callable[[str, tuple[str, str]], Any]
 _ENTITY_FULLTEXT_INDEX = "entity_text"
 _FACT_FULLTEXT_INDEX = "fact_text"
+_GRAPH_REVISION_METADATA_KEY = "graph_revision"
+_PERSISTENT_MULTI_HOP_EXPANSION_CACHE_VERSION = "persistent_multi_hop_expansion:v2"
 T = TypeVar("T")
 __all__ = ["GRAPH_QUERY_ENUMERATION_TERMS", "Neo4jGraphClient", "_query_terms"]
 
@@ -116,9 +119,21 @@ class Neo4jGraphClient:
         self._fulltext_indexes_ready = False
         self._fulltext_index_unavailable_reason = None
 
-    def _bump_graph_revision(self) -> None:
-        self._graph_revision += 1
+    def _bump_graph_revision(self) -> bool:
         self._retrieval_cache.clear()
+        if self.driver is None:
+            self._graph_revision += 1
+            return False
+        bumped_revision = self._bump_persistent_graph_revision()
+        if bumped_revision is None:
+            self._graph_revision += 1
+            self._clear_persistent_multi_hop_expansion_cache()
+            return False
+        self._graph_revision = bumped_revision
+        self._prune_persistent_multi_hop_expansion_cache(
+            current_revision=bumped_revision,
+        )
+        return True
 
     def _cached_fulltext_seed_rows(
         self,
@@ -246,10 +261,16 @@ class Neo4jGraphClient:
         depth: int,
         path_limit: int,
         load_misses: bool = True,
-    ) -> tuple[list[dict[str, Any]], bool]:
+        use_persistent_cache: bool = True,
+    ) -> tuple[list[dict[str, Any]], bool, dict[str, int]]:
         normalized_seed_ids = _unique_text_values(seed_element_ids)
+        stats = {
+            "memory_hit_count": 0,
+            "persistent_hit_count": 0,
+            "loaded_count": 0,
+        }
         if not normalized_seed_ids:
-            return [], True
+            return [], True, stats
 
         cached_by_seed: dict[str, dict[str, Any]] = {}
         missed_seed_ids = []
@@ -265,6 +286,30 @@ class Neo4jGraphClient:
                 missed_seed_ids.append(seed_element_id)
                 continue
             cached_by_seed[seed_element_id] = dict(cached)
+            stats["memory_hit_count"] += 1
+
+        if missed_seed_ids and use_persistent_cache:
+            persistent_by_seed = self._load_persistent_multi_hop_expansion_paths(
+                seed_element_ids=missed_seed_ids,
+                depth=depth,
+                path_limit=path_limit,
+            )
+            if persistent_by_seed:
+                for seed_element_id, value in persistent_by_seed.items():
+                    key = _multi_hop_expansion_cache_key(
+                        revision=self._graph_revision,
+                        seed_element_id=seed_element_id,
+                        depth=depth,
+                        path_limit=path_limit,
+                    )
+                    self._retrieval_cache.set("multi_hop_expansion", key, value)
+                    cached_by_seed[seed_element_id] = value
+                    stats["persistent_hit_count"] += 1
+                missed_seed_ids = [
+                    seed_element_id
+                    for seed_element_id in missed_seed_ids
+                    if seed_element_id not in cached_by_seed
+                ]
 
         if missed_seed_ids and load_misses:
             loaded_by_seed = self._load_multi_hop_expansion_paths(
@@ -285,11 +330,24 @@ class Neo4jGraphClient:
                 )
                 self._retrieval_cache.set("multi_hop_expansion", key, value)
                 cached_by_seed[seed_element_id] = value
+                stats["loaded_count"] += 1
+            if use_persistent_cache:
+                self._store_persistent_multi_hop_expansion_paths(
+                    values_by_seed={
+                        seed_element_id: cached_by_seed[seed_element_id]
+                        for seed_element_id in missed_seed_ids
+                    },
+                    depth=depth,
+                    path_limit=path_limit,
+                )
 
         expansion_rows: list[dict[str, Any]] = []
-        complete = not missed_seed_ids or load_misses
+        complete = True
         for seed_element_id in normalized_seed_ids:
-            value = cached_by_seed.get(seed_element_id) or {"complete": True, "paths": []}
+            value = cached_by_seed.get(seed_element_id)
+            if value is None:
+                complete = False
+                continue
             if not bool(value.get("complete", True)):
                 complete = False
                 continue
@@ -304,7 +362,180 @@ class Neo4jGraphClient:
                 )
                 if cached_path is not None:
                     expansion_rows.append(cached_path)
-        return expansion_rows, complete
+        return expansion_rows, complete, stats
+
+    def _seed_identities_by_element_id(
+        self,
+        seed_element_ids: list[str],
+    ) -> dict[str, dict[str, str]]:
+        normalized_seed_ids = _unique_text_values(seed_element_ids)
+        if not normalized_seed_ids:
+            return {}
+        query = """
+        UNWIND $seed_element_ids AS seed_element_id
+        MATCH (seed:Entity)
+        WHERE elementId(seed) = seed_element_id
+        RETURN seed_element_id,
+               seed.name_key AS seed_name_key,
+               seed.type_key AS seed_type_key
+        """
+        rows = self._run_with_reconnect(
+            lambda session: list(
+                session.run(
+                    query,
+                    seed_element_ids=normalized_seed_ids,
+                    timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                )
+            )
+        )
+        identities: dict[str, dict[str, str]] = {}
+        for row in rows:
+            seed_element_id = str(_row_value(row, "seed_element_id") or "").strip()
+            identity = _seed_identity(
+                _row_value(row, "seed_name_key"),
+                _row_value(row, "seed_type_key"),
+            )
+            if seed_element_id and identity is not None:
+                identities[seed_element_id] = identity
+        return identities
+
+    def _load_persistent_multi_hop_expansion_paths(
+        self,
+        *,
+        seed_element_ids: list[str],
+        depth: int,
+        path_limit: int,
+    ) -> dict[str, dict[str, Any]]:
+        if not seed_element_ids or not self._persistent_multi_hop_expansion_cache_enabled():
+            return {}
+        try:
+            seed_identities = self._seed_identities_by_element_id(seed_element_ids)
+        except Exception as e:
+            logger.debug("Neo4j graph persistent multi-hop seed identity read skipped: %s", e)
+            return {}
+        cache_keys_by_seed = {
+            seed_element_id: _persistent_multi_hop_expansion_cache_key(
+                revision=self._graph_revision,
+                seed_identity=seed_identity,
+                depth=depth,
+                path_limit=path_limit,
+            )
+            for seed_element_id, seed_identity in seed_identities.items()
+        }
+        if not cache_keys_by_seed:
+            return {}
+        seed_by_cache_key = {key: seed for seed, key in cache_keys_by_seed.items()}
+        query = """
+        MATCH (cache:GraphExpansionCache)
+        WHERE cache.key IN $cache_keys
+        RETURN properties(cache) AS cache_properties
+        """
+        try:
+            rows = self._run_with_reconnect(
+                lambda session: list(
+                    session.run(
+                        query,
+                        cache_keys=list(seed_by_cache_key),
+                        timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                    )
+                )
+            )
+        except Exception as e:
+            logger.debug("Neo4j graph persistent multi-hop cache read skipped: %s", e)
+            return {}
+
+        values: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            raw_cache_properties = _row_value(row, "cache_properties", {}) or {}
+            cache_properties = (
+                raw_cache_properties if isinstance(raw_cache_properties, dict) else {}
+            )
+            cache_key = str(cache_properties.get("key") or "").strip()
+            seed_element_id = seed_by_cache_key.get(cache_key, "")
+            if not seed_element_id:
+                continue
+            complete = bool(cache_properties.get("complete", True))
+            raw_paths_json = str(cache_properties.get("paths_json") or "[]")
+            try:
+                raw_paths = json.loads(raw_paths_json)
+            except (TypeError, ValueError):
+                continue
+            paths = [] if not complete else _normalized_multi_hop_expansion_paths(raw_paths)
+            values[seed_element_id] = {"complete": complete, "paths": paths}
+        return values
+
+    def _store_persistent_multi_hop_expansion_paths(
+        self,
+        *,
+        values_by_seed: dict[str, dict[str, Any]],
+        depth: int,
+        path_limit: int,
+    ) -> None:
+        if not values_by_seed or not self._persistent_multi_hop_expansion_cache_enabled():
+            return
+        now = time.time()
+        entries = []
+        for value in values_by_seed.values():
+            seed_identity = _seed_identity_from_value(value.get("seed_identity"))
+            if seed_identity is None:
+                continue
+            paths = value.get("paths")
+            persistent_paths = _persistent_multi_hop_expansion_paths(paths)
+            if persistent_paths is None:
+                continue
+            cache_key = _persistent_multi_hop_expansion_cache_key(
+                revision=self._graph_revision,
+                seed_identity=seed_identity,
+                depth=depth,
+                path_limit=path_limit,
+            )
+            entries.append(
+                {
+                    "key": cache_key,
+                    "graph_revision": self._graph_revision,
+                    "seed_name_key": seed_identity["name_key"],
+                    "seed_type_key": seed_identity["type_key"],
+                    "depth": depth,
+                    "path_limit": path_limit,
+                    "complete": bool(value.get("complete", True)),
+                    "paths_json": json.dumps(
+                        persistent_paths,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    "updated_at": now,
+                }
+            )
+        if not entries:
+            return
+        query = """
+        UNWIND $expansion_cache_entries AS entry
+        MERGE (cache:GraphExpansionCache {key: entry.key})
+        SET cache.graph_revision = entry.graph_revision,
+            cache.seed_name_key = entry.seed_name_key,
+            cache.seed_type_key = entry.seed_type_key,
+            cache.depth = entry.depth,
+            cache.path_limit = entry.path_limit,
+            cache.complete = entry.complete,
+            cache.paths_json = entry.paths_json,
+            cache.updated_at = entry.updated_at
+        """
+        try:
+            self._run_with_reconnect(
+                lambda session: list(
+                    session.run(
+                        query,
+                        expansion_cache_entries=entries,
+                        timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                    )
+                )
+            )
+        except Exception as e:
+            logger.debug("Neo4j graph persistent multi-hop cache write skipped: %s", e)
+
+    def _persistent_multi_hop_expansion_cache_enabled(self) -> bool:
+        enabled = _optional_bool(self.config.get("persistent_multi_hop_expansion_cache_enabled"))
+        return True if enabled is None else enabled
 
     def _load_multi_hop_expansion_paths(
         self,
@@ -328,10 +559,17 @@ class Neo4jGraphClient:
           RETURN collect({{
             hop: hop,
             rel_ids: [rel_index IN range(0, size(rels) - 1) |
-              {{element_id: elementId(rels[rel_index]), rel_index: rel_index}}]
+              {{
+                element_id: elementId(rels[rel_index]),
+                fact_key: rels[rel_index].fact_key,
+                rel_index: rel_index
+              }}]
           }}) AS paths
         }}
-        RETURN seed_element_id, paths, size(paths) > $path_limit AS incomplete
+        RETURN seed_element_id, paths,
+               seed.name_key AS seed_name_key,
+               seed.type_key AS seed_type_key,
+               size(paths) > $path_limit AS incomplete
         """
         rows = self._run_with_reconnect(
             lambda session: list(
@@ -352,8 +590,167 @@ class Neo4jGraphClient:
             incomplete = bool(_row_value(row, "incomplete", False))
             raw_paths = _row_value(row, "paths", []) or []
             paths = [] if incomplete else _normalized_multi_hop_expansion_paths(raw_paths)
-            loaded[seed_element_id] = {"complete": not incomplete, "paths": paths}
+            seed_identity = _seed_identity(
+                _row_value(row, "seed_name_key"),
+                _row_value(row, "seed_type_key"),
+            )
+            value: dict[str, Any] = {"complete": not incomplete, "paths": paths}
+            if seed_identity is not None:
+                value["seed_identity"] = seed_identity
+            loaded[seed_element_id] = value
         return loaded
+
+    def _prewarm_multi_hop_expansion_cache(
+        self,
+        seed_element_ids: list[str],
+        *,
+        use_persistent_cache: bool = True,
+    ) -> None:
+        normalized_seed_ids = _unique_text_values(seed_element_ids)
+        if not normalized_seed_ids:
+            return
+        max_depth = _retrieval_depth(
+            self.config.get("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
+        )
+        if max_depth <= 1:
+            return
+        seed_limit = _multi_hop_expansion_cache_preload_seed_limit(
+            self.config.get(
+                "multi_hop_expansion_cache_prewarm_seed_limit",
+                self.config.get("multi_hop_expansion_cache_preload_seed_limit"),
+            )
+        )
+        if seed_limit <= 0:
+            return
+        hot_seed_ids = normalized_seed_ids[:seed_limit]
+        max_path_limit = _multi_hop_expansion_cache_path_limit(
+            self.config.get("multi_hop_expansion_cache_path_limit")
+        )
+        path_budget = _multi_hop_expansion_cache_preload_path_limit(
+            self.config.get("multi_hop_expansion_cache_preload_path_limit")
+        )
+        path_limit = min(
+            max_path_limit,
+            max(1, path_budget // len(hot_seed_ids)),
+        )
+        for depth in range(2, max_depth + 1):
+            self._cached_multi_hop_expansion_paths(
+                seed_element_ids=hot_seed_ids,
+                depth=depth,
+                path_limit=path_limit,
+                load_misses=True,
+                use_persistent_cache=use_persistent_cache,
+            )
+
+    def _bump_persistent_graph_revision(self) -> int | None:
+        if self.driver is None:
+            return None
+        query = """
+        MERGE (meta:GraphMetadata {key: $key})
+          ON CREATE SET meta.value = 0
+        SET meta.value = coalesce(meta.value, 0) + 1,
+            meta.updated_at = $updated_at
+        RETURN meta.value AS value
+        """
+        try:
+            rows = self._run_with_reconnect(
+                lambda session: list(
+                    session.run(
+                        query,
+                        key=_GRAPH_REVISION_METADATA_KEY,
+                        updated_at=time.time(),
+                    )
+                )
+            )
+            if rows:
+                return int(_row_value(rows[0], "value", self._graph_revision) or 0)
+        except Exception as e:
+            logger.debug("Neo4j graph revision bump skipped: %s", e)
+        return None
+
+    def _refresh_graph_revision_from_store(self) -> bool:
+        if self.driver is None:
+            return False
+        query = """
+        MATCH (meta:GraphMetadata {key: $key})
+        RETURN meta.value AS value
+        """
+        try:
+            rows = self._run_with_reconnect(
+                lambda session: list(
+                    session.run(
+                        query,
+                        key=_GRAPH_REVISION_METADATA_KEY,
+                        timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                    )
+                )
+            )
+        except Exception as e:
+            logger.debug("Neo4j graph revision refresh skipped: %s", e)
+            return False
+        if not rows:
+            return False
+        try:
+            store_revision = int(_row_value(rows[0], "value", self._graph_revision) or 0)
+        except (TypeError, ValueError):
+            return False
+        if store_revision <= self._graph_revision:
+            return False
+        self._graph_revision = store_revision
+        self._retrieval_cache.clear()
+        return True
+
+    def _prune_persistent_multi_hop_expansion_cache(
+        self,
+        *,
+        current_revision: int,
+    ) -> None:
+        if not self._persistent_multi_hop_expansion_cache_enabled():
+            return
+        query = """
+        MATCH (cache:GraphExpansionCache)
+        WITH cache, properties(cache) AS cache_properties
+        WITH cache,
+             toInteger(cache_properties[$graph_revision_property]) AS cache_graph_revision
+        WHERE cache_graph_revision IS NULL OR cache_graph_revision < $current_revision
+        DELETE cache
+        """
+        try:
+            self._run_with_reconnect(
+                lambda session: list(
+                    session.run(
+                        query,
+                        current_revision=int(current_revision),
+                        graph_revision_property="graph_revision",
+                        timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                    )
+                )
+            )
+        except Exception as e:
+            logger.debug("Neo4j graph persistent multi-hop cache prune skipped: %s", e)
+
+    def _clear_persistent_multi_hop_expansion_cache(self) -> None:
+        if not self._persistent_multi_hop_expansion_cache_enabled():
+            return
+        query = """
+        MATCH (cache:GraphExpansionCache)
+        DELETE cache
+        """
+        try:
+            self._run_with_reconnect(
+                lambda session: list(
+                    session.run(
+                        query,
+                        timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+                    )
+                )
+            )
+        except Exception as e:
+            logger.warning(
+                "Neo4j graph persistent multi-hop cache clear skipped after "
+                "revision bump failure: %s",
+                e,
+            )
 
     def test_connection(self, config: dict[str, Any] | None = None) -> dict:
         cfg = {**self.config, **(config or {}), "enabled": True}
@@ -391,6 +788,12 @@ class Neo4jGraphClient:
             "FOR (source:GraphSource) REQUIRE source.source_id IS UNIQUE",
             "CREATE CONSTRAINT graph_fact_key IF NOT EXISTS "
             "FOR (fact:GraphFact) REQUIRE fact.fact_key IS UNIQUE",
+            "CREATE CONSTRAINT graph_metadata_key IF NOT EXISTS "
+            "FOR (meta:GraphMetadata) REQUIRE meta.key IS UNIQUE",
+            "CREATE CONSTRAINT graph_expansion_cache_key IF NOT EXISTS "
+            "FOR (cache:GraphExpansionCache) REQUIRE cache.key IS UNIQUE",
+            "CREATE INDEX graph_expansion_cache_seed IF NOT EXISTS "
+            "FOR (cache:GraphExpansionCache) ON (cache.seed_name_key, cache.seed_type_key)",
             "CREATE INDEX fact_source_id IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.source_id)",
             "CREATE INDEX fact_updated_at IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.updated_at)",
             "CREATE INDEX fact_predicate IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.predicate)",
@@ -444,6 +847,25 @@ class Neo4jGraphClient:
                         )
                     else:
                         logger.debug("Neo4j graph constraint skipped: %s", e)
+            try:
+                revision_rows = list(
+                    session.run(
+                        """
+                        MERGE (meta:GraphMetadata {key: $key})
+                          ON CREATE SET meta.value = 0,
+                                        meta.updated_at = $updated_at
+                        RETURN meta.value AS value
+                        """,
+                        key=_GRAPH_REVISION_METADATA_KEY,
+                        updated_at=time.time(),
+                    )
+                )
+                if revision_rows:
+                    self._graph_revision = int(
+                        _row_value(revision_rows[0], "value", self._graph_revision) or 0
+                    )
+            except Exception as e:
+                logger.debug("Neo4j graph revision load skipped: %s", e)
         self._constraints_ready = True
         self._fulltext_indexes_ready = fulltext_ready
         self._fulltext_index_unavailable_reason = (
@@ -567,7 +989,7 @@ class Neo4jGraphClient:
             fact_node.predicate = fact.predicate
         MERGE (fact_node)-[:FACT_SUBJECT]->(s)
         MERGE (fact_node)-[:FACT_OBJECT]->(o)
-        WITH r, fact_node, source_ids
+        WITH s, o, r, fact_node, source_ids
         CALL (fact_node, source_ids) {
           UNWIND source_ids AS source_id
           WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
@@ -576,7 +998,9 @@ class Neo4jGraphClient:
           MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)
           RETURN count(*) AS linked_source_count
         }
-        RETURN count(DISTINCT r) AS count
+        RETURN count(DISTINCT r) AS count,
+               collect(DISTINCT elementId(s)) + collect(DISTINCT elementId(o))
+                 AS seed_element_ids
         """
         result = self._run_with_reconnect(
             lambda session: list(
@@ -589,7 +1013,15 @@ class Neo4jGraphClient:
         )
         count = _result_count(result, len(rows))
         if count > 0:
-            self._bump_graph_revision()
+            seed_element_ids = _result_seed_element_ids(result)
+            use_persistent_cache = self._bump_graph_revision()
+            try:
+                self._prewarm_multi_hop_expansion_cache(
+                    seed_element_ids,
+                    use_persistent_cache=use_persistent_cache,
+                )
+            except Exception as e:
+                logger.debug("Neo4j graph multi-hop cache prewarm skipped: %s", e)
         return count
 
     def retrieve_context(
@@ -611,10 +1043,39 @@ class Neo4jGraphClient:
         self.initialize()
         if self.driver is None:
             return ""
+        self._refresh_graph_revision_from_store()
         term_rows = _query_term_rows(query)
         terms = [str(row["term"]) for row in term_rows]
+        multihop_seed_count = 0
+        multihop_cache_hit = False
+        multihop_cached_seed_count = 0
+        multihop_live_seed_limit = 0
+        multihop_partial_cache_hit = False
+        multihop_persistent_cache_hit_count = 0
         if not terms and not source_ids:
             _record_timing(timings, "graph_total_ms", started_at)
+            _record_count(timings, "graph_multihop_seed_count", multihop_seed_count)
+            _set_bool(timings, "graph_multihop_cache_hit", multihop_cache_hit)
+            _record_count(
+                timings,
+                "graph_multihop_cached_seed_count",
+                multihop_cached_seed_count,
+            )
+            _record_count(
+                timings,
+                "graph_multihop_live_seed_limit",
+                multihop_live_seed_limit,
+            )
+            _set_bool(
+                timings,
+                "graph_multihop_partial_cache_hit",
+                multihop_partial_cache_hit,
+            )
+            _record_count(
+                timings,
+                "graph_multihop_persistent_cache_hit_count",
+                multihop_persistent_cache_hit_count,
+            )
             return ""
         depth = _retrieval_depth(retrieval_depth)
         policy = _ranking_policy(ranking_policy)
@@ -635,6 +1096,8 @@ class Neo4jGraphClient:
             self.config.get("multi_hop_expansion_cache_preload_path_limit")
         )
         seed_limit = max(query_limit, expansion_query_limit)
+        live_seed_limit = seed_limit if depth > 1 else 0
+        multihop_live_seed_limit = live_seed_limit
         fulltext_query = _fulltext_query(terms) if self._fulltext_indexes_ready else ""
         if terms and not self._fulltext_indexes_ready:
             logger.warning(
@@ -670,6 +1133,28 @@ class Neo4jGraphClient:
             _set_bool(timings, "graph_used_fulltext", bool(fulltext_query))
             _set_bool(timings, "graph_used_scan_fallback", False)
             _set_bool(timings, "graph_cache_hit", True)
+            _record_count(timings, "graph_multihop_seed_count", multihop_seed_count)
+            _set_bool(timings, "graph_multihop_cache_hit", multihop_cache_hit)
+            _record_count(
+                timings,
+                "graph_multihop_cached_seed_count",
+                multihop_cached_seed_count,
+            )
+            _record_count(
+                timings,
+                "graph_multihop_live_seed_limit",
+                multihop_live_seed_limit,
+            )
+            _set_bool(
+                timings,
+                "graph_multihop_partial_cache_hit",
+                multihop_partial_cache_hit,
+            )
+            _record_count(
+                timings,
+                "graph_multihop_persistent_cache_hit_count",
+                multihop_persistent_cache_hit_count,
+            )
             return str(cached_context)
         _set_bool(timings, "graph_cache_hit", False)
         fulltext_seed_rows = self._cached_fulltext_seed_rows(fulltext_query, seed_limit)
@@ -677,6 +1162,7 @@ class Neo4jGraphClient:
         fact_seed_rows = fulltext_seed_rows["fact_seed_rows"]
         cached_expansion_paths: list[dict[str, Any]] = []
         cached_expansion_seed_rows: list[dict[str, Any]] = []
+        cached_expansion_seed_ids: list[str] = []
         single_hop_order_by = (
             "ORDER BY structural_role ASC, r.updated_at DESC"
             if policy == "latest"
@@ -886,8 +1372,10 @@ class Neo4jGraphClient:
           RETURN seed, coalesce(toFloat(fact_seed.score), 0.0) AS seed_score
         }}
         WITH seed, max(seed_score) AS seed_score
+        WHERE size($cached_expansion_seed_ids) = 0
+           OR NOT elementId(seed) IN $cached_expansion_seed_ids
         ORDER BY seed_score DESC
-        LIMIT $seed_limit
+        LIMIT $live_seed_limit
         MATCH path = (seed)-[:FACT*1..{depth}]-(o:Entity)
         WITH path, relationships(path) AS rels, length(path) AS hop, seed_score
         WHERE hop > 1
@@ -961,8 +1449,10 @@ class Neo4jGraphClient:
           RETURN seed, 3.0 + source_vector_score * 2.0 AS seed_score
         }}
         WITH seed, max(seed_score) AS seed_score
+        WHERE size($cached_expansion_seed_ids) = 0
+           OR NOT elementId(seed) IN $cached_expansion_seed_ids
         ORDER BY seed_score DESC
-        LIMIT $seed_limit
+        LIMIT $live_seed_limit
         MATCH path = (seed)-[:FACT*1..{depth}]-(o:Entity)
         WITH path, relationships(path) AS rels, length(path) AS hop, seed_score
         WHERE hop > 1
@@ -1129,41 +1619,7 @@ class Neo4jGraphClient:
         {multi_hop_edge_order_by}
         """
 
-            if fulltext_query or not terms:
-                expansion_cache_seed_probe_limit = min(
-                    seed_limit,
-                    expansion_cache_preload_seed_limit + 1,
-                )
-                cached_expansion_seed_rows = self._multi_hop_seed_rows(
-                    source_ids=source_ids or [],
-                    source_score_rows=source_score_rows,
-                    entity_seed_rows=entity_seed_rows,
-                    fact_seed_rows=fact_seed_rows,
-                    seed_limit=expansion_cache_seed_probe_limit,
-                )
-                if (
-                    cached_expansion_seed_rows
-                    and len(cached_expansion_seed_rows) <= expansion_cache_preload_seed_limit
-                ):
-                    preload_path_limit = min(
-                        expansion_cache_path_limit,
-                        max(
-                            1,
-                            expansion_cache_preload_path_limit // len(cached_expansion_seed_rows),
-                        ),
-                    )
-                    cached_expansion_paths, expansion_cache_complete = (
-                        self._cached_multi_hop_expansion_paths(
-                            seed_element_ids=[
-                                str(row["element_id"]) for row in cached_expansion_seed_rows
-                            ],
-                            depth=depth,
-                            path_limit=preload_path_limit,
-                            load_misses=True,
-                        )
-                    )
-                    if expansion_cache_complete:
-                        multi_hop_seed_cypher = """
+            cached_multi_hop_seed_cypher = """
         UNWIND $cached_expansion_paths AS cached_path
         WITH cached_path,
              reduce(seed_score = 0.0, seed_row IN $cached_expansion_seed_rows |
@@ -1176,7 +1632,8 @@ class Neo4jGraphClient:
         WHERE size(coalesce(cached_path.rel_ids, [])) > 1
         UNWIND cached_path.rel_ids AS rel_ref
         MATCH ()-[rel:FACT]->()
-        WHERE elementId(rel) = rel_ref.element_id
+        WHERE (rel_ref.element_id IS NOT NULL AND elementId(rel) = rel_ref.element_id)
+           OR (rel_ref.fact_key IS NOT NULL AND rel.fact_key = rel_ref.fact_key)
         WITH cached_path.path_key AS path_key,
              coalesce(toInteger(cached_path.hop), size(cached_path.rel_ids)) AS hop,
              seed_score,
@@ -1186,6 +1643,99 @@ class Neo4jGraphClient:
         WITH path_key, hop, seed_score, collect(rel) AS rels
         WHERE hop > 1 AND size(rels) = hop
                     """
+
+            def build_cached_plus_live_multi_hop_seed_cypher(live_seed_cypher: str) -> str:
+                return f"""
+        CALL {{
+          {cached_multi_hop_seed_cypher}
+          RETURN rels, hop, seed_score
+          UNION
+          {live_seed_cypher}
+          RETURN rels, hop, seed_score
+        }}
+                """
+
+            if fulltext_query or not terms:
+                expansion_cache_seed_probe_limit = min(
+                    seed_limit,
+                    expansion_cache_preload_seed_limit + 1,
+                )
+                cached_expansion_seed_rows = self._multi_hop_seed_rows(
+                    source_ids=source_ids or [],
+                    source_score_rows=source_score_rows,
+                    entity_seed_rows=entity_seed_rows,
+                    fact_seed_rows=fact_seed_rows,
+                    seed_limit=expansion_cache_seed_probe_limit,
+                )
+                multihop_seed_count = len(cached_expansion_seed_rows)
+                if cached_expansion_seed_rows:
+                    cacheable_seed_rows = (
+                        cached_expansion_seed_rows[:expansion_cache_preload_seed_limit]
+                        if expansion_cache_preload_seed_limit > 0
+                        else []
+                    )
+                    cacheable_seed_ids = [str(row["element_id"]) for row in cacheable_seed_rows]
+                    seed_overflow = len(cached_expansion_seed_rows) > len(cacheable_seed_rows)
+                else:
+                    cacheable_seed_rows = []
+                    cacheable_seed_ids = []
+                    seed_overflow = False
+                if cacheable_seed_rows:
+                    hot_paths, hot_complete, hot_stats = self._cached_multi_hop_expansion_paths(
+                        seed_element_ids=cacheable_seed_ids,
+                        depth=depth,
+                        path_limit=expansion_cache_path_limit,
+                        load_misses=False,
+                    )
+                    multihop_persistent_cache_hit_count += hot_stats["persistent_hit_count"]
+                    if hot_complete:
+                        cached_expansion_paths = hot_paths
+                        cached_expansion_seed_rows = cacheable_seed_rows
+                        cached_expansion_seed_ids = cacheable_seed_ids
+                        if seed_overflow:
+                            multi_hop_seed_cypher = build_cached_plus_live_multi_hop_seed_cypher(
+                                multi_hop_seed_cypher
+                            )
+                        else:
+                            multi_hop_seed_cypher = cached_multi_hop_seed_cypher
+                            multihop_cache_hit = True
+                    else:
+                        preload_path_limit = min(
+                            expansion_cache_path_limit,
+                            max(
+                                1,
+                                expansion_cache_preload_path_limit // len(cacheable_seed_rows),
+                            ),
+                        )
+                        cached_expansion_paths, expansion_cache_complete, load_stats = (
+                            self._cached_multi_hop_expansion_paths(
+                                seed_element_ids=cacheable_seed_ids,
+                                depth=depth,
+                                path_limit=preload_path_limit,
+                                load_misses=True,
+                            )
+                        )
+                        multihop_persistent_cache_hit_count += load_stats["persistent_hit_count"]
+                        if expansion_cache_complete:
+                            cached_expansion_seed_rows = cacheable_seed_rows
+                            cached_expansion_seed_ids = cacheable_seed_ids
+                            if seed_overflow:
+                                multi_hop_seed_cypher = (
+                                    build_cached_plus_live_multi_hop_seed_cypher(
+                                        multi_hop_seed_cypher
+                                    )
+                                )
+                            else:
+                                multi_hop_seed_cypher = cached_multi_hop_seed_cypher
+                                multihop_cache_hit = load_stats["loaded_count"] == 0
+
+                if cached_expansion_seed_ids:
+                    live_seed_limit = (
+                        max(0, seed_limit - len(cached_expansion_seed_ids)) if seed_overflow else 0
+                    )
+                    multihop_cached_seed_count = len(cached_expansion_seed_ids)
+                    multihop_partial_cache_hit = bool(seed_overflow)
+                multihop_live_seed_limit = live_seed_limit
 
             cypher = build_multi_hop_cypher(multi_hop_seed_cypher)
             if multi_hop_scan_seed_cypher:
@@ -1201,11 +1751,13 @@ class Neo4jGraphClient:
                     fact_seed_rows=fact_seed_rows,
                     cached_expansion_paths=cached_expansion_paths,
                     cached_expansion_seed_rows=cached_expansion_seed_rows,
+                    cached_expansion_seed_ids=cached_expansion_seed_ids,
                     terms=terms,
                     term_rows=term_rows,
                     fulltext_query=fulltext_query,
                     limit=limit,
                     seed_limit=seed_limit,
+                    live_seed_limit=live_seed_limit,
                     ranking_policy=policy,
                     entity_text_index=_ENTITY_FULLTEXT_INDEX,
                     fact_text_index=_FACT_FULLTEXT_INDEX,
@@ -1353,13 +1905,38 @@ class Neo4jGraphClient:
         _record_timing(timings, "graph_format_ms", format_started_at)
         _record_count(timings, "graph_rows", len(rows))
         _record_count(timings, "graph_returned_facts", len(lines))
+        _record_count(timings, "graph_multihop_seed_count", multihop_seed_count)
         _set_bool(timings, "graph_used_fulltext", bool(fulltext_query))
         _set_bool(timings, "graph_used_scan_fallback", used_scan_fallback)
+        _set_bool(timings, "graph_multihop_cache_hit", multihop_cache_hit)
+        _record_count(
+            timings,
+            "graph_multihop_cached_seed_count",
+            multihop_cached_seed_count,
+        )
+        _record_count(
+            timings,
+            "graph_multihop_live_seed_limit",
+            multihop_live_seed_limit,
+        )
+        _set_bool(
+            timings,
+            "graph_multihop_partial_cache_hit",
+            multihop_partial_cache_hit,
+        )
+        _record_count(
+            timings,
+            "graph_multihop_persistent_cache_hit_count",
+            multihop_persistent_cache_hit_count,
+        )
         _record_timing(timings, "graph_total_ms", started_at)
         logger.info(
             "Neo4j graph retrieval done: elapsed_ms=%.1f depth=%d max_facts=%d "
             "source_ids_count=%d row_count=%d returned_facts=%d used_fulltext=%s "
-            "used_scan_fallback=%s ranking_policy=%s",
+            "used_scan_fallback=%s ranking_policy=%s graph_multihop_seed_count=%d "
+            "graph_multihop_cache_hit=%s graph_multihop_cached_seed_count=%d "
+            "graph_multihop_live_seed_limit=%d graph_multihop_partial_cache_hit=%s "
+            "graph_multihop_persistent_cache_hit_count=%d",
             (time.perf_counter() - started_at) * 1000,
             depth,
             query_limit,
@@ -1369,6 +1946,12 @@ class Neo4jGraphClient:
             bool(fulltext_query),
             used_scan_fallback,
             policy,
+            multihop_seed_count,
+            multihop_cache_hit,
+            multihop_cached_seed_count,
+            multihop_live_seed_limit,
+            multihop_partial_cache_hit,
+            multihop_persistent_cache_hit_count,
         )
         context = format_graph_context(lines)
         self._retrieval_cache.set("final_context", final_cache_key, context)
@@ -1400,6 +1983,76 @@ def _default_driver_factory(uri: str, auth: tuple[str, str]):
     except ImportError as e:
         raise RuntimeError("neo4j package is required for graph knowledge") from e
     return GraphDatabase.driver(uri, auth=auth)
+
+
+def _result_seed_element_ids(result: list[Any]) -> list[str]:
+    seed_element_ids: list[str] = []
+    for row in result:
+        raw_values = _row_value(row, "seed_element_ids", []) or []
+        if not isinstance(raw_values, list):
+            continue
+        seed_element_ids.extend(str(value or "").strip() for value in raw_values)
+    return _unique_text_values(seed_element_ids)
+
+
+def _seed_identity(name_key: Any, type_key: Any) -> dict[str, str] | None:
+    normalized_name_key = str(name_key or "").strip()
+    normalized_type_key = str(type_key or "").strip()
+    if not normalized_name_key or not normalized_type_key:
+        return None
+    return {"name_key": normalized_name_key, "type_key": normalized_type_key}
+
+
+def _seed_identity_from_value(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    return _seed_identity(value.get("name_key"), value.get("type_key"))
+
+
+def _persistent_multi_hop_expansion_paths(paths: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(paths, list):
+        return None
+    normalized_paths = _normalized_multi_hop_expansion_paths(paths)
+    if len(normalized_paths) != len(paths):
+        return None
+    persistent_paths: list[dict[str, Any]] = []
+    for path in normalized_paths:
+        rel_refs = []
+        for rel_ref in path.get("rel_ids", []):
+            fact_key = str(_row_value(rel_ref, "fact_key") or "").strip()
+            if not fact_key:
+                return None
+            rel_refs.append(
+                {
+                    "fact_key": fact_key,
+                    "rel_index": _row_int(rel_ref, "rel_index", len(rel_refs)),
+                }
+            )
+        if len(rel_refs) != int(path.get("hop", 0)):
+            return None
+        persistent_paths.append({"hop": path["hop"], "rel_ids": rel_refs})
+    return persistent_paths
+
+
+def _persistent_multi_hop_expansion_cache_key(
+    *,
+    revision: int,
+    seed_identity: dict[str, str],
+    depth: int,
+    path_limit: int,
+) -> str:
+    key = (
+        _PERSISTENT_MULTI_HOP_EXPANSION_CACHE_VERSION,
+        int(revision),
+        str(seed_identity["name_key"]),
+        str(seed_identity["type_key"]),
+        int(depth),
+        "variable_length",
+        ("FACT",),
+        "undirected",
+        int(path_limit),
+    )
+    return json.dumps(key, ensure_ascii=False, separators=(",", ":"))
 
 
 def _fulltext_index_name(statement: str) -> str:

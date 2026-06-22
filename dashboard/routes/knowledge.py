@@ -373,10 +373,23 @@ def _graph_retrieval_diagnostics(
     ):
         if key in timings:
             diagnostics[key] = _float_diagnostic(timings[key])
-    for key in ("graph_rows", "graph_returned_facts"):
+    for key in (
+        "graph_rows",
+        "graph_returned_facts",
+        "graph_multihop_seed_count",
+        "graph_multihop_cached_seed_count",
+        "graph_multihop_live_seed_limit",
+        "graph_multihop_persistent_cache_hit_count",
+    ):
         if key in timings:
             diagnostics[key] = _int_diagnostic(timings[key])
-    for key in ("graph_cache_hit", "graph_used_fulltext", "graph_used_scan_fallback"):
+    for key in (
+        "graph_cache_hit",
+        "graph_used_fulltext",
+        "graph_used_scan_fallback",
+        "graph_multihop_cache_hit",
+        "graph_multihop_partial_cache_hit",
+    ):
         if key in timings:
             diagnostics[key] = bool(timings[key])
     diagnostics.update(

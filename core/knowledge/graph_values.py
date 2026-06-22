@@ -18,7 +18,7 @@ _VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
 
 _DEFAULT_MULTIHOP_EXPANSION_CACHE_PATH_LIMIT = GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT
 
-_DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT = 4
+_DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT = 64
 
 _DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT = 200
 
@@ -93,7 +93,7 @@ def _multi_hop_expansion_cache_preload_seed_limit(value: Any) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         parsed = _DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT
-    return max(0, min(16, parsed))
+    return max(0, min(128, parsed))
 
 
 def _multi_hop_expansion_cache_preload_path_limit(value: Any) -> int:

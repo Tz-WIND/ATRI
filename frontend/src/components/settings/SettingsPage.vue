@@ -1079,6 +1079,32 @@ const graphQueryDiagnosticItems = computed(() => {
     { label: 'Format', value: graphDiagnosticMs(diagnostics.graph_format_ms) },
     { label: 'Rows', value: graphDiagnosticCount(diagnostics.graph_rows) },
     { label: 'Facts', value: graphDiagnosticCount(diagnostics.graph_returned_facts) },
+    { label: 'Seeds', value: graphDiagnosticCount(diagnostics.graph_multihop_seed_count) },
+    {
+      label: 'Cached Seeds',
+      value: graphDiagnosticCount(diagnostics.graph_multihop_cached_seed_count),
+    },
+    {
+      label: 'Live Seeds',
+      value: graphDiagnosticCount(diagnostics.graph_multihop_live_seed_limit),
+    },
+    {
+      label: 'Multi Cache',
+      value: graphDiagnosticFlag(diagnostics.graph_multihop_cache_hit),
+      active: diagnostics.graph_multihop_cache_hit === true,
+      muted: diagnostics.graph_multihop_cache_hit === false,
+    },
+    {
+      label: 'Partial Cache',
+      value: graphDiagnosticFlag(diagnostics.graph_multihop_partial_cache_hit),
+      active: diagnostics.graph_multihop_partial_cache_hit === true,
+      muted: diagnostics.graph_multihop_partial_cache_hit === false,
+    },
+    {
+      label: 'Persistent',
+      value: graphDiagnosticCount(diagnostics.graph_multihop_persistent_cache_hit_count),
+      active: Number(diagnostics.graph_multihop_persistent_cache_hit_count || 0) > 0,
+    },
     {
       label: 'Cache',
       value: graphDiagnosticFlag(diagnostics.graph_cache_hit),

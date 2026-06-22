@@ -855,6 +855,12 @@ async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
                         "graph_format_ms": 1.2,
                         "graph_rows": 2,
                         "graph_returned_facts": 2,
+                        "graph_multihop_seed_count": 6,
+                        "graph_multihop_cache_hit": True,
+                        "graph_multihop_cached_seed_count": 4,
+                        "graph_multihop_live_seed_limit": 36,
+                        "graph_multihop_partial_cache_hit": True,
+                        "graph_multihop_persistent_cache_hit_count": 2,
                     }
                 )
             return context
@@ -898,6 +904,12 @@ async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
         "graph_format_ms=1.2",
         "vector_hits=1",
         "graph_rows=2",
+        "graph_multihop_seed_count=6",
+        "graph_multihop_cache_hit=True",
+        "graph_multihop_cached_seed_count=4",
+        "graph_multihop_live_seed_limit=36",
+        "graph_multihop_partial_cache_hit=True",
+        "graph_multihop_persistent_cache_hit_count=2",
         "graph_retry=False",
     ):
         assert field in caplog.text
@@ -919,6 +931,12 @@ async def test_process_stage_passes_graph_timings_to_var_keyword_manager(caplog)
                         "graph_format_ms": 1.1,
                         "graph_rows": 4,
                         "graph_returned_facts": 2,
+                        "graph_multihop_seed_count": 3,
+                        "graph_multihop_cache_hit": False,
+                        "graph_multihop_cached_seed_count": 1,
+                        "graph_multihop_live_seed_limit": 39,
+                        "graph_multihop_partial_cache_hit": False,
+                        "graph_multihop_persistent_cache_hit_count": 0,
                     }
                 )
             return context
@@ -947,6 +965,11 @@ async def test_process_stage_passes_graph_timings_to_var_keyword_manager(caplog)
     assert "graph_total_ms=31.2" in caplog.text
     assert "graph_single_hop_ms=7.8" in caplog.text
     assert "graph_rows=4" in caplog.text
+    assert "graph_multihop_seed_count=3" in caplog.text
+    assert "graph_multihop_cache_hit=False" in caplog.text
+    assert "graph_multihop_cached_seed_count=1" in caplog.text
+    assert "graph_multihop_live_seed_limit=39" in caplog.text
+    assert "graph_multihop_partial_cache_hit=False" in caplog.text
 
 
 @pytest.mark.asyncio

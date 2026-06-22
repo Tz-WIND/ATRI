@@ -135,6 +135,12 @@ class _FakeGraphManager:
                     "graph_cache_hit": False,
                     "graph_used_fulltext": True,
                     "graph_used_scan_fallback": False,
+                    "graph_multihop_seed_count": 9,
+                    "graph_multihop_cache_hit": True,
+                    "graph_multihop_cached_seed_count": 7,
+                    "graph_multihop_live_seed_limit": 33,
+                    "graph_multihop_partial_cache_hit": True,
+                    "graph_multihop_persistent_cache_hit_count": 5,
                 }
             )
         self.retrieve_calls.append(
@@ -639,6 +645,12 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
             "graph_cache_hit": False,
             "graph_used_fulltext": True,
             "graph_used_scan_fallback": False,
+            "graph_multihop_seed_count": 9,
+            "graph_multihop_cache_hit": True,
+            "graph_multihop_cached_seed_count": 7,
+            "graph_multihop_live_seed_limit": 33,
+            "graph_multihop_partial_cache_hit": True,
+            "graph_multihop_persistent_cache_hit_count": 5,
             "max_facts": 4,
             "retrieval_depth": 7,
             "ranking_policy": "relevance",

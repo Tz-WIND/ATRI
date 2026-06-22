@@ -826,7 +826,10 @@ class ProcessStage(Stage):
                 "vector_limit_ms=%.1f graph_total_ms=%.1f graph_wall_ms=%.1f "
                 "graph_single_hop_ms=%.1f graph_multi_hop_ms=%.1f "
                 "graph_scan_fallback_ms=%.1f graph_format_ms=%.1f vector_hits=%d "
-                "graph_rows=%d graph_returned_facts=%d graph_retry=%s retrieval_mode=%s "
+                "graph_rows=%d graph_returned_facts=%d graph_multihop_seed_count=%d "
+                "graph_multihop_cache_hit=%s graph_multihop_cached_seed_count=%d "
+                "graph_multihop_live_seed_limit=%d graph_multihop_partial_cache_hit=%s "
+                "graph_multihop_persistent_cache_hit_count=%d graph_retry=%s retrieval_mode=%s "
                 "vector_enabled=%s graph_enabled=%s",
                 total_elapsed_ms,
                 _timing_float(vector_timings, "vector_total_ms", vector_elapsed_ms),
@@ -846,6 +849,15 @@ class ProcessStage(Stage):
                 _timing_int(vector_timings, "vector_returned_hits", vector_results_count),
                 _timing_int(graph_combined_timings, "graph_rows"),
                 _timing_int(graph_combined_timings, "graph_returned_facts"),
+                _timing_int(graph_combined_timings, "graph_multihop_seed_count"),
+                _timing_bool(graph_combined_timings, "graph_multihop_cache_hit"),
+                _timing_int(graph_combined_timings, "graph_multihop_cached_seed_count"),
+                _timing_int(graph_combined_timings, "graph_multihop_live_seed_limit"),
+                _timing_bool(graph_combined_timings, "graph_multihop_partial_cache_hit"),
+                _timing_int(
+                    graph_combined_timings,
+                    "graph_multihop_persistent_cache_hit_count",
+                ),
                 graph_retry,
                 retrieval_mode,
                 vector_enabled,
@@ -1804,7 +1816,18 @@ def _combine_graph_timings(*timing_sets: dict[str, Any]) -> dict[str, Any]:
         "graph_scan_fallback_ms",
         "graph_format_ms",
     }
-    additive_int_keys = {"graph_rows", "graph_returned_facts"}
+    additive_int_keys = {
+        "graph_rows",
+        "graph_returned_facts",
+        "graph_multihop_seed_count",
+        "graph_multihop_cached_seed_count",
+        "graph_multihop_live_seed_limit",
+        "graph_multihop_persistent_cache_hit_count",
+    }
+    any_bool_keys = {
+        "graph_multihop_cache_hit",
+        "graph_multihop_partial_cache_hit",
+    }
     for timings in timing_sets:
         for key in additive_float_keys:
             if key in timings:
@@ -1812,6 +1835,9 @@ def _combine_graph_timings(*timing_sets: dict[str, Any]) -> dict[str, Any]:
         for key in additive_int_keys:
             if key in timings:
                 combined[key] = _timing_int(combined, key) + _timing_int(timings, key)
+        for key in any_bool_keys:
+            if key in timings:
+                combined[key] = _timing_bool(combined, key) or _timing_bool(timings, key)
     return combined
 
 
@@ -1827,6 +1853,13 @@ def _timing_int(timings: dict[str, Any], key: str, default: int = 0) -> int:
         return int(timings.get(key, default))
     except (TypeError, ValueError):
         return int(default)
+
+
+def _timing_bool(timings: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = timings.get(key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _planned_graph_retrieval_options(query: str, graph_cfg: dict) -> dict[str, Any]:

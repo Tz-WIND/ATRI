@@ -198,14 +198,17 @@ def _normalized_multi_hop_expansion_path(path: Any) -> dict[str, Any] | None:
     rel_refs: list[dict[str, Any]] = []
     for fallback_index, rel_ref in enumerate(rel_ids):
         element_id = str(_row_value(rel_ref, "element_id") or "").strip()
-        if not element_id:
+        fact_key = str(_row_value(rel_ref, "fact_key") or "").strip()
+        if not element_id and not fact_key:
             continue
-        rel_refs.append(
-            {
-                "element_id": element_id,
-                "rel_index": _row_int(rel_ref, "rel_index", fallback_index),
-            }
-        )
+        normalized_ref: dict[str, Any] = {
+            "rel_index": _row_int(rel_ref, "rel_index", fallback_index),
+        }
+        if element_id:
+            normalized_ref["element_id"] = element_id
+        if fact_key:
+            normalized_ref["fact_key"] = fact_key
+        rel_refs.append(normalized_ref)
     rel_refs.sort(key=lambda ref: int(ref["rel_index"]))
     if len(rel_refs) != hop:
         return None

@@ -53,6 +53,13 @@ def test_graph_module_split_keeps_compatibility_imports():
     assert _format_retrieved_fact_lines([], depth=1, limit=3) == []
 
 
+def test_default_multihop_expansion_cache_preload_seed_limit_is_64():
+    from core.knowledge.graph_values import _multi_hop_expansion_cache_preload_seed_limit
+
+    assert _multi_hop_expansion_cache_preload_seed_limit(None) == 64
+    assert _multi_hop_expansion_cache_preload_seed_limit(999) == 128
+
+
 def test_build_extraction_prompt_documents_segmented_input():
     prompt = build_extraction_prompt("document")
 
@@ -1371,6 +1378,8 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
     assert "CREATE INDEX fact_updated_at IF NOT EXISTS" in queries
     assert "CREATE FULLTEXT INDEX entity_text IF NOT EXISTS" in queries
     assert "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS" in queries
+    assert "GraphExpansionCache" in queries
+    assert "GraphMetadata" in queries
     assert (
         "MERGE (s:Entity {name_key: fact.subject_key, type_key: fact.subject_type_key})" in queries
     )
@@ -2198,6 +2207,8 @@ def test_neo4j_graph_client_logs_retrieval_metrics(caplog):
     assert "row_count=" in caplog.text
     assert "returned_facts=" in caplog.text
     assert "used_fulltext=True" in caplog.text
+    assert "graph_multihop_seed_count=" in caplog.text
+    assert "graph_multihop_cache_hit=" in caplog.text
 
 
 def test_neo4j_graph_client_records_retrieval_timing_segments():
@@ -2234,6 +2245,12 @@ def test_neo4j_graph_client_records_retrieval_timing_segments():
     assert timings["graph_rows"] >= 1
     assert timings["graph_returned_facts"] >= 1
     assert timings["graph_used_fulltext"] is True
+    assert timings["graph_multihop_seed_count"] == 0
+    assert timings["graph_multihop_cache_hit"] is False
+    assert timings["graph_multihop_cached_seed_count"] == 0
+    assert timings["graph_multihop_live_seed_limit"] == 40
+    assert timings["graph_multihop_partial_cache_hit"] is False
+    assert timings["graph_multihop_persistent_cache_hit_count"] == 0
 
 
 def test_neo4j_graph_client_reuses_final_context_cache_until_graph_revision_changes():
@@ -2289,6 +2306,324 @@ def test_neo4j_graph_client_reuses_final_context_cache_until_graph_revision_chan
     )
 
     assert len(_retrieve_calls(driver.session_obj.calls)) > retrieve_count
+
+
+def test_neo4j_graph_client_refreshes_external_revision_before_final_context_cache_hit():
+    class ExternalRevisionSession(FakeNeo4jSession):
+        def __init__(self):
+            super().__init__()
+            self.graph_revision = 0
+
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "GraphMetadata" in query and "RETURN meta.value AS value" in query:
+                return [{"value": self.graph_revision}]
+            if "RETURN s.name AS subject" in query:
+                if self.graph_revision == 0:
+                    return [
+                        {
+                            "subject": "Alice",
+                            "subject_type": "Person",
+                            "predicate": "works_at",
+                            "object": "Acme",
+                            "object_type": "Company",
+                            "evidence": "Alice works at Acme.",
+                            "confidence": 0.9,
+                        }
+                    ]
+                return [
+                    {
+                        "subject": "Bob",
+                        "subject_type": "Person",
+                        "predicate": "uses",
+                        "object": "Redis",
+                        "object_type": "Tool",
+                        "evidence": "Bob uses Redis.",
+                        "confidence": 0.8,
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ExternalRevisionSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    first_context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=1,
+        retrieval_depth=1,
+    )
+    retrieve_count = len(_retrieve_calls(driver.session_obj.calls))
+
+    driver.session_obj.graph_revision = 1
+    second_context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=1,
+        retrieval_depth=1,
+    )
+
+    assert first_context == format_graph_context(
+        ["- Alice -[works_at]-> Acme (Alice works at Acme.)"]
+    )
+    assert second_context == format_graph_context(["- Bob -[uses]-> Redis (Bob uses Redis.)"])
+    assert len(_retrieve_calls(driver.session_obj.calls)) > retrieve_count
+    assert client._graph_revision == 1
+
+
+def test_neo4j_graph_client_atomically_increments_graph_revision_across_clients():
+    class SharedRevisionSession(FakeNeo4jSession):
+        def __init__(self):
+            super().__init__()
+            self.graph_revision = 0
+
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if (
+                "MERGE (meta:GraphMetadata {key: $key})" in query
+                and "RETURN meta.value AS value" in query
+            ):
+                if "coalesce(meta.value, 0) + 1" in query:
+                    self.graph_revision += 1
+                return [{"value": self.graph_revision}]
+            if "MERGE (meta:GraphMetadata {key: $key})" in query and "value" in params:
+                self.graph_revision = int(params["value"])
+                return []
+            if "facts" in params:
+                return [{"count": 1, "seed_element_ids": ["seed-alice"]}]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = SharedRevisionSession()
+    config = {
+        "enabled": True,
+        "uri": "bolt://localhost:7687",
+        "username": "neo4j",
+        "password": "secret",
+        "database": "atri",
+        "multi_hop_expansion_cache_prewarm_seed_limit": 0,
+    }
+    first_client = Neo4jGraphClient(config, driver_factory=lambda uri, auth: driver)
+    second_client = Neo4jGraphClient(config, driver_factory=lambda uri, auth: driver)
+    first_fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-revision-1",
+        source_kind="document",
+    )[0]
+    second_fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Bob",
+                "subject_type": "Person",
+                "predicate": "uses",
+                "object": "Neo4j",
+                "object_type": "Tool",
+            }
+        ],
+        source_id="chunk-revision-2",
+        source_kind="document",
+    )[0]
+
+    first_client.initialize()
+    second_client.initialize()
+    assert first_client._graph_revision == 0
+    assert second_client._graph_revision == 0
+
+    first_client.upsert_facts([first_fact])
+    second_client.upsert_facts([second_fact])
+
+    assert driver.session_obj.graph_revision == 2
+    assert first_client._graph_revision == 1
+    assert second_client._graph_revision == 2
+
+
+def test_neo4j_graph_client_prunes_stale_persistent_expansion_cache_after_revision_bump():
+    class StaleExpansionCacheSession(FakeNeo4jSession):
+        def __init__(self):
+            super().__init__()
+            self.graph_revision = 1
+            self.persistent_cache: dict[str, dict[str, Any]] = {
+                "revision-0": {"key": "revision-0", "graph_revision": 0},
+                "revision-1": {"key": "revision-1", "graph_revision": 1},
+                "revision-2": {"key": "revision-2", "graph_revision": 2},
+            }
+
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if (
+                "MERGE (meta:GraphMetadata {key: $key})" in query
+                and "RETURN meta.value AS value" in query
+            ):
+                if "coalesce(meta.value, 0) + 1" in query:
+                    self.graph_revision += 1
+                return [{"value": self.graph_revision}]
+            if "MATCH (cache:GraphExpansionCache)" in query and "DELETE cache" in query:
+                current_revision = int(params["current_revision"])
+                self.persistent_cache = {
+                    key: value
+                    for key, value in self.persistent_cache.items()
+                    if int(value.get("graph_revision", -1)) >= current_revision
+                }
+                return []
+            if "facts" in params:
+                return [{"count": 1, "seed_element_ids": ["seed-alice"]}]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = StaleExpansionCacheSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+            "multi_hop_expansion_cache_prewarm_seed_limit": 0,
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-prune-cache",
+        source_kind="document",
+    )[0]
+
+    client.initialize()
+    client.upsert_facts([fact])
+
+    prune_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "MATCH (cache:GraphExpansionCache)" in call["query"] and "DELETE cache" in call["query"]
+    ]
+    assert client._graph_revision == 2
+    assert list(driver.session_obj.persistent_cache) == ["revision-2"]
+    assert prune_calls
+    assert prune_calls[0]["params"]["current_revision"] == 2
+    assert prune_calls[0]["params"]["graph_revision_property"] == "graph_revision"
+    assert "properties(cache)" in prune_calls[0]["query"]
+    assert ".graph_revision" not in prune_calls[0]["query"]
+
+
+def test_neo4j_graph_client_clears_and_skips_persistent_prewarm_when_revision_bump_fails():
+    class FailedRevisionBumpSession(FakeNeo4jSession):
+        def __init__(self):
+            super().__init__()
+            self.graph_revision = 0
+            self.persistent_cache: dict[str, dict[str, Any]] = {
+                "stale": {"key": "stale", "graph_revision": 0}
+            }
+            self.persistent_writes: list[dict[str, Any]] = []
+
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if (
+                "MERGE (meta:GraphMetadata {key: $key})" in query
+                and "RETURN meta.value AS value" in query
+            ):
+                if "coalesce(meta.value, 0) + 1" in query:
+                    raise RuntimeError("metadata write failed")
+                return [{"value": self.graph_revision}]
+            if "MATCH (cache:GraphExpansionCache)" in query and "DELETE cache" in query:
+                self.persistent_cache.clear()
+                return []
+            if "facts" in params:
+                return [{"count": 1, "seed_element_ids": ["seed-alice"]}]
+            if "RETURN seed_element_id, paths" in query:
+                return [
+                    {
+                        "seed_element_id": "seed-alice",
+                        "seed_name_key": "alice",
+                        "seed_type_key": "person",
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {
+                                        "element_id": "rel-alice-acme",
+                                        "fact_key": "person:alice|works_at|company:acme",
+                                        "rel_index": 0,
+                                    },
+                                    {
+                                        "element_id": "rel-acme-neo4j",
+                                        "fact_key": "company:acme|uses|tool:neo4j",
+                                        "rel_index": 1,
+                                    },
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    }
+                ]
+            if "expansion_cache_entries" in params:
+                self.persistent_writes.extend(params["expansion_cache_entries"])
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = FailedRevisionBumpSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+            "retrieval_depth": 2,
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-revision-failure",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+
+    clear_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "MATCH (cache:GraphExpansionCache)" in call["query"] and "DELETE cache" in call["query"]
+    ]
+    assert client._graph_revision == 1
+    assert clear_calls
+    assert driver.session_obj.persistent_cache == {}
+    assert driver.session_obj.persistent_writes == []
 
 
 def test_neo4j_graph_client_caches_fulltext_seed_rows_across_context_cache_misses():
@@ -2453,25 +2788,227 @@ def test_neo4j_graph_client_caches_multihop_expansion_across_context_cache_misse
     ]
 
 
-def test_neo4j_graph_client_skips_multihop_expansion_preload_when_seed_count_is_large():
+def test_neo4j_graph_client_prewarms_multihop_expansion_after_upsert():
+    class PrewarmExpansionSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "facts" in params:
+                return [{"count": 1, "seed_element_ids": ["seed-alice"]}]
+            if "RETURN seed_element_id, paths" in query:
+                return [
+                    {
+                        "seed_element_id": "seed-alice",
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {"element_id": "rel-alice-acme", "rel_index": 0},
+                                    {"element_id": "rel-acme-neo4j", "rel_index": 1},
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    }
+                ]
+            if "db.index.fulltext.queryNodes" in query:
+                return [{"element_id": "seed-alice", "score": 4.0}]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [{"element_id": "seed-alice", "seed_score": 4.0}]
+            if "RETURN startNode(r).name AS subject" in query:
+                return [
+                    {
+                        "subject": "Acme",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Acme uses Neo4j.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = PrewarmExpansionSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+            "retrieval_depth": 2,
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-prewarm",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+    prewarm_call_count = sum(
+        1 for call in driver.session_obj.calls if "RETURN seed_element_id, paths" in call["query"]
+    )
+    timings: dict[str, Any] = {}
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+        timings=timings,
+    )
+
+    retrieval_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    assert prewarm_call_count == 1
+    assert (
+        sum(
+            1
+            for call in driver.session_obj.calls
+            if "RETURN seed_element_id, paths" in call["query"]
+        )
+        == prewarm_call_count
+    )
+    assert "UNWIND $cached_expansion_paths AS cached_path" in retrieval_call["query"]
+    assert "MATCH path = (seed)-[:FACT*1..2]" not in retrieval_call["query"]
+    assert retrieval_call["params"]["cached_expansion_paths"] == [
+        {
+            "seed_element_id": "seed-alice",
+            "path_key": "seed-alice:0",
+            "hop": 2,
+            "rel_ids": [
+                {"element_id": "rel-alice-acme", "rel_index": 0},
+                {"element_id": "rel-acme-neo4j", "rel_index": 1},
+            ],
+        }
+    ]
+    assert timings["graph_multihop_seed_count"] == 1
+    assert timings["graph_multihop_cache_hit"] is True
+    assert timings["graph_multihop_cached_seed_count"] == 1
+    assert timings["graph_multihop_live_seed_limit"] == 0
+    assert timings["graph_multihop_partial_cache_hit"] is False
+    assert context == format_graph_context(["- [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"])
+
+
+def test_neo4j_graph_client_prewarm_uses_preload_path_budget_per_seed():
+    class BudgetedPrewarmSession(FakeNeo4jSession):
+        def __init__(self):
+            super().__init__()
+            self.graph_revision = 0
+
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if (
+                "MERGE (meta:GraphMetadata {key: $key})" in query
+                and "RETURN meta.value AS value" in query
+            ):
+                if "coalesce(meta.value, 0) + 1" in query:
+                    self.graph_revision += 1
+                return [{"value": self.graph_revision}]
+            if "MATCH (cache:GraphExpansionCache)" in query and "DELETE cache" in query:
+                return []
+            if "facts" in params:
+                return [
+                    {
+                        "count": 1,
+                        "seed_element_ids": [f"seed-{index}" for index in range(80)],
+                    }
+                ]
+            if "RETURN seed_element_id, paths" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = BudgetedPrewarmSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+            "retrieval_depth": 3,
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-prewarm-budget",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+
+    expansion_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "RETURN seed_element_id, paths" in call["query"]
+    ]
+    assert len(expansion_calls) == 2
+    for call in expansion_calls:
+        assert call["params"]["seed_element_ids"] == [f"seed-{index}" for index in range(64)]
+        assert call["params"]["path_limit_plus_one"] == 4
+
+
+def test_neo4j_graph_client_partially_preloads_multihop_expansion_when_seed_count_is_large():
     class LargeSeedExpansionSession(FakeNeo4jSession):
         def run(self, query, **params):
             self.calls.append({"query": query, "params": params})
             if "db.index.fulltext.queryNodes" in query:
                 return [
                     {"element_id": f"seed-{index}", "score": 4.0 - index * 0.1}
-                    for index in range(5)
+                    for index in range(3)
                 ]
             if "db.index.fulltext.queryRelationships" in query:
                 return []
             if "RETURN element_id, seed_score" in query:
                 return [
                     {"element_id": f"seed-{index}", "seed_score": 4.0 - index * 0.1}
-                    for index in range(5)
+                    for index in range(3)
                 ]
             if "RETURN seed_element_id, paths" in query:
-                raise AssertionError("large seed misses should not preload expansion paths")
-            if "MATCH path = (seed)-[:FACT*1..2]" in query:
+                return [
+                    {
+                        "seed_element_id": seed_element_id,
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {
+                                        "element_id": f"rel-{seed_element_id}-0",
+                                        "rel_index": 0,
+                                    },
+                                    {
+                                        "element_id": f"rel-{seed_element_id}-1",
+                                        "rel_index": 1,
+                                    },
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    }
+                    for seed_element_id in params["seed_element_ids"]
+                ]
+            if "RETURN startNode(r).name AS subject" in query:
                 return [
                     {
                         "subject": "Acme",
@@ -2494,27 +3031,214 @@ def test_neo4j_graph_client_skips_multihop_expansion_preload_when_seed_count_is_
             "username": "neo4j",
             "password": "secret",
             "database": "atri",
+            "multi_hop_expansion_cache_preload_seed_limit": 2,
         },
         driver_factory=lambda uri, auth: driver,
     )
 
+    timings: dict[str, Any] = {}
     context = client.retrieve_context(
         query="Alice Acme",
         source_ids=[],
         max_facts=2,
         retrieval_depth=2,
+        timings=timings,
     )
 
     assert context == format_graph_context(["- [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"])
+    expansion_call = next(
+        call
+        for call in driver.session_obj.calls
+        if "RETURN seed_element_id, paths" in call["query"]
+    )
+    assert expansion_call["params"]["seed_element_ids"] == ["seed-0", "seed-1"]
     seed_probe_call = next(
         call
         for call in driver.session_obj.calls
         if "RETURN element_id, seed_score" in call["query"]
     )
-    assert seed_probe_call["params"]["seed_limit"] == 5
+    assert seed_probe_call["params"]["seed_limit"] == 3
     retrieve_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    assert "UNWIND $cached_expansion_paths AS cached_path" in retrieve_call["query"]
     assert "MATCH path = (seed)-[:FACT*1..2]" in retrieve_call["query"]
-    assert "UNWIND $cached_expansion_paths AS cached_path" not in retrieve_call["query"]
+    assert "LIMIT $live_seed_limit" in retrieve_call["query"]
+    assert retrieve_call["params"]["cached_expansion_seed_ids"] == ["seed-0", "seed-1"]
+    assert retrieve_call["params"]["live_seed_limit"] == 38
+    assert retrieve_call["params"]["cached_expansion_seed_rows"] == [
+        {"element_id": "seed-0", "seed_score": 4.0},
+        {"element_id": "seed-1", "seed_score": 3.9},
+    ]
+    assert timings["graph_multihop_seed_count"] == 3
+    assert timings["graph_multihop_cache_hit"] is False
+    assert timings["graph_multihop_cached_seed_count"] == 2
+    assert timings["graph_multihop_partial_cache_hit"] is True
+    assert timings["graph_multihop_persistent_cache_hit_count"] == 0
+
+
+def test_neo4j_graph_client_reuses_persistent_multihop_expansion_cache_across_clients():
+    class PersistentExpansionSession(FakeNeo4jSession):
+        def __init__(self):
+            super().__init__()
+            self.persistent_cache: dict[str, dict[str, Any]] = {}
+
+        @property
+        def seed_element_id(self) -> str:
+            return "seed-alice-v2" if self.persistent_cache else "seed-alice-v1"
+
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "GraphMetadata" in query and "RETURN meta.value AS value" in query:
+                return [{"value": 0}]
+            if "RETURN seed_element_id, paths" in query:
+                return [
+                    {
+                        "seed_element_id": seed_element_id,
+                        "seed_name_key": "alice",
+                        "seed_type_key": "person",
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {
+                                        "element_id": f"rel-{seed_element_id}-works-at",
+                                        "fact_key": "person:alice|works_at|company:acme",
+                                        "rel_index": 0,
+                                    },
+                                    {
+                                        "element_id": f"rel-{seed_element_id}-uses",
+                                        "fact_key": "company:acme|uses|tool:neo4j",
+                                        "rel_index": 1,
+                                    },
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    }
+                    for seed_element_id in params["seed_element_ids"]
+                ]
+            if "RETURN seed_element_id" in query and "seed.name_key AS seed_name_key" in query:
+                return [
+                    {
+                        "seed_element_id": seed_element_id,
+                        "seed_name_key": "alice",
+                        "seed_type_key": "person",
+                    }
+                    for seed_element_id in params["seed_element_ids"]
+                ]
+            if "MATCH (cache:GraphExpansionCache)" in query:
+                rows = []
+                for key in params.get("cache_keys", []):
+                    cache_entry = self.persistent_cache.get(key)
+                    if cache_entry is None:
+                        continue
+                    rows.append(
+                        {
+                            **cache_entry,
+                            "cache_properties": dict(cache_entry),
+                        }
+                    )
+                return rows
+            if "expansion_cache_entries" in params:
+                for entry in params["expansion_cache_entries"]:
+                    self.persistent_cache[entry["key"]] = dict(entry)
+                return []
+            if "db.index.fulltext.queryNodes" in query:
+                return [{"element_id": self.seed_element_id, "score": 4.0}]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [{"element_id": self.seed_element_id, "seed_score": 4.0}]
+            if "RETURN startNode(r).name AS subject" in query:
+                return [
+                    {
+                        "subject": "Acme",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Acme uses Neo4j.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = PersistentExpansionSession()
+    config = {
+        "enabled": True,
+        "uri": "bolt://localhost:7687",
+        "username": "neo4j",
+        "password": "secret",
+        "database": "atri",
+    }
+
+    first_client = Neo4jGraphClient(config, driver_factory=lambda uri, auth: driver)
+    first_client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+    first_expansion_loads = sum(
+        1 for call in driver.session_obj.calls if "RETURN seed_element_id, paths" in call["query"]
+    )
+
+    second_client = Neo4jGraphClient(config, driver_factory=lambda uri, auth: driver)
+    timings: dict[str, Any] = {}
+    context = second_client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+        timings=timings,
+    )
+
+    expansion_loads = [
+        call
+        for call in driver.session_obj.calls
+        if "RETURN seed_element_id, paths" in call["query"]
+    ]
+    persistent_reads = [
+        call
+        for call in driver.session_obj.calls
+        if "MATCH (cache:GraphExpansionCache)" in call["query"]
+    ]
+    persistent_writes = [
+        call for call in driver.session_obj.calls if "expansion_cache_entries" in call["params"]
+    ]
+
+    assert first_expansion_loads == 1
+    assert len(expansion_loads) == 1
+    assert persistent_reads
+    persistent_read_query = persistent_reads[0]["query"]
+    assert "properties(cache) AS cache_properties" in persistent_read_query
+    assert "cache.complete AS complete" not in persistent_read_query
+    assert "cache.paths_json AS paths_json" not in persistent_read_query
+    persistent_read_cache_keys = [
+        call["params"]["cache_keys"][0] for call in persistent_reads if call["params"]["cache_keys"]
+    ]
+    assert all("seed-alice-v" not in key for key in persistent_read_cache_keys)
+    assert persistent_writes
+    persistent_entry = persistent_writes[0]["params"]["expansion_cache_entries"][0]
+    assert persistent_entry["key"] in persistent_read_cache_keys
+    assert "seed_element_id" not in persistent_entry
+    assert persistent_entry["seed_name_key"] == "alice"
+    assert persistent_entry["seed_type_key"] == "person"
+    persistent_paths = json.loads(persistent_entry["paths_json"])
+    assert persistent_paths == [
+        {
+            "hop": 2,
+            "rel_ids": [
+                {"fact_key": "person:alice|works_at|company:acme", "rel_index": 0},
+                {"fact_key": "company:acme|uses|tool:neo4j", "rel_index": 1},
+            ],
+        }
+    ]
+    assert context == format_graph_context(["- [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"])
+    assert timings["graph_multihop_cache_hit"] is True
+    assert timings["graph_multihop_cached_seed_count"] == 1
+    assert timings["graph_multihop_live_seed_limit"] == 0
+    assert timings["graph_multihop_persistent_cache_hit_count"] == 1
 
 
 def test_neo4j_graph_client_caps_multihop_expansion_preload_with_global_budget():
@@ -5234,6 +5958,12 @@ async def test_graph_manager_logs_graph_timing_segments_for_direct_retrieval(cap
                         "graph_format_ms": 1.4,
                         "graph_rows": 1686,
                         "graph_returned_facts": 75,
+                        "graph_multihop_seed_count": 11,
+                        "graph_multihop_cache_hit": True,
+                        "graph_multihop_cached_seed_count": 9,
+                        "graph_multihop_live_seed_limit": 31,
+                        "graph_multihop_partial_cache_hit": True,
+                        "graph_multihop_persistent_cache_hit_count": 4,
                     }
                 )
             return super().retrieve_context(
@@ -5279,6 +6009,12 @@ async def test_graph_manager_logs_graph_timing_segments_for_direct_retrieval(cap
             "graph_format_ms=1.4",
             "graph_rows=1686",
             "graph_returned_facts=75",
+            "graph_multihop_seed_count=11",
+            "graph_multihop_cache_hit=True",
+            "graph_multihop_cached_seed_count=9",
+            "graph_multihop_live_seed_limit=31",
+            "graph_multihop_partial_cache_hit=True",
+            "graph_multihop_persistent_cache_hit_count=4",
         ):
             assert field in caplog.text
     finally:
