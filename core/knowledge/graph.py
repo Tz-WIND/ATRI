@@ -67,6 +67,19 @@ _FACT_FULLTEXT_INDEX = "fact_text"
 _GRAPH_REVISION_METADATA_KEY = "graph_revision"
 _PERSISTENT_MULTI_HOP_EXPANSION_CACHE_VERSION = "persistent_multi_hop_expansion:v2"
 _MULTI_HOP_EXPANSION_CACHE_MODES = {"off", "memory", "persistent"}
+_ACTIVE_FACT_STATUS = "active"
+_CURRENT_SINGLE_CONFLICT_POLICY = "current_single"
+_APPEND_ONLY_CONFLICT_POLICY = "append_only"
+_FULLTEXT_FACT_SEED_CANDIDATE_MULTIPLIER = 4
+# Conservative whitelist: topology alone never creates a conflict; only these
+# predicates are treated as one-current-value slots for the same subject.
+_CURRENT_SINGLE_PREDICATES = frozenset(
+    {
+        "has_status",
+        "has_version",
+        "works_at",
+    }
+)
 T = TypeVar("T")
 __all__ = ["GRAPH_QUERY_ENUMERATION_TERMS", "Neo4jGraphClient", "_query_terms"]
 
@@ -82,6 +95,54 @@ def _legacy_persistent_cache_enabled(value: Any) -> bool | None:
             return True
         return bool(normalized)
     return bool(value)
+
+
+def _fact_conflict_policy(fact: dict[str, Any]) -> str:
+    predicate = str(fact.get("predicate") or "").strip().lower()
+    if predicate in _CURRENT_SINGLE_PREDICATES:
+        return _CURRENT_SINGLE_CONFLICT_POLICY
+    return _APPEND_ONLY_CONFLICT_POLICY
+
+
+def _fact_status(fact: dict[str, Any]) -> str:
+    return (_optional_text(fact.get("status")) or _ACTIVE_FACT_STATUS).lower()
+
+
+def _fact_slot_key(fact: dict[str, Any], conflict_policy: str) -> str | None:
+    if conflict_policy != _CURRENT_SINGLE_CONFLICT_POLICY:
+        return None
+    subject_type_key = _optional_text(fact.get("subject_type_key"))
+    subject_key = _optional_text(fact.get("subject_key"))
+    predicate = _optional_text(fact.get("predicate"))
+    if not subject_type_key or not subject_key or not predicate:
+        return None
+    return f"{subject_type_key}:{subject_key}|{predicate}"
+
+
+def _fold_current_single_fact_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    slot_indexes: dict[str, int] = {}
+    folded: list[dict[str, Any]] = []
+    for row in rows:
+        slot_key = _optional_text(row.get("slot_key"))
+        if (
+            row.get("conflict_policy") != _CURRENT_SINGLE_CONFLICT_POLICY
+            or row.get("status") != _ACTIVE_FACT_STATUS
+            or not slot_key
+        ):
+            folded.append(row)
+            continue
+        existing_index = slot_indexes.get(slot_key)
+        if existing_index is None:
+            slot_indexes[slot_key] = len(folded)
+            folded.append(row)
+            continue
+        folded[existing_index] = row
+    return folded
+
+
+def _fulltext_fact_seed_candidate_limit(seed_limit: int) -> int:
+    normalized_limit = max(1, int(seed_limit or 1))
+    return normalized_limit * _FULLTEXT_FACT_SEED_CANDIDATE_MULTIPLIER
 
 
 class Neo4jGraphClient:
@@ -167,6 +228,8 @@ class Neo4jGraphClient:
         if cached is not None:
             return cast(dict[str, list[dict[str, Any]]], cached)
 
+        fact_seed_candidate_limit = _fulltext_fact_seed_candidate_limit(seed_limit)
+
         def load_seed_rows(session: Any) -> dict[str, list[dict[str, Any]]]:
             entity_rows = session.run(
                 """
@@ -188,14 +251,19 @@ class Neo4jGraphClient:
                 CALL db.index.fulltext.queryRelationships(
                   $fact_text_index,
                   $fulltext_query,
-                  {limit: $seed_limit}
+                  {limit: $fact_seed_candidate_limit}
                 )
                 YIELD relationship AS r, score
+                WHERE coalesce(r.status, 'active') = 'active'
+                WITH r, score
+                ORDER BY score DESC
+                LIMIT $seed_limit
                 RETURN elementId(r) AS element_id, score
                 """,
                 fact_text_index=_FACT_FULLTEXT_INDEX,
                 fulltext_query=fulltext_query,
                 seed_limit=seed_limit,
+                fact_seed_candidate_limit=fact_seed_candidate_limit,
                 timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
             )
             return {
@@ -222,8 +290,12 @@ class Neo4jGraphClient:
         CALL () {
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
-          MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
-          WITH seed,
+          MATCH (s:Entity)-[source_r:FACT]->(o:Entity)
+          WHERE source_r.fact_key = fact_node.fact_key
+            AND coalesce(source_r.status, 'active') = 'active'
+          WITH [s, o] AS source_seed_nodes, source_node
+          UNWIND source_seed_nodes AS seed
+          WITH seed, source_node,
                reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
                  CASE
                    WHEN source_score.source_id = source_node.source_id
@@ -241,6 +313,7 @@ class Neo4jGraphClient:
           UNWIND $fact_seed_rows AS fact_seed
           MATCH ()-[r:FACT]-()
           WHERE elementId(r) = fact_seed.element_id
+            AND coalesce(r.status, 'active') = 'active'
           WITH [startNode(r), endNode(r)] AS fact_seeds, fact_seed
           UNWIND fact_seeds AS seed
           WITH seed, fact_seed
@@ -580,6 +653,7 @@ class Neo4jGraphClient:
           MATCH path = (seed)-[:FACT*1..{depth}]-(o:Entity)
           WITH relationships(path) AS rels, length(path) AS hop
           WHERE hop > 1
+            AND all(rel IN rels WHERE coalesce(rel.status, 'active') = 'active')
           WITH rels, hop
           LIMIT $path_limit_plus_one
           RETURN collect({{
@@ -931,8 +1005,17 @@ class Neo4jGraphClient:
             row["hyper_role"] = _optional_text(row.get("hyper_role"))
             row["derived_from_hyper_tuple"] = _optional_bool(row.get("derived_from_hyper_tuple"))
             row["structural"] = _optional_bool(row.get("structural"))
+            row["status"] = _fact_status(row)
+            row["conflict_policy"] = _fact_conflict_policy(row)
+            row["slot_key"] = _fact_slot_key(row, row["conflict_policy"])
+            row["valid_from"] = row.get("valid_from")
+            row["valid_to"] = row.get("valid_to")
+            row["superseded_by"] = _optional_text(row.get("superseded_by"))
             row["metadata_json"] = json.dumps(row.get("metadata") or {}, ensure_ascii=False)
             rows.append(row)
+        rows = _fold_current_single_fact_rows(rows)
+        if not rows:
+            return 0
         query = """
         UNWIND $facts AS fact
         MERGE (s:Entity {name_key: fact.subject_key, type_key: fact.subject_type_key})
@@ -951,6 +1034,27 @@ class Neo4jGraphClient:
                         o.updated_at = fact.now
         MERGE (s)-[r:FACT {fact_key: fact.fact_key}]->(o)
           ON CREATE SET r.created_at = fact.now
+        WITH s, o, r, fact
+        CALL (s, fact) {
+          WITH s, fact
+          MATCH (s)-[old:FACT]->(:Entity)
+          WHERE fact.conflict_policy = 'current_single'
+            AND coalesce(fact.status, 'active') = 'active'
+            AND fact.slot_key IS NOT NULL
+            AND (
+              old.slot_key = fact.slot_key
+              OR (old.slot_key IS NULL AND old.predicate = fact.predicate)
+            )
+            AND old.fact_key <> fact.fact_key
+            AND coalesce(old.status, 'active') = 'active'
+          SET old.status = 'superseded',
+              old.conflict_policy = coalesce(old.conflict_policy, 'current_single'),
+              old.slot_key = coalesce(old.slot_key, fact.slot_key),
+              old.valid_to = fact.now,
+              old.superseded_by = fact.fact_key,
+              old.updated_at = fact.now
+          RETURN count(old) AS superseded_count
+        }
         WITH s, o, r, fact,
              coalesce(r.source_ids, []) + coalesce(fact.source_ids, [fact.source_id])
              AS raw_source_ids
@@ -976,6 +1080,12 @@ class Neo4jGraphClient:
                     ELSE chain_order_keys + [chain_order_key]
                   END) AS chain_order_keys
           SET r.predicate = fact.predicate,
+              r.status = coalesce(fact.status, 'active'),
+              r.conflict_policy = fact.conflict_policy,
+              r.slot_key = fact.slot_key,
+              r.valid_from = coalesce(fact.valid_from, r.valid_from),
+              r.valid_to = fact.valid_to,
+              r.superseded_by = fact.superseded_by,
               r.source_id = fact.source_id,
               r.source_ids = source_ids,
               r.source_kind = fact.source_kind,
@@ -1272,6 +1382,7 @@ class Neo4jGraphClient:
             """
         single_hop_cypher = f"""
         {single_hop_seed_cypher}
+        WHERE coalesce(r.status, 'active') = 'active'
         WITH s, r, o, index_score,
              CASE
                WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
@@ -1379,8 +1490,12 @@ class Neo4jGraphClient:
         CALL () {{
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
-          MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
-          WITH seed,
+          MATCH (s:Entity)-[source_r:FACT]->(o:Entity)
+          WHERE source_r.fact_key = fact_node.fact_key
+            AND coalesce(source_r.status, 'active') = 'active'
+          WITH [s, o] AS source_seed_nodes, source_node
+          UNWIND source_seed_nodes AS seed
+          WITH seed, source_node,
                reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
                  CASE
                    WHEN source_score.source_id = source_node.source_id
@@ -1470,8 +1585,12 @@ class Neo4jGraphClient:
         CALL () {{
           MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
           WHERE source_node.source_id IN $source_ids
-          MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)
-          WITH seed,
+          MATCH (s:Entity)-[source_r:FACT]->(o:Entity)
+          WHERE source_r.fact_key = fact_node.fact_key
+            AND coalesce(source_r.status, 'active') = 'active'
+          WITH [s, o] AS source_seed_nodes, source_node
+          UNWIND source_seed_nodes AS seed
+          WITH seed, source_node,
                reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
                  CASE
                    WHEN source_score.source_id = source_node.source_id
@@ -1495,6 +1614,8 @@ class Neo4jGraphClient:
             def build_multi_hop_cypher(seed_cypher: str) -> str:
                 return f"""
         {seed_cypher}
+        WITH rels, hop, seed_score
+        WHERE all(rel IN rels WHERE coalesce(rel.status, 'active') = 'active')
         WITH rels, hop, seed_score,
              reduce(path_term_score = 0.0, term_row IN $term_rows |
                path_term_score
@@ -1666,8 +1787,11 @@ class Neo4jGraphClient:
         WHERE size(coalesce(cached_path.rel_ids, [])) > 1
         UNWIND cached_path.rel_ids AS rel_ref
         MATCH ()-[rel:FACT]->()
-        WHERE (rel_ref.element_id IS NOT NULL AND elementId(rel) = rel_ref.element_id)
-           OR (rel_ref.fact_key IS NOT NULL AND rel.fact_key = rel_ref.fact_key)
+        WHERE (
+            (rel_ref.element_id IS NOT NULL AND elementId(rel) = rel_ref.element_id)
+            OR (rel_ref.fact_key IS NOT NULL AND rel.fact_key = rel_ref.fact_key)
+          )
+          AND coalesce(rel.status, 'active') = 'active'
         WITH cached_path.path_key AS path_key,
              coalesce(toInteger(cached_path.hop), size(cached_path.rel_ids)) AS hop,
              seed_score,

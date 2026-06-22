@@ -1415,6 +1415,315 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
     assert driver.closed is True
 
 
+def test_neo4j_graph_client_marks_current_single_facts_with_slot_metadata():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-current-single",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    upsert_row = upsert_call["params"]["facts"][0]
+    assert upsert_row["status"] == "active"
+    assert upsert_row["conflict_policy"] == "current_single"
+    assert upsert_row["slot_key"] == "person:alice|works_at"
+    assert upsert_row["valid_from"] is None
+    assert upsert_row["valid_to"] is None
+    assert upsert_row["superseded_by"] is None
+
+
+def test_neo4j_graph_client_keeps_connection_facts_append_only():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "uses",
+                "object": "Neo4j",
+                "object_type": "Tool",
+            }
+        ],
+        source_id="chunk-append-only",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    upsert_row = upsert_call["params"]["facts"][0]
+    assert upsert_row["status"] == "active"
+    assert upsert_row["conflict_policy"] == "append_only"
+    assert upsert_row["slot_key"] is None
+    assert upsert_row["valid_from"] is None
+    assert upsert_row["valid_to"] is None
+    assert upsert_row["superseded_by"] is None
+
+
+def test_neo4j_graph_client_keeps_ambiguous_location_facts_append_only():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "located_at",
+                "object": "Shanghai",
+                "object_type": "Location",
+            }
+        ],
+        source_id="chunk-location",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    upsert_row = upsert_call["params"]["facts"][0]
+    assert upsert_row["conflict_policy"] == "append_only"
+    assert upsert_row["slot_key"] is None
+
+
+def test_neo4j_graph_client_upsert_supersedes_only_current_single_slot():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Contoso",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-current-single-2",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+
+    upsert_query = next(
+        call["query"] for call in driver.session_obj.calls if "MERGE (s)-[r:FACT" in call["query"]
+    )
+    assert "fact.conflict_policy = 'current_single'" in upsert_query
+    assert "old.slot_key = fact.slot_key" in upsert_query
+    assert "old.fact_key <> fact.fact_key" in upsert_query
+    assert "coalesce(old.status, 'active') = 'active'" in upsert_query
+    assert "old.status = 'superseded'" in upsert_query
+    assert "old.superseded_by = fact.fact_key" in upsert_query
+    assert "uses" not in upsert_query
+
+
+def test_neo4j_graph_client_supersedes_legacy_current_single_without_slot_key():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Contoso",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-current-single-legacy",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+
+    upsert_query = next(
+        call["query"] for call in driver.session_obj.calls if "MERGE (s)-[r:FACT" in call["query"]
+    )
+    assert "old.slot_key IS NULL AND old.predicate = fact.predicate" in upsert_query
+    assert "old.slot_key = coalesce(old.slot_key, fact.slot_key)" in upsert_query
+
+
+def test_neo4j_graph_client_folds_same_batch_current_single_slots_deterministically():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    facts = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            },
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Contoso",
+                "object_type": "Company",
+            },
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "uses",
+                "object": "Neo4j",
+                "object_type": "Tool",
+            },
+        ],
+        source_id="chunk-current-single-batch",
+        source_kind="document",
+    )
+
+    count = client.upsert_facts(facts)
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    rows = upsert_call["params"]["facts"]
+    assert count == 2
+    assert [row["predicate"] for row in rows] == ["works_at", "uses"]
+    assert rows[0]["object"] == "Contoso"
+    assert rows[0]["slot_key"] == "person:alice|works_at"
+    assert rows[1]["object"] == "Neo4j"
+    assert rows[1]["conflict_policy"] == "append_only"
+
+
+def test_neo4j_graph_client_keeps_non_active_current_single_from_superseding():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    facts = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Contoso",
+                "object_type": "Company",
+            },
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "OldCo",
+                "object_type": "Company",
+            },
+        ],
+        source_id="chunk-current-single-history",
+        source_kind="document",
+    )
+    facts[1]["status"] = "superseded"
+
+    count = client.upsert_facts(facts)
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    rows = upsert_call["params"]["facts"]
+    upsert_query = upsert_call["query"]
+    assert count == 2
+    assert [row["object"] for row in rows] == ["Contoso", "OldCo"]
+    assert rows[0]["status"] == "active"
+    assert rows[1]["status"] == "superseded"
+    assert "coalesce(fact.status, 'active') = 'active'" in upsert_query
+
+
+def test_neo4j_graph_client_retrieval_filters_superseded_facts_by_default():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    single_hop_query = _single_hop_retrieve_call(driver.session_obj.calls)["query"]
+    multi_hop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
+    assert "coalesce(r.status, 'active') = 'active'" in single_hop_query
+    assert "all(rel IN rels WHERE coalesce(rel.status, 'active') = 'active')" in (multi_hop_query)
+
+
 def test_neo4j_graph_client_builds_source_index_nodes_for_fact_source_ids():
     driver = FakeNeo4jDriver()
     client = Neo4jGraphClient(
@@ -1551,8 +1860,66 @@ def test_neo4j_graph_client_uses_source_index_nodes_for_multihop_source_seeds():
     assert "MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)" in (
         multihop_query
     )
-    assert "MATCH (fact_node)-[:FACT_SUBJECT|FACT_OBJECT]->(seed:Entity)" in multihop_query
+    assert "MATCH (s:Entity)-[source_r:FACT]->(o:Entity)" in multihop_query
+    assert "source_r.fact_key = fact_node.fact_key" in multihop_query
+    assert "coalesce(source_r.status, 'active') = 'active'" in multihop_query
     assert "any(source_id IN coalesce(source_r.source_ids, [])" not in multihop_query
+
+
+def test_neo4j_graph_client_multihop_seed_probe_requires_active_source_fact():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    seed_probe_query = next(
+        call["query"]
+        for call in driver.session_obj.calls
+        if "RETURN elementId(seed) AS element_id" in call["query"]
+    )
+    assert "MATCH (s:Entity)-[source_r:FACT]->(o:Entity)" in seed_probe_query
+    assert "source_r.fact_key = fact_node.fact_key" in seed_probe_query
+    assert "coalesce(source_r.status, 'active') = 'active'" in seed_probe_query
+
+
+def test_neo4j_graph_client_live_multihop_source_seeds_require_active_source_fact():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    multihop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
+    assert "MATCH (s:Entity)-[source_r:FACT]->(o:Entity)" in multihop_query
+    assert "source_r.fact_key = fact_node.fact_key" in multihop_query
+    assert "coalesce(source_r.status, 'active') = 'active'" in multihop_query
 
 
 def test_neo4j_graph_client_can_include_entity_types_in_retrieved_context():
@@ -1620,6 +1987,37 @@ def test_neo4j_graph_client_uses_fulltext_seeded_single_hop_retrieval():
     assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" in query
     assert call["params"]["fulltext_query"] == '"alice" OR "acme"'
     assert call["params"]["seed_limit"] >= call["params"]["limit"]
+
+
+def test_neo4j_graph_client_fulltext_fact_seeds_filter_active_before_final_limit():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2)
+
+    fact_seed_call = next(
+        seed_call
+        for seed_call in driver.session_obj.calls
+        if "db.index.fulltext.queryRelationships" in seed_call["query"]
+    )
+    query = fact_seed_call["query"]
+    assert "{limit: $fact_seed_candidate_limit}" in query
+    assert "WHERE coalesce(r.status, 'active') = 'active'" in query
+    assert "ORDER BY score DESC" in query
+    assert "LIMIT $seed_limit" in query
+    assert (
+        fact_seed_call["params"]["fact_seed_candidate_limit"]
+        > fact_seed_call["params"]["seed_limit"]
+    )
 
 
 def test_neo4j_graph_client_falls_back_when_fulltext_index_creation_fails(caplog):
