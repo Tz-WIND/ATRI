@@ -187,6 +187,7 @@ import { useChat } from '@/composables/useChat.js'
 import { useWebSocket } from '@/composables/useWebSocket.js'
 import { useSession } from '@/composables/useSession.js'
 import { useProviders } from '@/composables/useProviders.js'
+import { createChatEventProcessor } from './chatEventProcessor.js'
 
 const {
   messages, sending, thinkingBlock, toolCards,
@@ -210,8 +211,7 @@ const panelWidth = ref(280)
 const editorWidth = ref(500)
 const editorExpanded = ref(false)
 const autoScroll = ref(true)
-let handledEventCount = 0
-let processingEvents = false
+let scrollPending = false
 let resizeState = null
 
 const CHAT_MIN_WIDTH = 340
@@ -244,7 +244,10 @@ function onScroll() {
 }
 
 function scrollToBottom() {
+  if (scrollPending) return
+  scrollPending = true
   nextTick(() => {
+    scrollPending = false
     if (chatArea.value && autoScroll.value) {
       chatArea.value.scrollTop = chatArea.value.scrollHeight
     }
@@ -320,7 +323,7 @@ function handleActiveTabTypeChange(type) {
 
 async function loadChatSession(id) {
   resetMessages()
-  handledEventCount = events.value.length
+  eventProcessor.resetToEnd()
   const transcript = await loadSessionMessages(id)
   if (transcript.messages.length || transcript.runtimeItems.length || transcript.todoSnapshot?.items?.length) {
     loadTranscript(transcript)
@@ -346,6 +349,15 @@ function handleCancel() {
 function normalizeMode(mode) {
   return mode === 'plan' ? 'plan' : 'agent'
 }
+
+const eventProcessor = createChatEventProcessor({
+  events,
+  handleEvent: handleWsEvent,
+  handleModeChanged: (mode) => {
+    agentMode.value = normalizeMode(mode)
+  },
+  scrollToBottom,
+})
 
 async function loadAgentMode() {
   try {
@@ -383,27 +395,8 @@ function onGlobalKeydown(e) {
   }
 }
 
-async function processEvents() {
-  if (processingEvents) return
-  processingEvents = true
-  try {
-    while (handledEventCount < events.value.length) {
-      const event = events.value[handledEventCount]
-      handledEventCount++
-      if (event.type === 'mode_changed') {
-        agentMode.value = normalizeMode(event.mode)
-      }
-      handleWsEvent(event)
-      scrollToBottom()
-      await nextTick()
-    }
-  } finally {
-    processingEvents = false
-  }
-}
-
 watch(events, () => {
-  processEvents()
+  eventProcessor.schedule()
 }, { deep: false })
 
 watch(messages, () => scrollToBottom(), { deep: true })
@@ -422,6 +415,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
+  eventProcessor.cancel()
   stopResize()
 })
 </script>

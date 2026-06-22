@@ -11,6 +11,7 @@ import {
   hasAssistantResponse,
   shouldAppendHttpAssistantResponse,
 } from './chatHttpResponse.js'
+import { createStreamingDeltaBuffer } from './streamingDeltaBuffer.js'
 import { useApi } from './useApi.js'
 import { useSession } from './useSession.js'
 
@@ -36,6 +37,9 @@ export function useChat() {
   const toolMessageIndex = new Map()
   let streamingAssistantId = null
   let streamingMessage = null
+  const assistantDeltaBuffer = createStreamingDeltaBuffer({
+    apply: applyAssistantDelta,
+  })
 
   // WebSocket event handler — called from ChatPage
   function handleWsEvent(msg) {
@@ -247,7 +251,13 @@ export function useChat() {
 
   function appendAssistantDelta(delta) {
     if (!delta) return
-    const msg = ensureAssistantStream()
+    ensureAssistantStream()
+    assistantDeltaBuffer.append(delta)
+  }
+
+  function applyAssistantDelta(delta) {
+    if (!delta || !streamingAssistantId || !streamingMessage) return
+    const msg = streamingMessage
     streamingMessage = patchMessage(msg.id, {
       content: (msg.content || '') + delta,
       streaming: true,
@@ -255,6 +265,7 @@ export function useChat() {
   }
 
   function finishAssistantStream(finalContent = '') {
+    assistantDeltaBuffer.flush()
     if (!streamingAssistantId || !streamingMessage) {
       if (finalContent && !hasAssistantResponse(messages, finalContent)) {
         addMessage('assistant', finalContent, true)
@@ -304,6 +315,7 @@ export function useChat() {
   }
 
   function resetMessages() {
+    assistantDeltaBuffer.clear()
     messages.value = []
     todoSnapshot.value = emptyTodoSnapshot()
     toolMessageIndex.clear()
@@ -634,6 +646,7 @@ export function useChat() {
     sending.value = true
     clearThinking()
     clearToolCards()
+    assistantDeltaBuffer.clear()
     streamingAssistantId = null
     streamingMessage = null
 
@@ -692,6 +705,7 @@ export function useChat() {
     loadTranscript,
     sendMessage,
     cancelMessage,
+    flushAssistantDeltas: assistantDeltaBuffer.flush,
   }
   return instance
 }

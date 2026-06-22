@@ -113,7 +113,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AgentTodoPanel from './AgentTodoPanel.vue'
 import ChatInput from './ChatInput.vue'
 import ChatMessage from './ChatMessage.vue'
@@ -131,6 +131,7 @@ import { useDawHost } from '@/composables/useDawHost.js'
 import { useProviders } from '@/composables/useProviders.js'
 import { useSession } from '@/composables/useSession.js'
 import { useWebSocket } from '@/composables/useWebSocket.js'
+import { createChatEventProcessor } from './chatEventProcessor.js'
 
 const api = useApi()
 const { activeModel, activeModelProvider, loadStatus } = useProviders()
@@ -172,8 +173,7 @@ const hostProjectSyncStatus = ref('')
 const snapshotStatus = ref(null)
 const snapshotStatusPending = ref(false)
 const autoImportOnSend = ref(readAutoImportPreference())
-let handledEventCount = 0
-let processingEvents = false
+let scrollPending = false
 
 const currentThreadId = computed(() => `daw_agent:friend:${projectSessionId.value || 'default_project'}`)
 const { events } = useWebSocket(currentThreadId, { surface: 'daw-agent' })
@@ -201,12 +201,32 @@ const snapshotStatusLabel = computed(() => {
 })
 
 function scrollToBottom() {
+  if (scrollPending) return
+  scrollPending = true
   nextTick(() => {
+    scrollPending = false
     if (chatArea.value) {
       chatArea.value.scrollTop = chatArea.value.scrollHeight
     }
   })
 }
+
+async function handleDawWsEvent(event) {
+  if (event.type === 'music_project') {
+    await handleProjectBroadcast(event)
+    return
+  }
+  handleWsEvent(event)
+}
+
+const eventProcessor = createChatEventProcessor({
+  events,
+  handleEvent: handleDawWsEvent,
+  handleModeChanged: (mode) => {
+    agentMode.value = mode === 'plan' ? 'plan' : 'agent'
+  },
+  scrollToBottom,
+})
 
 function setWorkspace(nextWorkspace) {
   workspace.value = nextWorkspace === 'host_project' ? 'host_project' : 'atri_studio'
@@ -348,37 +368,15 @@ async function handleSetMode(mode) {
   }
 }
 
-async function processEvents() {
-  if (processingEvents) return
-  processingEvents = true
-  try {
-    while (handledEventCount < events.value.length) {
-      const event = events.value[handledEventCount]
-      handledEventCount += 1
-      if (event.type === 'mode_changed') {
-        agentMode.value = event.mode === 'plan' ? 'plan' : 'agent'
-      } else if (event.type === 'music_project') {
-        await handleProjectBroadcast(event)
-      } else {
-        handleWsEvent(event)
-      }
-      scrollToBottom()
-      await nextTick()
-    }
-  } finally {
-    processingEvents = false
-  }
-}
-
 async function loadProjectTranscript() {
-  handledEventCount = events.value.length
+  eventProcessor.resetToEnd()
   const transcript = await loadSessionMessages(currentThreadId.value)
   loadTranscript(transcript)
   scrollToBottom()
 }
 
 watch(events, () => {
-  processEvents()
+  eventProcessor.schedule()
 }, { deep: false })
 
 watch(messages, () => scrollToBottom(), { deep: true })
@@ -401,6 +399,10 @@ onMounted(async () => {
   } catch {
     agentMode.value = 'agent'
   }
+})
+
+onUnmounted(() => {
+  eventProcessor.cancel()
 })
 </script>
 

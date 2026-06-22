@@ -1,4 +1,4 @@
-import { ref, unref } from 'vue'
+import { ref, shallowRef, triggerRef, unref } from 'vue'
 
 const instances = new Map()
 const sessionObjectIds = new WeakMap()
@@ -27,7 +27,7 @@ export function useWebSocket(sessionId, options = {}) {
   if (cached) return cached
 
   const connected = ref(false)
-  const events = ref([])
+  const events = shallowRef([])
   const surfaceKey = String(options.surface || '')
   let ws = null
   let reconnectTimer = null
@@ -77,7 +77,8 @@ export function useWebSocket(sessionId, options = {}) {
           currentSessionId.includes(msg.session_id)
         ) {
           rememberRuntimeSeq(msg, currentSessionId)
-          events.value = [...events.value, msg]
+          events.value.push(msg)
+          triggerRef(events)
         }
       } catch {}
     }

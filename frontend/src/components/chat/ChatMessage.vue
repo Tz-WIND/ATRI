@@ -66,7 +66,12 @@
         </div>
       </template>
       <template v-else-if="message.role === 'assistant' && message.md">
+        <pre
+          v-if="streamingPlainText"
+          class="msg-text assistant-stream-text"
+        >{{ message.content }}</pre>
         <div
+          v-else
           class="markdown-body"
           @click="handleMarkdownClick"
           v-html="renderedContent"
@@ -107,6 +112,13 @@ import { computed } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import { renderMarkdownWithMath } from './mathRenderer.js'
+import {
+  escapeHtml,
+  escapeHtmlAttribute,
+  highlightCode,
+  normalizeLanguage,
+  shouldRenderStreamingPlainText,
+} from './chatMarkdown.js'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -146,7 +158,7 @@ renderer.html = function (tokenOrHtml) {
   const raw = typeof tokenOrHtml === 'object'
     ? tokenOrHtml.raw || tokenOrHtml.text || ''
     : String(tokenOrHtml ?? '')
-  return esc(raw)
+  return escapeHtml(raw)
 }
 
 renderer.link = function (tokenOrHref, title, text) {
@@ -156,8 +168,8 @@ renderer.link = function (tokenOrHref, title, text) {
     : String(text ?? '')
   if (!isSafeUrl(href)) return label
   const rawTitle = typeof tokenOrHref === 'object' ? tokenOrHref.title : title
-  const titleAttr = rawTitle ? ` title="${escAttr(rawTitle)}"` : ''
-  return `<a href="${escAttr(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${label}</a>`
+  const titleAttr = rawTitle ? ` title="${escapeHtmlAttribute(rawTitle)}"` : ''
+  return `<a href="${escapeHtmlAttribute(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${label}</a>`
 }
 
 renderer.image = function (tokenOrHref, title, text) {
@@ -165,42 +177,30 @@ renderer.image = function (tokenOrHref, title, text) {
   if (!isSafeUrl(href)) return ''
   const rawTitle = typeof tokenOrHref === 'object' ? tokenOrHref.title : title
   const alt = typeof tokenOrHref === 'object' ? tokenOrHref.text || '' : String(text ?? '')
-  const titleAttr = rawTitle ? ` title="${escAttr(rawTitle)}"` : ''
-  return `<img src="${escAttr(href)}" alt="${escAttr(alt)}"${titleAttr}>`
+  const titleAttr = rawTitle ? ` title="${escapeHtmlAttribute(rawTitle)}"` : ''
+  return `<img src="${escapeHtmlAttribute(href)}" alt="${escapeHtmlAttribute(alt)}"${titleAttr}>`
 }
 
 renderer.code = function (tokenOrCode, lang) {
   const code = typeof tokenOrCode === 'object' ? tokenOrCode.text || '' : String(tokenOrCode ?? '')
   const language = normalizeLanguage((typeof tokenOrCode === 'object' ? tokenOrCode.lang : lang) || 'text')
   const classLanguage = language.replace(/[^a-z0-9_-]/g, '-')
-  let highlighted
-  if (language !== 'text' && hljs.getLanguage(language)) {
-    highlighted = hljs.highlight(code, { language }).value
-  } else {
-    highlighted = hljs.highlightAuto(code).value
-  }
-  return `<div class="code-header"><span>${esc(language)}</span><button class="btn-copy" type="button">Copy</button></div><pre><code class="hljs language-${escAttr(classLanguage)}">${highlighted}</code></pre>`
+  const highlighted = highlightCode(code, language, hljs)
+  return `<div class="code-header"><span>${escapeHtml(language)}</span><button class="btn-copy" type="button">Copy</button></div><pre><code class="hljs language-${escapeHtmlAttribute(classLanguage)}">${highlighted}</code></pre>`
 }
 
 marked.use({ renderer })
 
+const streamingPlainText = computed(() => shouldRenderStreamingPlainText(props.message))
+
 const renderedContent = computed(() => {
+  if (streamingPlainText.value) return ''
   try {
     return renderMarkdownWithMath(props.message.content || '', (markdown) => marked.parse(markdown))
   } catch {
-    return `<pre class="msg-text">${esc(props.message.content || '')}</pre>`
+    return `<pre class="msg-text">${escapeHtml(props.message.content || '')}</pre>`
   }
 })
-
-function esc(s) {
-  const d = document.createElement('div')
-  d.textContent = s
-  return d.innerHTML
-}
-
-function escAttr(s) {
-  return esc(String(s ?? '')).replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
 
 function isSafeUrl(url) {
   const value = String(url || '').trim()
@@ -232,12 +232,6 @@ function safeImageSrc(url) {
   } catch {
     return ''
   }
-}
-
-function normalizeLanguage(value) {
-  const firstToken = String(value || 'text').trim().split(/\s+/)[0].toLowerCase()
-  if (!firstToken || firstToken.length > 40) return 'text'
-  return /^[a-z0-9_+.-]+$/.test(firstToken) ? firstToken : 'text'
 }
 
 async function handleMarkdownClick(event) {
@@ -317,6 +311,11 @@ async function handleMarkdownClick(event) {
   white-space: pre-wrap;
   font-family: var(--sans);
   font-size: 14px;
+}
+
+.assistant-stream-text {
+  margin: 0;
+  color: var(--t1);
 }
 
 .user-bubble {

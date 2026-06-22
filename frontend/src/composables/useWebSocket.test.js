@@ -51,14 +51,19 @@ try {
   sockets[0].onmessage({
     data: JSON.stringify({ type: 'response_delta', session_id: 'webchat:friend:default' }),
   })
+  const chatEventsArray = chat.events.value
   sockets[1].onmessage({
     data: JSON.stringify({ type: 'response_delta', session_id: 'daw_agent:friend:song-a' }),
   })
   sockets[2].onmessage({
     data: JSON.stringify({ type: 'response_delta', session_id: 'webchat:friend:other' }),
   })
+  sockets[0].onmessage({
+    data: JSON.stringify({ type: 'response_delta', session_id: 'webchat:friend:default' }),
+  })
 
-  assert.equal(chat.events.value.length, 1)
+  assert.equal(chat.events.value, chatEventsArray)
+  assert.equal(chat.events.value.length, 2)
   assert.equal(daw.events.value.length, 1)
   assert.equal(otherChat.events.value.length, 1)
   assert.equal(chat.events.value[0].session_id, 'webchat:friend:default')
