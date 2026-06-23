@@ -17,6 +17,31 @@ STUDIO_TRACK_CREATE_DIALOG = (
 STUDIO_MIXER_PANEL = (
     ROOT / "frontend" / "src" / "components" / "music" / "studio" / "MixerPanel.vue"
 )
+STUDIO_TOPBAR = ROOT / "frontend" / "src" / "components" / "music" / "studio" / "StudioTopbar.vue"
+STUDIO_PROJECT_LIBRARY = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "ProjectLibraryPopover.vue"
+)
+STUDIO_CONTROLLER_LANES = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "ControllerLanesPanel.vue"
+)
+STUDIO_PIANO_HEADER = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "PianoEditorHeader.vue"
+)
+STUDIO_AUTOMATION_PICKER = (
+    ROOT
+    / "frontend"
+    / "src"
+    / "components"
+    / "music"
+    / "studio"
+    / "AutomationParameterPickerDialog.vue"
+)
+STUDIO_ARRANGEMENT_EDITOR = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "ArrangementEditorPanel.vue"
+)
+STUDIO_TRACK_LIST = (
+    ROOT / "frontend" / "src" / "components" / "music" / "studio" / "TrackListPanel.vue"
+)
 STUDIO_DIALOGS_CSS = (
     ROOT / "frontend" / "src" / "components" / "music" / "studio" / "StudioDialogs.css"
 )
@@ -41,17 +66,25 @@ def _read_studio_runtime_sources() -> str:
         CANVAS_UTILS,
         PIANO_ROLL_RENDERER,
         RULER_RENDERER,
+        STUDIO_TOPBAR,
+        STUDIO_CONTROLLER_LANES,
+        STUDIO_PIANO_HEADER,
+        STUDIO_AUTOMATION_PICKER,
+        STUDIO_ARRANGEMENT_EDITOR,
+        STUDIO_TRACK_LIST,
     )
 
 
 def test_music_studio_exposes_track_context_delete_control():
-    text = _read(STUDIO_COMPONENT)
+    text = _read_many(STUDIO_COMPONENT, STUDIO_ARRANGEMENT_EDITOR, STUDIO_TRACK_LIST)
 
     assert "deleteTrack," in text
-    assert '@contextmenu.prevent="openTrackContextMenu($event, track)"' in text
-    assert 'v-if="trackContextMenu.open"' in text
+    assert "emit('open-context-menu', event, track)" in text
+    assert '@open-context-menu="openTrackContextMenu"' in text
+    assert 'v-if="contextMenus.track.open"' in text
     assert 'class="track-context-menu"' in text
-    assert '@click="deleteTrackFromContextMenu"' in text
+    assert "@click=\"emit('delete-track-from-context-menu')\"" in text
+    assert '@delete-track-from-context-menu="deleteTrackFromContextMenu"' in text
     assert "function openTrackContextMenu(event, track)" in text
     assert "function deleteTrackFromContextMenu()" in text
     assert 'class="track-delete"' not in text
@@ -60,7 +93,7 @@ def test_music_studio_exposes_track_context_delete_control():
 
 
 def test_music_studio_track_row_truncates_long_labels_and_keeps_flags_right():
-    text = _read(STUDIO_COMPONENT)
+    text = _read_many(STUDIO_COMPONENT, STUDIO_TRACK_LIST)
 
     assert 'class="track-title-text"' in text
     assert 'class="track-meta-text"' in text
@@ -73,13 +106,16 @@ def test_music_studio_track_row_truncates_long_labels_and_keeps_flags_right():
 
 
 def test_music_studio_track_rows_match_arrangement_track_height():
-    text = _read(STUDIO_COMPONENT)
+    text = _read_many(STUDIO_COMPONENT, STUDIO_TRACK_LIST)
 
     assert "const arrangementTrackH = 72" in text
     assert ".track-row {\n  width: 100%;\n  height: 72px;" in text
     assert "  min-height: 72px;\n" not in text
     assert "  overflow: hidden;" in text
-    assert ".track-title-text {\n  color: var(--t1);\n  line-height: 16px;\n}" in text
+    assert (
+        ".track-title-text {\n  color: var(--t1);\n  font-size: 13px;\n  line-height: 16px;\n}"
+        in text
+    )
     assert (
         ".track-meta-text {\n  color: var(--t4);\n  font-size: 11px;\n  line-height: 13px;\n}"
         in text
@@ -99,11 +135,13 @@ def test_daw_host_and_api_support_deleting_tracks():
 
 def test_music_studio_supports_audio_export_dialog():
     studio_text = _read(STUDIO_COMPONENT)
+    topbar_text = _read(STUDIO_TOPBAR)
     export_dialog_text = _read(STUDIO_EXPORT_DIALOG)
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
-    assert '@click="openExportDialog"' in studio_text
+    assert '@open-export="openExportDialog"' in studio_text
+    assert "emit('open-export')" in topbar_text
     assert "StudioExportDialog" in studio_text
     assert 'v-if="exportDialogOpen"' in studio_text
     assert 'v-model:target="exportTarget"' in studio_text
@@ -132,12 +170,13 @@ def test_music_studio_supports_audio_export_dialog():
 
 
 def test_music_studio_supports_track_type_and_audio_channel_controls():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_ARRANGEMENT_EDITOR, STUDIO_TRACK_LIST)
     track_dialog_text = _read(STUDIO_TRACK_CREATE_DIALOG)
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
-    assert '@click="openTrackCreateDialog"' in studio_text
+    assert "@click=\"emit('add-track')\"" in studio_text
+    assert '@add-track="openTrackCreateDialog"' in studio_text
     assert "TrackCreateDialog" in studio_text
     assert 'v-if="trackCreateDialogOpen"' in studio_text
     assert 'v-model:name="trackCreateName"' in studio_text
@@ -165,8 +204,10 @@ def test_music_studio_supports_track_type_and_audio_channel_controls():
     assert "isInstrumentTrack(track)" in studio_text
     assert "isAudioTrack(track)" in studio_text
     assert (
-        '@change.stop="updateTrack(track.id, { channel_type: $event.target.value })"' in studio_text
+        "@change.stop=\"event => emit('update-track', track.id, { channel_type: event.target.value })\""
+        in studio_text
     )
+    assert '@update-track="updateTrack"' in studio_text
     assert "async function createTrack(name = 'Instrument', options = {})" in host_text
     assert "studioCreateTrack: (name, options = {})" in api_text
     assert "body: JSON.stringify({ name, ...options })" in api_text
@@ -186,7 +227,8 @@ def test_music_studio_supports_external_audio_drop_import():
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
-    assert '@drop.prevent="onAudioDrop"' in studio_text
+    assert "@drop.prevent=\"event => emit('audio-drop', event)\"" in studio_text
+    assert '@audio-drop="onAudioDrop"' in studio_text
     assert "prepareAudioImport(file)" in studio_text
     assert "file," in studio_text
     assert "encodeAudioBufferToWav" not in studio_text
@@ -197,19 +239,19 @@ def test_music_studio_supports_external_audio_drop_import():
 
 
 def test_music_studio_exposes_free_time_signature_controls():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_TOPBAR)
 
     assert 'class="time-signature-picker mono"' in studio_text
     assert 'class="time-signature-display"' in studio_text
     assert 'v-if="timeSignaturePopoverOpen"' in studio_text
     assert 'class="time-signature-popover"' in studio_text
-    assert 'v-model.number="timeSignatureNumerator"' in studio_text
+    assert ':value="timeSignatureNumerator"' in studio_text
     assert (
-        '@click.stop="timeSignatureDenominatorPopoverOpen = !timeSignatureDenominatorPopoverOpen"'
+        "emit('update:timeSignatureDenominatorPopoverOpen', !timeSignatureDenominatorPopoverOpen)"
     ) in studio_text
     assert 'v-if="timeSignatureDenominatorPopoverOpen"' in studio_text
     assert "const timeSignatureDenominatorOptions = [2, 4, 8, 16, 32]" in studio_text
-    assert '@change="updateTimeSignature"' in studio_text
+    assert '@update-time-signature="updateTimeSignature"' in studio_text
     assert "timeSignatureLabel" in studio_text
     assert "timeSignatureDenominatorLabel" in studio_text
     assert "async function updateTimeSignature()" in studio_text
@@ -218,13 +260,13 @@ def test_music_studio_exposes_free_time_signature_controls():
 
 
 def test_music_studio_exposes_editable_tempo_control():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_TOPBAR)
 
-    assert 'v-model.number="tempoInput"' in studio_text
+    assert ':value="tempoInput"' in studio_text
     assert 'aria-label="Tempo BPM"' in studio_text
-    assert '@change="updateTempo"' in studio_text
-    assert '@keydown.enter="updateTempo"' in studio_text
-    assert '@wheel.prevent="onTempoWheel"' in studio_text
+    assert '@update-tempo="updateTempo"' in studio_text
+    assert "emit('update-tempo')" in studio_text
+    assert '@tempo-wheel="onTempoWheel"' in studio_text
     assert "function normalizeTempo(value)" in studio_text
     assert "async function updateTempo()" in studio_text
     assert "function onTempoWheel(event)" in studio_text
@@ -241,17 +283,36 @@ def test_music_studio_topbar_removes_manual_sync_and_demo_controls():
     assert "  resetDemo,\n" not in studio_text
 
 
+def test_music_studio_topbar_is_extracted_to_component():
+    studio_text = _read(STUDIO_COMPONENT)
+    topbar_text = _read(STUDIO_TOPBAR)
+
+    assert "<StudioTopbar" in studio_text
+    assert 'class="studio-topbar"' not in studio_text
+    assert 'class="studio-topbar"' in topbar_text
+    assert ':set-time-signature-root="setTimeSignatureRoot"' in studio_text
+    assert "ProjectLibraryPopover" in topbar_text
+    assert "defineEmits([" in topbar_text
+
+
 def test_music_studio_exposes_project_archive_library_controls():
     studio_text = _read(STUDIO_COMPONENT)
+    topbar_text = _read(STUDIO_TOPBAR)
+    project_library_text = _read(STUDIO_PROJECT_LIBRARY)
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
-    assert 'class="project-library-trigger"' in studio_text
-    assert 'v-if="projectLibraryOpen"' in studio_text
-    assert 'class="project-library-popover"' in studio_text
-    assert 'v-for="archive in projectArchives"' in studio_text
-    assert '@click="saveCurrentProjectCopy"' in studio_text
-    assert '@click="openArchivedProject(archive.id)"' in studio_text
+    assert "<StudioTopbar" in studio_text
+    assert 'class="project-library-trigger"' in topbar_text
+    assert "<ProjectLibraryPopover" in topbar_text
+    assert 'v-if="projectLibraryOpen"' in topbar_text
+    assert '@save-copy="saveCurrentProjectCopy"' in studio_text
+    assert '@open-archive="openArchivedProject"' in studio_text
+    assert 'class="project-library-popover"' not in studio_text
+    assert 'class="project-library-popover"' in project_library_text
+    assert 'v-for="archive in archives"' in project_library_text
+    assert "emit('save-copy')" in project_library_text
+    assert "emit('open-archive', archive.id)" in project_library_text
     assert "projectArchives," in host_text
     assert "activeProjectId," in host_text
     assert "async function loadProjectArchives()" in host_text
@@ -263,15 +324,19 @@ def test_music_studio_exposes_project_archive_library_controls():
 
 
 def test_music_studio_timeline_toolbar_matches_piano_editor_tools():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_ARRANGEMENT_EDITOR)
 
     assert 'class="timeline-actions arrangement-actions"' in studio_text
     assert 'class="timeline-control piano-quantize"' in studio_text
     assert 'title="选择时间线量化网格"' in studio_text
     assert 'title="MIDI 写入是否吸附到当前量化"' in studio_text
     assert 'title="创建全局小轨道"' in studio_text
-    assert ":class=\"['mini-btn text', { active: timelineTool === 'select' }]\"" in studio_text
-    assert ":class=\"['mini-btn text', { active: timelineTool === 'draw' }]\"" in studio_text
+    assert (
+        ":class=\"['mini-btn text', { active: toolbar.timelineTool === 'select' }]\"" in studio_text
+    )
+    assert (
+        ":class=\"['mini-btn text', { active: toolbar.timelineTool === 'draw' }]\"" in studio_text
+    )
     assert "function setTimelineTool(tool)" in studio_text
     assert "async function drawTimelineMidiAtPoint(point)" in studio_text
     assert "await createMidiClipAtBeat(track.id, point.beat)" in studio_text
@@ -405,7 +470,7 @@ def test_music_studio_audio_drop_matches_host_supported_import_formats():
 
 
 def test_music_studio_keeps_arrangement_track_list_fixed_while_scrolling():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_ARRANGEMENT_EDITOR, STUDIO_TRACK_LIST)
 
     assert '@scroll="syncArrangementScroll"' in studio_text
     assert "'--arrangement-scroll-left': `${arrangementScrollLeft.value}px`" in studio_text
@@ -439,7 +504,8 @@ def test_music_studio_track_list_sidebar_can_be_resized():
 
     assert 'class="track-list-resize-handle"' in studio_text
     assert 'aria-label="Resize track list"' in studio_text
-    assert '@pointerdown="startTrackListResize"' in studio_text
+    assert "@pointerdown=\"event => emit('start-track-list-resize', event)\"" in studio_text
+    assert '@start-track-list-resize="startTrackListResize"' in studio_text
     assert "const defaultTrackListWidth = 246" in studio_text
     assert "const minTrackListWidth = 190" in studio_text
     assert "const maxTrackListWidth = 420" in studio_text
@@ -456,14 +522,17 @@ def test_music_studio_track_list_sidebar_can_be_resized():
 
 
 def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_mixer():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_ARRANGEMENT_EDITOR, STUDIO_TRACK_LIST)
     mixer_text = _read(STUDIO_MIXER_PANEL)
 
     assert ':draggable="canDragTrackRow(track)"' in studio_text
-    assert '@dragstart.stop="startTrackReorderDrag($event, track)"' in studio_text
-    assert '@dragover.prevent.stop="onTrackReorderDragOver($event, track)"' in studio_text
-    assert '@drop.prevent.stop="dropTrackReorder($event, track)"' in studio_text
-    assert '@dragend.stop="endTrackReorderDrag"' in studio_text
+    assert "@dragstart.stop=\"event => emit('start-reorder', event, track)\"" in studio_text
+    assert "@dragover.prevent.stop=\"event => emit('reorder-over', event, track)\"" in studio_text
+    assert "@drop.prevent.stop=\"event => emit('drop-reorder', event, track)\"" in studio_text
+    assert '@start-reorder="startTrackReorderDrag"' in studio_text
+    assert '@reorder-over="onTrackReorderDragOver"' in studio_text
+    assert '@drop-reorder="dropTrackReorder"' in studio_text
+    assert '@end-reorder="endTrackReorder"' in studio_text
     assert (
         "const trackReorderDrag = ref({ trackId: null, overTrackId: null, placement: 'after' })"
         in studio_text
@@ -483,7 +552,7 @@ def test_music_studio_track_sidebar_drag_reorder_persists_tracks_and_syncs_mixer
 
 
 def test_music_studio_track_list_sidebar_uses_single_aligned_divider():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_ARRANGEMENT_EDITOR, STUDIO_TRACK_LIST)
 
     assert ".track-list-resize-handle::after" in studio_text
     assert "left: 4px;" in studio_text
@@ -504,9 +573,10 @@ def test_music_studio_track_list_sidebar_uses_single_aligned_divider():
 
 
 def test_music_studio_arrangement_body_wheel_uses_shift_for_horizontal_scroll():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_ARRANGEMENT_EDITOR)
 
-    assert '@wheel="onArrangementWheel"' in studio_text
+    assert "@wheel=\"event => emit('arrangement-wheel', event)\"" in studio_text
+    assert '@arrangement-wheel="onArrangementWheel"' in studio_text
     assert "function scrollArrangementHorizontallyFromWheel(event, wrap)" in studio_text
     assert "if (event.shiftKey && !event.ctrlKey && !event.metaKey)" in studio_text
     assert "if (!event.ctrlKey && !event.metaKey) return" in studio_text
@@ -534,7 +604,7 @@ def test_music_studio_exposes_automation_tracks_and_context_creation():
     assert "isAutomationTrack(track)" in studio_text
     assert "trackTypeLabel(track)" in studio_text
     assert "drawAutomationTrack(ctx, track, index)" in studio_text
-    assert "openAutomationMenu($event" in studio_text
+    assert "@tempo-context-menu" in studio_text
     assert "confirmCreateAutomationFromMenu" in studio_text
     assert "createAutomationTrackForTarget" in studio_text
     assert "automationTargetForTrackVolume(track)" in studio_text
@@ -564,7 +634,7 @@ def test_music_studio_exposes_plugin_parameter_browser_and_live_set():
 
 
 def test_music_studio_plugin_names_truncate_like_track_titles():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_TRACK_LIST)
     mixer_css = _read(STUDIO_MIXER_CSS)
 
     assert (
@@ -587,7 +657,9 @@ def test_music_studio_plugin_names_truncate_like_track_titles():
         "  overflow: hidden;\n"
     ) in mixer_css
     assert ".mixer-insert-slot span {" in mixer_css
-    assert "text-overflow: ellipsis;" in _read_many(STUDIO_COMPONENT, STUDIO_MIXER_CSS)
+    assert "text-overflow: ellipsis;" in _read_many(
+        STUDIO_COMPONENT, STUDIO_TRACK_LIST, STUDIO_MIXER_CSS
+    )
 
 
 def test_music_studio_has_mutually_exclusive_piano_and_mixer_lower_windows():
@@ -596,7 +668,7 @@ def test_music_studio_has_mutually_exclusive_piano_and_mixer_lower_windows():
     assert "const lowerEditorMode = ref(null)" in studio_text
     assert "const pianoVisible = computed(() => lowerEditorMode.value === 'piano')" in studio_text
     assert "const mixerVisible = computed(() => lowerEditorMode.value === 'mixer')" in studio_text
-    assert '@click="openMixer"' in studio_text
+    assert '@open-mixer="openMixer"' in studio_text
     assert "function openMixer()" in studio_text
     assert "function closeMixer()" in studio_text
     assert "lowerEditorMode.value = 'mixer'" in studio_text
@@ -678,6 +750,21 @@ def test_music_studio_mixer_window_replaces_inspector_rack():
     assert 'class="mixer-master-dock"' in mixer_text
     assert 'class="plugin-rack"' not in studio_text
     assert "const rackSlots =" not in studio_text
+
+
+def test_music_studio_controller_lanes_are_extracted_to_panel_component():
+    studio_text = _read(STUDIO_COMPONENT)
+    panel_text = _read(STUDIO_CONTROLLER_LANES)
+
+    assert "<ControllerLanesPanel" in studio_text
+    assert ':lanes="controllerLanes"' in studio_text
+    assert ':set-wrap="setControllerWrap"' in studio_text
+    assert ':set-canvas="setControllerLaneCanvas"' in studio_text
+    assert '@lane-pointerdown="onControllerLanePointerDown"' in studio_text
+    assert 'class="controller-lanes-wrap"' not in studio_text
+    assert 'class="controller-lanes-wrap"' in panel_text
+    assert 'v-for="lane in lanes"' in panel_text
+    assert "defineEmits([" in panel_text
     assert ">Mixer\n          </div>" not in studio_text
 
 
@@ -1088,7 +1175,12 @@ def test_music_studio_draw_mode_existing_notes_and_meter_events_use_click_delete
 
 def test_music_studio_exposes_automation_parameter_picker_and_learned_list():
     parent_text = _read(STUDIO_COMPONENT)
-    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_TRACK_CREATE_DIALOG)
+    studio_text = _read_many(
+        STUDIO_COMPONENT,
+        STUDIO_TOPBAR,
+        STUDIO_TRACK_CREATE_DIALOG,
+        STUDIO_AUTOMATION_PICKER,
+    )
     host_text = _read(DAW_HOST)
     api_text = _read(API)
 
@@ -1098,20 +1190,22 @@ def test_music_studio_exposes_automation_parameter_picker_and_learned_list():
     assert "openAutomationParameterPickerForCreate" in studio_text
     assert "openAutomationParameterPickerForTrack(track)" in studio_text
     assert "automation-parameter-dialog" in studio_text
+    assert "<AutomationParameterPickerDialog" in parent_text
     assert "defaultAutomationTargets" in studio_text
     assert "learnedAutomationTargets" in studio_text
     assert "automationTargetForTempoBpm()" in studio_text
     assert 'key: "global-tempo-bpm"' in studio_text
     assert (
-        '@contextmenu.prevent="openAutomationMenu($event, automationTargetForTempoBpm(), '
+        '@tempo-context-menu="event => openAutomationMenu(event, automationTargetForTempoBpm(), '
         "'Tempo BPM')"
     ) in studio_text
     assert 'class="automation-learned-row"' in studio_text
-    assert '@click="bindAutomationPickerTarget(item.target)"' in studio_text
-    assert '@keydown.enter.stop.prevent="bindAutomationPickerTarget(item.target)"' in studio_text
+    assert "emit('bind-target', item.target)" in studio_text
+    assert "@keydown.enter.stop.prevent=\"emit('bind-target', item.target)\"" in studio_text
     assert "@pointerdown.stop" in studio_text
     assert "@click.stop" in studio_text
-    assert "renameLearnedAutomationParameter(item.id, $event.target.value)" in studio_text
+    assert "emit('rename-learned-target', item.id, $event.target.value)" in studio_text
+    assert '@rename-learned-target="renameLearnedAutomationParameter"' in studio_text
     assert "bindAutomationPickerTarget(target)" in studio_text
     assert "Bind" not in studio_text
     assert "target?.kind === 'tempo_bpm'" in studio_text
@@ -1135,7 +1229,7 @@ def test_music_studio_frontend_transport_uses_tempo_automation_and_meter_events(
 
 
 def test_music_studio_separates_host_audio_ws_and_pcm_streaming_statuses():
-    studio_text = _read(STUDIO_COMPONENT)
+    studio_text = _read_many(STUDIO_COMPONENT, STUDIO_TOPBAR)
     host_text = _read(DAW_HOST)
 
     assert "const hostStreamingEnabled = ref(false)" in host_text

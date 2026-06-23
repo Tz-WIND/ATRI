@@ -11,247 +11,52 @@
     tabindex="0"
     @keydown="onStudioKeydown"
   >
-    <header class="studio-topbar">
-      <div class="session-title">
-        <span class="session-kicker">ATRI Studio</span>
-        <button
-          class="project-library-trigger"
-          type="button"
-          title="Project library"
-          @click.stop="toggleProjectLibrary"
-        >
-          <strong>{{ project?.title || 'Session' }}</strong>
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-          ><path d="m6 9 6 6 6-6" /></svg>
-        </button>
-        <div
-          v-if="projectLibraryOpen"
-          class="project-library-popover"
-          @click.stop
-        >
-          <div class="project-library-head">
-            <span>Project Library</span>
-            <button
-              class="mini-btn text"
-              type="button"
-              :disabled="loading"
-              @click="saveCurrentProjectCopy"
-            >
-              Save Copy
-            </button>
-          </div>
-          <input
-            v-model="projectCopyTitle"
-            class="project-copy-input"
-            type="text"
-            aria-label="Project copy title"
-            :placeholder="`${project?.title || 'ATRI Session'} Copy`"
-            @keydown.enter.prevent="saveCurrentProjectCopy"
-          >
-          <div class="project-library-list">
-            <button
-              v-for="archive in projectArchives"
-              :key="archive.id"
-              :class="['project-library-item', { active: archive.id === activeProjectId }]"
-              type="button"
-              :disabled="loading"
-              @click="openArchivedProject(archive.id)"
-            >
-              <span>
-                <strong>{{ archive.title || 'ATRI Session' }}</strong>
-                <small>{{ archiveTimeLabel(archive) }}</small>
-              </span>
-              <em>{{ archive.track_count || 0 }} tracks</em>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="transport">
-        <button
-          class="tool-btn primary"
-          :disabled="loading"
-          :title="playing ? 'Pause' : 'Play'"
-          @click="togglePlay"
-        >
-          <svg
-            v-if="playing"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-          ><rect
-            x="6"
-            y="5"
-            width="4"
-            height="14"
-          /><rect
-            x="14"
-            y="5"
-            width="4"
-            height="14"
-          /></svg>
-          <svg
-            v-else
-            viewBox="0 0 24 24"
-            fill="currentColor"
-          ><polygon points="7,4 19,12 7,20" /></svg>
-        </button>
-        <button
-          class="tool-btn"
-          title="Stop"
-          @click="stopPlayback"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="currentColor"
-          ><rect
-            x="6"
-            y="6"
-            width="12"
-            height="12"
-            rx="1"
-          /></svg>
-        </button>
-        <div class="clock mono">
-          {{ positionLabel }}
-        </div>
-        <label
-          class="tempo-box mono"
-          title="Tempo BPM"
-          @wheel.prevent="onTempoWheel"
-          @contextmenu.prevent="openAutomationMenu($event, automationTargetForTempoBpm(), 'Tempo BPM')"
-        >
-          <input
-            v-model.number="tempoInput"
-            type="number"
-            min="1"
-            step="1"
-            aria-label="Tempo BPM"
-            @focus="tempoInputFocused = true"
-            @blur="tempoInputFocused = false; syncTempoField(project)"
-            @change="updateTempo"
-            @keydown.enter="updateTempo"
-          >
-          <span>BPM</span>
-        </label>
-        <div
-          ref="timeSignatureRoot"
-          class="time-signature-picker mono"
-          title="Time signature"
-        >
-          <button
-            class="time-signature-display"
-            type="button"
-            aria-label="Edit time signature"
-            @click.stop="toggleTimeSignaturePopover"
-          >
-            {{ timeSignatureLabel }}
-          </button>
-          <div
-            v-if="timeSignaturePopoverOpen"
-            class="time-signature-popover"
-            @click.stop
-          >
-            <label class="time-signature-numerator">
-              <span>拍号</span>
-              <input
-                v-model.number="timeSignatureNumerator"
-                type="number"
-                min="1"
-                max="255"
-                step="1"
-                aria-label="Time signature numerator"
-                @focus="timeSignatureNumeratorFocused = true"
-                @blur="timeSignatureNumeratorFocused = false; syncTimeSignatureFields(project)"
-                @change="updateTimeSignature"
-                @keydown.enter="updateTimeSignature"
-              >
-            </label>
-            <div class="time-signature-duration-row">
-              <span>节拍时长</span>
-              <button
-                class="time-signature-denominator-trigger"
-                type="button"
-                @click.stop="timeSignatureDenominatorPopoverOpen = !timeSignatureDenominatorPopoverOpen"
-              >
-                {{ timeSignatureDenominatorLabel }}
-              </button>
-            </div>
-            <div
-              v-if="timeSignatureDenominatorPopoverOpen"
-              class="time-signature-denominator-popover"
-            >
-              <button
-                v-for="denominator in timeSignatureDenominatorOptions"
-                :key="denominator"
-                type="button"
-                :class="{ active: denominator === timeSignatureDenominator }"
-                @click.stop="setTimeSignatureDenominator(denominator)"
-              >
-                {{ denominatorLabel(denominator) }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="host-controls">
-        <div
-          class="host-status"
-          aria-label="Audio host diagnostics"
-        >
-          <span class="host-status-item">
-            <span :class="['host-dot', { online: host.running }]" />
-            <span class="host-label">{{ host.running ? 'Host Online' : 'Host Offline' }}</span>
-          </span>
-          <span class="host-status-item">
-            <span :class="['host-dot', { connected: audioConnected }]" />
-            <span class="host-label">
-              {{ audioConnected ? 'Audio WS Connected' : 'Audio WS Disconnected' }}
-            </span>
-          </span>
-          <span class="host-status-item">
-            <span :class="['host-dot', { connected: hostStreamingEnabled, streaming: pcmStreaming }]" />
-            <span class="host-label">
-              {{ hostStreamingEnabled ? (pcmStreaming ? 'PCM Streaming' : 'PCM Waiting') : 'PCM Idle' }}
-            </span>
-          </span>
-        </div>
-        <button
-          :class="['tool-btn text', { active: mixerVisible }]"
-          title="Show mixer rack"
-          @click="openMixer"
-        >
-          Mixer
-        </button>
-        <button
-          class="tool-btn"
-          type="button"
-          title="Export audio"
-          aria-label="Export audio"
-          :disabled="loading || exporting"
-          @click="openExportDialog"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-          ><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
-        </button>
-        <button
-          :class="['tool-btn text', { active: inspectorVisible }]"
-          title="Show or hide inspector"
-          @click="inspectorVisible = !inspectorVisible"
-        >
-          Inspector
-        </button>
-      </div>
-    </header>
-
+    <StudioTopbar
+      v-model:project-copy-title="projectCopyTitle"
+      v-model:tempo-input="tempoInput"
+      v-model:tempo-input-focused="tempoInputFocused"
+      v-model:time-signature-numerator="timeSignatureNumerator"
+      v-model:time-signature-numerator-focused="timeSignatureNumeratorFocused"
+      v-model:time-signature-denominator-popover-open="timeSignatureDenominatorPopoverOpen"
+      v-model:inspector-visible="inspectorVisible"
+      :embedded="embedded"
+      :project="project"
+      :project-archives="projectArchives"
+      :active-project-id="activeProjectId"
+      :project-library-open="projectLibraryOpen"
+      :loading="loading"
+      :playing="playing"
+      :position-label="positionLabel"
+      :time-signature-denominator="timeSignatureDenominator"
+      :time-signature-label="timeSignatureLabel"
+      :time-signature-denominator-label="timeSignatureDenominatorLabel"
+      :time-signature-denominator-options="timeSignatureDenominatorOptions"
+      :time-signature-popover-open="timeSignaturePopoverOpen"
+      :host="host"
+      :audio-connected="audioConnected"
+      :host-streaming-enabled="hostStreamingEnabled"
+      :pcm-streaming="pcmStreaming"
+      :mixer-visible="mixerVisible"
+      :exporting="exporting"
+      :archive-time-label="archiveTimeLabel"
+      :denominator-label="denominatorLabel"
+      :set-time-signature-root="setTimeSignatureRoot"
+      @toggle-project-library="toggleProjectLibrary"
+      @save-copy="saveCurrentProjectCopy"
+      @open-archive="openArchivedProject"
+      @toggle-play="togglePlay"
+      @stop-playback="stopPlayback"
+      @sync-tempo-field="syncTempoField(project)"
+      @update-tempo="updateTempo"
+      @tempo-wheel="onTempoWheel"
+      @tempo-context-menu="event => openAutomationMenu(event, automationTargetForTempoBpm(), 'Tempo BPM')"
+      @toggle-time-signature-popover="toggleTimeSignaturePopover"
+      @sync-time-signature-fields="syncTimeSignatureFields(project)"
+      @update-time-signature="updateTimeSignature"
+      @set-time-signature-denominator="setTimeSignatureDenominator"
+      @open-mixer="openMixer"
+      @open-export="openExportDialog"
+    />
     <div
       v-if="hostError"
       class="studio-error"
@@ -265,430 +70,45 @@
         class="editor-stack"
         :style="editorStackStyle"
       >
-        <div
-          class="arrangement"
-          :style="arrangementLayoutStyle"
-        >
-          <div class="arrangement-head-grid">
-            <div class="track-list-head">
-              <span>Tracks</span>
-              <button
-                class="mini-btn track-create-trigger"
-                type="button"
-                title="Add Track"
-                aria-label="Add track"
-                @click="openTrackCreateDialog"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                ><path d="M12 5v14M5 12h14" /></svg>
-              </button>
-            </div>
-
-            <div class="arrangement-toolbar">
-              <div>
-                <span>Timeline</span>
-                <strong>{{ selectedClipIds.size }} selected</strong>
-              </div>
-              <div class="timeline-actions arrangement-actions">
-                <div
-                  class="timeline-control piano-quantize"
-                  title="选择时间线量化网格"
-                >
-                  <span>量化</span>
-                  <button
-                    class="piano-quantize-button"
-                    type="button"
-                    @click.stop="timelineQuantizeMenuOpen = !timelineQuantizeMenuOpen"
-                  >
-                    <strong>{{ pianoQuantizeLabel }}</strong>
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                    ><path d="m6 9 6 6 6-6" /></svg>
-                  </button>
-                  <div
-                    v-if="timelineQuantizeMenuOpen"
-                    class="piano-quantize-menu"
-                  >
-                    <button
-                      v-for="option in pianoQuantizeOptions"
-                      :key="`timeline-${option.id}`"
-                      type="button"
-                      :class="{ active: pianoQuantizeId === option.id }"
-                      @click.stop="setPianoQuantizeOption(option.id)"
-                    >
-                      {{ option.label }}
-                    </button>
-                  </div>
-                </div>
-                <button
-                  :class="['mini-btn text', { active: isPianoSnapActive }]"
-                  title="MIDI 写入是否吸附到当前量化"
-                  @click="pianoSnapEnabled = !pianoSnapEnabled"
-                >
-                  吸附 {{ isPianoSnapActive ? '量化' : '关闭' }}
-                </button>
-                <select
-                  v-model="pianoSubtrackCreateValue"
-                  class="piano-subtrack-select"
-                  title="创建全局小轨道"
-                  @change="createPianoSubtrack()"
-                >
-                  <option value="">
-                    + 小轨道
-                  </option>
-                  <option
-                    v-for="option in pianoSubtrackOptions"
-                    :key="`timeline-${option.id}`"
-                    :value="option.id"
-                    :disabled="option.disabled"
-                  >
-                    {{ option.label }}
-                  </option>
-                </select>
-                <button
-                  :class="['mini-btn text', { active: timelineTool === 'select' }]"
-                  title="Select and move clips"
-                  @click="setTimelineTool('select')"
-                >
-                  Select
-                </button>
-                <button
-                  :class="['mini-btn text', { active: timelineTool === 'draw' }]"
-                  title="Draw MIDI into the selected instrument track"
-                  @click="setTimelineTool('draw')"
-                >
-                  Draw
-                </button>
-                <button
-                  class="mini-btn text danger"
-                  title="Delete selected clips"
-                  :disabled="selectedClipIds.size === 0"
-                  @click="deleteSelectedClips"
-                >
-                  Del
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <button
-            class="track-list-resize-handle"
-            type="button"
-            title="Resize track list"
-            aria-label="Resize track list"
-            @pointerdown="startTrackListResize"
-          />
-
-          <div
-            ref="arrangementWrap"
-            :class="[
-              'arrangement-canvas-wrap',
-              {
-                'audio-drop-active': audioDropActive,
-                'audio-importing': audioImporting,
-              },
-            ]"
-            :style="arrangementWrapStyle"
-            @dragenter.prevent="onAudioDragEnter"
-            @dragover.prevent="onAudioDragOver"
-            @dragleave="onAudioDragLeave"
-            @drop.prevent="onAudioDrop"
-            @scroll="syncArrangementScroll"
-          >
-            <div class="arrangement-scroll-inner">
-              <aside class="track-list">
-                <div class="track-list-sticky-header">
-                  <div
-                    class="track-lane-spacer"
-                    aria-hidden="true"
-                  />
-
-                  <div
-                    v-for="subtrackId in arrangementVisibleSubtracks"
-                    :key="`arrangement-subtrack-${subtrackId}`"
-                    class="track-global-subtrack-row"
-                  >
-                    <span>{{ subtrackId === 'meter' ? '拍号轨' : '和声轨' }}</span>
-                    <small>{{ subtrackId === 'meter' ? 'Global Meter' : 'Global Harmony' }}</small>
-                  </div>
-                </div>
-
-                <template
-                  v-for="track in tracks"
-                  :key="track.id"
-                >
-                  <div
-                    :class="[
-                      'track-row',
-                      {
-                        active: activeTrack?.id === track.id,
-                        'reorder-dragging': isTrackReorderDragging(track),
-                        'reorder-before': isTrackReorderDropTarget(track, 'before'),
-                        'reorder-after': isTrackReorderDropTarget(track, 'after'),
-                      },
-                    ]"
-                    :draggable="canDragTrackRow(track)"
-                    role="button"
-                    tabindex="0"
-                    @click="selectTrack(track.id)"
-                    @contextmenu.prevent="openTrackContextMenu($event, track)"
-                    @dragstart.stop="startTrackReorderDrag($event, track)"
-                    @dragover.prevent.stop="onTrackReorderDragOver($event, track)"
-                    @drop.prevent.stop="dropTrackReorder($event, track)"
-                    @dragend.stop="endTrackReorderDrag"
-                    @keydown="onTrackRowKeydown($event, track.id)"
-                  >
-                    <span
-                      class="track-color"
-                      :style="{ background: track.color }"
-                    />
-                    <span class="track-main">
-                      <span class="track-title-line">
-                        <strong
-                          class="track-title-text"
-                          :title="track.name"
-                        >{{ track.name }}</strong>
-                        <small
-                          class="track-meta-text"
-                          :title="trackRowMetaLabel(track)"
-                        >{{ trackRowMetaLabel(track) }}</small>
-                      </span>
-                      <span
-                        v-if="isInstrumentTrack(track)"
-                        class="track-plugin-bar"
-                        @click.stop
-                      >
-                        <select
-                          class="track-plugin-select"
-                          :value="pluginSlotValue(track, 'instrument')"
-                          :title="pluginSlotLabel(track, 'instrument')"
-                          @change="onPluginSelect(track, 'instrument', $event.target.value)"
-                        >
-                          <option value="builtin::ATRI Basic Synth">
-                            ATRI Basic Synth
-                          </option>
-                          <option
-                            v-if="selectedPluginMissing(track, 'instrument')"
-                            :value="pluginSlotValue(track, 'instrument')"
-                          >
-                            {{ pluginSlot(track, 'instrument').name }}
-                          </option>
-                          <option
-                            v-for="plugin in pluginOptions.vst3"
-                            :key="`track-vst3-${track.id}-${plugin.path}`"
-                            :value="`vst3::${plugin.path}`"
-                          >
-                            {{ plugin.name }}
-                          </option>
-                          <option
-                            v-for="plugin in pluginOptions.vst2"
-                            :key="`track-vst2-${track.id}-${plugin.path}`"
-                            :value="`vst2::${plugin.path}`"
-                            disabled
-                          >
-                            {{ plugin.name }} (VST2)
-                          </option>
-                        </select>
-                        <select
-                          class="track-plugin-select track-output-select"
-                          :value="track.output_bus_id ?? ''"
-                          title="Output"
-                          @change.stop="updateTrackOutputBus(track, $event.target.value)"
-                        >
-                          <option value="">
-                            Master
-                          </option>
-                          <option
-                            v-for="bus in availableOutputBuses(track.id)"
-                            :key="`out-${track.id}-${bus.id}`"
-                            :value="bus.id"
-                          >
-                            {{ bus.name }}
-                          </option>
-                        </select>
-                        <button
-                          :class="['track-plugin-open', { active: isPluginEditorOpen(track.id) }]"
-                          :disabled="!canOpenPluginEditor(track)"
-                          :title="isPluginEditorOpen(track.id) ? 'Native editor open' : 'Open native plugin editor'"
-                          @click.stop="togglePluginEditor(track)"
-                        >
-                          <svg
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                          ><path d="M4 7h10" /><path d="M18 7h2" /><path d="M4 17h2" /><path d="M10 17h10" /><circle
-                            cx="16"
-                            cy="7"
-                            r="2"
-                          /><circle
-                            cx="8"
-                            cy="17"
-                            r="2"
-                          /></svg>
-                        </button>
-                      </span>
-                      <span
-                        v-else-if="isAudioTrack(track)"
-                        class="track-plugin-bar audio-channel-bar"
-                        @click.stop
-                      >
-                        <select
-                          class="track-plugin-select"
-                          :value="track.channel_type || 'multichannel'"
-                          title="Audio channel type"
-                          @change.stop="updateTrack(track.id, { channel_type: $event.target.value })"
-                        >
-                          <option value="mono">
-                            Mono
-                          </option>
-                          <option value="multichannel">
-                            Multi-channel
-                          </option>
-                        </select>
-                        <select
-                          class="track-plugin-select track-output-select"
-                          :value="track.output_bus_id ?? ''"
-                          title="Output"
-                          @change.stop="updateTrackOutputBus(track, $event.target.value)"
-                        >
-                          <option value="">
-                            Master
-                          </option>
-                          <option
-                            v-for="bus in availableOutputBuses(track.id)"
-                            :key="`out-${track.id}-${bus.id}`"
-                            :value="bus.id"
-                          >
-                            {{ bus.name }}
-                          </option>
-                        </select>
-                      </span>
-                      <span
-                        v-else-if="isBusTrack(track)"
-                        class="track-plugin-bar bus-output-bar"
-                        @click.stop
-                      >
-                        <select
-                          class="track-plugin-select track-output-select"
-                          :value="track.output_bus_id ?? ''"
-                          title="Output"
-                          @change.stop="updateTrackOutputBus(track, $event.target.value)"
-                        >
-                          <option value="">
-                            Master
-                          </option>
-                          <option
-                            v-for="bus in availableOutputBuses(track.id)"
-                            :key="`out-${track.id}-${bus.id}`"
-                            :value="bus.id"
-                          >
-                            {{ bus.name }}
-                          </option>
-                        </select>
-                      </span>
-                      <span
-                        v-else-if="isAutomationTrack(track)"
-                        class="track-plugin-bar automation-target-bar"
-                        @click.stop
-                      >
-                        <button
-                          class="automation-target-select"
-                          type="button"
-                          @click.stop="openAutomationParameterPickerForTrack(track)"
-                        >
-                          {{ automationTargetLabel(track.target) }}
-                        </button>
-                        <small>{{ automationPointCount(track) }} pts</small>
-                      </span>
-                    </span>
-                    <span class="track-buttons">
-                      <button
-                        :class="['track-flag', { on: track.mute }]"
-                        title="Mute"
-                        @click.stop="updateTrack(track.id, { mute: !track.mute })"
-                      >M</button>
-                      <button
-                        :class="['track-flag', { on: track.solo }]"
-                        title="Solo"
-                        @click.stop="updateTrack(track.id, { solo: !track.solo })"
-                      >S</button>
-                    </span>
-                  </div>
-                </template>
-              </aside>
-
-              <div class="arrangement-timeline-stack">
-                <canvas
-                  ref="arrangementHeaderCanvas"
-                  class="editor-canvas arrangement-header-canvas"
-                  @pointerdown="onArrangementPointerDown"
-                  @wheel="onArrangementWheel"
-                  @contextmenu.prevent
-                />
-                <div class="arrangement-scroll-content">
-                  <canvas
-                    ref="arrangementCanvas"
-                    class="editor-canvas arrangement-canvas"
-                    @dblclick="onArrangementDoubleClick"
-                    @pointerdown="onArrangementPointerDown"
-                    @wheel="onArrangementWheel"
-                    @contextmenu.prevent
-                  />
-                </div>
-              </div>
-            </div>
-            <div
-              v-if="audioDropActive || audioImporting"
-              class="audio-drop-layer"
-              aria-hidden="true"
-            >
-              <span class="audio-drop-glyph">
-                <i />
-                <i />
-                <i />
-                <i />
-                <i />
-              </span>
-            </div>
-            <div
-              v-if="automationMenu.open"
-              class="automation-context-menu"
-              :style="{ left: `${automationMenu.x}px`, top: `${automationMenu.y}px` }"
-              @pointerdown.stop
-            >
-              <button @click="confirmCreateAutomationFromMenu">
-                Create automation track
-              </button>
-              <small>{{ automationMenu.label }}</small>
-            </div>
-            <div
-              v-if="trackContextMenu.open"
-              class="track-context-menu"
-              :style="{ left: `${trackContextMenu.x}px`, top: `${trackContextMenu.y}px` }"
-              @pointerdown.stop
-              @contextmenu.prevent.stop
-            >
-              <small>{{ trackContextMenu.name }}</small>
-              <button
-                class="track-context-delete"
-                type="button"
-                :disabled="tracks.length <= 1 || loading"
-                @click="deleteTrackFromContextMenu"
-              >
-                Delete Track
-              </button>
-            </div>
-          </div>
-        </div>
+        <ArrangementEditorPanel
+          ref="arrangementEditorPanel"
+          :layout="arrangementLayoutContext"
+          :toolbar="arrangementToolbarContext"
+          :track-list="arrangementTrackListContext"
+          :audio-drop="arrangementAudioDropContext"
+          :context-menus="arrangementContextMenuContext"
+          @add-track="openTrackCreateDialog"
+          @toggle-timeline-quantize-menu="timelineQuantizeMenuOpen = !timelineQuantizeMenuOpen"
+          @set-piano-quantize-option="setPianoQuantizeOption"
+          @toggle-piano-snap="pianoSnapEnabled = !pianoSnapEnabled"
+          @update-piano-subtrack-create-value="value => { pianoSubtrackCreateValue = value }"
+          @create-piano-subtrack="createPianoSubtrack"
+          @set-timeline-tool="setTimelineTool"
+          @delete-selected-clips="deleteSelectedClips"
+          @start-track-list-resize="startTrackListResize"
+          @audio-drag-enter="onAudioDragEnter"
+          @audio-drag-over="onAudioDragOver"
+          @audio-drag-leave="onAudioDragLeave"
+          @audio-drop="onAudioDrop"
+          @scroll="syncArrangementScroll"
+          @select-track="selectTrack"
+          @open-context-menu="openTrackContextMenu"
+          @start-reorder="startTrackReorderDrag"
+          @reorder-over="onTrackReorderDragOver"
+          @drop-reorder="dropTrackReorder"
+          @end-reorder="endTrackReorder"
+          @row-keydown="onTrackRowKeydown"
+          @plugin-select="onPluginSelect"
+          @update-track-output-bus="updateTrackOutputBus"
+          @toggle-plugin-editor="togglePluginEditor"
+          @update-track="updateTrack"
+          @open-automation-picker="openAutomationParameterPickerForTrack"
+          @arrangement-pointer-down="onArrangementPointerDown"
+          @arrangement-wheel="onArrangementWheel"
+          @arrangement-double-click="onArrangementDoubleClick"
+          @confirm-create-automation="confirmCreateAutomationFromMenu"
+          @delete-track-from-context-menu="deleteTrackFromContextMenu"
+        />
 
         <div
           v-if="pianoVisible && activeMidiClip"
@@ -704,106 +124,25 @@
           >
             <span />
           </div>
-          <div class="piano-head">
-            <div>
-              <span>Piano Roll</span>
-              <strong>{{ activeMidiClip.clip.name }}</strong>
-            </div>
-            <div class="piano-actions">
-              <div
-                class="piano-control piano-quantize"
-                title="选择钢琴窗量化网格"
-              >
-                <span>量化</span>
-                <button
-                  class="piano-quantize-button"
-                  type="button"
-                  @click.stop="pianoQuantizeMenuOpen = !pianoQuantizeMenuOpen"
-                >
-                  <strong>{{ pianoQuantizeLabel }}</strong>
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  ><path d="m6 9 6 6 6-6" /></svg>
-                </button>
-                <div
-                  v-if="pianoQuantizeMenuOpen"
-                  class="piano-quantize-menu"
-                >
-                  <button
-                    v-for="option in pianoQuantizeOptions"
-                    :key="option.id"
-                    type="button"
-                    :class="{ active: pianoQuantizeId === option.id }"
-                    @click.stop="setPianoQuantizeOption(option.id)"
-                  >
-                    {{ option.label }}
-                  </button>
-                </div>
-              </div>
-              <button
-                :class="['mini-btn text', { active: isPianoSnapActive }]"
-                title="音符和控制器拖拽是否吸附到当前量化"
-                @click="pianoSnapEnabled = !pianoSnapEnabled"
-              >
-                吸附 {{ isPianoSnapActive ? '量化' : '关闭' }}
-              </button>
-              <select
-                v-model="pianoSubtrackCreateValue"
-                class="piano-subtrack-select"
-                title="创建钢琴窗附属小轨道"
-                @change="createPianoSubtrack()"
-              >
-                <option value="">
-                  + 小轨道
-                </option>
-                <option
-                  v-for="option in pianoSubtrackOptions"
-                  :key="option.id"
-                  :value="option.id"
-                  :disabled="option.disabled"
-                >
-                  {{ option.label }}
-                </option>
-              </select>
-              <button
-                :class="['mini-btn text', { active: pianoTool === 'select' }]"
-                title="Select and move notes"
-                @click="pianoTool = 'select'"
-              >
-                Select
-              </button>
-              <button
-                :class="['mini-btn text', { active: pianoTool === 'draw' }]"
-                title="Draw notes by dragging"
-                @click="pianoTool = 'draw'"
-              >
-                Draw
-              </button>
-              <button
-                class="mini-btn text danger"
-                title="Delete selected notes"
-                :disabled="selectedNoteIds.size === 0"
-                @click="deleteSelectedNotes"
-              >
-                Del
-              </button>
-              <button
-                class="mini-btn"
-                title="Close piano roll"
-                @click="closePiano"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                ><path d="M18 6 6 18M6 6l12 12" /></svg>
-              </button>
-            </div>
-          </div>
+          <PianoEditorHeader
+            v-model:subtrack-create-value="pianoSubtrackCreateValue"
+            :clip-name="activeMidiClip.clip.name"
+            :quantize-menu-open="pianoQuantizeMenuOpen"
+            :quantize-label="pianoQuantizeLabel"
+            :quantize-options="pianoQuantizeOptions"
+            :quantize-id="pianoQuantizeId"
+            :snap-active="isPianoSnapActive"
+            :subtrack-options="pianoSubtrackOptions"
+            :tool="pianoTool"
+            :selected-note-count="selectedNoteIds.size"
+            @toggle-quantize-menu="pianoQuantizeMenuOpen = !pianoQuantizeMenuOpen"
+            @set-quantize-option="setPianoQuantizeOption"
+            @toggle-snap="pianoSnapEnabled = !pianoSnapEnabled"
+            @create-subtrack="createPianoSubtrack"
+            @set-tool="value => { pianoTool = value }"
+            @delete-selected-notes="deleteSelectedNotes"
+            @close="closePiano"
+          />
           <div
             ref="pianoWorkspace"
             class="piano-workspace"
@@ -850,127 +189,32 @@
               @pointerdown.stop
               @click.stop="togglePianoHarmonyLane"
             />
-            <div
+            <ControllerLanesPanel
               v-if="controllerLanes.length"
-              ref="controllerWrap"
-              class="controller-lanes-wrap"
-              :style="{ height: `${controllerPanelHeight}px` }"
+              v-model:custom-controller-number="customControllerNumber"
+              :lanes="controllerLanes"
+              :panel-height="controllerPanelHeight"
+              :timeline-width="pianoTimelineWidth"
+              :piano-key-width="pianoKeyW"
+              :scroll-left="controllerScrollLeft"
+              :menu-lane-id="controllerMenuLaneId"
+              :axis-top="controllerAxisTop"
+              :axis-middle="controllerAxisMiddle"
+              :axis-bottom="controllerAxisBottom"
+              :controller-label="controllerLabel"
+              :menu-options="controllerMenuOptions"
+              :set-wrap="setControllerWrap"
+              :set-canvas="setControllerLaneCanvas"
               @scroll="syncPianoScroll('controller')"
-            >
-              <div
-                class="controller-lanes"
-                :style="{ width: `${pianoTimelineWidth}px` }"
-              >
-                <section
-                  v-for="lane in controllerLanes"
-                  :key="lane.id"
-                  class="controller-lane"
-                  :style="{ width: `${pianoTimelineWidth}px` }"
-                >
-                  <div class="controller-lane-axis">
-                    <span>{{ controllerAxisTop(lane) }}</span>
-                    <span>{{ controllerAxisMiddle(lane) }}</span>
-                    <span>{{ controllerAxisBottom(lane) }}</span>
-                  </div>
-                  <div
-                    class="controller-lane-tabs"
-                    :style="{ left: `${pianoKeyW + controllerScrollLeft}px` }"
-                  >
-                    <button
-                      class="controller-menu-btn"
-                      title="添加或移除控制器"
-                      @click.stop="toggleControllerMenu(lane.id)"
-                    >
-                      ...
-                    </button>
-                    <button
-                      v-for="controllerId in lane.controllerIds"
-                      :key="`${lane.id}-${controllerId}`"
-                      :class="[
-                        'controller-tab',
-                        { active: lane.activeControllerId === controllerId },
-                      ]"
-                      :title="controllerLabel(controllerId)"
-                      @click.stop="setLaneController(lane.id, controllerId)"
-                    >
-                      {{ controllerLabel(controllerId) }}
-                    </button>
-                    <button
-                      v-if="controllerLanes.length > 1"
-                      class="controller-close"
-                      title="移除控制器窗口"
-                      @click.stop="removeControllerLane(lane.id)"
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                      ><path d="M18 6 6 18M6 6l12 12" /></svg>
-                    </button>
-                    <div
-                      v-if="controllerMenuLaneId === lane.id"
-                      class="controller-menu"
-                    >
-                      <button
-                        v-for="preset in controllerMenuOptions(lane)"
-                        :key="`${lane.id}-menu-${preset.id}`"
-                        type="button"
-                        @click.stop="addControllerToLane(lane.id, preset.id)"
-                      >
-                        {{ preset.label }}
-                      </button>
-                      <label>
-                        <span>自定义 CC</span>
-                        <input
-                          v-model="customControllerNumber"
-                          inputmode="numeric"
-                          maxlength="3"
-                          placeholder="0-127"
-                          @keydown.enter.stop.prevent="addCustomControllerToLane(lane.id)"
-                        >
-                      </label>
-                      <button
-                        type="button"
-                        @click.stop="addCustomControllerToLane(lane.id)"
-                      >
-                        添加
-                      </button>
-                      <button
-                        type="button"
-                        :disabled="lane.controllerIds.length <= 1"
-                        @click.stop="removeActiveControllerFromLane(lane.id)"
-                      >
-                        移除当前
-                      </button>
-                    </div>
-                  </div>
-                  <canvas
-                    :ref="el => setControllerLaneCanvas(lane.id, el)"
-                    class="controller-canvas"
-                    @pointerdown="event => onControllerLanePointerDown(event, lane)"
-                    @contextmenu.prevent
-                  />
-                </section>
-                <div
-                  class="controller-lane-footer"
-                  :style="{ width: `${pianoTimelineWidth}px` }"
-                >
-                  <button
-                    class="controller-footer-btn"
-                    title="增加控制器窗口"
-                    @click="addControllerLane"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                    ><path d="M12 5v14M5 12h14" /></svg>
-                  </button>
-                </div>
-              </div>
-            </div>
+              @toggle-menu="toggleControllerMenu"
+              @set-lane-controller="setLaneController"
+              @remove-lane="removeControllerLane"
+              @add-controller="addControllerToLane"
+              @add-custom-controller="addCustomControllerToLane"
+              @remove-active-controller="removeActiveControllerFromLane"
+              @lane-pointerdown="onControllerLanePointerDown"
+              @add-lane="addControllerLane"
+            />
             <div
               v-if="pianoMeterEditor.open"
               ref="pianoMeterEditorRoot"
@@ -1107,95 +351,28 @@
       @close="closeExportDialog"
       @export="exportCurrentAudio"
     />
-    <div
-      v-if="automationParameterPicker.open"
-      class="modal-backdrop automation-parameter-backdrop"
-      @click.self="closeAutomationParameterPicker"
-      @keydown.esc.stop.prevent="closeAutomationParameterPicker"
-    >
-      <section
-        class="automation-parameter-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="automation-parameter-title"
-        tabindex="-1"
-      >
-        <header class="track-create-dialog-head">
-          <div>
-            <span>Automation</span>
-            <h2 id="automation-parameter-title">
-              Select Parameter
-            </h2>
-          </div>
-          <button
-            class="mini-btn"
-            type="button"
-            title="Close"
-            aria-label="Close"
-            @click="closeAutomationParameterPicker"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            ><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </header>
-
-        <div class="automation-parameter-columns">
-          <section class="automation-parameter-column">
-            <h3>Available</h3>
-            <button
-              v-for="target in defaultAutomationTargets"
-              :key="target.key"
-              type="button"
-              class="automation-parameter-row"
-              @click="bindAutomationPickerTarget(target.target)"
-            >
-              <strong>{{ target.label }}</strong>
-              <span>{{ target.detail }}</span>
-            </button>
-          </section>
-          <section class="automation-parameter-column learned">
-            <h3>MIDI Learn</h3>
-            <button
-              type="button"
-              class="automation-learn-refresh"
-              @click="pollCapturedPluginParameters"
-            >
-              Refresh captured
-            </button>
-            <div
-              v-for="item in learnedAutomationTargets"
-              :key="item.id"
-              class="automation-learned-row"
-              role="button"
-              tabindex="0"
-              @click="bindAutomationPickerTarget(item.target)"
-              @keydown.enter.stop.prevent="bindAutomationPickerTarget(item.target)"
-              @keydown.space.stop.prevent="bindAutomationPickerTarget(item.target)"
-            >
-              <input
-                :value="item.name"
-                @pointerdown.stop
-                @click.stop
-                @change="renameLearnedAutomationParameter(item.id, $event.target.value)"
-              >
-              <small>{{ item.detail }}</small>
-            </div>
-          </section>
-        </div>
-      </section>
-    </div>
+    <AutomationParameterPickerDialog
+      :open="automationParameterPicker.open"
+      :default-targets="defaultAutomationTargets"
+      :learned-targets="learnedAutomationTargets"
+      @close="closeAutomationParameterPicker"
+      @bind-target="bindAutomationPickerTarget"
+      @refresh-captured="pollCapturedPluginParameters"
+      @rename-learned-target="renameLearnedAutomationParameter"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDawHost } from '@/composables/useDawHost.js'
+import ArrangementEditorPanel from './studio/ArrangementEditorPanel.vue'
+import AutomationParameterPickerDialog from './studio/AutomationParameterPickerDialog.vue'
+import ControllerLanesPanel from './studio/ControllerLanesPanel.vue'
 import MixerPanel from './studio/MixerPanel.vue'
+import PianoEditorHeader from './studio/PianoEditorHeader.vue'
 import StudioExportDialog from './studio/StudioExportDialog.vue'
+import StudioTopbar from './studio/StudioTopbar.vue'
 import TrackCreateDialog from './studio/TrackCreateDialog.vue'
 import { createArrangementRenderer } from './arrangementRenderer.js'
 import { createAutomationEditing } from './automationEditing.js'
@@ -1299,9 +476,10 @@ const {
   disconnectAudioStream,
 } = useDawHost()
 
-const arrangementWrap = ref(null)
-const arrangementHeaderCanvas = ref(null)
-const arrangementCanvas = ref(null)
+const arrangementEditorPanel = ref(null)
+const arrangementWrap = computed(() => arrangementEditorPanel.value?.arrangementWrap || null)
+const arrangementHeaderCanvas = computed(() => arrangementEditorPanel.value?.arrangementHeaderCanvas || null)
+const arrangementCanvas = computed(() => arrangementEditorPanel.value?.arrangementCanvas || null)
 const editorStack = ref(null)
 const lowerEditorPanel = ref(null)
 const pianoWorkspace = ref(null)
@@ -1593,6 +771,53 @@ const arrangementLayoutStyle = computed(() => ({
 }))
 const arrangementWrapStyle = computed(() => ({
   '--arrangement-scroll-left': `${arrangementScrollLeft.value}px`,
+}))
+const arrangementLayoutContext = computed(() => ({
+  arrangementStyle: arrangementLayoutStyle.value,
+  wrapStyle: arrangementWrapStyle.value,
+}))
+const arrangementToolbarContext = computed(() => ({
+  selectedClipCount: selectedClipIds.value.size,
+  timelineQuantizeMenuOpen: timelineQuantizeMenuOpen.value,
+  pianoQuantizeLabel: pianoQuantizeLabel.value,
+  pianoQuantizeOptions: pianoQuantizeOptions.value,
+  pianoQuantizeId: pianoQuantizeId.value,
+  pianoSnapActive: isPianoSnapActive.value,
+  pianoSubtrackCreateValue: pianoSubtrackCreateValue.value,
+  pianoSubtrackOptions: pianoSubtrackOptions.value,
+  timelineTool: timelineTool.value,
+}))
+const arrangementTrackListContext = computed(() => ({
+  tracks: tracks.value,
+  activeTrack: activeTrack.value,
+  visibleSubtracks: arrangementVisibleSubtracks.value,
+  pluginOptions: pluginOptions.value,
+  canDragTrackRow,
+  isTrackReorderDragging,
+  isTrackReorderDropTarget,
+  trackRowMetaLabel,
+  isInstrumentTrack,
+  isAudioTrack,
+  isBusTrack,
+  isAutomationTrack,
+  pluginSlot,
+  pluginSlotValue,
+  pluginSlotLabel,
+  selectedPluginMissing,
+  availableOutputBuses,
+  isPluginEditorOpen,
+  canOpenPluginEditor,
+  automationTargetLabel,
+  automationPointCount,
+}))
+const arrangementAudioDropContext = computed(() => ({
+  active: audioDropActive.value,
+  importing: audioImporting.value,
+}))
+const arrangementContextMenuContext = computed(() => ({
+  automation: automationMenu.value,
+  track: trackContextMenu.value,
+  loading: loading.value,
 }))
 const positionLabel = computed(() => {
   const position = meterPositionAtBeat(project.value, visualPositionBeats.value)
@@ -4004,6 +3229,14 @@ async function deletePianoNoteById(noteId) {
   await persistActiveClipNotes(remaining)
 }
 
+function setControllerWrap(el) {
+  controllerWrap.value = el
+}
+
+function setTimeSignatureRoot(el) {
+  timeSignatureRoot.value = el
+}
+
 function setControllerLaneCanvas(laneId, el) {
   if (el) controllerLaneCanvases.set(laneId, el)
   else controllerLaneCanvases.delete(laneId)
@@ -5090,179 +4323,6 @@ watch(() => host.value.running, (running) => {
   background: #17191c;
 }
 
-.studio-topbar {
-  height: 54px;
-  display: grid;
-  grid-template-columns: minmax(170px, 1fr) auto minmax(300px, 1fr);
-  align-items: center;
-  gap: 14px;
-  padding: 0 14px;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.12);
-  background: #24282c;
-}
-
-.session-title {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.session-kicker {
-  font-size: 10px;
-  text-transform: uppercase;
-  color: var(--orange);
-  letter-spacing: 0;
-  font-family: var(--mono);
-}
-
-.session-title strong {
-  font-size: 14px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.project-library-trigger {
-  width: 100%;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--t1);
-  cursor: pointer;
-  text-align: left;
-}
-
-.project-library-trigger svg {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  color: var(--t4);
-}
-
-.project-library-popover {
-  position: absolute;
-  top: calc(100% + 10px);
-  left: 0;
-  z-index: 40;
-  width: min(360px, calc(100vw - 28px));
-  padding: 10px;
-  border: 1px solid rgba(229, 236, 245, 0.14);
-  border-radius: 8px;
-  background: #202428;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38);
-}
-
-.project-library-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
-  color: var(--t2);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.project-copy-input {
-  width: 100%;
-  height: 30px;
-  margin-bottom: 8px;
-  padding: 0 9px;
-  border: 1px solid rgba(229, 236, 245, 0.13);
-  border-radius: 6px;
-  background: #17191c;
-  color: var(--t1);
-  font-size: 12px;
-}
-
-.project-library-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 260px;
-  overflow: auto;
-}
-
-.project-library-item {
-  width: 100%;
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px;
-  border: 1px solid rgba(229, 236, 245, 0.1);
-  border-radius: 6px;
-  background: #262b30;
-  color: var(--t2);
-  cursor: pointer;
-  text-align: left;
-}
-
-.project-library-item:hover {
-  color: var(--t1);
-  border-color: rgba(229, 236, 245, 0.2);
-  background: #2f353b;
-}
-
-.project-library-item.active {
-  border-color: rgba(240, 209, 122, 0.42);
-  background: rgba(240, 209, 122, 0.1);
-}
-
-.project-library-item span {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.project-library-item strong {
-  font-size: 12px;
-  color: var(--t1);
-}
-
-.project-library-item small,
-.project-library-item em {
-  color: var(--t4);
-  font-size: 11px;
-  font-style: normal;
-}
-
-.transport,
-.host-controls,
-.piano-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.host-controls {
-  justify-content: flex-end;
-}
-
-.host-status {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  min-width: 0;
-}
-
-.host-status-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
 .tool-btn,
 .mini-btn {
   height: 32px;
@@ -5335,209 +4395,6 @@ watch(() => host.value.running, (running) => {
   height: 15px;
 }
 
-.clock {
-  min-width: 132px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-  color: #f0d17a;
-  background: #141618;
-  border: 1px solid rgba(240, 209, 122, 0.18);
-  border-radius: 6px;
-  font-size: 14px;
-}
-
-.tempo-box {
-  height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 8px;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 6px;
-  color: var(--t3);
-  background: #1d2024;
-  font-size: 11px;
-}
-
-.tempo-box input {
-  width: 50px;
-  min-width: 0;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: var(--t1);
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.tempo-box input:focus {
-  outline: none;
-}
-
-.tempo-box:focus-within {
-  border-color: rgba(240, 209, 122, 0.5);
-  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
-}
-
-.time-signature-picker {
-  position: relative;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.time-signature-display {
-  height: 32px;
-  min-width: 66px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 6px;
-  padding: 0 10px;
-  color: var(--t3);
-  background: #1d2024;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.time-signature-display:hover {
-  color: var(--t1);
-  border-color: rgba(240, 209, 122, 0.3);
-  background: #25292e;
-}
-
-.time-signature-popover {
-  position: absolute;
-  top: 38px;
-  left: 50%;
-  z-index: 20;
-  width: 166px;
-  display: grid;
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid rgba(229, 236, 245, 0.18);
-  border-radius: 7px;
-  background: #24282c;
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
-  transform: translateX(-50%);
-}
-
-.time-signature-numerator,
-.time-signature-duration-row {
-  display: grid;
-  grid-template-columns: 62px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-}
-
-.time-signature-numerator span,
-.time-signature-duration-row span {
-  color: var(--t4);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.time-signature-numerator input,
-.time-signature-denominator-trigger {
-  height: 26px;
-  min-width: 0;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 4px;
-  background: #101215;
-  color: var(--t1);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.time-signature-numerator input {
-  width: 100%;
-  padding: 0 7px;
-}
-
-.time-signature-denominator-trigger {
-  width: 100%;
-  padding: 0 8px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.time-signature-denominator-popover {
-  position: absolute;
-  top: 76px;
-  right: 8px;
-  z-index: 21;
-  width: 86px;
-  display: grid;
-  gap: 3px;
-  padding: 4px;
-  border: 1px solid rgba(229, 236, 245, 0.2);
-  border-radius: 6px;
-  background: #30353a;
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
-}
-
-.time-signature-denominator-popover button {
-  height: 24px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: #d8dee6;
-  font-family: var(--mono);
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.time-signature-denominator-popover button:hover,
-.time-signature-denominator-popover button.active {
-  background: #0d74c9;
-  color: #fff;
-}
-
-.time-signature-numerator input:focus,
-.time-signature-denominator-trigger:focus {
-  outline: none;
-  border-color: rgba(240, 209, 122, 0.5);
-  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
-}
-
-.host-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--red);
-  box-shadow: 0 0 0 3px rgba(255, 141, 127, 0.12);
-}
-
-.host-dot.online {
-  background: var(--ok);
-  box-shadow: 0 0 0 3px rgba(143, 216, 199, 0.12);
-}
-
-.host-dot.connected {
-  background: #f0d17a;
-  box-shadow: 0 0 0 3px rgba(240, 209, 122, 0.14);
-}
-
-.host-dot.streaming {
-  background: #58a7b8;
-  box-shadow: 0 0 0 3px rgba(88, 167, 184, 0.16);
-}
-
-.host-label {
-  color: var(--t3);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
 .studio-error {
   padding: 8px 14px;
   background: rgba(255, 141, 127, 0.12);
@@ -5566,63 +4423,10 @@ watch(() => host.value.running, (running) => {
   background: #202428;
 }
 
-.track-list {
-  position: relative;
-  z-index: 4;
-  grid-column: 1;
-  grid-row: 1;
-  align-self: start;
-  width: var(--track-list-width);
-  min-width: var(--track-list-width);
-  background: #202428;
-  box-shadow: 10px 0 20px rgba(0, 0, 0, 0.22);
-  transform: translateX(var(--arrangement-scroll-left, 0px));
-  will-change: transform;
-}
-
-.track-list-resize-handle {
-  position: absolute;
-  z-index: 8;
-  top: 0;
-  bottom: 0;
-  left: calc(var(--track-list-width) - 4px);
-  width: 8px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.track-list-resize-handle::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 4px;
-  width: 1px;
-  background: rgba(229, 236, 245, 0.14);
-  transition: background 120ms ease;
-}
-
-.track-list-resize-handle:hover::after,
-.track-list-resize-handle:focus-visible::after {
-  background: rgba(143, 216, 199, 0.72);
-}
-
-.track-list-resize-handle:focus-visible {
-  outline: 1px solid rgba(143, 216, 199, 0.8);
-  outline-offset: -1px;
-}
-
 .inspector {
   border-left: 1px solid rgba(229, 236, 245, 0.12);
 }
 
-.track-list-head,
-.arrangement-toolbar,
-.piano-head,
 .section-title {
   height: 34px;
   display: flex;
@@ -5634,520 +4438,6 @@ watch(() => host.value.running, (running) => {
   text-transform: uppercase;
   border-bottom: 1px solid rgba(229, 236, 245, 0.1);
   background: #262b30;
-}
-
-.arrangement-head-grid {
-  flex: 0 0 auto;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: var(--track-list-width) minmax(0, 1fr);
-}
-
-.track-list-head {
-  gap: 6px;
-}
-
-.track-list-head span {
-  flex: 1 1 auto;
-}
-
-
-.automation-parameter-dialog {
-  width: min(760px, 100%);
-  max-height: calc(100% - 24px);
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  border: 1px solid rgba(229, 236, 245, 0.16);
-  border-radius: 8px;
-  background: #202428;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
-}
-
-.automation-parameter-columns {
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.88fr);
-  gap: 0;
-  overflow: hidden;
-}
-
-.automation-parameter-column {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-}
-
-.automation-parameter-column.learned {
-  border-left: 1px solid rgba(229, 236, 245, 0.08);
-  background: rgba(12, 15, 18, 0.22);
-}
-
-.automation-parameter-column h3 {
-  margin: 0 0 4px;
-  color: var(--t4);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.automation-parameter-row,
-.automation-learned-row {
-  width: 100%;
-  min-width: 0;
-  border: 1px solid rgba(229, 236, 245, 0.1);
-  border-radius: 6px;
-  background: rgba(11, 13, 15, 0.36);
-}
-
-.automation-parameter-row {
-  display: grid;
-  gap: 3px;
-  padding: 9px 10px;
-  color: var(--t2);
-  cursor: pointer;
-  text-align: left;
-}
-
-.automation-parameter-row:hover,
-.automation-parameter-row:focus-visible,
-.automation-learned-row:hover,
-.automation-learned-row:focus-visible,
-.automation-learned-row:focus-within {
-  border-color: rgba(240, 209, 122, 0.34);
-  background: rgba(240, 209, 122, 0.07);
-}
-
-.automation-parameter-row strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--t1);
-  font-size: 12px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.automation-parameter-row span,
-.automation-learned-row small {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--t4);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.automation-learn-refresh {
-  width: 100%;
-  height: 28px;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 6px;
-  background: rgba(229, 236, 245, 0.05);
-  color: var(--t3);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.automation-learn-refresh:hover,
-.automation-learn-refresh:focus-visible {
-  border-color: rgba(127, 201, 167, 0.34);
-  color: var(--t1);
-}
-
-.automation-learned-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 7px;
-  padding: 8px;
-  cursor: pointer;
-}
-
-.automation-learned-row input {
-  min-width: 0;
-  width: 100%;
-  height: 28px;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 5px;
-  background: #111418;
-  color: var(--t2);
-  font-size: 12px;
-  padding: 0 8px;
-  cursor: text;
-}
-
-.automation-learned-row input:focus {
-  outline: none;
-  border-color: rgba(240, 209, 122, 0.5);
-  box-shadow: 0 0 0 2px rgba(240, 209, 122, 0.12);
-}
-
-.automation-learned-row small {
-  grid-column: 1 / -1;
-}
-
-.arrangement-toolbar {
-  flex: 0 0 auto;
-  min-width: 0;
-  text-transform: none;
-}
-
-.arrangement-toolbar div:first-child {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.arrangement-toolbar span {
-  color: var(--t3);
-  text-transform: uppercase;
-  font-size: 11px;
-}
-
-.arrangement-toolbar strong {
-  color: var(--t1);
-  font-size: 12px;
-}
-
-.arrangement-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.timeline-control {
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border: 1px solid rgba(229, 236, 245, 0.13);
-  border-radius: 6px;
-  background: #2b3035;
-  color: var(--t2);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.timeline-control span {
-  color: var(--t3);
-  text-transform: none;
-  font-size: 10px;
-}
-
-.track-lane-spacer {
-  height: 30px;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.08);
-  background: #1b1f23;
-}
-
-.track-list-sticky-header {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  background: #202428;
-}
-
-.track-global-subtrack-row {
-  width: 100%;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 10px;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.1);
-  background: #171b1f;
-  color: var(--t2);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.track-global-subtrack-row small {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--t4);
-  font-size: 10px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.track-row {
-  width: 100%;
-  height: 72px;
-  position: relative;
-  display: grid;
-  grid-template-columns: 4px minmax(0, 1fr) auto;
-  gap: 9px;
-  align-items: center;
-  padding: 6px 9px;
-  border: 0;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.08);
-  background: transparent;
-  color: var(--t2);
-  cursor: grab;
-  overflow: hidden;
-  text-align: left;
-}
-
-.track-row.reorder-dragging {
-  opacity: 0.58;
-  cursor: grabbing;
-}
-
-.track-row.reorder-before::before,
-.track-row.reorder-after::after {
-  content: '';
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  z-index: 2;
-  height: 2px;
-  border-radius: 999px;
-  background: #f0d17a;
-  box-shadow: 0 0 0 1px rgba(240, 209, 122, 0.18);
-  pointer-events: none;
-}
-
-.track-row.reorder-before::before {
-  top: 0;
-}
-
-.track-row.reorder-after::after {
-  bottom: -1px;
-}
-
-.track-row.active {
-  background: rgba(158, 191, 255, 0.11);
-  color: var(--t1);
-}
-
-.track-row:focus-visible {
-  outline: 1px solid rgba(240, 209, 122, 0.42);
-  outline-offset: -2px;
-}
-
-.track-color {
-  width: 4px;
-  height: 24px;
-  border-radius: 2px;
-  flex: 0 0 auto;
-}
-
-.track-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-
-.track-title-line {
-  width: 100%;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-}
-
-.track-title-text,
-.track-meta-text {
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  display: block;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.track-title-text {
-  font-size: 13px;
-}
-
-.track-title-text {
-  color: var(--t1);
-  line-height: 16px;
-}
-
-.track-meta-text {
-  color: var(--t4);
-  font-size: 11px;
-  line-height: 13px;
-}
-
-.track-buttons {
-  justify-self: end;
-  margin-left: auto;
-  display: flex;
-  gap: 5px;
-}
-
-.track-plugin-bar {
-  width: 100%;
-  min-width: 0;
-  height: 24px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 70px 24px;
-  gap: 5px;
-}
-
-.track-plugin-bar.audio-channel-bar {
-  grid-template-columns: minmax(0, 1fr) 70px;
-}
-
-.track-plugin-bar.bus-output-bar {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.track-plugin-bar.automation-target-bar {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  color: rgba(229, 236, 245, 0.72);
-  font-size: 10px;
-}
-
-.automation-target-select {
-  min-width: 0;
-  overflow: hidden;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.track-plugin-select {
-  min-width: 0;
-  width: 100%;
-  height: 24px;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-radius: 5px;
-  background: #101215;
-  color: var(--t2);
-  font-size: 11px;
-}
-
-.track-output-select {
-  color: var(--t3);
-}
-
-.track-plugin-open {
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(229, 236, 245, 0.12);
-  border-radius: 5px;
-  background: #181b1f;
-  color: var(--t4);
-  cursor: pointer;
-}
-
-.track-plugin-open:hover,
-.track-plugin-open.active {
-  color: #f0d17a;
-  border-color: rgba(240, 209, 122, 0.34);
-  background: rgba(240, 209, 122, 0.1);
-}
-
-.track-plugin-open:disabled {
-  cursor: not-allowed;
-  opacity: 0.46;
-}
-
-.track-plugin-open svg {
-  width: 14px;
-  height: 14px;
-}
-
-.automation-context-menu,
-.track-context-menu {
-  position: fixed;
-  z-index: 80;
-  display: grid;
-  gap: 4px;
-  min-width: 176px;
-  padding: 7px;
-  border: 1px solid rgba(229, 236, 245, 0.16);
-  border-radius: 7px;
-  background: rgba(24, 27, 31, 0.96);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34);
-}
-
-.automation-context-menu button,
-.track-context-menu button {
-  border: 0;
-  border-radius: 5px;
-  padding: 7px 9px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.automation-context-menu button {
-  background: rgba(240, 209, 122, 0.18);
-  color: #f4f0dc;
-}
-
-.track-context-delete {
-  background: rgba(255, 141, 127, 0.14);
-  color: #ffd4cf;
-}
-
-.track-context-delete:hover:not(:disabled),
-.track-context-delete:focus-visible:not(:disabled) {
-  background: rgba(255, 141, 127, 0.22);
-}
-
-.track-context-delete:disabled {
-  cursor: not-allowed;
-  opacity: 0.46;
-}
-
-.automation-context-menu small,
-.track-context-menu small {
-  min-width: 0;
-  overflow: hidden;
-  color: rgba(229, 236, 245, 0.56);
-  padding: 0 3px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.track-flag {
-  width: 24px;
-  height: 24px;
-  border: 1px solid rgba(229, 236, 245, 0.1);
-  border-radius: 5px;
-  background: #181b1f;
-  color: var(--t4);
-  font-family: var(--mono);
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.track-flag.on {
-  color: #f0d17a;
-  border-color: rgba(240, 209, 122, 0.32);
-  background: rgba(240, 209, 122, 0.12);
-}
-
-.track-flag:disabled {
-  cursor: not-allowed;
-  opacity: 0.46;
 }
 
 .editor-stack {
@@ -6163,123 +4453,10 @@ watch(() => host.value.running, (running) => {
   grid-template-rows: minmax(0, 1fr);
 }
 
-.arrangement-canvas-wrap,
 .piano-canvas-wrap {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-}
-
-.arrangement {
-  --track-list-width: 246px;
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.14);
-}
-
-.arrangement-canvas-wrap {
-  flex: 1 1 auto;
-  position: relative;
-  overscroll-behavior: contain;
-}
-
-.arrangement-canvas-wrap.audio-drop-active,
-.arrangement-canvas-wrap.audio-importing {
-  box-shadow: inset 0 0 0 1px rgba(88, 167, 184, 0.52);
-}
-
-.audio-drop-layer {
-  pointer-events: none;
-  position: absolute;
-  inset: 30px 0 0 var(--track-list-width);
-  z-index: 6;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(88, 167, 184, 0.12);
-  border: 1px dashed rgba(143, 216, 199, 0.42);
-}
-
-.audio-drop-glyph {
-  width: 78px;
-  height: 42px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  border-radius: 6px;
-  background: rgba(16, 18, 21, 0.72);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
-}
-
-.audio-drop-glyph i {
-  width: 4px;
-  height: 18px;
-  border-radius: 999px;
-  background: #8fd8c7;
-  animation: audio-pulse 0.78s ease-in-out infinite alternate;
-}
-
-.audio-drop-glyph i:nth-child(2) {
-  height: 30px;
-  animation-delay: 0.08s;
-}
-
-.audio-drop-glyph i:nth-child(3) {
-  height: 22px;
-  animation-delay: 0.16s;
-}
-
-.audio-drop-glyph i:nth-child(4) {
-  height: 34px;
-  animation-delay: 0.24s;
-}
-
-.audio-drop-glyph i:nth-child(5) {
-  height: 14px;
-  animation-delay: 0.32s;
-}
-
-@keyframes audio-pulse {
-  from {
-    opacity: 0.42;
-    transform: scaleY(0.72);
-  }
-  to {
-    opacity: 1;
-    transform: scaleY(1);
-  }
-}
-
-.arrangement-scroll-inner {
-  min-width: 100%;
-  display: grid;
-  grid-template-columns: var(--track-list-width) max-content;
-  align-items: start;
-}
-
-.arrangement-timeline-stack {
-  grid-column: 2;
-  grid-row: 1;
-  min-width: 100%;
-}
-
-.arrangement-header-canvas {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  background: #17191c;
-}
-
-.arrangement-scroll-content {
-  min-width: 100%;
-}
-
-.arrangement-canvas {
-  min-width: 0;
 }
 
 .editor-canvas {
@@ -6519,333 +4696,6 @@ watch(() => host.value.running, (running) => {
   outline: none;
 }
 
-.controller-lanes-wrap {
-  flex: 0 0 auto;
-  height: 124px;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  border-top: 1px solid rgba(229, 236, 245, 0.13);
-  background: #15181b;
-  scrollbar-width: thin;
-}
-
-.controller-lanes {
-  min-width: 100%;
-}
-
-.controller-lane {
-  position: relative;
-  height: 96px;
-  min-width: 100%;
-  overflow: visible;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.11);
-  background: #17191c;
-}
-
-.controller-canvas {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  display: block;
-  min-width: 100%;
-  cursor: crosshair;
-}
-
-.controller-lane-axis {
-  position: sticky;
-  left: 0;
-  z-index: 4;
-  width: 76px;
-  height: 96px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  align-items: flex-end;
-  padding: 28px 8px 6px;
-  border-right: 1px solid rgba(229, 236, 245, 0.16);
-  background: #2b3035;
-  color: #b7c2cf;
-  font-family: var(--mono);
-  font-size: 11px;
-  pointer-events: none;
-}
-
-.controller-lane-tabs {
-  position: absolute;
-  top: 0;
-  z-index: 5;
-  width: max-content;
-  height: 24px;
-  display: flex;
-  align-items: stretch;
-  overflow: visible;
-  background: rgba(32, 36, 40, 0.96);
-}
-
-.controller-menu-btn,
-.controller-tab,
-.controller-close,
-.controller-footer-btn {
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-right: 1px solid rgba(229, 236, 245, 0.08);
-  background: #24282c;
-  color: #b9c3cf;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.controller-menu-btn {
-  width: 28px;
-  font-weight: 800;
-}
-
-.controller-tab {
-  min-width: 76px;
-  padding: 0 12px;
-  white-space: nowrap;
-}
-
-.controller-tab.active {
-  background: #0d74c9;
-  color: #fff;
-}
-
-.controller-close {
-  width: 26px;
-  color: var(--t4);
-}
-
-.controller-close svg,
-.controller-footer-btn svg {
-  width: 13px;
-  height: 13px;
-}
-
-.controller-menu-btn:hover,
-.controller-tab:hover,
-.controller-close:hover,
-.controller-footer-btn:hover {
-  color: var(--t1);
-  background: #343b42;
-}
-
-.controller-tab.active:hover {
-  background: #0d74c9;
-}
-
-.controller-menu {
-  position: absolute;
-  top: 25px;
-  left: 0;
-  z-index: 8;
-  width: 188px;
-  padding: 6px;
-  border: 1px solid rgba(229, 236, 245, 0.2);
-  border-radius: 6px;
-  background: #30353a;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.36);
-}
-
-.controller-menu button,
-.controller-menu label {
-  width: 100%;
-  min-height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border: 0;
-  border-radius: 4px;
-  padding: 4px 7px;
-  background: transparent;
-  color: #e1e7ee;
-  font-size: 12px;
-  text-align: left;
-}
-
-.controller-menu button {
-  cursor: pointer;
-}
-
-.controller-menu button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-
-.controller-menu button:hover:not(:disabled) {
-  background: rgba(13, 116, 201, 0.28);
-}
-
-.controller-menu span {
-  color: #b7c2cf;
-}
-
-.controller-menu input {
-  width: 64px;
-  height: 22px;
-  border: 1px solid rgba(229, 236, 245, 0.18);
-  border-radius: 4px;
-  background: #15181b;
-  color: #f4f6f8;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.controller-lane-footer {
-  height: 28px;
-  min-width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid rgba(229, 236, 245, 0.09);
-  background: #202428;
-}
-
-.controller-footer-btn {
-  position: sticky;
-  left: 10px;
-  width: 26px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: #b9c3cf;
-}
-
-.piano-head {
-  flex: 0 0 auto;
-  text-transform: none;
-}
-
-.piano-head div:first-child {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.piano-head span {
-  color: var(--t3);
-  text-transform: uppercase;
-  font-size: 11px;
-}
-
-.piano-head strong {
-  color: var(--t1);
-  font-size: 12px;
-}
-
-.piano-actions {
-  min-width: 0;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.piano-control {
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border: 1px solid rgba(229, 236, 245, 0.13);
-  border-radius: 6px;
-  background: #2b3035;
-  color: var(--t2);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.piano-control span {
-  color: var(--t3);
-  text-transform: none;
-  font-size: 10px;
-}
-
-.piano-subtrack-select {
-  height: 28px;
-  min-width: 92px;
-  border: 1px solid rgba(229, 236, 245, 0.14);
-  border-radius: 6px;
-  padding: 0 8px;
-  background: #2b3035;
-  color: #d9e0e8;
-  font: 650 11px var(--mono);
-  cursor: pointer;
-}
-
-.piano-subtrack-select:focus {
-  outline: 1px solid rgba(240, 209, 122, 0.42);
-  outline-offset: 1px;
-}
-
-.piano-quantize {
-  position: relative;
-}
-
-.piano-quantize-button {
-  min-width: 70px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: var(--t1);
-  font: inherit;
-  cursor: pointer;
-}
-
-.piano-quantize-button strong {
-  color: var(--t1);
-  font-size: 12px;
-}
-
-.piano-quantize-button svg {
-  width: 13px;
-  height: 13px;
-  color: var(--t3);
-}
-
-.piano-quantize-menu {
-  position: absolute;
-  top: 31px;
-  left: 0;
-  z-index: 12;
-  min-width: 100%;
-  padding: 4px;
-  border: 1px solid rgba(229, 236, 245, 0.2);
-  border-radius: 6px;
-  background: #2a2e33;
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
-}
-
-.piano-quantize-menu button {
-  width: 100%;
-  min-height: 26px;
-  display: flex;
-  align-items: center;
-  border: 0;
-  border-radius: 4px;
-  padding: 4px 8px;
-  background: transparent;
-  color: #d8dee6;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 650;
-  text-align: left;
-}
-
-.piano-quantize-menu button:hover,
-.piano-quantize-menu button.active {
-  background: #0d74c9;
-  color: #fff;
-}
-
 .inspector-section {
   border-bottom: 1px solid rgba(229, 236, 245, 0.1);
 }
@@ -6877,17 +4727,6 @@ watch(() => host.value.running, (running) => {
 
 
 @media (max-width: 1120px) {
-  .studio-topbar {
-    grid-template-columns: 1fr;
-    height: auto;
-    padding: 10px;
-  }
-
-  .host-controls {
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
   .studio-body {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -6896,76 +4735,11 @@ watch(() => host.value.running, (running) => {
     display: none;
   }
 
-  .automation-parameter-dialog {
-    max-height: calc(100% - 16px);
-  }
-
-  .automation-parameter-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .automation-parameter-column.learned {
-    border-top: 1px solid rgba(229, 236, 245, 0.08);
-    border-left: 0;
-  }
 }
 
 .studio-page.embedded {
   background: #17191c;
   border: 0;
-}
-
-.studio-page.embedded .studio-topbar {
-  height: auto;
-  min-height: 104px;
-  grid-template-columns: 1fr;
-  align-items: stretch;
-  gap: 8px;
-  padding: 9px;
-  background: #202428;
-}
-
-.studio-page.embedded .session-title {
-  min-width: 0;
-}
-
-.studio-page.embedded .session-title strong {
-  font-size: 13px;
-}
-
-.studio-page.embedded .transport {
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.studio-page.embedded .clock {
-  min-width: 0;
-  flex: 1;
-  padding: 0 7px;
-  font-size: 12px;
-}
-
-.studio-page.embedded .tempo-box,
-.studio-page.embedded .time-signature-picker {
-  display: none;
-}
-
-.studio-page.embedded .host-controls {
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.studio-page.embedded .host-status {
-  gap: 6px;
-}
-
-.studio-page.embedded .host-label {
-  display: none;
-}
-
-.studio-page.embedded .tool-btn.text {
-  padding: 0 8px;
-  font-size: 11px;
 }
 
 .studio-page.embedded .studio-body {
@@ -6982,27 +4756,6 @@ watch(() => host.value.running, (running) => {
 
 .studio-page.embedded.piano-closed .editor-stack {
   grid-template-rows: minmax(0, 1fr);
-}
-
-.studio-page.embedded .piano-head {
-  height: 32px;
-  padding: 0 8px;
-}
-
-.studio-page.embedded .piano-head div:first-child {
-  min-width: 0;
-}
-
-.studio-page.embedded .piano-head strong {
-  max-width: 112px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.studio-page.embedded .piano-actions {
-  gap: 4px;
-  overflow: auto;
 }
 
 .studio-page.embedded .studio-error {

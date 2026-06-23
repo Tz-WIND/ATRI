@@ -80,7 +80,7 @@ test('controllerLaneColorStyles_useTrackColorForVelocityAndEvents', () => {
 })
 
 test('controllerCanvas_isLayeredInsideEachLane', () => {
-  const source = readFileSync(new URL('./MusicStudio.vue', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('./studio/ControllerLanesPanel.vue', import.meta.url), 'utf8')
   const match = /\.controller-canvas\s*\{(?<body>[^}]+)\}/.exec(source)
 
   assert.ok(match, 'controller canvas style should exist')

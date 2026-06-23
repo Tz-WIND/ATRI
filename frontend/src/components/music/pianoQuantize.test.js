@@ -32,7 +32,11 @@ test('interpolateControllerValue_returnsValueAtQuantizedBeat', () => {
 })
 
 test('pianoQuantizeControl_usesCustomDarkMenuInsteadOfNativeSelect', () => {
-  const source = readFileSync(new URL('./MusicStudio.vue', import.meta.url), 'utf8')
+  const source = [
+    readFileSync(new URL('./MusicStudio.vue', import.meta.url), 'utf8'),
+    readFileSync(new URL('./studio/ArrangementEditorPanel.vue', import.meta.url), 'utf8'),
+    readFileSync(new URL('./studio/PianoEditorHeader.vue', import.meta.url), 'utf8'),
+  ].join('\n')
 
   assert.doesNotMatch(source, /<select\s+v-model="pianoQuantizeId"/)
   assert.match(source, /class="piano-quantize-menu"/)
