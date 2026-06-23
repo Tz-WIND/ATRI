@@ -11,6 +11,10 @@ from core.knowledge.graph_constants import (
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
+from core.knowledge.graph_values import (
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
+)
 from core.knowledge.store import DEFAULT_EMBEDDING_CACHE_MAX_SIZE
 
 DEFAULT_IMAGE_TRANSCRIPTION_PROMPT = (
@@ -111,6 +115,12 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "type": "string",
                             "default": "persistent",
                             "enum": ["off", "memory", "persistent"],
+                        },
+                        "multi_hop_expansion_cache_preload_seed_limit": {
+                            "type": "integer",
+                            "default": MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
+                            "minimum": 0,
+                            "maximum": MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
                         },
                         "ranking_policy": {
                             "type": "string",

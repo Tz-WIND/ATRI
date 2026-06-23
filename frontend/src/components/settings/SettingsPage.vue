@@ -606,6 +606,15 @@
                   </select>
                 </label>
                 <label class="setting-field">
+                  <span>Cache Seed Limit</span>
+                  <input
+                    v-model.number="form.knowledge.graph.multi_hop_expansion_cache_preload_seed_limit"
+                    type="number"
+                    min="0"
+                    :max="graphCachePreloadSeedMax"
+                  >
+                </label>
+                <label class="setting-field">
                   <span>Ranking Policy</span>
                   <select v-model="form.knowledge.graph.ranking_policy">
                     <option value="hybrid">
@@ -999,6 +1008,7 @@ const settingsGroups = [
 
 const flatTabs = settingsGroups.flatMap(group => group.tabs)
 const graphExpansionCandidateMax = ref(1000)
+const graphCachePreloadSeedMax = ref(2048)
 const activeTab = ref('providers')
 const activeTabMeta = computed(() => flatTabs.find(tab => tab.id === activeTab.value) || flatTabs[0])
 
@@ -1042,6 +1052,7 @@ const form = ref({
       max_facts: 8,
       expansion_candidate_limit: 40,
       multi_hop_expansion_cache_mode: 'persistent',
+      multi_hop_expansion_cache_preload_seed_limit: 64,
       ranking_policy: 'hybrid',
       queue_max_size: 1000,
     },
@@ -1330,6 +1341,7 @@ function normalizeGraphKnowledge(value = {}) {
       value.multi_hop_expansion_cache_mode,
       value.persistent_multi_hop_expansion_cache_enabled,
     ),
+    multi_hop_expansion_cache_preload_seed_limit: normalizeGraphCachePreloadSeedLimit(value.multi_hop_expansion_cache_preload_seed_limit),
     ranking_policy: normalizeGraphRankingPolicy(value.ranking_policy),
     queue_max_size: Number(value.queue_max_size || 1000),
   }
@@ -1347,6 +1359,15 @@ function normalizeGraphExpansionCandidateLimit(value) {
   return Math.min(
     graphExpansionCandidateMax.value,
     Math.max(1, Math.trunc(parsed)),
+  )
+}
+
+function normalizeGraphCachePreloadSeedLimit(value) {
+  const parsed = Number(value ?? 64)
+  if (!Number.isFinite(parsed)) return 64
+  return Math.min(
+    graphCachePreloadSeedMax.value,
+    Math.max(0, Math.trunc(parsed)),
   )
 }
 
@@ -1373,10 +1394,15 @@ function normalizeLegacyGraphPersistentCacheEnabled(value) {
 async function loadConfigLimits() {
   try {
     const schema = await api.getConfigSchema()
-    const maximum = schema?.properties?.knowledge?.properties?.graph
-      ?.properties?.expansion_candidate_limit?.maximum
-    if (Number.isFinite(maximum) && maximum > 0) {
-      graphExpansionCandidateMax.value = Math.trunc(maximum)
+    const graphSchema = schema?.properties?.knowledge?.properties?.graph
+    const expansionMaximum = graphSchema?.properties?.expansion_candidate_limit?.maximum
+    if (Number.isFinite(expansionMaximum) && expansionMaximum > 0) {
+      graphExpansionCandidateMax.value = Math.trunc(expansionMaximum)
+    }
+    const seedMaximum = graphSchema?.properties
+      ?.multi_hop_expansion_cache_preload_seed_limit?.maximum
+    if (Number.isFinite(seedMaximum) && seedMaximum > 0) {
+      graphCachePreloadSeedMax.value = Math.trunc(seedMaximum)
     }
   } catch {}
 }

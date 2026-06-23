@@ -1297,6 +1297,7 @@ class Neo4jGraphClient:
             ranking_policy=policy,
             expansion_candidate_limit=expansion_query_limit,
             multi_hop_expansion_cache_mode=multi_hop_expansion_cache_mode,
+            multi_hop_expansion_cache_preload_seed_limit=expansion_cache_preload_seed_limit,
             include_entity_types=include_entity_types,
             fulltext_ready=self._fulltext_indexes_ready,
         )

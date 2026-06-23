@@ -111,6 +111,14 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "Off" in source
     assert "Memory" in source
     assert "Persistent" in source
+    assert "Cache Seed Limit" in source
+    assert "multi_hop_expansion_cache_preload_seed_limit" in source
+    assert "graphCachePreloadSeedMax" in source
+    assert "normalizeGraphCachePreloadSeedLimit" in source
+    assert (
+        "multi_hop_expansion_cache_preload_seed_limit: normalizeGraphCachePreloadSeedLimit"
+        in source
+    )
     assert "Ranking Policy" in source
     assert "ranking_policy" in source
     assert "normalizeGraphRankingPolicy" in source

@@ -80,6 +80,7 @@ def _final_context_cache_key(
     ranking_policy: str,
     expansion_candidate_limit: int,
     multi_hop_expansion_cache_mode: str,
+    multi_hop_expansion_cache_preload_seed_limit: int,
     include_entity_types: bool,
     fulltext_ready: bool,
 ) -> tuple[Any, ...]:
@@ -94,6 +95,7 @@ def _final_context_cache_key(
         str(ranking_policy),
         int(expansion_candidate_limit),
         str(multi_hop_expansion_cache_mode),
+        int(multi_hop_expansion_cache_preload_seed_limit),
         bool(include_entity_types),
         bool(fulltext_ready),
     )

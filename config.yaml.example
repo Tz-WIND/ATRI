@@ -64,6 +64,9 @@ knowledge:
   active_bases: []
   top_k: 5
   embedding_cache_max_size: 20000
+  graph:
+    # Multi-hop expansion cache seed preload limit. 0 disables; range: 0-2048.
+    multi_hop_expansion_cache_preload_seed_limit: 64
 
 # Optional image transcription model. When enabled, image attachments are
 # transcribed here before the main chat model receives the request.

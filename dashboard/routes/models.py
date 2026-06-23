@@ -18,6 +18,10 @@ from core.knowledge.graph_constants import (
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
+from core.knowledge.graph_values import (
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
+)
 from core.knowledge.store import DEFAULT_EMBEDDING_CACHE_MAX_SIZE
 from core.tools.novelai_image import mask_novelai_config, merge_novelai_config, set_novelai_config
 
@@ -106,6 +110,10 @@ def _nonnegative_int(value: Any, field: str) -> int:
 
 def _bounded_positive_int(value: Any, field: str, maximum: int) -> int:
     return min(maximum, _positive_int(value, field))
+
+
+def _bounded_nonnegative_int(value: Any, field: str, maximum: int) -> int:
+    return min(maximum, _nonnegative_int(value, field))
 
 
 def _legacy_bool(value: Any) -> bool:
@@ -231,6 +239,12 @@ def _merge_graph_knowledge_config(
             if _legacy_bool(incoming.get("persistent_multi_hop_expansion_cache_enabled"))
             else "memory"
         )
+    if "multi_hop_expansion_cache_preload_seed_limit" in incoming:
+        merged["multi_hop_expansion_cache_preload_seed_limit"] = _bounded_nonnegative_int(
+            incoming["multi_hop_expansion_cache_preload_seed_limit"],
+            "knowledge.graph.multi_hop_expansion_cache_preload_seed_limit",
+            MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
+        )
     if "ranking_policy" in incoming:
         ranking_policy = str(incoming.get("ranking_policy") or "hybrid").strip().lower()
         if ranking_policy not in {"hybrid", "relevance", "latest"}:
@@ -257,6 +271,10 @@ def _merge_graph_knowledge_config(
     merged.setdefault("max_facts", 8)
     merged.setdefault("expansion_candidate_limit", 40)
     merged.setdefault("multi_hop_expansion_cache_mode", "persistent")
+    merged.setdefault(
+        "multi_hop_expansion_cache_preload_seed_limit",
+        MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
+    )
     merged.setdefault("ranking_policy", "hybrid")
     merged.setdefault("queue_max_size", 1000)
     if (

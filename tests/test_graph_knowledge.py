@@ -60,7 +60,8 @@ def test_default_multihop_expansion_cache_preload_seed_limit_is_64():
     from core.knowledge.graph_values import _multi_hop_expansion_cache_preload_seed_limit
 
     assert _multi_hop_expansion_cache_preload_seed_limit(None) == 64
-    assert _multi_hop_expansion_cache_preload_seed_limit(999) == 128
+    assert _multi_hop_expansion_cache_preload_seed_limit(999) == 999
+    assert _multi_hop_expansion_cache_preload_seed_limit(4096) == 2048
 
 
 @pytest.mark.parametrize("value", [False, "false", "0", "no", "off", ""])
@@ -72,6 +73,18 @@ def test_legacy_persistent_multihop_cache_false_values_map_to_memory(value):
 
     assert worker_config["multi_hop_expansion_cache_mode"] == "memory"
     assert client._multi_hop_expansion_cache_mode() == "memory"
+
+
+def test_graph_worker_config_includes_multihop_cache_preload_seed_limit():
+    worker_config = _graph_config_from_app_config(
+        {"knowledge": {"graph": {"multi_hop_expansion_cache_preload_seed_limit": "512"}}}
+    )
+    clamped_config = _graph_config_from_app_config(
+        {"knowledge": {"graph": {"multi_hop_expansion_cache_preload_seed_limit": "4096"}}}
+    )
+
+    assert worker_config["multi_hop_expansion_cache_preload_seed_limit"] == 512
+    assert clamped_config["multi_hop_expansion_cache_preload_seed_limit"] == 2048
 
 
 def test_build_extraction_prompt_documents_segmented_input():

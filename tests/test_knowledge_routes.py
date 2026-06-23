@@ -441,6 +441,7 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
             "max_facts": 8,
             "expansion_candidate_limit": 40,
             "multi_hop_expansion_cache_mode": "persistent",
+            "multi_hop_expansion_cache_preload_seed_limit": 64,
             "ranking_policy": "hybrid",
             "queue_max_size": 1000,
         },

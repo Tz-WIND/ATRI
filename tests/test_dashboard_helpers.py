@@ -418,6 +418,29 @@ def test_dashboard_masks_and_merges_vector_knowledge_cache_limit():
     assert masked["graph"]["password"] == models._MASKED_SECRET
 
 
+def test_dashboard_masks_and_merges_graph_multihop_cache_seed_limit():
+    merged = models._merge_graph_knowledge_config(
+        {"multi_hop_expansion_cache_preload_seed_limit": 64, "password": "secret"},
+        {"multi_hop_expansion_cache_preload_seed_limit": "512"},
+    )
+    masked = models._mask_knowledge_config({"graph": merged})
+
+    assert merged["multi_hop_expansion_cache_preload_seed_limit"] == 512
+    assert masked["graph"]["multi_hop_expansion_cache_preload_seed_limit"] == 512
+
+    clamped = models._merge_graph_knowledge_config(
+        {},
+        {"multi_hop_expansion_cache_preload_seed_limit": "9999"},
+    )
+    disabled = models._merge_graph_knowledge_config(
+        {},
+        {"multi_hop_expansion_cache_preload_seed_limit": "0"},
+    )
+
+    assert clamped["multi_hop_expansion_cache_preload_seed_limit"] == 2048
+    assert disabled["multi_hop_expansion_cache_preload_seed_limit"] == 0
+
+
 @pytest.mark.asyncio
 async def test_dashboard_status_includes_embedding_and_rerank_model_pools(monkeypatch, tmp_path):
     dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)

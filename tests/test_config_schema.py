@@ -33,6 +33,7 @@ EXPECTED_GRAPH_KNOWLEDGE_DEFAULT = {
     "max_facts": 8,
     "expansion_candidate_limit": 40,
     "multi_hop_expansion_cache_mode": "persistent",
+    "multi_hop_expansion_cache_preload_seed_limit": 64,
     "ranking_policy": "hybrid",
     "queue_max_size": 1000,
 }
@@ -147,6 +148,7 @@ def test_normalize_config_coerces_graph_knowledge_settings():
                     "max_facts": "12",
                     "expansion_candidate_limit": "64",
                     "multi_hop_expansion_cache_mode": "MEMORY",
+                    "multi_hop_expansion_cache_preload_seed_limit": "512",
                     "ranking_policy": "RELEVANCE",
                     "queue_max_size": "50",
                 },
@@ -173,6 +175,7 @@ def test_normalize_config_coerces_graph_knowledge_settings():
         "max_facts": 12,
         "expansion_candidate_limit": 64,
         "multi_hop_expansion_cache_mode": "memory",
+        "multi_hop_expansion_cache_preload_seed_limit": 512,
         "ranking_policy": "relevance",
         "queue_max_size": 50,
     }
@@ -269,6 +272,14 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         (
             {"knowledge": {"graph": {"expansion_candidate_limit": 0}}},
             "knowledge.graph.expansion_candidate_limit must be >= 1",
+        ),
+        (
+            {"knowledge": {"graph": {"multi_hop_expansion_cache_preload_seed_limit": -1}}},
+            "knowledge.graph.multi_hop_expansion_cache_preload_seed_limit must be >= 0",
+        ),
+        (
+            {"knowledge": {"graph": {"multi_hop_expansion_cache_preload_seed_limit": 2049}}},
+            "knowledge.graph.multi_hop_expansion_cache_preload_seed_limit must be <= 2048",
         ),
         (
             {"knowledge": {"embedding_cache_max_size": -1}},
