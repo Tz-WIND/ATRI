@@ -1332,6 +1332,10 @@ def _multi_hop_retrieve_call(calls):
     )
 
 
+def _status_filter_property_reads(query: str) -> list[str]:
+    return re.findall(r"\b(?:r|rel|source_r)\.status\b", query)
+
+
 class FailingOnceRetrieveSession(FakeNeo4jSession):
     def __init__(self, error: Exception):
         super().__init__()
@@ -1559,7 +1563,11 @@ def test_neo4j_graph_client_upsert_supersedes_only_current_single_slot():
     assert "fact.conflict_policy = 'current_single'" in upsert_query
     assert "old.slot_key = fact.slot_key" in upsert_query
     assert "old.fact_key <> fact.fact_key" in upsert_query
-    assert "coalesce(old.status, 'active') = 'active'" in upsert_query
+    assert "coalesce(old[$status_property], 'active') = 'active'" in upsert_query
+    upsert_call = next(
+        call for call in driver.session_obj.calls if "MERGE (s)-[r:FACT" in call["query"]
+    )
+    assert upsert_call["params"]["status_property"] == "status"
     assert "old.status = 'superseded'" in upsert_query
     assert "old.superseded_by = fact.fact_key" in upsert_query
     assert "uses" not in upsert_query
@@ -1720,8 +1728,61 @@ def test_neo4j_graph_client_retrieval_filters_superseded_facts_by_default():
 
     single_hop_query = _single_hop_retrieve_call(driver.session_obj.calls)["query"]
     multi_hop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
-    assert "coalesce(r.status, 'active') = 'active'" in single_hop_query
-    assert "all(rel IN rels WHERE coalesce(rel.status, 'active') = 'active')" in (multi_hop_query)
+    assert "coalesce(r[$status_property], 'active') = 'active'" in single_hop_query
+    assert "all(rel IN rels WHERE coalesce(rel[$status_property], 'active') = 'active')" in (
+        multi_hop_query
+    )
+
+
+def test_neo4j_graph_client_retrieval_uses_dynamic_status_property_reads():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    graph_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "FACT" in call["query"]
+        and (
+            "RETURN elementId(r) AS element_id" in call["query"]
+            or "RETURN elementId(seed) AS element_id" in call["query"]
+            or "RETURN seed_element_id, paths" in call["query"]
+            or "RETURN s.name AS subject" in call["query"]
+            or "RETURN startNode(r).name AS subject" in call["query"]
+        )
+    ]
+
+    assert graph_calls
+    assert all(call["params"]["status_property"] == "status" for call in graph_calls)
+    assert all(not _status_filter_property_reads(call["query"]) for call in graph_calls)
+    assert any(
+        "coalesce(r[$status_property], 'active') = 'active'" in call["query"]
+        for call in graph_calls
+    )
+    assert any(
+        "coalesce(source_r[$status_property], 'active') = 'active'" in call["query"]
+        for call in graph_calls
+    )
+    assert any(
+        "all(rel IN rels WHERE coalesce(rel[$status_property], 'active') = 'active')"
+        in call["query"]
+        for call in graph_calls
+    )
 
 
 def test_neo4j_graph_client_builds_source_index_nodes_for_fact_source_ids():
@@ -1862,7 +1923,7 @@ def test_neo4j_graph_client_uses_source_index_nodes_for_multihop_source_seeds():
     )
     assert "MATCH (s:Entity)-[source_r:FACT]->(o:Entity)" in multihop_query
     assert "source_r.fact_key = fact_node.fact_key" in multihop_query
-    assert "coalesce(source_r.status, 'active') = 'active'" in multihop_query
+    assert "coalesce(source_r[$status_property], 'active') = 'active'" in multihop_query
     assert "any(source_id IN coalesce(source_r.source_ids, [])" not in multihop_query
 
 
@@ -1893,7 +1954,7 @@ def test_neo4j_graph_client_multihop_seed_probe_requires_active_source_fact():
     )
     assert "MATCH (s:Entity)-[source_r:FACT]->(o:Entity)" in seed_probe_query
     assert "source_r.fact_key = fact_node.fact_key" in seed_probe_query
-    assert "coalesce(source_r.status, 'active') = 'active'" in seed_probe_query
+    assert "coalesce(source_r[$status_property], 'active') = 'active'" in seed_probe_query
 
 
 def test_neo4j_graph_client_live_multihop_source_seeds_require_active_source_fact():
@@ -1919,7 +1980,7 @@ def test_neo4j_graph_client_live_multihop_source_seeds_require_active_source_fac
     multihop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
     assert "MATCH (s:Entity)-[source_r:FACT]->(o:Entity)" in multihop_query
     assert "source_r.fact_key = fact_node.fact_key" in multihop_query
-    assert "coalesce(source_r.status, 'active') = 'active'" in multihop_query
+    assert "coalesce(source_r[$status_property], 'active') = 'active'" in multihop_query
 
 
 def test_neo4j_graph_client_can_include_entity_types_in_retrieved_context():
@@ -2011,7 +2072,8 @@ def test_neo4j_graph_client_fulltext_fact_seeds_filter_active_before_final_limit
     )
     query = fact_seed_call["query"]
     assert "{limit: $fact_seed_candidate_limit}" in query
-    assert "WHERE coalesce(r.status, 'active') = 'active'" in query
+    assert "WHERE coalesce(r[$status_property], 'active') = 'active'" in query
+    assert fact_seed_call["params"]["status_property"] == "status"
     assert "ORDER BY score DESC" in query
     assert "LIMIT $seed_limit" in query
     assert (
@@ -3598,6 +3660,126 @@ def test_neo4j_graph_client_prewarm_uses_preload_path_budget_per_seed():
     for call in expansion_calls:
         assert call["params"]["seed_element_ids"] == [f"seed-{index}" for index in range(64)]
         assert call["params"]["path_limit_plus_one"] == 4
+
+
+def test_neo4j_graph_client_reuses_prewarm_cache_when_query_seed_window_is_smaller():
+    class ManyPrewarmSeedsSession(FakeNeo4jSession):
+        def __init__(self):
+            super().__init__()
+            self.graph_revision = 0
+
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "GraphMetadata" in query and "RETURN meta.value AS value" in query:
+                if "coalesce(meta.value, 0) + 1" in query:
+                    self.graph_revision += 1
+                return [{"value": self.graph_revision}]
+            if "facts" in params:
+                return [
+                    {
+                        "count": 1,
+                        "seed_element_ids": [f"seed-{index}" for index in range(80)],
+                    }
+                ]
+            if "db.index.fulltext.queryNodes" in query:
+                return [{"element_id": "seed-0", "score": 4.0}]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [{"element_id": "seed-0", "seed_score": 4.0}]
+            if "RETURN seed_element_id, paths" in query:
+                return [
+                    {
+                        "seed_element_id": seed_element_id,
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {
+                                        "element_id": f"rel-{seed_element_id}-0",
+                                        "rel_index": 0,
+                                    },
+                                    {
+                                        "element_id": f"rel-{seed_element_id}-1",
+                                        "rel_index": 1,
+                                    },
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    }
+                    for seed_element_id in params["seed_element_ids"]
+                ]
+            if "RETURN startNode(r).name AS subject" in query:
+                return [
+                    {
+                        "subject": "Acme",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Acme uses Neo4j.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ManyPrewarmSeedsSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+            "retrieval_depth": 2,
+            "multi_hop_expansion_cache_mode": "memory",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Alice",
+                "subject_type": "Person",
+                "predicate": "works_at",
+                "object": "Acme",
+                "object_type": "Company",
+            }
+        ],
+        source_id="chunk-prewarm-many-seeds",
+        source_kind="document",
+    )[0]
+
+    client.upsert_facts([fact])
+    prewarm_expansion_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "RETURN seed_element_id, paths" in call["query"]
+    ]
+    timings: dict[str, Any] = {}
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+        timings=timings,
+    )
+
+    expansion_calls = [
+        call
+        for call in driver.session_obj.calls
+        if "RETURN seed_element_id, paths" in call["query"]
+    ]
+    retrieval_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    assert len(prewarm_expansion_calls) == 1
+    assert prewarm_expansion_calls[0]["params"]["path_limit"] == 3
+    assert len(expansion_calls) == 1
+    assert "UNWIND $cached_expansion_paths AS cached_path" in retrieval_call["query"]
+    assert "MATCH path = (seed)-[:FACT*1..2]" not in retrieval_call["query"]
+    assert timings["graph_multihop_cache_hit"] is True
+    assert context == format_graph_context(["- [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"])
 
 
 def test_neo4j_graph_client_partially_preloads_multihop_expansion_when_seed_count_is_large():

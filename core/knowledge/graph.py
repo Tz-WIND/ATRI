@@ -68,6 +68,7 @@ _GRAPH_REVISION_METADATA_KEY = "graph_revision"
 _PERSISTENT_MULTI_HOP_EXPANSION_CACHE_VERSION = "persistent_multi_hop_expansion:v2"
 _MULTI_HOP_EXPANSION_CACHE_MODES = {"off", "memory", "persistent"}
 _ACTIVE_FACT_STATUS = "active"
+_FACT_STATUS_PROPERTY = "status"
 _CURRENT_SINGLE_CONFLICT_POLICY = "current_single"
 _APPEND_ONLY_CONFLICT_POLICY = "append_only"
 _FULLTEXT_FACT_SEED_CANDIDATE_MULTIPLIER = 4
@@ -254,7 +255,7 @@ class Neo4jGraphClient:
                   {limit: $fact_seed_candidate_limit}
                 )
                 YIELD relationship AS r, score
-                WHERE coalesce(r.status, 'active') = 'active'
+                WHERE coalesce(r[$status_property], 'active') = 'active'
                 WITH r, score
                 ORDER BY score DESC
                 LIMIT $seed_limit
@@ -264,6 +265,7 @@ class Neo4jGraphClient:
                 fulltext_query=fulltext_query,
                 seed_limit=seed_limit,
                 fact_seed_candidate_limit=fact_seed_candidate_limit,
+                status_property=_FACT_STATUS_PROPERTY,
                 timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
             )
             return {
@@ -292,7 +294,7 @@ class Neo4jGraphClient:
           WHERE source_node.source_id IN $source_ids
           MATCH (s:Entity)-[source_r:FACT]->(o:Entity)
           WHERE source_r.fact_key = fact_node.fact_key
-            AND coalesce(source_r.status, 'active') = 'active'
+            AND coalesce(source_r[$status_property], 'active') = 'active'
           WITH [s, o] AS source_seed_nodes, source_node
           UNWIND source_seed_nodes AS seed
           WITH seed, source_node,
@@ -313,7 +315,7 @@ class Neo4jGraphClient:
           UNWIND $fact_seed_rows AS fact_seed
           MATCH ()-[r:FACT]-()
           WHERE elementId(r) = fact_seed.element_id
-            AND coalesce(r.status, 'active') = 'active'
+            AND coalesce(r[$status_property], 'active') = 'active'
           WITH [startNode(r), endNode(r)] AS fact_seeds, fact_seed
           UNWIND fact_seeds AS seed
           WITH seed, fact_seed
@@ -335,6 +337,7 @@ class Neo4jGraphClient:
                     entity_seed_rows=entity_seed_rows,
                     fact_seed_rows=fact_seed_rows,
                     seed_limit=seed_limit,
+                    status_property=_FACT_STATUS_PROPERTY,
                     timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
                 )
             )
@@ -349,6 +352,7 @@ class Neo4jGraphClient:
         path_limit: int,
         load_misses: bool = True,
         use_persistent_cache: bool = True,
+        alias_path_limits: list[int] | None = None,
     ) -> tuple[list[dict[str, Any]], bool, dict[str, int]]:
         cache_mode = self._multi_hop_expansion_cache_mode()
         use_persistent_cache = use_persistent_cache and cache_mode == "persistent"
@@ -358,6 +362,18 @@ class Neo4jGraphClient:
             "persistent_hit_count": 0,
             "loaded_count": 0,
         }
+        normalized_alias_path_limits = []
+        for alias_path_limit in alias_path_limits or []:
+            try:
+                parsed_alias_path_limit = int(alias_path_limit)
+            except (TypeError, ValueError):
+                continue
+            if (
+                parsed_alias_path_limit > 0
+                and parsed_alias_path_limit != int(path_limit)
+                and parsed_alias_path_limit not in normalized_alias_path_limits
+            ):
+                normalized_alias_path_limits.append(parsed_alias_path_limit)
         if not normalized_seed_ids or cache_mode == "off":
             return [], True, stats
 
@@ -406,6 +422,7 @@ class Neo4jGraphClient:
                 depth=depth,
                 path_limit=path_limit,
             )
+            loaded_values_by_seed: dict[str, dict[str, Any]] = {}
             for seed_element_id in missed_seed_ids:
                 value = loaded_by_seed.get(
                     seed_element_id,
@@ -419,16 +436,35 @@ class Neo4jGraphClient:
                 )
                 self._retrieval_cache.set("multi_hop_expansion", key, value)
                 cached_by_seed[seed_element_id] = value
+                loaded_values_by_seed[seed_element_id] = value
                 stats["loaded_count"] += 1
             if use_persistent_cache:
                 self._store_persistent_multi_hop_expansion_paths(
-                    values_by_seed={
-                        seed_element_id: cached_by_seed[seed_element_id]
-                        for seed_element_id in missed_seed_ids
-                    },
+                    values_by_seed=loaded_values_by_seed,
                     depth=depth,
                     path_limit=path_limit,
                 )
+            complete_loaded_values_by_seed = {
+                seed_element_id: value
+                for seed_element_id, value in loaded_values_by_seed.items()
+                if bool(value.get("complete", True)) and isinstance(value.get("paths"), list)
+            }
+            if complete_loaded_values_by_seed and normalized_alias_path_limits:
+                for alias_path_limit in normalized_alias_path_limits:
+                    for seed_element_id, value in complete_loaded_values_by_seed.items():
+                        key = _multi_hop_expansion_cache_key(
+                            revision=self._graph_revision,
+                            seed_element_id=seed_element_id,
+                            depth=depth,
+                            path_limit=alias_path_limit,
+                        )
+                        self._retrieval_cache.set("multi_hop_expansion", key, value)
+                    if use_persistent_cache:
+                        self._store_persistent_multi_hop_expansion_paths(
+                            values_by_seed=complete_loaded_values_by_seed,
+                            depth=depth,
+                            path_limit=alias_path_limit,
+                        )
 
         expansion_rows: list[dict[str, Any]] = []
         complete = True
@@ -653,7 +689,7 @@ class Neo4jGraphClient:
           MATCH path = (seed)-[:FACT*1..{depth}]-(o:Entity)
           WITH relationships(path) AS rels, length(path) AS hop
           WHERE hop > 1
-            AND all(rel IN rels WHERE coalesce(rel.status, 'active') = 'active')
+            AND all(rel IN rels WHERE coalesce(rel[$status_property], 'active') = 'active')
           WITH rels, hop
           LIMIT $path_limit_plus_one
           RETURN collect({{
@@ -678,6 +714,7 @@ class Neo4jGraphClient:
                     seed_element_ids=seed_element_ids,
                     path_limit=path_limit,
                     path_limit_plus_one=path_limit + 1,
+                    status_property=_FACT_STATUS_PROPERTY,
                     timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
                 )
             )
@@ -744,6 +781,7 @@ class Neo4jGraphClient:
                 path_limit=path_limit,
                 load_misses=True,
                 use_persistent_cache=use_persistent_cache,
+                alias_path_limits=[max_path_limit],
             )
 
     def _bump_persistent_graph_revision(self) -> int | None:
@@ -1046,7 +1084,7 @@ class Neo4jGraphClient:
               OR (old.slot_key IS NULL AND old.predicate = fact.predicate)
             )
             AND old.fact_key <> fact.fact_key
-            AND coalesce(old.status, 'active') = 'active'
+            AND coalesce(old[$status_property], 'active') = 'active'
           SET old.status = 'superseded',
               old.conflict_policy = coalesce(old.conflict_policy, 'current_single'),
               old.slot_key = coalesce(old.slot_key, fact.slot_key),
@@ -1148,6 +1186,7 @@ class Neo4jGraphClient:
                     query,
                     facts=rows,
                     chain_order_separator=CHAIN_ORDER_KEY_SEPARATOR,
+                    status_property=_FACT_STATUS_PROPERTY,
                 )
             )
         )
@@ -1382,7 +1421,7 @@ class Neo4jGraphClient:
             """
         single_hop_cypher = f"""
         {single_hop_seed_cypher}
-        WHERE coalesce(r.status, 'active') = 'active'
+        WHERE coalesce(r[$status_property], 'active') = 'active'
         WITH s, r, o, index_score,
              CASE
                WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
@@ -1492,7 +1531,7 @@ class Neo4jGraphClient:
           WHERE source_node.source_id IN $source_ids
           MATCH (s:Entity)-[source_r:FACT]->(o:Entity)
           WHERE source_r.fact_key = fact_node.fact_key
-            AND coalesce(source_r.status, 'active') = 'active'
+            AND coalesce(source_r[$status_property], 'active') = 'active'
           WITH [s, o] AS source_seed_nodes, source_node
           UNWIND source_seed_nodes AS seed
           WITH seed, source_node,
@@ -1587,7 +1626,7 @@ class Neo4jGraphClient:
           WHERE source_node.source_id IN $source_ids
           MATCH (s:Entity)-[source_r:FACT]->(o:Entity)
           WHERE source_r.fact_key = fact_node.fact_key
-            AND coalesce(source_r.status, 'active') = 'active'
+            AND coalesce(source_r[$status_property], 'active') = 'active'
           WITH [s, o] AS source_seed_nodes, source_node
           UNWIND source_seed_nodes AS seed
           WITH seed, source_node,
@@ -1615,7 +1654,7 @@ class Neo4jGraphClient:
                 return f"""
         {seed_cypher}
         WITH rels, hop, seed_score
-        WHERE all(rel IN rels WHERE coalesce(rel.status, 'active') = 'active')
+        WHERE all(rel IN rels WHERE coalesce(rel[$status_property], 'active') = 'active')
         WITH rels, hop, seed_score,
              reduce(path_term_score = 0.0, term_row IN $term_rows |
                path_term_score
@@ -1791,7 +1830,7 @@ class Neo4jGraphClient:
             (rel_ref.element_id IS NOT NULL AND elementId(rel) = rel_ref.element_id)
             OR (rel_ref.fact_key IS NOT NULL AND rel.fact_key = rel_ref.fact_key)
           )
-          AND coalesce(rel.status, 'active') = 'active'
+          AND coalesce(rel[$status_property], 'active') = 'active'
         WITH cached_path.path_key AS path_key,
              coalesce(toInteger(cached_path.hop), size(cached_path.rel_ids)) AS hop,
              seed_score,
@@ -1873,6 +1912,7 @@ class Neo4jGraphClient:
                                 path_limit=preload_path_limit,
                                 load_misses=True,
                                 use_persistent_cache=use_persistent_multi_hop_expansion_cache,
+                                alias_path_limits=[expansion_cache_path_limit],
                             )
                         )
                         multihop_persistent_cache_hit_count += load_stats["persistent_hit_count"]
@@ -1929,6 +1969,7 @@ class Neo4jGraphClient:
                     chain_order_keys_property="chain_order_keys",
                     hyper_event_property="hyper_event",
                     hyper_role_property="hyper_role",
+                    status_property=_FACT_STATUS_PROPERTY,
                     structural_property="structural",
                     timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
                 )
