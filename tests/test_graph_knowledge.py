@@ -93,6 +93,16 @@ def test_build_extraction_prompt_documents_segmented_input():
     assert "[文本分段 i/n]" in prompt
 
 
+def test_build_extraction_prompt_handles_noisy_input_text():
+    prompt = build_extraction_prompt("document")
+
+    assert "错别字" in prompt
+    assert "语音识别/转写错误" in prompt
+    assert "手误打错" in prompt
+    assert "evidence 保留原文表述" in prompt
+    assert "不要强行猜测" in prompt
+
+
 def test_build_extraction_prompt_prefers_person_tool_links_for_chat():
     prompt = build_extraction_prompt("chat")
 
