@@ -98,6 +98,24 @@ def _legacy_persistent_cache_enabled(value: Any) -> bool | None:
     return bool(value)
 
 
+def _seed_rows_for_element_ids(
+    seed_rows: list[dict[str, Any]],
+    seed_element_ids: list[str],
+) -> list[dict[str, Any]]:
+    wanted = set(_unique_text_values(seed_element_ids))
+    if not wanted:
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in seed_rows:
+        element_id = str(row.get("element_id") or "").strip()
+        if not element_id or element_id in seen or element_id not in wanted:
+            continue
+        seen.add(element_id)
+        rows.append(row)
+    return rows
+
+
 def _fact_conflict_policy(fact: dict[str, Any]) -> str:
     predicate = str(fact.get("predicate") or "").strip().lower()
     if predicate in _CURRENT_SINGLE_PREDICATES:
@@ -353,14 +371,15 @@ class Neo4jGraphClient:
         load_misses: bool = True,
         use_persistent_cache: bool = True,
         alias_path_limits: list[int] | None = None,
-    ) -> tuple[list[dict[str, Any]], bool, dict[str, int]]:
+    ) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
         cache_mode = self._multi_hop_expansion_cache_mode()
         use_persistent_cache = use_persistent_cache and cache_mode == "persistent"
         normalized_seed_ids = _unique_text_values(seed_element_ids)
-        stats = {
+        stats: dict[str, Any] = {
             "memory_hit_count": 0,
             "persistent_hit_count": 0,
             "loaded_count": 0,
+            "complete_seed_ids": [],
         }
         normalized_alias_path_limits = []
         for alias_path_limit in alias_path_limits or []:
@@ -478,7 +497,9 @@ class Neo4jGraphClient:
                 continue
             paths = cached_value.get("paths")
             if not isinstance(paths, list):
+                complete = False
                 continue
+            stats["complete_seed_ids"].append(seed_element_id)
             for path_index, path in enumerate(paths):
                 cached_path = _multi_hop_expansion_cache_path_row(
                     seed_element_id,
@@ -1298,6 +1319,8 @@ class Neo4jGraphClient:
             expansion_candidate_limit=expansion_query_limit,
             multi_hop_expansion_cache_mode=multi_hop_expansion_cache_mode,
             multi_hop_expansion_cache_preload_seed_limit=expansion_cache_preload_seed_limit,
+            multi_hop_expansion_cache_path_limit=expansion_cache_path_limit,
+            multi_hop_expansion_cache_preload_path_limit=expansion_cache_preload_path_limit,
             include_entity_types=include_entity_types,
             fulltext_ready=self._fulltext_indexes_ready,
         )
@@ -1844,7 +1867,7 @@ class Neo4jGraphClient:
 
             def build_cached_plus_live_multi_hop_seed_cypher(live_seed_cypher: str) -> str:
                 return f"""
-        CALL {{
+        CALL () {{
           {cached_multi_hop_seed_cypher}
           RETURN rels, hop, seed_score
           UNION
@@ -1879,6 +1902,7 @@ class Neo4jGraphClient:
                     cacheable_seed_ids = []
                     seed_overflow = False
                 if cacheable_seed_rows:
+                    cached_seed_loaded_count = 0
                     hot_paths, hot_complete, hot_stats = self._cached_multi_hop_expansion_paths(
                         seed_element_ids=cacheable_seed_ids,
                         depth=depth,
@@ -1887,17 +1911,15 @@ class Neo4jGraphClient:
                         use_persistent_cache=use_persistent_multi_hop_expansion_cache,
                     )
                     multihop_persistent_cache_hit_count += hot_stats["persistent_hit_count"]
+                    candidate_cached_expansion_paths = hot_paths
+                    hot_complete_seed_ids = set(hot_stats.get("complete_seed_ids", []))
+                    candidate_cached_seed_ids = [
+                        seed_element_id
+                        for seed_element_id in cacheable_seed_ids
+                        if seed_element_id in hot_complete_seed_ids
+                    ]
                     if hot_complete:
-                        cached_expansion_paths = hot_paths
-                        cached_expansion_seed_rows = cacheable_seed_rows
-                        cached_expansion_seed_ids = cacheable_seed_ids
-                        if seed_overflow:
-                            multi_hop_seed_cypher = build_cached_plus_live_multi_hop_seed_cypher(
-                                multi_hop_seed_cypher
-                            )
-                        else:
-                            multi_hop_seed_cypher = cached_multi_hop_seed_cypher
-                            multihop_cache_hit = True
+                        candidate_cached_seed_ids = cacheable_seed_ids
                     else:
                         preload_path_limit = min(
                             expansion_cache_path_limit,
@@ -1917,25 +1939,49 @@ class Neo4jGraphClient:
                             )
                         )
                         multihop_persistent_cache_hit_count += load_stats["persistent_hit_count"]
+                        cached_seed_loaded_count = int(load_stats["loaded_count"])
+                        candidate_cached_expansion_paths = cached_expansion_paths
+                        loaded_complete_seed_ids = set(load_stats.get("complete_seed_ids", []))
+                        candidate_cached_seed_ids = [
+                            seed_element_id
+                            for seed_element_id in cacheable_seed_ids
+                            if seed_element_id in loaded_complete_seed_ids
+                        ]
                         if expansion_cache_complete:
-                            cached_expansion_seed_rows = cacheable_seed_rows
-                            cached_expansion_seed_ids = cacheable_seed_ids
-                            if seed_overflow:
-                                multi_hop_seed_cypher = (
-                                    build_cached_plus_live_multi_hop_seed_cypher(
-                                        multi_hop_seed_cypher
-                                    )
-                                )
-                            else:
-                                multi_hop_seed_cypher = cached_multi_hop_seed_cypher
-                                multihop_cache_hit = load_stats["loaded_count"] == 0
+                            candidate_cached_seed_ids = cacheable_seed_ids
+
+                    if candidate_cached_seed_ids:
+                        cached_expansion_seed_ids = candidate_cached_seed_ids
+                        cached_expansion_seed_rows = _seed_rows_for_element_ids(
+                            cacheable_seed_rows,
+                            cached_expansion_seed_ids,
+                        )
+                        cached_expansion_paths = candidate_cached_expansion_paths
+                        partial_cached_seed_window = len(cached_expansion_seed_ids) < len(
+                            cacheable_seed_ids
+                        )
+                        if seed_overflow or partial_cached_seed_window:
+                            multi_hop_seed_cypher = build_cached_plus_live_multi_hop_seed_cypher(
+                                multi_hop_seed_cypher
+                            )
+                        else:
+                            multi_hop_seed_cypher = cached_multi_hop_seed_cypher
+                            multihop_cache_hit = cached_seed_loaded_count == 0
 
                 if cached_expansion_seed_ids:
-                    live_seed_limit = (
-                        max(0, seed_limit - len(cached_expansion_seed_ids)) if seed_overflow else 0
-                    )
+                    if seed_overflow:
+                        live_seed_limit = max(0, seed_limit - len(cached_expansion_seed_ids))
+                    elif len(cached_expansion_seed_ids) < len(cacheable_seed_rows):
+                        live_seed_limit = max(
+                            0,
+                            len(cacheable_seed_rows) - len(cached_expansion_seed_ids),
+                        )
+                    else:
+                        live_seed_limit = 0
                     multihop_cached_seed_count = len(cached_expansion_seed_ids)
-                    multihop_partial_cache_hit = bool(seed_overflow)
+                    multihop_partial_cache_hit = bool(
+                        seed_overflow or len(cached_expansion_seed_ids) < len(cacheable_seed_rows)
+                    )
                 multihop_live_seed_limit = live_seed_limit
 
             cypher = build_multi_hop_cypher(multi_hop_seed_cypher)

@@ -19,6 +19,10 @@ from core.knowledge.graph_constants import (
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
 from core.knowledge.graph_values import (
+    MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT,
+    MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_MAX,
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_DEFAULT,
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_MAX,
     MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
     MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
 )
@@ -245,6 +249,18 @@ def _merge_graph_knowledge_config(
             "knowledge.graph.multi_hop_expansion_cache_preload_seed_limit",
             MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
         )
+    if "multi_hop_expansion_cache_path_limit" in incoming:
+        merged["multi_hop_expansion_cache_path_limit"] = _bounded_positive_int(
+            incoming["multi_hop_expansion_cache_path_limit"],
+            "knowledge.graph.multi_hop_expansion_cache_path_limit",
+            MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_MAX,
+        )
+    if "multi_hop_expansion_cache_preload_path_limit" in incoming:
+        merged["multi_hop_expansion_cache_preload_path_limit"] = _bounded_positive_int(
+            incoming["multi_hop_expansion_cache_preload_path_limit"],
+            "knowledge.graph.multi_hop_expansion_cache_preload_path_limit",
+            MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_MAX,
+        )
     if "ranking_policy" in incoming:
         ranking_policy = str(incoming.get("ranking_policy") or "hybrid").strip().lower()
         if ranking_policy not in {"hybrid", "relevance", "latest"}:
@@ -274,6 +290,14 @@ def _merge_graph_knowledge_config(
     merged.setdefault(
         "multi_hop_expansion_cache_preload_seed_limit",
         MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
+    )
+    merged.setdefault(
+        "multi_hop_expansion_cache_path_limit",
+        MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT,
+    )
+    merged.setdefault(
+        "multi_hop_expansion_cache_preload_path_limit",
+        MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_DEFAULT,
     )
     merged.setdefault("ranking_policy", "hybrid")
     merged.setdefault("queue_max_size", 1000)

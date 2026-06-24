@@ -12,6 +12,10 @@ from core.knowledge.graph_constants import (
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
 from core.knowledge.graph_values import (
+    MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT,
+    MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_MAX,
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_DEFAULT,
+    MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_MAX,
     MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
     MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
 )
@@ -121,6 +125,18 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "default": MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT,
                             "minimum": 0,
                             "maximum": MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX,
+                        },
+                        "multi_hop_expansion_cache_path_limit": {
+                            "type": "integer",
+                            "default": MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT,
+                            "minimum": 1,
+                            "maximum": MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_MAX,
+                        },
+                        "multi_hop_expansion_cache_preload_path_limit": {
+                            "type": "integer",
+                            "default": MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_DEFAULT,
+                            "minimum": 1,
+                            "maximum": MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_MAX,
                         },
                         "ranking_policy": {
                             "type": "string",

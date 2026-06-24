@@ -16,17 +16,21 @@ _DEFAULT_MULTIHOP_EXPANSION_LIMIT = 40
 
 _VALID_RANKING_POLICIES = {"hybrid", "relevance", "latest"}
 
-_DEFAULT_MULTIHOP_EXPANSION_CACHE_PATH_LIMIT = GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT
+MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT = GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT
+
+MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_MAX = 10_000
 
 MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT = 64
 
 MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_MAX = 2048
 
+MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_DEFAULT = 200
+
+MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_MAX = 50_000
+
 _DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT = (
     MULTI_HOP_EXPANSION_CACHE_PRELOAD_SEED_LIMIT_DEFAULT
 )
-
-_DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT = 200
 
 
 def _source_score_rows(
@@ -90,8 +94,8 @@ def _multi_hop_expansion_cache_path_limit(value: Any) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
-        parsed = _DEFAULT_MULTIHOP_EXPANSION_CACHE_PATH_LIMIT
-    return max(1, min(10_000, parsed))
+        parsed = MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT
+    return max(1, min(MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_MAX, parsed))
 
 
 def _multi_hop_expansion_cache_preload_seed_limit(value: Any) -> int:
@@ -106,8 +110,8 @@ def _multi_hop_expansion_cache_preload_path_limit(value: Any) -> int:
     try:
         parsed = int(value)
     except (TypeError, ValueError):
-        parsed = _DEFAULT_MULTIHOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT
-    return max(1, min(1_000, parsed))
+        parsed = MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_DEFAULT
+    return max(1, min(MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_MAX, parsed))
 
 
 def _fact_source_ids(fact: dict[str, Any]) -> list[str]:

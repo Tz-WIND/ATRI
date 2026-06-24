@@ -67,6 +67,11 @@ knowledge:
   graph:
     # Multi-hop expansion cache seed preload limit. 0 disables; range: 0-2048.
     multi_hop_expansion_cache_preload_seed_limit: 64
+    # Per-seed path limit; larger values make more multi-hop seeds cache-complete.
+    # Range: 1-10000.
+    multi_hop_expansion_cache_path_limit: 1000
+    # Global path budget spread across preloaded multi-hop seeds; range: 1-50000.
+    multi_hop_expansion_cache_preload_path_limit: 200
 
 # Optional image transcription model. When enabled, image attachments are
 # transcribed here before the main chat model receives the request.

@@ -23,7 +23,11 @@ from core.knowledge.graph_constants import (
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
 )
-from core.knowledge.graph_values import _multi_hop_expansion_cache_preload_seed_limit
+from core.knowledge.graph_values import (
+    _multi_hop_expansion_cache_path_limit,
+    _multi_hop_expansion_cache_preload_path_limit,
+    _multi_hop_expansion_cache_preload_seed_limit,
+)
 from core.runtime import TaskStore
 
 _EXTRACTION_MAX_ATTEMPTS = 3
@@ -614,6 +618,14 @@ def _graph_config_from_app_config(config: dict[str, Any]) -> dict[str, Any]:
         "multi_hop_expansion_cache_preload_seed_limit": (
             _multi_hop_expansion_cache_preload_seed_limit(
                 graph.get("multi_hop_expansion_cache_preload_seed_limit")
+            )
+        ),
+        "multi_hop_expansion_cache_path_limit": _multi_hop_expansion_cache_path_limit(
+            graph.get("multi_hop_expansion_cache_path_limit")
+        ),
+        "multi_hop_expansion_cache_preload_path_limit": (
+            _multi_hop_expansion_cache_preload_path_limit(
+                graph.get("multi_hop_expansion_cache_preload_path_limit")
             )
         ),
         "ranking_policy": _ranking_policy(graph.get("ranking_policy")),

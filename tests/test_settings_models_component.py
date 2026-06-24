@@ -119,6 +119,19 @@ def test_settings_page_exposes_graph_knowledge_settings():
         "multi_hop_expansion_cache_preload_seed_limit: normalizeGraphCachePreloadSeedLimit"
         in source
     )
+    assert "Cache Path Limit" in source
+    assert "multi_hop_expansion_cache_path_limit" in source
+    assert "graphCachePathMax" in source
+    assert "normalizeGraphCachePathLimit" in source
+    assert "multi_hop_expansion_cache_path_limit: normalizeGraphCachePathLimit" in source
+    assert "Cache Path Budget" in source
+    assert "multi_hop_expansion_cache_preload_path_limit" in source
+    assert "graphCachePreloadPathMax" in source
+    assert "normalizeGraphCachePreloadPathLimit" in source
+    assert (
+        "multi_hop_expansion_cache_preload_path_limit: normalizeGraphCachePreloadPathLimit"
+        in source
+    )
     assert "Ranking Policy" in source
     assert "ranking_policy" in source
     assert "normalizeGraphRankingPolicy" in source

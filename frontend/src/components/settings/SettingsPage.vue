@@ -615,6 +615,24 @@
                   >
                 </label>
                 <label class="setting-field">
+                  <span>Cache Path Limit</span>
+                  <input
+                    v-model.number="form.knowledge.graph.multi_hop_expansion_cache_path_limit"
+                    type="number"
+                    min="1"
+                    :max="graphCachePathMax"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Cache Path Budget</span>
+                  <input
+                    v-model.number="form.knowledge.graph.multi_hop_expansion_cache_preload_path_limit"
+                    type="number"
+                    min="1"
+                    :max="graphCachePreloadPathMax"
+                  >
+                </label>
+                <label class="setting-field">
                   <span>Ranking Policy</span>
                   <select v-model="form.knowledge.graph.ranking_policy">
                     <option value="hybrid">
@@ -1009,6 +1027,8 @@ const settingsGroups = [
 const flatTabs = settingsGroups.flatMap(group => group.tabs)
 const graphExpansionCandidateMax = ref(1000)
 const graphCachePreloadSeedMax = ref(2048)
+const graphCachePathMax = ref(10000)
+const graphCachePreloadPathMax = ref(50000)
 const activeTab = ref('providers')
 const activeTabMeta = computed(() => flatTabs.find(tab => tab.id === activeTab.value) || flatTabs[0])
 
@@ -1053,6 +1073,8 @@ const form = ref({
       expansion_candidate_limit: 40,
       multi_hop_expansion_cache_mode: 'persistent',
       multi_hop_expansion_cache_preload_seed_limit: 64,
+      multi_hop_expansion_cache_path_limit: 1000,
+      multi_hop_expansion_cache_preload_path_limit: 200,
       ranking_policy: 'hybrid',
       queue_max_size: 1000,
     },
@@ -1342,6 +1364,12 @@ function normalizeGraphKnowledge(value = {}) {
       value.persistent_multi_hop_expansion_cache_enabled,
     ),
     multi_hop_expansion_cache_preload_seed_limit: normalizeGraphCachePreloadSeedLimit(value.multi_hop_expansion_cache_preload_seed_limit),
+    multi_hop_expansion_cache_path_limit: normalizeGraphCachePathLimit(
+      value.multi_hop_expansion_cache_path_limit,
+    ),
+    multi_hop_expansion_cache_preload_path_limit: normalizeGraphCachePreloadPathLimit(
+      value.multi_hop_expansion_cache_preload_path_limit,
+    ),
     ranking_policy: normalizeGraphRankingPolicy(value.ranking_policy),
     queue_max_size: Number(value.queue_max_size || 1000),
   }
@@ -1368,6 +1396,24 @@ function normalizeGraphCachePreloadSeedLimit(value) {
   return Math.min(
     graphCachePreloadSeedMax.value,
     Math.max(0, Math.trunc(parsed)),
+  )
+}
+
+function normalizeGraphCachePathLimit(value) {
+  const parsed = Number(value ?? 1000)
+  if (!Number.isFinite(parsed)) return 1000
+  return Math.min(
+    graphCachePathMax.value,
+    Math.max(1, Math.trunc(parsed)),
+  )
+}
+
+function normalizeGraphCachePreloadPathLimit(value) {
+  const parsed = Number(value ?? 200)
+  if (!Number.isFinite(parsed)) return 200
+  return Math.min(
+    graphCachePreloadPathMax.value,
+    Math.max(1, Math.trunc(parsed)),
   )
 }
 
@@ -1403,6 +1449,16 @@ async function loadConfigLimits() {
       ?.multi_hop_expansion_cache_preload_seed_limit?.maximum
     if (Number.isFinite(seedMaximum) && seedMaximum > 0) {
       graphCachePreloadSeedMax.value = Math.trunc(seedMaximum)
+    }
+    const cachePathMaximum = graphSchema?.properties
+      ?.multi_hop_expansion_cache_path_limit?.maximum
+    if (Number.isFinite(cachePathMaximum) && cachePathMaximum > 0) {
+      graphCachePathMax.value = Math.trunc(cachePathMaximum)
+    }
+    const pathMaximum = graphSchema?.properties
+      ?.multi_hop_expansion_cache_preload_path_limit?.maximum
+    if (Number.isFinite(pathMaximum) && pathMaximum > 0) {
+      graphCachePreloadPathMax.value = Math.trunc(pathMaximum)
     }
   } catch {}
 }

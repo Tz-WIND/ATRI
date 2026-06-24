@@ -57,11 +57,21 @@ def test_graph_module_split_keeps_compatibility_imports():
 
 
 def test_default_multihop_expansion_cache_preload_seed_limit_is_64():
-    from core.knowledge.graph_values import _multi_hop_expansion_cache_preload_seed_limit
+    from core.knowledge.graph_values import (
+        _multi_hop_expansion_cache_path_limit,
+        _multi_hop_expansion_cache_preload_path_limit,
+        _multi_hop_expansion_cache_preload_seed_limit,
+    )
 
+    assert _multi_hop_expansion_cache_path_limit(None) == 1000
+    assert _multi_hop_expansion_cache_path_limit(2000) == 2000
+    assert _multi_hop_expansion_cache_path_limit(50000) == 10000
     assert _multi_hop_expansion_cache_preload_seed_limit(None) == 64
     assert _multi_hop_expansion_cache_preload_seed_limit(999) == 999
     assert _multi_hop_expansion_cache_preload_seed_limit(4096) == 2048
+    assert _multi_hop_expansion_cache_preload_path_limit(None) == 200
+    assert _multi_hop_expansion_cache_preload_path_limit(800) == 800
+    assert _multi_hop_expansion_cache_preload_path_limit(100000) == 50000
 
 
 @pytest.mark.parametrize("value", [False, "false", "0", "no", "off", ""])
@@ -77,14 +87,34 @@ def test_legacy_persistent_multihop_cache_false_values_map_to_memory(value):
 
 def test_graph_worker_config_includes_multihop_cache_preload_seed_limit():
     worker_config = _graph_config_from_app_config(
-        {"knowledge": {"graph": {"multi_hop_expansion_cache_preload_seed_limit": "512"}}}
+        {
+            "knowledge": {
+                "graph": {
+                    "multi_hop_expansion_cache_preload_seed_limit": "512",
+                    "multi_hop_expansion_cache_path_limit": "2000",
+                    "multi_hop_expansion_cache_preload_path_limit": "800",
+                }
+            }
+        }
     )
     clamped_config = _graph_config_from_app_config(
-        {"knowledge": {"graph": {"multi_hop_expansion_cache_preload_seed_limit": "4096"}}}
+        {
+            "knowledge": {
+                "graph": {
+                    "multi_hop_expansion_cache_preload_seed_limit": "4096",
+                    "multi_hop_expansion_cache_path_limit": "50000",
+                    "multi_hop_expansion_cache_preload_path_limit": "4096",
+                }
+            }
+        }
     )
 
     assert worker_config["multi_hop_expansion_cache_preload_seed_limit"] == 512
+    assert worker_config["multi_hop_expansion_cache_path_limit"] == 2000
+    assert worker_config["multi_hop_expansion_cache_preload_path_limit"] == 800
     assert clamped_config["multi_hop_expansion_cache_preload_seed_limit"] == 2048
+    assert clamped_config["multi_hop_expansion_cache_path_limit"] == 10000
+    assert clamped_config["multi_hop_expansion_cache_preload_path_limit"] == 4096
 
 
 def test_build_extraction_prompt_documents_segmented_input():
@@ -2840,6 +2870,52 @@ def test_neo4j_graph_client_cache_mode_change_busts_final_context_cache():
     assert len(_retrieve_calls(driver.session_obj.calls)) > retrieve_count
 
 
+@pytest.mark.parametrize(
+    ("field", "updated_value"),
+    [
+        ("multi_hop_expansion_cache_path_limit", 500),
+        ("multi_hop_expansion_cache_preload_path_limit", 500),
+    ],
+)
+def test_neo4j_graph_client_multihop_cache_limit_change_busts_final_context_cache(
+    field, updated_value
+):
+    driver = FakeNeo4jDriver()
+    base_config = {
+        "enabled": True,
+        "uri": "bolt://localhost:7687",
+        "username": "neo4j",
+        "password": "secret",
+        "database": "atri",
+        "multi_hop_expansion_cache_mode": "persistent",
+        "multi_hop_expansion_cache_path_limit": 1000,
+        "multi_hop_expansion_cache_preload_path_limit": 200,
+    }
+    client = Neo4jGraphClient(
+        base_config,
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+    retrieve_count = len(_retrieve_calls(driver.session_obj.calls))
+
+    client.update_config({**base_config, field: updated_value})
+    context_after_limit_change = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=3,
+        retrieval_depth=2,
+    )
+
+    assert context_after_limit_change == context
+    assert len(_retrieve_calls(driver.session_obj.calls)) > retrieve_count
+
+
 def test_neo4j_graph_client_refreshes_external_revision_before_final_context_cache_hit():
     class ExternalRevisionSession(FakeNeo4jSession):
         def __init__(self):
@@ -3909,6 +3985,95 @@ def test_neo4j_graph_client_partially_preloads_multihop_expansion_when_seed_coun
     assert timings["graph_multihop_cached_seed_count"] == 2
     assert timings["graph_multihop_partial_cache_hit"] is True
     assert timings["graph_multihop_persistent_cache_hit_count"] == 0
+
+
+def test_neo4j_graph_client_uses_complete_cached_multihop_seed_subset():
+    class PartialCompleteExpansionSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "db.index.fulltext.queryNodes" in query:
+                return [
+                    {"element_id": "seed-alice", "score": 4.0},
+                    {"element_id": "seed-acme", "score": 3.0},
+                ]
+            if "db.index.fulltext.queryRelationships" in query:
+                return []
+            if "RETURN element_id, seed_score" in query:
+                return [
+                    {"element_id": "seed-alice", "seed_score": 4.0},
+                    {"element_id": "seed-acme", "seed_score": 3.0},
+                ]
+            if "RETURN seed_element_id, paths" in query:
+                return [
+                    {
+                        "seed_element_id": "seed-alice",
+                        "paths": [
+                            {
+                                "hop": 2,
+                                "rel_ids": [
+                                    {"element_id": "rel-alice-acme", "rel_index": 0},
+                                    {"element_id": "rel-acme-neo4j", "rel_index": 1},
+                                ],
+                            }
+                        ],
+                        "incomplete": False,
+                    },
+                    {
+                        "seed_element_id": "seed-acme",
+                        "paths": [],
+                        "incomplete": True,
+                    },
+                ]
+            if "RETURN startNode(r).name AS subject" in query:
+                return [
+                    {
+                        "subject": "Acme",
+                        "predicate": "uses",
+                        "object": "Neo4j",
+                        "evidence": "Acme uses Neo4j.",
+                        "hop": 2,
+                    }
+                ]
+            if "RETURN s.name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = PartialCompleteExpansionSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+            "multi_hop_expansion_cache_mode": "memory",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    timings: dict[str, Any] = {}
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+        timings=timings,
+    )
+
+    assert context == format_graph_context(["- [2-hop] Acme -[uses]-> Neo4j (Acme uses Neo4j.)"])
+    retrieve_call = _multi_hop_retrieve_call(driver.session_obj.calls)
+    assert "UNWIND $cached_expansion_paths AS cached_path" in retrieve_call["query"]
+    assert "MATCH path = (seed)-[:FACT*1..2]" in retrieve_call["query"]
+    assert retrieve_call["params"]["cached_expansion_seed_ids"] == ["seed-alice"]
+    assert retrieve_call["params"]["cached_expansion_seed_rows"] == [
+        {"element_id": "seed-alice", "seed_score": 4.0}
+    ]
+    assert retrieve_call["params"]["live_seed_limit"] == 1
+    assert timings["graph_multihop_seed_count"] == 2
+    assert timings["graph_multihop_cache_hit"] is False
+    assert timings["graph_multihop_cached_seed_count"] == 1
+    assert timings["graph_multihop_partial_cache_hit"] is True
 
 
 def test_neo4j_graph_client_reuses_persistent_multihop_expansion_cache_across_clients():
