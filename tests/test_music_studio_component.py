@@ -204,8 +204,8 @@ def test_music_studio_supports_track_type_and_audio_channel_controls():
     assert "isInstrumentTrack(track)" in studio_text
     assert "isAudioTrack(track)" in studio_text
     assert (
-        "@change.stop=\"event => emit('update-track', track.id, { channel_type: event.target.value })\""
-        in studio_text
+        "@change.stop=\"event => emit('update-track', track.id, "
+        '{ channel_type: event.target.value })"' in studio_text
     )
     assert '@update-track="updateTrack"' in studio_text
     assert "async function createTrack(name = 'Instrument', options = {})" in host_text
