@@ -2190,6 +2190,115 @@ def test_neo4j_graph_client_falls_back_when_fulltext_index_creation_fails(caplog
     )
 
 
+def test_neo4j_graph_client_skips_unbounded_multihop_when_fulltext_unavailable():
+    class FulltextUnsupportedSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "CREATE FULLTEXT INDEX" in query:
+                raise RuntimeError("fulltext indexes are not allowed")
+            if "db.index.fulltext" in query:
+                raise AssertionError("fulltext retrieval should be disabled")
+            if "RETURN startNode(r).name AS subject" in query:
+                raise AssertionError("unbounded multi-hop scan should not run")
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "Alice works at Acme.",
+                        "confidence": 0.9,
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = FulltextUnsupportedSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    timings = {}
+
+    context = client.retrieve_context(
+        query="Alice Acme",
+        source_ids=[],
+        max_facts=2,
+        retrieval_depth=2,
+        timings=timings,
+    )
+
+    assert not any(
+        "RETURN startNode(r).name AS subject" in call["query"]
+        for call in driver.session_obj.calls
+    )
+    assert timings["graph_multihop_degraded"] is True
+    assert timings["graph_multi_hop_ms"] == 0.0
+    assert context == format_graph_context(
+        ["- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)"]
+    )
+
+
+def test_neo4j_graph_client_uses_source_seeded_multihop_when_fulltext_unavailable():
+    class FulltextUnsupportedSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "CREATE FULLTEXT INDEX" in query:
+                raise RuntimeError("fulltext indexes are not allowed")
+            if "db.index.fulltext" in query:
+                raise AssertionError("fulltext retrieval should be disabled")
+            if "RETURN s.name AS subject" in query:
+                return [
+                    {
+                        "subject": "Alice",
+                        "subject_type": "Person",
+                        "predicate": "works_at",
+                        "object": "Acme",
+                        "object_type": "Company",
+                        "evidence": "Alice works at Acme.",
+                        "confidence": 0.9,
+                    }
+                ]
+            if "RETURN startNode(r).name AS subject" in query:
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = FulltextUnsupportedSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    timings = {}
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=2,
+        retrieval_depth=2,
+        timings=timings,
+    )
+
+    multi_hop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
+    assert "MATCH path = (seed)-[:FACT*1..2]-(o:Entity)" in multi_hop_query
+    assert "MATCH path = (s:Entity)-[:FACT*1..2]->(o:Entity)" not in multi_hop_query
+    assert timings["graph_multihop_degraded"] is False
+
+
 @pytest.mark.parametrize("failing_index", ["entity_text", "fact_text"])
 def test_neo4j_graph_client_logs_specific_fulltext_index_creation_failure(caplog, failing_index):
     class PartiallyUnsupportedFulltextSession(FakeNeo4jSession):

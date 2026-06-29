@@ -1880,6 +1880,7 @@ def _combine_graph_timings(*timing_sets: dict[str, Any]) -> dict[str, Any]:
     any_bool_keys = {
         "graph_multihop_cache_hit",
         "graph_multihop_partial_cache_hit",
+        "graph_multihop_degraded",
     }
     for timings in timing_sets:
         for key in additive_float_keys:

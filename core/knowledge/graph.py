@@ -1276,6 +1276,7 @@ class Neo4jGraphClient:
                 "graph_multihop_persistent_cache_hit_count",
                 multihop_persistent_cache_hit_count,
             )
+            _set_bool(timings, "graph_multihop_degraded", False)
             return ""
         depth = _retrieval_depth(retrieval_depth)
         policy = _ranking_policy(ranking_policy)
@@ -1302,6 +1303,7 @@ class Neo4jGraphClient:
         live_seed_limit = seed_limit if depth > 1 else 0
         multihop_live_seed_limit = live_seed_limit
         fulltext_query = _fulltext_query(terms) if self._fulltext_indexes_ready else ""
+        multihop_degraded = bool(depth > 1 and terms and not fulltext_query and not source_ids)
         if terms and not self._fulltext_indexes_ready:
             logger.warning(
                 "Neo4j graph fulltext index unavailable; using scan fallback "
@@ -1362,6 +1364,7 @@ class Neo4jGraphClient:
                 "graph_multihop_persistent_cache_hit_count",
                 multihop_persistent_cache_hit_count,
             )
+            _set_bool(timings, "graph_multihop_degraded", multihop_degraded)
             return str(cached_context)
         _set_bool(timings, "graph_cache_hit", False)
         fulltext_seed_rows = self._cached_fulltext_seed_rows(fulltext_query, seed_limit)
@@ -1617,32 +1620,10 @@ class Neo4jGraphClient:
         WITH path, relationships(path) AS rels, length(path) AS hop, 0.0 AS seed_score
         WHERE hop > 1
                 """
-            elif terms:
-                multi_hop_seed_cypher = f"""
-        MATCH path = (s:Entity)-[:FACT*1..{depth}]->(o:Entity)
-        WHERE
-          (
-            size($source_ids) > 0
-            AND any(rel IN relationships(path) WHERE
-              EXISTS {{
-                MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
-                WHERE source_node.source_id IN $source_ids
-                  AND fact_node.fact_key = rel.fact_key
-              }})
-          )
-          OR any(term_row IN $term_rows WHERE
-              any(node IN nodes(path) WHERE toLower(node.name) CONTAINS term_row.term)
-              OR any(rel IN relationships(path) WHERE
-                toLower(rel.predicate) CONTAINS term_row.term
-                OR toLower(coalesce(rel.evidence, '')) CONTAINS term_row.term
-                OR toLower(coalesce(rel[$hyper_event_property], '')) CONTAINS term_row.term
-                OR toLower(coalesce(rel[$hyper_role_property], '')) CONTAINS term_row.term
-                OR toLower(coalesce(rel[$chain_id_property], '')) CONTAINS term_row.term
-                OR any(chain_id IN coalesce(rel[$chain_ids_property], [])
-                       WHERE toLower(toString(chain_id)) CONTAINS term_row.term)))
-        WITH path, relationships(path) AS rels, length(path) AS hop, 0.0 AS seed_score
-        WHERE hop > 1
-                """
+            elif terms and not source_ids:
+                multi_hop_seed_cypher = ""
+                live_seed_limit = 0
+                multihop_live_seed_limit = 0
             else:
                 multi_hop_seed_cypher = f"""
         CALL () {{
@@ -1984,7 +1965,7 @@ class Neo4jGraphClient:
                     )
                 multihop_live_seed_limit = live_seed_limit
 
-            cypher = build_multi_hop_cypher(multi_hop_seed_cypher)
+            cypher = build_multi_hop_cypher(multi_hop_seed_cypher) if multi_hop_seed_cypher else ""
             if multi_hop_scan_seed_cypher:
                 multi_hop_scan_cypher = build_multi_hop_cypher(multi_hop_scan_seed_cypher)
 
@@ -2067,7 +2048,7 @@ class Neo4jGraphClient:
                 raise first_error
             return [result or ([], 0.0) for result in results]
 
-        if depth > 1:
+        if depth > 1 and cypher:
             used_scan_fallback = False
             parallel_results = run_parallel_context_queries(
                 [
@@ -2086,6 +2067,13 @@ class Neo4jGraphClient:
                 _record_timing(timings, "graph_scan_fallback_ms", scan_fallback_started_at)
             else:
                 _set_timing(timings, "graph_scan_fallback_ms", 0.0)
+        elif depth > 1:
+            used_scan_fallback = False
+            single_hop_started_at = time.perf_counter()
+            rows = run_context_query(single_hop_cypher, limit=query_limit)
+            _record_timing(timings, "graph_single_hop_ms", single_hop_started_at)
+            _set_timing(timings, "graph_multi_hop_ms", 0.0)
+            _set_timing(timings, "graph_scan_fallback_ms", 0.0)
         else:
             used_scan_fallback = False
             single_hop_started_at = time.perf_counter()
@@ -2177,6 +2165,7 @@ class Neo4jGraphClient:
             "graph_multihop_persistent_cache_hit_count",
             multihop_persistent_cache_hit_count,
         )
+        _set_bool(timings, "graph_multihop_degraded", multihop_degraded)
         _record_timing(timings, "graph_total_ms", started_at)
         logger.info(
             "Neo4j graph retrieval done: elapsed_ms=%.1f depth=%d max_facts=%d "

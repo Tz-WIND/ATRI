@@ -88,6 +88,7 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "graph_multihop_live_seed_limit" in source
     assert "graph_multihop_partial_cache_hit" in source
     assert "graph_multihop_persistent_cache_hit_count" in source
+    assert "graph_multihop_degraded" in source
     assert "graph_used_fulltext" in source
     assert "graph_used_scan_fallback" in source
     assert "graph_total_ms" in source

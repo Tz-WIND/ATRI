@@ -389,6 +389,7 @@ def _graph_retrieval_diagnostics(
         "graph_used_scan_fallback",
         "graph_multihop_cache_hit",
         "graph_multihop_partial_cache_hit",
+        "graph_multihop_degraded",
     ):
         if key in timings:
             diagnostics[key] = bool(timings[key])

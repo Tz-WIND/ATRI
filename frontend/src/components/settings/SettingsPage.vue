@@ -1171,6 +1171,12 @@ const graphQueryDiagnosticItems = computed(() => {
       active: diagnostics.graph_used_scan_fallback === true,
       muted: diagnostics.graph_used_scan_fallback === false,
     },
+    {
+      label: 'Degraded',
+      value: graphDiagnosticFlag(diagnostics.graph_multihop_degraded),
+      active: diagnostics.graph_multihop_degraded === true,
+      muted: diagnostics.graph_multihop_degraded === false,
+    },
     { label: 'Depth', value: graphDiagnosticCount(diagnostics.retrieval_depth) },
     { label: 'Policy', value: String(diagnostics.ranking_policy || '').trim() },
   ].filter(item => item.value)

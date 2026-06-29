@@ -141,6 +141,7 @@ class _FakeGraphManager:
                     "graph_multihop_live_seed_limit": 33,
                     "graph_multihop_partial_cache_hit": True,
                     "graph_multihop_persistent_cache_hit_count": 5,
+                    "graph_multihop_degraded": True,
                 }
             )
         self.retrieve_calls.append(
@@ -681,6 +682,7 @@ async def test_knowledge_graph_retrieve_route(monkeypatch, tmp_path):
             "graph_multihop_live_seed_limit": 33,
             "graph_multihop_partial_cache_hit": True,
             "graph_multihop_persistent_cache_hit_count": 5,
+            "graph_multihop_degraded": True,
             "max_facts": 4,
             "retrieval_depth": 7,
             "ranking_policy": "relevance",
