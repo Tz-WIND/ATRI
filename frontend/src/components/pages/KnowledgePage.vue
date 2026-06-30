@@ -258,6 +258,7 @@
                     type="file"
                     class="file-input"
                     :accept="documentAccept"
+                    multiple
                     @change="onFileSelected"
                   >
                   <button
@@ -265,7 +266,7 @@
                     :disabled="uploading"
                     @click="triggerUpload"
                   >
-                    {{ uploading ? 'Uploading' : 'Upload File' }}
+                    {{ uploadButtonLabel }}
                   </button>
                 </div>
               </div>
@@ -452,6 +453,8 @@ const {
   loadStatus,
 } = useProviders()
 
+const MAX_KNOWLEDGE_UPLOAD_FILES = 1000
+
 const bases = ref([])
 const documents = ref([])
 const chunks = ref([])
@@ -468,6 +471,12 @@ const error = ref('')
 const taskStatus = ref(null)
 const retrievalResults = ref([])
 const fileInput = ref(null)
+const uploadProgress = ref({
+  current: 0,
+  total: 0,
+  success: 0,
+  failed: 0,
+})
 const knowledgeConfig = ref({
   enabled: false,
   active_bases: [],
@@ -511,6 +520,11 @@ const summary = computed(() => ({
 
 const embeddingOptions = computed(() => activeEmbeddingModels.value.map(modelOption))
 const rerankOptions = computed(() => activeRerankModels.value.map(modelOption))
+const uploadButtonLabel = computed(() => {
+  if (!uploading.value) return 'Upload File'
+  const { current, total } = uploadProgress.value
+  return total > 1 ? `Uploading ${current}/${total}` : 'Uploading'
+})
 
 onMounted(async () => {
   await loadDocumentSupport()
@@ -658,14 +672,47 @@ function triggerUpload() {
 }
 
 async function onFileSelected(event) {
-  const file = event.target.files?.[0]
-  if (!file || !selectedKb.value) return
+  const files = Array.from(event.target.files || [])
+  if (!files.length || !selectedKb.value) {
+    event.target.value = ''
+    return
+  }
+
+  const uploadKbId = selectedKb.value.kb_id
+  const queuedFiles = files.slice(0, MAX_KNOWLEDGE_UPLOAD_FILES)
+  const skippedCount = Math.max(0, files.length - queuedFiles.length)
+  const failedUploads = []
   uploading.value = true
   error.value = ''
+  uploadProgress.value = {
+    current: 0,
+    total: queuedFiles.length,
+    success: 0,
+    failed: 0,
+  }
   try {
-    const task = await api.uploadKnowledgeDocument(selectedKb.value.kb_id, file)
-    taskStatus.value = task
-    await refreshTask(task.task_id)
+    for (const file of queuedFiles) {
+      uploadProgress.value.current += 1
+      try {
+        const task = await api.uploadKnowledgeDocument(uploadKbId, file)
+        taskStatus.value = task
+        await refreshTask(task.task_id)
+        uploadProgress.value.success += 1
+      } catch (err) {
+        failedUploads.push(`${file.name || 'file'}: ${err.message || 'failed to upload document'}`)
+        uploadProgress.value.failed += 1
+        continue
+      }
+    }
+
+    const messages = []
+    if (skippedCount) {
+      messages.push(`Queued first ${MAX_KNOWLEDGE_UPLOAD_FILES} files; skipped ${skippedCount}.`)
+    }
+    if (failedUploads.length) {
+      messages.push(uploadFailureSummary(failedUploads))
+    }
+    error.value = messages.join(' ')
     await loadBases()
   } catch (err) {
     error.value = err.message || 'failed to upload document'
@@ -673,6 +720,12 @@ async function onFileSelected(event) {
     uploading.value = false
     event.target.value = ''
   }
+}
+
+function uploadFailureSummary(failedUploads) {
+  const visible = failedUploads.slice(0, 5).join('; ')
+  const more = failedUploads.length > 5 ? `; +${failedUploads.length - 5} more` : ''
+  return `Failed ${failedUploads.length} file${failedUploads.length === 1 ? '' : 's'}: ${visible}${more}`
 }
 
 async function removeDocument(docId) {

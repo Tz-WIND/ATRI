@@ -120,3 +120,36 @@ def test_knowledge_page_can_collapse_and_scroll_chunks():
     assert "chunks.value = []" in source
     assert "max-height:" in source
     assert "overflow-y: auto" in source
+
+
+def test_knowledge_page_uploads_selected_files_as_capped_queue():
+    source = _read("frontend/src/components/pages/KnowledgePage.vue")
+    ref_index = source.index('ref="fileInput"')
+    input_start = source.rindex("<input", 0, ref_index)
+    input_end = source.index(">", ref_index)
+    file_input = source[input_start:input_end]
+
+    assert '@change="onFileSelected"' in file_input
+    assert "multiple" in file_input
+    assert "const MAX_KNOWLEDGE_UPLOAD_FILES = 1000" in source
+    assert "Array.from(event.target.files || [])" in source
+    assert ".slice(0, MAX_KNOWLEDGE_UPLOAD_FILES)" in source
+    assert "for (const file of queuedFiles)" in source
+    assert "failedUploads.push" in source
+    assert "continue" in source
+    assert "files?.[0]" not in source
+
+
+def test_knowledge_page_upload_queue_uses_initially_selected_base():
+    source = _read("frontend/src/components/pages/KnowledgePage.vue")
+    function_start = source.index("async function onFileSelected")
+    function_end = source.index("\nasync function removeDocument", function_start)
+    body = source[function_start:function_end]
+
+    assert "const uploadKbId = selectedKb.value.kb_id" in body
+    capture_index = body.index("const uploadKbId = selectedKb.value.kb_id")
+    loop_index = body.index("for (const file of queuedFiles)")
+
+    assert capture_index < loop_index
+    assert "api.uploadKnowledgeDocument(uploadKbId, file)" in body
+    assert "api.uploadKnowledgeDocument(selectedKb.value.kb_id" not in body

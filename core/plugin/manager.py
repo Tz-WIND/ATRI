@@ -97,9 +97,7 @@ class PluginManager:
         except TimeoutError:
             if future.done():
                 raise
-            future.add_done_callback(
-                lambda done: self._log_late_plugin_source(module_name, done)
-            )
+            future.add_done_callback(lambda done: self._log_late_plugin_source(module_name, done))
             raise PluginStartupTimeoutError from None
 
     def _load_plugin_source_sync(self, module_name: str) -> list[Plugin]:

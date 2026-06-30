@@ -2237,8 +2237,7 @@ def test_neo4j_graph_client_skips_unbounded_multihop_when_fulltext_unavailable()
     )
 
     assert not any(
-        "RETURN startNode(r).name AS subject" in call["query"]
-        for call in driver.session_obj.calls
+        "RETURN startNode(r).name AS subject" in call["query"] for call in driver.session_obj.calls
     )
     assert timings["graph_multihop_degraded"] is True
     assert timings["graph_multi_hop_ms"] == 0.0
