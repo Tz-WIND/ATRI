@@ -142,6 +142,30 @@ async def test_process_stage_prepends_knowledge_context_to_current_turn():
 
 
 @pytest.mark.asyncio
+async def test_process_stage_skips_knowledge_retrieval_for_low_signal_greeting():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": True,
+        "active_bases": ["kb-1"],
+        "top_k": 3,
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+        },
+    }
+    stage.knowledge_manager = FakeKnowledgeManager()
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="你好")
+
+    context = await stage._knowledge_context_for_event(event)
+
+    assert context == ""
+    assert stage.knowledge_manager.calls == []
+    assert stage.graph_manager.retrieve_calls == []
+
+
+@pytest.mark.asyncio
 async def test_process_stage_appends_graph_context_without_replacing_vector_context():
     stage = ProcessStage()
     stage.image_transcription = {"enabled": False}
@@ -919,11 +943,13 @@ async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
                         "vector_embed_ms": 1.1,
                         "vector_store_ms": 2.2,
                         "vector_dense_ms": 3.3,
+                        "vector_hydrate_ms": 0.8,
                         "vector_sparse_ms": 4.4,
                         "vector_fuse_ms": 0.5,
                         "vector_rerank_ms": 0.6,
                         "vector_limit_ms": 0.7,
                         "vector_returned_hits": 1,
+                        "vector_hydrated_rows": 1,
                     }
                 )
             return result
@@ -1001,6 +1027,7 @@ async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
         "vector_total_ms=12.3",
         "vector_embed_ms=1.1",
         "vector_dense_ms=3.3",
+        "vector_hydrate_ms=0.8",
         "vector_sparse_ms=4.4",
         "graph_total_ms=23.4",
         "graph_single_hop_ms=5.5",
@@ -1008,6 +1035,7 @@ async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
         "graph_scan_fallback_ms=0.0",
         "graph_format_ms=1.2",
         "vector_hits=1",
+        "vector_hydrated_rows=1",
         "graph_rows=2",
         "graph_multihop_seed_count=6",
         "graph_multihop_cache_hit=True",

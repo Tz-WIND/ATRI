@@ -30,6 +30,8 @@ class KnowledgeStore:
         self.conn: sqlite3.Connection | None = None
         self.fts_available = False
         self._embedding_cache: OrderedDict[str, tuple[float, tuple[float, ...]]] = OrderedDict()
+        self._vector_candidate_cache: OrderedDict[str, tuple[dict, ...]] = OrderedDict()
+        self._vector_candidate_cache_size = 0
         self.embedding_cache_max_size = _nonnegative_int(
             embedding_cache_max_size,
             DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
@@ -49,6 +51,8 @@ class KnowledgeStore:
             self.conn.close()
             self.conn = None
         self._embedding_cache.clear()
+        self._vector_candidate_cache.clear()
+        self._vector_candidate_cache_size = 0
 
     def set_embedding_cache_max_size(self, value: object) -> None:
         self.embedding_cache_max_size = _nonnegative_int(
@@ -56,6 +60,7 @@ class KnowledgeStore:
             DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
         )
         self._trim_embedding_cache()
+        self._trim_vector_candidate_cache()
 
     def _create_schema(self) -> None:
         conn = self._conn()
@@ -219,6 +224,7 @@ class KnowledgeStore:
         for doc_id in doc_ids:
             self._delete_fts_doc(doc_id)
         self._delete_embedding_cache_for_kb(kb_id)
+        self._delete_vector_candidate_cache_for_kb(kb_id)
         cur = self._conn().execute("DELETE FROM knowledge_bases WHERE kb_id=?", (kb_id,))
         self._conn().commit()
         return cur.rowcount > 0
@@ -275,6 +281,7 @@ class KnowledgeStore:
                     (chunk_id, kb_id, doc_id, content),
                 )
         conn.commit()
+        self._delete_vector_candidate_cache_for_kb(kb_id)
         self.refresh_counts(kb_id, doc_id)
 
     def get_document(self, doc_id: str) -> dict | None:
@@ -298,6 +305,7 @@ class KnowledgeStore:
             return False
         self._delete_fts_doc(doc_id)
         self._delete_embedding_cache_for_doc(doc_id)
+        self._delete_vector_candidate_cache_for_kb(doc["kb_id"])
         cur = self._conn().execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
         self._conn().commit()
         self.refresh_counts(doc["kb_id"])
@@ -334,6 +342,7 @@ class KnowledgeStore:
         if self.fts_available:
             self._conn().execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
         self._embedding_cache.pop(chunk_id, None)
+        self._delete_vector_candidate_cache_for_kb(row["kb_id"])
         cur = self._conn().execute("DELETE FROM chunks WHERE chunk_id=?", (chunk_id,))
         self._conn().commit()
         self.refresh_counts(row["kb_id"], row["doc_id"])
@@ -342,14 +351,56 @@ class KnowledgeStore:
     def vector_chunks(self, kb_ids: list[str]) -> list[dict]:
         if not kb_ids:
             return []
+        candidates = self.vector_chunk_candidates(kb_ids)
+        hydrated = self.chunks_by_ids([row["chunk_id"] for row in candidates])
+        hydrated_by_id = {row["chunk_id"]: row for row in hydrated}
+        return [
+            {**row, **hydrated_by_id[row["chunk_id"]]}
+            for row in candidates
+            if row["chunk_id"] in hydrated_by_id
+        ]
+
+    def vector_chunk_candidates(self, kb_ids: list[str]) -> list[dict]:
+        if not kb_ids:
+            return []
+        if self.embedding_cache_max_size <= 0:
+            return self._load_vector_chunk_candidates(kb_ids)
+
+        missing_kb_ids = [kb_id for kb_id in kb_ids if kb_id not in self._vector_candidate_cache]
+        if missing_kb_ids:
+            loaded = self._load_vector_chunk_candidates(missing_kb_ids)
+            grouped: dict[str, list[dict]] = {}
+            for row in loaded:
+                grouped.setdefault(row["kb_id"], []).append(row)
+            loaded_grouped = {
+                kb_id: tuple(dict(row) for row in grouped.get(kb_id, []))
+                for kb_id in missing_kb_ids
+            }
+            for kb_id in missing_kb_ids:
+                self._cache_vector_candidates(kb_id, list(loaded_grouped[kb_id]))
+        else:
+            loaded_grouped = {}
+
+        rows: list[dict] = []
+        for kb_id in kb_ids:
+            cached = self._vector_candidate_cache.get(kb_id)
+            if cached is not None:
+                self._vector_candidate_cache.move_to_end(kb_id)
+                rows.extend(dict(row) for row in cached)
+            else:
+                rows.extend(dict(row) for row in loaded_grouped.get(kb_id, ()))
+        return rows
+
+    def _load_vector_chunk_candidates(self, kb_ids: list[str]) -> list[dict]:
+        if not kb_ids:
+            return []
         rows = (
             self._conn()
             .execute(
                 """
-            SELECT c.*, d.doc_name, kb.name AS kb_name
+            SELECT c.chunk_id, c.kb_id, c.doc_id, c.chunk_index,
+                   c.embedding, c.embedding_norm, c.created_at
             FROM chunks c
-            JOIN documents d ON d.doc_id = c.doc_id
-            JOIN knowledge_bases kb ON kb.kb_id = c.kb_id
             WHERE c.kb_id IN (SELECT value FROM json_each(?))
             """,
                 (json.dumps(kb_ids),),
@@ -357,6 +408,38 @@ class KnowledgeStore:
             .fetchall()
         )
         return [self._decode_chunk(row) for row in rows]
+
+    def _cache_vector_candidates(self, kb_id: str, rows: list[dict]) -> bool:
+        if self.embedding_cache_max_size <= 0 or len(rows) > self.embedding_cache_max_size:
+            return False
+        existing = self._vector_candidate_cache.pop(kb_id, None)
+        if existing is not None:
+            self._vector_candidate_cache_size -= len(existing)
+        self._vector_candidate_cache[kb_id] = tuple(dict(row) for row in rows)
+        self._vector_candidate_cache_size += len(rows)
+        self._trim_vector_candidate_cache()
+        return True
+
+    def chunks_by_ids(self, chunk_ids: list[str]) -> list[dict]:
+        if not chunk_ids:
+            return []
+        rows = (
+            self._conn()
+            .execute(
+                """
+            SELECT c.chunk_id, c.kb_id, c.doc_id, c.chunk_index, c.content,
+                   c.char_count, c.created_at, d.doc_name, kb.name AS kb_name
+            FROM chunks c
+            JOIN documents d ON d.doc_id = c.doc_id
+            JOIN knowledge_bases kb ON kb.kb_id = c.kb_id
+            WHERE c.chunk_id IN (SELECT value FROM json_each(?))
+            """,
+                (json.dumps(chunk_ids),),
+            )
+            .fetchall()
+        )
+        by_id = {row["chunk_id"]: self._decode_search_chunk(row) for row in rows}
+        return [by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in by_id]
 
     def keyword_search(self, query: str, kb_ids: list[str], limit: int) -> list[dict]:
         if not kb_ids or not query.strip():
@@ -506,6 +589,11 @@ class KnowledgeStore:
         for chunk_id in chunk_ids:
             self._embedding_cache.pop(chunk_id, None)
 
+    def _delete_vector_candidate_cache_for_kb(self, kb_id: str) -> None:
+        rows = self._vector_candidate_cache.pop(kb_id, None)
+        if rows is not None:
+            self._vector_candidate_cache_size -= len(rows)
+
     def _decode_kb(self, row: sqlite3.Row) -> dict:
         data = dict(row)
         data["embedding_config"] = json.loads(data.get("embedding_config") or "{}")
@@ -544,6 +632,15 @@ class KnowledgeStore:
             return
         while len(self._embedding_cache) > self.embedding_cache_max_size:
             self._embedding_cache.popitem(last=False)
+
+    def _trim_vector_candidate_cache(self) -> None:
+        if self.embedding_cache_max_size <= 0:
+            self._vector_candidate_cache.clear()
+            self._vector_candidate_cache_size = 0
+            return
+        while self._vector_candidate_cache_size > self.embedding_cache_max_size:
+            _, rows = self._vector_candidate_cache.popitem(last=False)
+            self._vector_candidate_cache_size -= len(rows)
 
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:

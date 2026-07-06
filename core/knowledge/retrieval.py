@@ -99,7 +99,7 @@ class HybridRetriever:
         timings: dict[str, Any] | None = None,
     ) -> list[dict]:
         store_started_at = time.perf_counter()
-        rows = self.store.vector_chunks(kb_ids)
+        rows = self.store.vector_chunk_candidates(kb_ids)
         _record_timing(timings, "vector_store_ms", store_started_at)
         _record_count(timings, "vector_rows", len(rows))
         query_norms = {kb_id: _vector_norm(vector) for kb_id, vector in query_vectors.items()}
@@ -128,8 +128,18 @@ class HybridRetriever:
             sequence += 1
         limited_entries = [entry for heap in heaps.values() for entry in heap]
         limited_entries.sort(key=lambda item: (-item[0], -item[1]))
-        limited = [row for _, _, row in limited_entries]
-        _record_count(timings, "vector_dense_rows", len(limited))
+        limited_candidates = [row for _, _, row in limited_entries]
+        _record_count(timings, "vector_dense_rows", len(limited_candidates))
+        hydrate_started_at = time.perf_counter()
+        hydrated_rows = self.store.chunks_by_ids([row["chunk_id"] for row in limited_candidates])
+        _record_timing(timings, "vector_hydrate_ms", hydrate_started_at)
+        hydrated_by_id = {row["chunk_id"]: row for row in hydrated_rows}
+        limited = [
+            {**row, **hydrated_by_id[row["chunk_id"]]}
+            for row in limited_candidates
+            if row["chunk_id"] in hydrated_by_id
+        ]
+        _record_count(timings, "vector_hydrated_rows", len(limited))
         return limited
 
     def _fuse(self, dense_rows: list[dict], sparse_rows: list[dict]) -> list[tuple[dict, float]]:

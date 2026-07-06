@@ -5,6 +5,7 @@ import pytest
 import core.knowledge.store as store_module
 from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.manager import KnowledgeBaseManager
+from core.knowledge.retrieval import HybridRetriever
 from core.knowledge.rerank import OpenAIRerankClient
 from core.knowledge.store import KnowledgeStore
 
@@ -36,6 +37,52 @@ class FakeRerankClient:
 class FailingRerankClient:
     async def rerank(self, selection, query, documents):
         raise RuntimeError("rerank offline")
+
+
+class DenseHydrationStore:
+    def __init__(self) -> None:
+        self.hydrated_chunk_ids: list[str] = []
+
+    def vector_chunks(self, kb_ids):
+        return [
+            self._row("chunk-python", [1.0, 0.0, 0.0], "Python retrieval chunk"),
+            self._row("chunk-sqlite", [0.0, 0.0, 1.0], "SQLite retrieval chunk"),
+        ]
+
+    def vector_chunk_candidates(self, kb_ids):
+        return [
+            self._candidate("chunk-python", [1.0, 0.0, 0.0]),
+            self._candidate("chunk-sqlite", [0.0, 0.0, 1.0]),
+        ]
+
+    def chunks_by_ids(self, chunk_ids):
+        self.hydrated_chunk_ids = list(chunk_ids)
+        return [
+            self._row("chunk-python", [1.0, 0.0, 0.0], "Python retrieval chunk"),
+            self._row("chunk-sqlite", [0.0, 0.0, 1.0], "SQLite retrieval chunk"),
+        ]
+
+    def keyword_search(self, query, kb_ids, limit):
+        return []
+
+    def _candidate(self, chunk_id, embedding):
+        return {
+            "chunk_id": chunk_id,
+            "kb_id": "kb-1",
+            "doc_id": "doc-1",
+            "chunk_index": 0,
+            "embedding": embedding,
+            "embedding_norm": 1.0,
+        }
+
+    def _row(self, chunk_id, embedding, content):
+        return {
+            **self._candidate(chunk_id, embedding),
+            "kb_name": "Docs",
+            "doc_name": "notes.txt",
+            "content": content,
+            "char_count": len(content),
+        }
 
 
 class MismatchedConfigEmbeddingClient:
@@ -179,6 +226,31 @@ async def test_knowledge_manager_records_retrieval_timing_segments(tmp_path):
     assert timings["vector_returned_hits"] >= 1
 
 
+@pytest.mark.asyncio
+async def test_dense_retrieval_hydrates_only_top_vector_candidates():
+    store = DenseHydrationStore()
+    retriever = HybridRetriever(store)
+
+    hits = await retriever.retrieve(
+        query="sqlite",
+        kb_records=[
+            {
+                "kb_id": "kb-1",
+                "name": "Docs",
+                "top_k_dense": 1,
+                "top_k_sparse": 1,
+                "top_m_final": 1,
+            }
+        ],
+        query_vectors={"kb-1": [0.0, 0.0, 1.0]},
+        top_k=1,
+    )
+
+    assert store.hydrated_chunk_ids == ["chunk-sqlite"]
+    assert [hit.chunk_id for hit in hits] == ["chunk-sqlite"]
+    assert hits[0].content == "SQLite retrieval chunk"
+
+
 def test_store_reuses_decoded_embeddings_between_vector_scans(tmp_path, monkeypatch):
     store = KnowledgeStore(tmp_path / "knowledge.db")
     store.initialize()
@@ -223,6 +295,176 @@ def test_store_reuses_decoded_embeddings_between_vector_scans(tmp_path, monkeypa
         [0.0, 0.0, 1.0],
     ]
     assert embedding_decode_count == 2
+
+
+def test_store_reuses_vector_candidate_cache_between_scans(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Cached Candidate Vectors",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+    vector_select_count = 0
+
+    def trace(statement):
+        nonlocal vector_select_count
+        if (
+            "c.embedding" in statement
+            and "c.embedding_norm" in statement
+            and "FROM chunks c" in statement
+        ):
+            vector_select_count += 1
+
+    store._conn().set_trace_callback(trace)
+    first_rows = store.vector_chunk_candidates([kb["kb_id"]])
+    second_rows = store.vector_chunk_candidates([kb["kb_id"]])
+    store._conn().set_trace_callback(None)
+
+    assert [row["embedding"] for row in first_rows] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    assert [row["embedding"] for row in second_rows] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    assert vector_select_count == 1
+
+
+def test_store_invalidates_vector_candidate_cache_when_chunks_change(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Invalidated Candidate Vectors",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    first_doc = store.create_document(kb["kb_id"], "first.txt", "txt", 21, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        first_doc["doc_id"],
+        [("Python retrieval chunk", [1.0, 0.0, 0.0])],
+    )
+
+    assert len(store.vector_chunk_candidates([kb["kb_id"]])) == 1
+
+    second_doc = store.create_document(kb["kb_id"], "second.txt", "txt", 21, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        second_doc["doc_id"],
+        [("SQLite retrieval chunk", [0.0, 0.0, 1.0])],
+    )
+    rows_after_add = store.vector_chunk_candidates([kb["kb_id"]])
+
+    assert [row["embedding"] for row in rows_after_add] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+
+    assert store.delete_chunk(rows_after_add[0]["chunk_id"]) is True
+    rows_after_delete = store.vector_chunk_candidates([kb["kb_id"]])
+
+    assert [row["embedding"] for row in rows_after_delete] == [[0.0, 0.0, 1.0]]
+
+
+def test_store_returns_uncached_vector_candidates_when_kb_exceeds_cache_limit(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db", embedding_cache_max_size=1)
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Oversized Candidate Vectors",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+
+    rows = store.vector_chunk_candidates([kb["kb_id"]])
+
+    assert [row["embedding"] for row in rows] == [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    assert store._vector_candidate_cache_size == 0
+
+
+def test_store_returns_loaded_candidates_when_lru_trim_evicts_during_same_scan(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db", embedding_cache_max_size=3)
+    store.initialize()
+    first_kb = store.create_kb(
+        {
+            "name": "First Trimmed KB",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    second_kb = store.create_kb(
+        {
+            "name": "Second Trimmed KB",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    first_doc = store.create_document(first_kb["kb_id"], "first.txt", "txt", 42, "test")
+    second_doc = store.create_document(second_kb["kb_id"], "second.txt", "txt", 42, "test")
+    store.add_chunks(
+        first_kb["kb_id"],
+        first_doc["doc_id"],
+        [
+            ("First python chunk", [1.0, 0.0, 0.0]),
+            ("First sqlite chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+    store.add_chunks(
+        second_kb["kb_id"],
+        second_doc["doc_id"],
+        [
+            ("Second python chunk", [2.0, 0.0, 0.0]),
+            ("Second sqlite chunk", [0.0, 0.0, 2.0]),
+        ],
+    )
+
+    rows = store.vector_chunk_candidates([first_kb["kb_id"], second_kb["kb_id"]])
+
+    assert [(row["kb_id"], row["embedding"]) for row in rows] == [
+        (first_kb["kb_id"], [1.0, 0.0, 0.0]),
+        (first_kb["kb_id"], [0.0, 0.0, 1.0]),
+        (second_kb["kb_id"], [2.0, 0.0, 0.0]),
+        (second_kb["kb_id"], [0.0, 0.0, 2.0]),
+    ]
+    assert store._vector_candidate_cache_size == 2
 
 
 def test_keyword_fallback_search_does_not_decode_embeddings(tmp_path, monkeypatch):

@@ -12,6 +12,7 @@ import concurrent.futures
 import inspect
 import json
 import math
+import re
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -46,6 +47,43 @@ _GRAPH_SOURCE_ANCHOR_LATENCY_ALPHA = 0.35
 _GRAPH_LATE_ANCHOR_RETRY_MIN_VECTOR_SCORE = 0.75
 _GRAPH_ENUMERATION_RETRIEVAL_DEPTH_FLOOR = 3
 _GRAPH_ENUMERATION_EXPANSION_CANDIDATE_FLOOR = 120
+_LOW_SIGNAL_KNOWLEDGE_QUERIES = {
+    "hi",
+    "hello",
+    "hey",
+    "yo",
+    "goodmorning",
+    "goodafternoon",
+    "goodevening",
+    "thanks",
+    "thankyou",
+    "ok",
+    "okay",
+    "你好",
+    "你好啊",
+    "您好",
+    "您好啊",
+    "嗨",
+    "哈喽",
+    "哈啰",
+    "在吗",
+    "在嘛",
+    "在么",
+    "早",
+    "早安",
+    "早上好",
+    "午安",
+    "中午好",
+    "晚上好",
+    "晚安",
+    "谢谢",
+    "好的",
+    "好",
+    "嗯",
+    "嗯嗯",
+    "收到",
+    "知道了",
+}
 
 if TYPE_CHECKING:
     pass
@@ -60,6 +98,11 @@ def _event_plain_text(event: MessageEvent) -> str:
     if parts:
         return " ".join(parts).strip()
     return "" if _event_images(event) else event.message_str.strip()
+
+
+def _is_low_signal_knowledge_query(query: str) -> bool:
+    normalized = re.sub(r"[\W_]+", "", query.casefold())
+    return normalized in _LOW_SIGNAL_KNOWLEDGE_QUERIES
 
 
 def _event_user_content(event: MessageEvent) -> str | list[dict]:
@@ -700,6 +743,8 @@ class ProcessStage(Stage):
         query = _event_plain_text(event) or event.message_str
         if not query.strip():
             return ""
+        if _is_low_signal_knowledge_query(query):
+            return ""
 
         vector_enabled = self._vector_retrieval_available(knowledge)
         graph_enabled = self._graph_retrieval_available()
@@ -831,11 +876,13 @@ class ProcessStage(Stage):
             logger.debug(
                 "GRAG retrieval timings: total_ms=%.1f vector_total_ms=%.1f "
                 "vector_embed_ms=%.1f vector_store_ms=%.1f vector_dense_ms=%.1f "
-                "vector_sparse_ms=%.1f vector_fuse_ms=%.1f vector_rerank_ms=%.1f "
-                "vector_limit_ms=%.1f graph_total_ms=%.1f graph_wall_ms=%.1f "
+                "vector_hydrate_ms=%.1f vector_sparse_ms=%.1f vector_fuse_ms=%.1f "
+                "vector_rerank_ms=%.1f vector_limit_ms=%.1f graph_total_ms=%.1f "
+                "graph_wall_ms=%.1f "
                 "graph_single_hop_ms=%.1f graph_multi_hop_ms=%.1f "
                 "graph_scan_fallback_ms=%.1f graph_format_ms=%.1f vector_hits=%d "
-                "graph_rows=%d graph_returned_facts=%d graph_multihop_seed_count=%d "
+                "vector_hydrated_rows=%d graph_rows=%d graph_returned_facts=%d "
+                "graph_multihop_seed_count=%d "
                 "graph_multihop_cache_hit=%s graph_multihop_cached_seed_count=%d "
                 "graph_multihop_live_seed_limit=%d graph_multihop_partial_cache_hit=%s "
                 "graph_multihop_persistent_cache_hit_count=%d graph_retry=%s retrieval_mode=%s "
@@ -845,6 +892,7 @@ class ProcessStage(Stage):
                 _timing_float(vector_timings, "vector_embed_ms"),
                 _timing_float(vector_timings, "vector_store_ms"),
                 _timing_float(vector_timings, "vector_dense_ms"),
+                _timing_float(vector_timings, "vector_hydrate_ms"),
                 _timing_float(vector_timings, "vector_sparse_ms"),
                 _timing_float(vector_timings, "vector_fuse_ms"),
                 _timing_float(vector_timings, "vector_rerank_ms"),
@@ -856,6 +904,7 @@ class ProcessStage(Stage):
                 _timing_float(graph_combined_timings, "graph_scan_fallback_ms"),
                 _timing_float(graph_combined_timings, "graph_format_ms"),
                 _timing_int(vector_timings, "vector_returned_hits", vector_results_count),
+                _timing_int(vector_timings, "vector_hydrated_rows"),
                 _timing_int(graph_combined_timings, "graph_rows"),
                 _timing_int(graph_combined_timings, "graph_returned_facts"),
                 _timing_int(graph_combined_timings, "graph_multihop_seed_count"),
