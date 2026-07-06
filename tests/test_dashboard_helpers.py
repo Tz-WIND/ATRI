@@ -117,6 +117,14 @@ class _FakeWebChat:
         return event, future
 
 
+class _FakeProcessStage:
+    def __init__(self):
+        self.updated = []
+
+    def update_config(self, **kwargs):
+        self.updated.append(kwargs)
+
+
 class _FakeStreamingDashboardHost:
     def __init__(self, *, running: bool = True):
         self.is_running = running
@@ -1219,6 +1227,73 @@ async def test_dashboard_chat_route_extracts_file_attachments(monkeypatch, tmp_p
             ],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_chat_route_uses_configured_agent_timeout(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    fake_webchat = _FakeWebChat()
+    dashboard.lifecycle.webchat = fake_webchat  # type: ignore[assignment]
+    dashboard.lifecycle.config["agent_timeout_seconds"] = 12.5  # type: ignore[attr-defined]
+    token = dashboard._create_auth_session()
+    timeouts = []
+
+    async def fake_wait_for(future, *args, **kwargs):
+        timeout_value = kwargs.get("timeout", args[0] if args else None)
+        timeouts.append(timeout_value)
+        return await future
+
+    monkeypatch.setattr(chat.asyncio, "wait_for", fake_wait_for)
+
+    response = await dashboard.app.test_client().post(
+        "/api/chat",
+        json={"message": "hello", "session_id": "default"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert 12.5 in timeouts
+    assert 300 not in timeouts
+
+
+@pytest.mark.asyncio
+async def test_settings_route_persists_agent_timeout(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    process_stage = _FakeProcessStage()
+    dashboard.lifecycle.process_stage = process_stage  # type: ignore[assignment]
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    update_response = await client.post(
+        "/api/settings",
+        json={"agent_timeout_seconds": "45.5"},
+        headers=headers,
+    )
+    get_response = await client.get("/api/settings", headers=headers)
+    payload = await get_response.get_json()
+
+    assert update_response.status_code == 200
+    assert get_response.status_code == 200
+    assert dashboard.lifecycle.config["agent_timeout_seconds"] == 45.5  # type: ignore[attr-defined]
+    assert payload["agent_timeout_seconds"] == 45.5
+    assert process_stage.updated[-1]["agent_timeout_seconds"] == 45.5
+    assert dashboard.lifecycle.saved == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_settings_route_rejects_agent_timeout_below_schema_minimum(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+
+    response = await dashboard.app.test_client().post(
+        "/api/settings",
+        json={"agent_timeout_seconds": 0.0001},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert (await response.get_json())["error"] == "agent_timeout_seconds must be >= 0.001"
 
 
 def test_dashboard_csp_allows_chat_image_previews():

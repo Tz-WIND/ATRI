@@ -62,6 +62,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["base_url"] is None
     assert config["max_tokens"] == 256
     assert config["temperature"] == 0.75
+    assert config["agent_timeout_seconds"] == DEFAULT_CONFIG["agent_timeout_seconds"]
     assert config["agent_mode"] == DEFAULT_CONFIG["agent_mode"]
     assert config["model_provider"] == ""
     assert config["embedding_model"] == ""
@@ -128,6 +129,13 @@ def test_normalize_config_adds_default_pool_config_to_model_entries():
     }
     assert config["active_embedding_models"][0]["config"] == EXPECTED_EMBEDDING_MODEL_CONFIG_DEFAULT
     assert config["active_rerank_models"][0]["config"] == EXPECTED_RERANK_MODEL_CONFIG_DEFAULT
+
+
+def test_normalize_config_coerces_agent_timeout_seconds():
+    config, changed = normalize_config({"agent_timeout_seconds": "45.5"})
+
+    assert changed is True
+    assert config["agent_timeout_seconds"] == 45.5
 
 
 def test_normalize_config_coerces_graph_knowledge_settings():
@@ -268,6 +276,7 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         ({"active_rerank_models": "rerank-test"}, "active_rerank_models must be an array"),
         ({"vst3_plugin_paths": "D:/VST3"}, "vst3_plugin_paths must be an array"),
         ({"agent_mode": "execute"}, "agent_mode must be one of: plan, agent"),
+        ({"agent_timeout_seconds": 0}, "agent_timeout_seconds must be >= 0.001"),
         (
             {"knowledge": {"graph": {"retrieval_depth": 8}}},
             "knowledge.graph.retrieval_depth must be <= 7",

@@ -48,6 +48,9 @@ RERANK_MODEL_CONFIG_DEFAULT: dict[str, Any] = {
     "max_input_tokens": 8192,
 }
 
+AGENT_TIMEOUT_SECONDS_DEFAULT = 300.0
+AGENT_TIMEOUT_SECONDS_MINIMUM = 0.001
+
 
 class ConfigValidationError(ValueError):
     """Raised when config.yaml contains an invalid value."""
@@ -164,6 +167,11 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "extra_instructions": {"type": "string", "default": ""},
         "persona": {"type": "string", "default": ""},
         "agent_mode": {"type": "string", "default": "agent", "enum": ["plan", "agent"]},
+        "agent_timeout_seconds": {
+            "type": "number",
+            "default": AGENT_TIMEOUT_SECONDS_DEFAULT,
+            "minimum": AGENT_TIMEOUT_SECONDS_MINIMUM,
+        },
         "image_transcription": {
             "type": "object",
             "properties": {
@@ -352,6 +360,12 @@ def _coerce_value(value: Any, schema: dict[str, Any], path: str) -> tuple[Any, b
                 raise ConfigValidationError(f"{path} must be a number") from e
         else:
             raise ConfigValidationError(f"{path} must be a number")
+        minimum = schema.get("minimum")
+        if minimum is not None and coerced < minimum:
+            raise ConfigValidationError(f"{path} must be >= {minimum}")
+        maximum = schema.get("maximum")
+        if maximum is not None and coerced > maximum:
+            raise ConfigValidationError(f"{path} must be <= {maximum}")
         return coerced, coerced != value
 
     if "string" in allowed:

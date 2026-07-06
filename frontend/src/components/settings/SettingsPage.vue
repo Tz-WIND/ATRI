@@ -321,6 +321,15 @@
                 >
               </label>
               <label class="setting-field full">
+                <span>Agent Response Timeout</span>
+                <input
+                  v-model.number="form.agent_timeout_seconds"
+                  type="number"
+                  min="0.001"
+                  step="1"
+                >
+              </label>
+              <label class="setting-field full">
                 <span>Persona</span>
                 <textarea
                   v-model="form.persona"
@@ -1052,6 +1061,7 @@ const activeTabMeta = computed(() => flatTabs.find(tab => tab.id === activeTab.v
 
 const form = ref({
   wake_words: '',
+  agent_timeout_seconds: 300,
   persona: '',
   extra_instructions: '',
   tavily_api_key: '',
@@ -1291,6 +1301,7 @@ async function loadSettings() {
   try {
     const d = await api.getSettings()
     form.value.wake_words = (d.wake_words || []).join(', ')
+    form.value.agent_timeout_seconds = normalizePositiveNumber(d.agent_timeout_seconds, 300)
     form.value.persona = d.persona || ''
     form.value.extra_instructions = d.extra_instructions || ''
     form.value.tavily_api_key = d.tavily_api_key || ''
@@ -1728,6 +1739,7 @@ async function saveSettings() {
     }
     await api.saveSettings({
       wake_words: form.value.wake_words.split(',').map(s => s.trim()).filter(Boolean),
+      agent_timeout_seconds: normalizePositiveNumber(form.value.agent_timeout_seconds, 300),
       persona: form.value.persona,
       extra_instructions: form.value.extra_instructions,
       tavily_api_key: form.value.tavily_api_key,

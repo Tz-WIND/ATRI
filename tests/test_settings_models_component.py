@@ -34,6 +34,19 @@ def test_settings_page_preserves_knowledge_config_when_saving():
     assert "knowledge," in source
 
 
+def test_settings_page_exposes_agent_timeout_setting():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+
+    assert "Agent Response Timeout" in source
+    assert "form.agent_timeout_seconds" in source
+    assert "agent_timeout_seconds: 300" in source
+    assert "form.value.agent_timeout_seconds = normalizePositiveNumber" in source
+    assert (
+        "agent_timeout_seconds: normalizePositiveNumber(form.value.agent_timeout_seconds, 300)"
+        in source
+    )
+
+
 def test_settings_page_exposes_vector_knowledge_cache_limit():
     source = _read("frontend/src/components/settings/SettingsPage.vue")
 

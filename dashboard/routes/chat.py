@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 from quart import jsonify, request
 
 from core import logger
+from core.config_schema import AGENT_TIMEOUT_SECONDS_DEFAULT, AGENT_TIMEOUT_SECONDS_MINIMUM
 from core.document_text import DocumentTextError, extract_document_text
 from core.platform.message import Image, Plain, display_session_id, normalize_session_id
 
@@ -23,6 +24,20 @@ _MAX_CHAT_IMAGES = 4
 _MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024
 _MAX_CHAT_FILES = 4
 _MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024
+
+
+def agent_timeout_seconds(config: dict[str, Any]) -> float:
+    try:
+        timeout = float(config.get("agent_timeout_seconds", AGENT_TIMEOUT_SECONDS_DEFAULT))
+    except (TypeError, ValueError):
+        return AGENT_TIMEOUT_SECONDS_DEFAULT
+    if timeout < AGENT_TIMEOUT_SECONDS_MINIMUM:
+        return AGENT_TIMEOUT_SECONDS_DEFAULT
+    return timeout
+
+
+def format_timeout_seconds(timeout: float) -> str:
+    return str(int(timeout)) if float(timeout).is_integer() else f"{timeout:g}"
 
 
 def _serialize_response_chain(chain: object) -> list[dict[str, object]] | None:
@@ -243,8 +258,9 @@ def register(dashboard: Dashboard) -> None:
         )
         await dashboard.broadcast({"type": "thinking", "session_id": session_id})
 
+        timeout_seconds = agent_timeout_seconds(dashboard.lifecycle.config)
         try:
-            result = await asyncio.wait_for(future, timeout=300)
+            result = await asyncio.wait_for(future, timeout=timeout_seconds)
             response_text = result.get("text", "")
             token_usage: dict[str, Any] = {}
             if dashboard.lifecycle.process_stage:
@@ -265,7 +281,8 @@ def register(dashboard: Dashboard) -> None:
                 }
             )
         except TimeoutError:
-            return jsonify({"error": "Agent timed out (300s)"}), 504
+            timeout_label = format_timeout_seconds(timeout_seconds)
+            return jsonify({"error": f"Agent timed out ({timeout_label}s)"}), 504
         except Exception as e:
             logger.exception(f"WebUI chat error: {e}")
             return jsonify({"error": str(e)}), 500

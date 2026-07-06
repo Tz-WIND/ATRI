@@ -2,6 +2,7 @@ import asyncio
 import textwrap
 import time
 import uuid
+from typing import Any, cast
 
 import pytest
 
@@ -73,7 +74,7 @@ async def test_initialize_skips_plugin_that_exceeds_startup_timeout(tmp_path):
 
     assert time.perf_counter() - started < 0.25
     assert [plugin.metadata.name for plugin in manager.plugins] == ["fast"]
-    assert manager.plugins[0].ctx == {"marker": "ctx"}
+    assert cast(Any, manager.plugins[0]).ctx == {"marker": "ctx"}
 
 
 @pytest.mark.asyncio

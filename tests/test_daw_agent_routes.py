@@ -104,6 +104,7 @@ class _FailingDawAgent:
 class _FakeLifecycle:
     def __init__(self, adapter):
         self.daw_agent = adapter
+        self.config = {}
         self.cancelled_sessions = []
 
     def cancel_operation(self, session_id=None):
@@ -502,6 +503,21 @@ async def test_daw_agent_chat_route_cancels_pending_request_on_timeout():
     assert await response.get_json() == {"error": "Agent timed out (300s)"}
     assert len(adapter.cancelled_events) == 1
     assert dashboard.lifecycle.cancelled_sessions == ["daw_agent:friend:default_project"]
+
+
+@pytest.mark.asyncio
+async def test_daw_agent_chat_route_uses_configured_agent_timeout():
+    adapter = _FailingDawAgent(TimeoutError())
+    dashboard = _FakeDashboard(adapter)
+    dashboard.lifecycle.config["agent_timeout_seconds"] = 12.5
+    _register_fake_dashboard(dashboard)
+    client = dashboard.app.test_client()
+
+    response = await client.post("/api/daw-agent/chat", json={"message": "hello"})
+
+    assert response.status_code == 504
+    assert await response.get_json() == {"error": "Agent timed out (12.5s)"}
+    assert len(adapter.cancelled_events) == 1
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,8 @@ from urllib.parse import urlsplit, urlunsplit
 from quart import jsonify, request
 
 from core.config_schema import (
+    AGENT_TIMEOUT_SECONDS_DEFAULT,
+    AGENT_TIMEOUT_SECONDS_MINIMUM,
     CHAT_MODEL_CONFIG_DEFAULT,
     EMBEDDING_MODEL_CONFIG_DEFAULT,
     RERANK_MODEL_CONFIG_DEFAULT,
@@ -55,6 +57,7 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "extra_instructions",
     "persona",
     "agent_mode",
+    "agent_timeout_seconds",
     "image_transcription",
     "novelai",
     "knowledge",
@@ -828,6 +831,10 @@ def register(dashboard: Dashboard) -> None:
                 "extra_instructions": c.get("extra_instructions", ""),
                 "persona": c.get("persona", ""),
                 "agent_mode": c.get("agent_mode", "agent"),
+                "agent_timeout_seconds": c.get(
+                    "agent_timeout_seconds",
+                    AGENT_TIMEOUT_SECONDS_DEFAULT,
+                ),
                 "embedding_model": c.get("embedding_model", ""),
                 "embedding_provider": c.get("embedding_provider", ""),
                 "active_embedding_models": c.get("active_embedding_models", []),
@@ -875,6 +882,20 @@ def register(dashboard: Dashboard) -> None:
         ]:
             if key in data:
                 lc.config[key] = data[key]
+        if "agent_timeout_seconds" in data:
+            try:
+                agent_timeout = _positive_float(
+                    data["agent_timeout_seconds"],
+                    "agent_timeout_seconds",
+                )
+                if agent_timeout < AGENT_TIMEOUT_SECONDS_MINIMUM:
+                    raise ValueError(
+                        f"agent_timeout_seconds must be >= {AGENT_TIMEOUT_SECONDS_MINIMUM:g}"
+                    )
+                lc.config["agent_timeout_seconds"] = agent_timeout
+                data["agent_timeout_seconds"] = lc.config["agent_timeout_seconds"]
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
         if "skills_root" in data:
             lc.config["skills_root"] = data["skills_root"]
         if "skill_search_roots" in data:

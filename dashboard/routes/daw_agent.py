@@ -16,6 +16,8 @@ from dashboard.routes.chat import (
     _normalize_chat_files,
     _normalize_chat_images,
     _serialize_response_chain,
+    agent_timeout_seconds,
+    format_timeout_seconds,
 )
 
 if TYPE_CHECKING:
@@ -104,8 +106,9 @@ def register(dashboard: Dashboard) -> None:
         )
         await dashboard.broadcast({"type": "thinking", "session_id": event.unified_msg_origin})
 
+        timeout_seconds = agent_timeout_seconds(dashboard.lifecycle.config)
         try:
-            result = await asyncio.wait_for(future, timeout=300)
+            result = await asyncio.wait_for(future, timeout=timeout_seconds)
             return jsonify(
                 {
                     "response": result.get("text", ""),
@@ -116,7 +119,8 @@ def register(dashboard: Dashboard) -> None:
             )
         except TimeoutError:
             _cancel_daw_agent_request(dashboard, adapter, event)
-            return jsonify({"error": "Agent timed out (300s)"}), 504
+            timeout_label = format_timeout_seconds(timeout_seconds)
+            return jsonify({"error": f"Agent timed out ({timeout_label}s)"}), 504
         except Exception as e:
             _cancel_daw_agent_request(dashboard, adapter, event)
             logger.exception("DAW agent chat error: %s", e)

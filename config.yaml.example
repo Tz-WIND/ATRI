@@ -56,6 +56,8 @@ wake_words:
 persona: ''
 extra_instructions: ''
 agent_mode: agent  # agent or plan
+# Maximum time to wait for an agent response in WebUI/DAW chat before timing out.
+agent_timeout_seconds: 300
 
 # Knowledge base retrieval. `active_bases` stores knowledge base IDs created
 # through the backend API and is used to inject retrieved context into chat.

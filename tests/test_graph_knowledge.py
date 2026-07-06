@@ -2226,7 +2226,7 @@ def test_neo4j_graph_client_skips_unbounded_multihop_when_fulltext_unavailable()
         },
         driver_factory=lambda uri, auth: driver,
     )
-    timings = {}
+    timings: dict[str, Any] = {}
 
     context = client.retrieve_context(
         query="Alice Acme",
@@ -2282,7 +2282,7 @@ def test_neo4j_graph_client_uses_source_seeded_multihop_when_fulltext_unavailabl
         },
         driver_factory=lambda uri, auth: driver,
     )
-    timings = {}
+    timings: dict[str, Any] = {}
 
     client.retrieve_context(
         query="Alice Acme",
