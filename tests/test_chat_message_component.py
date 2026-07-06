@@ -15,3 +15,13 @@ def test_chat_message_allows_generated_svg_image_data_urls():
 
     assert "svg\\+xml" in text
     assert "data:image/svg+xml" in text
+
+
+def test_chat_message_exposes_hover_copy_for_completed_assistant_messages():
+    text = COMPONENT.read_text(encoding="utf-8")
+
+    assert "assistant-copy-button" in text
+    assert "getAssistantMessageCopyText" in text
+    assert "navigator.clipboard.writeText(assistantCopyText.value)" in text
+    assert ".message.assistant:hover .assistant-copy-action" in text
+    assert ".message.assistant:focus-within .assistant-copy-action" in text

@@ -15,6 +15,11 @@ export function shouldRenderStreamingPlainText(message) {
   return Boolean(message?.role === 'assistant' && message?.md && message?.streaming)
 }
 
+export function getAssistantMessageCopyText(message) {
+  if (message?.role !== 'assistant' || message?.streaming) return ''
+  return typeof message?.content === 'string' ? message.content : ''
+}
+
 export function normalizeLanguage(value) {
   const firstToken = String(value || 'text').trim().split(/\s+/)[0].toLowerCase()
   if (!firstToken || firstToken.length > 40) return 'text'

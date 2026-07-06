@@ -446,6 +446,8 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
             "multi_hop_expansion_cache_path_limit": 1000,
             "multi_hop_expansion_cache_preload_path_limit": 200,
             "ranking_policy": "hybrid",
+            "retrieval_timeout_seconds": 15.0,
+            "extraction_timeout_seconds": 120.0,
             "queue_max_size": 1000,
         },
     }
@@ -482,6 +484,8 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
                     "max_facts": 6,
                     "expansion_candidate_limit": 64,
                     "multi_hop_expansion_cache_mode": "memory",
+                    "retrieval_timeout_seconds": 2.5,
+                    "extraction_timeout_seconds": 30,
                     "queue_max_size": 25,
                 }
             }
@@ -507,10 +511,14 @@ async def test_settings_route_masks_and_preserves_graph_password(monkeypatch, tm
     assert dashboard.lifecycle.config["knowledge"]["graph"]["retrieval_depth"] == 7
     assert dashboard.lifecycle.config["knowledge"]["graph"]["max_facts"] == 4
     assert dashboard.lifecycle.config["knowledge"]["graph"]["expansion_candidate_limit"] == 64
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["retrieval_timeout_seconds"] == 2.5
+    assert dashboard.lifecycle.config["knowledge"]["graph"]["extraction_timeout_seconds"] == 30.0
     assert (
         dashboard.lifecycle.config["knowledge"]["graph"]["multi_hop_expansion_cache_mode"]
         == "memory"
     )
+    assert payload["knowledge"]["graph"]["retrieval_timeout_seconds"] == 2.5
+    assert payload["knowledge"]["graph"]["extraction_timeout_seconds"] == 30.0
     assert payload["knowledge"]["graph"]["multi_hop_expansion_cache_mode"] == "memory"
     assert process_stage.updated[-1]["knowledge"] == dashboard.lifecycle.config["knowledge"]
     assert dashboard.lifecycle.graph_manager.updated[-1] == dashboard.lifecycle.config

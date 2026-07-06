@@ -6695,6 +6695,55 @@ async def test_graph_manager_retries_transient_extraction_failures(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_graph_manager_marks_chat_extraction_timed_out_and_drains(tmp_path, caplog):
+    store = TaskStore(tmp_path / "runtime")
+    extractor = HangingExtractor()
+    graph = FakeGraphClient()
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "extraction_enabled": True,
+                    "extraction_sources": ["chat"],
+                    "extraction_timeout_seconds": 0.01,
+                    "queue_max_size": 10,
+                }
+            }
+        },
+        graph_client=cast(Neo4jGraphClient, graph),
+        extractor=cast(Any, extractor),
+        task_store=store,
+    )
+    caplog.set_level(logging.WARNING, logger="atri")
+    try:
+        await manager.initialize()
+        task_id = manager.enqueue_chat_turn(
+            user_text="Alice works at Acme.",
+            assistant_text="Noted.",
+            session_id="webchat:friend:session-1",
+            platform="webchat",
+            metadata={"message_type": "friend"},
+        )
+
+        await asyncio.wait_for(manager.drain(wait_seconds=0.5), timeout=1)
+
+        assert task_id is not None
+        task = store.get_task(task_id)
+        events = store.events(task_id)
+        assert task is not None
+        assert task["status"] == "completed"
+        assert task["metadata"]["failed_extraction_count"] == 1
+        assert "timed out" in task["metadata"]["failed_extractions"][0]["error"]
+        assert graph.facts == []
+        assert any(event.event_type == "graph_extraction_skipped" for event in events)
+        assert "Graph extraction timed out" in caplog.text
+    finally:
+        await manager.close(drain_seconds=0.01)
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_graph_manager_skips_document_batches_after_retries_fail(tmp_path):
     store = TaskStore(tmp_path / "runtime")
     graph = FakeGraphClient()

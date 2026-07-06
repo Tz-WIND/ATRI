@@ -103,18 +103,49 @@
           >
         </figure>
       </div>
+      <div
+        v-if="assistantCopyAvailable"
+        class="assistant-copy-action"
+      >
+        <button
+          :class="['assistant-copy-button', assistantCopyState]"
+          type="button"
+          :aria-label="assistantCopyLabel"
+          :title="assistantCopyLabel"
+          @click="copyAssistantMessage"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
+            <rect
+              x="9"
+              y="9"
+              width="13"
+              height="13"
+              rx="2"
+            />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          <span class="assistant-copy-status">{{ assistantCopyStatusText }}</span>
+        </button>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import { renderMarkdownWithMath } from './mathRenderer.js'
 import {
   escapeHtml,
   escapeHtmlAttribute,
+  getAssistantMessageCopyText,
   highlightCode,
   normalizeLanguage,
   shouldRenderStreamingPlainText,
@@ -193,6 +224,22 @@ marked.use({ renderer })
 
 const streamingPlainText = computed(() => shouldRenderStreamingPlainText(props.message))
 
+const assistantCopyState = ref('idle')
+const assistantCopyText = computed(() => getAssistantMessageCopyText(props.message))
+const assistantCopyAvailable = computed(() => assistantCopyText.value.length > 0)
+const assistantCopyLabel = computed(() => {
+  if (assistantCopyState.value === 'copied') return 'Copied assistant reply'
+  if (assistantCopyState.value === 'failed') return 'Copy failed'
+  return 'Copy assistant reply'
+})
+const assistantCopyStatusText = computed(() => (
+  assistantCopyState.value === 'copied'
+    ? 'Copied'
+    : assistantCopyState.value === 'failed'
+      ? 'Failed'
+      : ''
+))
+
 const renderedContent = computed(() => {
   if (streamingPlainText.value) return ''
   try {
@@ -253,6 +300,19 @@ async function handleMarkdownClick(event) {
     }, 1200)
   }
 }
+
+async function copyAssistantMessage() {
+  if (!assistantCopyAvailable.value) return
+  try {
+    await navigator.clipboard.writeText(assistantCopyText.value)
+    assistantCopyState.value = 'copied'
+  } catch {
+    assistantCopyState.value = 'failed'
+  }
+  window.setTimeout(() => {
+    assistantCopyState.value = 'idle'
+  }, 1200)
+}
 </script>
 
 <style scoped>
@@ -261,6 +321,10 @@ async function handleMarkdownClick(event) {
   max-width: 900px;
   margin-left: auto;
   margin-right: auto;
+}
+
+.message.assistant {
+  margin-bottom: 28px;
 }
 
 .message.user {
@@ -302,6 +366,7 @@ async function handleMarkdownClick(event) {
 }
 
 .msg-body {
+  position: relative;
   font-size: 14px;
   line-height: 1.68;
   word-break: break-word;
@@ -601,5 +666,76 @@ async function handleMarkdownClick(event) {
   max-height: 520px;
   object-fit: contain;
   background: rgba(255, 255, 255, 0.03);
+}
+
+.assistant-copy-action {
+  position: absolute;
+  left: 0;
+  bottom: -26px;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.message.assistant:hover .assistant-copy-action,
+.message.assistant:focus-within .assistant-copy-action {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.assistant-copy-button {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--t3);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    color 0.14s ease,
+    background 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.assistant-copy-button:hover,
+.assistant-copy-button:focus-visible {
+  color: var(--t1);
+  background: var(--bg-100);
+  border-color: var(--border-strong);
+  outline: none;
+}
+
+.assistant-copy-button.copied {
+  color: var(--ok);
+  border-color: rgba(143, 216, 199, 0.42);
+}
+
+.assistant-copy-button.failed {
+  color: var(--red);
+  border-color: rgba(255, 116, 116, 0.42);
+}
+
+.assistant-copy-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.assistant-copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 </style>

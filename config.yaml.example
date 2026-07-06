@@ -72,6 +72,10 @@ knowledge:
     multi_hop_expansion_cache_path_limit: 1000
     # Global path budget spread across preloaded multi-hop seeds; range: 1-50000.
     multi_hop_expansion_cache_preload_path_limit: 200
+    # Maximum time to wait for graph context before letting chat continue.
+    retrieval_timeout_seconds: 15
+    # Maximum time to wait for one graph tuple extraction attempt.
+    extraction_timeout_seconds: 120
 
 # Optional image transcription model. When enabled, image attachments are
 # transcribed here before the main chat model receives the request.

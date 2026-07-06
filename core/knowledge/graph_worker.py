@@ -20,8 +20,10 @@ from core.knowledge.graph_constants import (
     GRAPH_EXTRACTION_BATCH_OVERLAP_CHARS,
     GRAPH_EXTRACTION_SEMANTIC_CHUNK_CHARS,
     GRAPH_EXTRACTION_SEMANTIC_CHUNK_OVERLAP_CHARS,
+    GRAPH_EXTRACTION_TIMEOUT_SECONDS,
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
+    GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
 )
 from core.knowledge.graph_values import (
     _multi_hop_expansion_cache_path_limit,
@@ -264,9 +266,16 @@ class GraphKnowledgeManager:
                 "timings",
             ):
                 retrieve_kwargs["timings"] = retrieval_timings
-            context = await asyncio.to_thread(
-                self.graph_client.retrieve_context,
-                **retrieve_kwargs,
+            timeout_seconds = _timeout_seconds(
+                self.graph_config.get("retrieval_timeout_seconds"),
+                GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+            )
+            context = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.graph_client.retrieve_context,
+                    **retrieve_kwargs,
+                ),
+                timeout=timeout_seconds,
             )
             logger.debug(
                 "Graph knowledge retrieval done: elapsed_ms=%.1f depth=%d max_facts=%d "
@@ -304,6 +313,16 @@ class GraphKnowledgeManager:
                 ),
             )
             return context
+        except TimeoutError:
+            timeout_seconds = _timeout_seconds(
+                self.graph_config.get("retrieval_timeout_seconds"),
+                GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+            )
+            logger.warning(
+                "Graph knowledge retrieval timed out after %.3fs",
+                timeout_seconds,
+            )
+            return ""
         except Exception as e:
             logger.warning("Graph knowledge retrieval skipped: %s", e)
             return ""
@@ -483,18 +502,37 @@ class GraphKnowledgeManager:
         existing_graph_context = await self._existing_graph_context_for_extraction(text)
         last_error: Exception | None = None
         for attempt in range(1, _EXTRACTION_MAX_ATTEMPTS + 1):
+            timeout_seconds = _timeout_seconds(
+                self.graph_config.get("extraction_timeout_seconds"),
+                GRAPH_EXTRACTION_TIMEOUT_SECONDS,
+            )
             try:
                 return (
-                    await _extractor_extract_facts(
-                        self.extractor,
-                        text,
-                        source_id=source_id,
-                        source_kind=source_kind,
-                        metadata=metadata,
-                        existing_graph_context=existing_graph_context,
+                    await asyncio.wait_for(
+                        _extractor_extract_facts(
+                            self.extractor,
+                            text,
+                            source_id=source_id,
+                            source_kind=source_kind,
+                            metadata=metadata,
+                            existing_graph_context=existing_graph_context,
+                        ),
+                        timeout=timeout_seconds,
                     ),
                     None,
                 )
+            except TimeoutError:
+                error = f"graph extraction timed out after {timeout_seconds:g}s"
+                last_error = TimeoutError(error)
+                logger.warning(
+                    "Graph extraction timed out after %.3fs for %s (attempt %s/%s)",
+                    timeout_seconds,
+                    source_id,
+                    attempt,
+                    _EXTRACTION_MAX_ATTEMPTS,
+                )
+                if attempt < _EXTRACTION_MAX_ATTEMPTS:
+                    await asyncio.sleep(0)
             except Exception as e:
                 last_error = e
                 if attempt < _EXTRACTION_MAX_ATTEMPTS:
@@ -532,20 +570,37 @@ class GraphKnowledgeManager:
         if not query:
             return ""
         try:
-            return await asyncio.to_thread(
-                self.graph_client.retrieve_context,
-                query=query,
-                source_ids=[],
-                max_facts=max(1, int(self.graph_config.get("max_facts") or 8)),
-                retrieval_depth=_retrieval_depth(
-                    self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
-                ),
-                ranking_policy=_ranking_policy(self.graph_config.get("ranking_policy")),
-                expansion_candidate_limit=_expansion_candidate_limit(
-                    self.graph_config.get("expansion_candidate_limit")
-                ),
-                include_entity_types=True,
+            timeout_seconds = _timeout_seconds(
+                self.graph_config.get("retrieval_timeout_seconds"),
+                GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
             )
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.graph_client.retrieve_context,
+                    query=query,
+                    source_ids=[],
+                    max_facts=max(1, int(self.graph_config.get("max_facts") or 8)),
+                    retrieval_depth=_retrieval_depth(
+                        self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
+                    ),
+                    ranking_policy=_ranking_policy(self.graph_config.get("ranking_policy")),
+                    expansion_candidate_limit=_expansion_candidate_limit(
+                        self.graph_config.get("expansion_candidate_limit")
+                    ),
+                    include_entity_types=True,
+                ),
+                timeout=timeout_seconds,
+            )
+        except TimeoutError:
+            timeout_seconds = _timeout_seconds(
+                self.graph_config.get("retrieval_timeout_seconds"),
+                GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+            )
+            logger.warning(
+                "Graph extraction context retrieval timed out after %.3fs",
+                timeout_seconds,
+            )
+            return ""
         except Exception as e:
             logger.warning("Graph extraction context retrieval skipped: %s", e)
             return ""
@@ -629,6 +684,14 @@ def _graph_config_from_app_config(config: dict[str, Any]) -> dict[str, Any]:
             )
         ),
         "ranking_policy": _ranking_policy(graph.get("ranking_policy")),
+        "retrieval_timeout_seconds": _timeout_seconds(
+            graph.get("retrieval_timeout_seconds"),
+            GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+        ),
+        "extraction_timeout_seconds": _timeout_seconds(
+            graph.get("extraction_timeout_seconds"),
+            GRAPH_EXTRACTION_TIMEOUT_SECONDS,
+        ),
         "queue_max_size": int(graph.get("queue_max_size") or 1000),
     }
 
@@ -677,6 +740,16 @@ def _expansion_candidate_limit(value: Any) -> int:
     except (TypeError, ValueError):
         parsed = 40
     return max(1, min(GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT, parsed))
+
+
+def _timeout_seconds(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    if parsed <= 0:
+        return float(default)
+    return parsed
 
 
 def _document_extraction_batches(

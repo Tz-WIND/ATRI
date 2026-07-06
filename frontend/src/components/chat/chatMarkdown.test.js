@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  getAssistantMessageCopyText,
   escapeHtml,
   highlightCode,
   shouldRenderStreamingPlainText,
@@ -29,4 +30,15 @@ test('highlightCode_escapesUnknownLanguageWithoutAutoHighlighting', () => {
 
 test('escapeHtml_escapesTextForPlainRendering', () => {
   assert.equal(escapeHtml('<script>"x"</script>'), '&lt;script&gt;&quot;x&quot;&lt;/script&gt;')
+})
+
+test('getAssistantMessageCopyText_returnsOriginalCompletedAssistantContent', () => {
+  const original = 'Here is **markdown**.\n\n```js\nconst value = 1\n```'
+
+  assert.equal(
+    getAssistantMessageCopyText({ role: 'assistant', md: true, streaming: false, content: original }),
+    original,
+  )
+  assert.equal(getAssistantMessageCopyText({ role: 'assistant', streaming: true, content: original }), '')
+  assert.equal(getAssistantMessageCopyText({ role: 'user', content: original }), '')
 })

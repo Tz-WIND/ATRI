@@ -1,32 +1,12 @@
+import katex from 'katex'
+
 const PLACEHOLDER_PREFIX = 'ATRI_MATH_PLACEHOLDER_'
 
-const COMMANDS = {
-  alpha: '<mi>&#x03B1;</mi>',
-  beta: '<mi>&#x03B2;</mi>',
-  gamma: '<mi>&#x03B3;</mi>',
-  delta: '<mi>&#x03B4;</mi>',
-  epsilon: '<mi>&#x03B5;</mi>',
-  theta: '<mi>&#x03B8;</mi>',
-  lambda: '<mi>&#x03BB;</mi>',
-  mu: '<mi>&#x03BC;</mi>',
-  pi: '<mi>&#x03C0;</mi>',
-  sigma: '<mi>&#x03C3;</mi>',
-  omega: '<mi>&#x03C9;</mi>',
-  infty: '<mi>&#x221E;</mi>',
-  int: '<mo>&#x222B;</mo>',
-  sum: '<mo>&#x2211;</mo>',
-  prod: '<mo>&#x220F;</mo>',
-  neq: '<mo>&#x2260;</mo>',
-  leq: '<mo>&#x2264;</mo>',
-  geq: '<mo>&#x2265;</mo>',
-  times: '<mo>&#x00D7;</mo>',
-  cdot: '<mo>&#x22C5;</mo>',
-  pm: '<mo>&#x00B1;</mo>',
-  ln: '<mi mathvariant="normal">ln</mi>',
-  sin: '<mi mathvariant="normal">sin</mi>',
-  cos: '<mi mathvariant="normal">cos</mi>',
-  tan: '<mi mathvariant="normal">tan</mi>',
-  log: '<mi mathvariant="normal">log</mi>',
+const KATEX_OPTIONS = {
+  output: 'htmlAndMathml',
+  strict: false,
+  throwOnError: false,
+  trust: false,
 }
 
 export function renderMarkdownWithMath(markdown, parseMarkdown) {
@@ -126,191 +106,19 @@ function addMathSegment(segments, kind, latex) {
 }
 
 function renderMathSegment(segment) {
-  const displayAttr = segment.kind === 'display' ? ' display="block"' : ''
   const className = segment.kind === 'display' ? 'math math-display' : 'math math-inline'
-  const parsed = parseLatexToMathml(segment.latex)
-  return `<span class="${className}" aria-label="${escapeAttribute(segment.latex)}"><math${displayAttr}>${parsed}</math></span>`
+  const parsed = parseLatexToHtml(segment.latex, segment.kind)
+  return `<span class="${className}" aria-label="${escapeAttribute(segment.latex)}">${parsed}</span>`
 }
 
-function parseLatexToMathml(latex) {
-  const parser = new LatexParser(latex)
-  return parser.parseExpression()
-}
-
-class LatexParser {
-  constructor(source) {
-    this.source = String(source || '')
-    this.index = 0
-  }
-
-  parseExpression(stopChar = '') {
-    const nodes = []
-    while (this.index < this.source.length) {
-      const current = this.peek()
-      if (stopChar && current === stopChar) break
-      if (/\s/.test(current)) {
-        this.index += 1
-        continue
-      }
-
-      const atom = this.parseAtom()
-      if (atom) nodes.push(this.parseScripts(atom))
-    }
-
-    if (stopChar && this.peek() === stopChar) this.index += 1
-    return nodes.length === 1 ? nodes[0] : `<mrow>${nodes.join('')}</mrow>`
-  }
-
-  parseAtom() {
-    const current = this.peek()
-    if (!current) return ''
-    if (current === '{') {
-      this.index += 1
-      return this.parseExpression('}')
-    }
-    if (current === '\\') return this.parseCommand()
-    if (/[0-9.]/.test(current)) return this.parseNumber()
-    if (/[A-Za-z]/.test(current)) {
-      this.index += 1
-      return `<mi>${escapeHtml(current)}</mi>`
-    }
-
-    this.index += 1
-    return this.parseSymbol(current)
-  }
-
-  parseCommand() {
-    this.index += 1
-    const name = this.readCommandName()
-    if (!name) return ''
-    if (name === 'frac') {
-      const numerator = this.parseRequiredGroup()
-      const denominator = this.parseRequiredGroup()
-      return `<mfrac>${numerator}${denominator}</mfrac>`
-    }
-    if (name === 'hat') {
-      const value = this.parseRequiredGroup()
-      return `<mover>${value}<mo>^</mo></mover>`
-    }
-    if (name === 'sqrt') {
-      return `<msqrt>${this.parseRequiredGroup()}</msqrt>`
-    }
-    if (name === 'text') {
-      return `<mtext>${escapeHtml(this.readRequiredTextGroup())}</mtext>`
-    }
-    if (name === 'xrightarrow') {
-      const label = this.parseRequiredGroup()
-      return `<mover><mo stretchy="true">&#x2192;</mo>${label}</mover>`
-    }
-    if (name === 'quad') return '<mspace width="1em"></mspace>'
-    if (name === ',') return '<mspace width="0.167em"></mspace>'
-
-    return COMMANDS[name] || `<mi>${escapeHtml(name)}</mi>`
-  }
-
-  parseRequiredGroup() {
-    this.skipSpaces()
-    if (this.peek() !== '{') return this.parseAtom()
-    this.index += 1
-    return this.parseExpression('}')
-  }
-
-  readRequiredTextGroup() {
-    this.skipSpaces()
-    if (this.peek() !== '{') {
-      const start = this.index
-      while (this.peek() && !/\s/.test(this.peek())) this.index += 1
-      return this.source.slice(start, this.index)
-    }
-
-    this.index += 1
-    let text = ''
-    let depth = 1
-    while (this.index < this.source.length && depth > 0) {
-      const current = this.peek()
-      const next = this.source[this.index + 1] || ''
-      if (current === '\\' && (next === '{' || next === '}')) {
-        text += next
-        this.index += 2
-        continue
-      }
-      if (current === '{') {
-        depth += 1
-        text += current
-        this.index += 1
-        continue
-      }
-      if (current === '}') {
-        depth -= 1
-        if (depth > 0) text += current
-        this.index += 1
-        continue
-      }
-      text += current
-      this.index += 1
-    }
-    return text
-  }
-
-  parseScripts(base) {
-    let subscript = ''
-    let superscript = ''
-
-    while (this.peek() === '_' || this.peek() === '^') {
-      const marker = this.peek()
-      this.index += 1
-      const value = this.parseScriptValue()
-      if (marker === '_') {
-        subscript = value
-      } else {
-        superscript = value
-      }
-    }
-
-    if (subscript && superscript) return `<msubsup>${base}${subscript}${superscript}</msubsup>`
-    if (subscript) return `<msub>${base}${subscript}</msub>`
-    if (superscript) return `<msup>${base}${superscript}</msup>`
-    return base
-  }
-
-  parseScriptValue() {
-    this.skipSpaces()
-    if (this.peek() === '{') {
-      this.index += 1
-      return this.parseExpression('}')
-    }
-    return this.parseAtom()
-  }
-
-  parseNumber() {
-    const start = this.index
-    while (/[0-9.]/.test(this.peek())) this.index += 1
-    return `<mn>${escapeHtml(this.source.slice(start, this.index))}</mn>`
-  }
-
-  parseSymbol(symbol) {
-    if ('=+-*/(),[]|'.includes(symbol)) return `<mo>${escapeHtml(symbol)}</mo>`
-    if (symbol === '<') return '<mo>&lt;</mo>'
-    if (symbol === '>') return '<mo>&gt;</mo>'
-    return `<mi>${escapeHtml(symbol)}</mi>`
-  }
-
-  readCommandName() {
-    const start = this.index
-    while (/[A-Za-z]/.test(this.peek())) this.index += 1
-    if (this.index > start) return this.source.slice(start, this.index)
-
-    const single = this.peek()
-    this.index += 1
-    return single
-  }
-
-  skipSpaces() {
-    while (/\s/.test(this.peek())) this.index += 1
-  }
-
-  peek() {
-    return this.source[this.index] || ''
+function parseLatexToHtml(latex, kind) {
+  try {
+    return katex.renderToString(String(latex || ''), {
+      ...KATEX_OPTIONS,
+      displayMode: kind === 'display',
+    })
+  } catch {
+    return `<code class="math-error">${escapeHtml(latex)}</code>`
   }
 }
 

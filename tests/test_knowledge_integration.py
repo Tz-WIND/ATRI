@@ -106,6 +106,8 @@ def test_normalize_config_adds_knowledge_defaults():
             "multi_hop_expansion_cache_path_limit": 1000,
             "multi_hop_expansion_cache_preload_path_limit": 200,
             "ranking_policy": "hybrid",
+            "retrieval_timeout_seconds": 15,
+            "extraction_timeout_seconds": 120,
             "queue_max_size": 1000,
         },
     }
@@ -1136,6 +1138,48 @@ async def test_process_stage_cancels_pending_retrieval_tasks_when_context_is_can
         await asyncio.sleep(0)
 
     assert graph_was_cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_process_stage_skips_graph_context_when_grag_retrieval_times_out(caplog):
+    class HangingGraphManager(FakeGraphManager):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def retrieve_context(self, **kwargs):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+            return await super().retrieve_context(**kwargs)
+
+    caplog.set_level(logging.WARNING, logger="atri")
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": False,
+        "active_bases": [],
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "retrieval_depth": 2,
+            "max_facts": 2,
+            "retrieval_timeout_seconds": 0.01,
+        },
+    }
+    stage.graph_manager = HangingGraphManager()
+    event = MessageEvent(message_str="How does Alice use sqlite?")
+
+    context = await asyncio.wait_for(stage._knowledge_context_for_event(event), timeout=0.5)
+
+    assert context == ""
+    assert stage.graph_manager.started.is_set()
+    assert stage.graph_manager.cancelled.is_set()
+    assert "Graph knowledge retrieval timed out" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,8 @@ EXPECTED_GRAPH_KNOWLEDGE_DEFAULT = {
     "multi_hop_expansion_cache_path_limit": 1000,
     "multi_hop_expansion_cache_preload_path_limit": 200,
     "ranking_policy": "hybrid",
+    "retrieval_timeout_seconds": 15.0,
+    "extraction_timeout_seconds": 120.0,
     "queue_max_size": 1000,
 }
 
@@ -154,6 +156,8 @@ def test_normalize_config_coerces_graph_knowledge_settings():
                     "multi_hop_expansion_cache_path_limit": "2000",
                     "multi_hop_expansion_cache_preload_path_limit": "800",
                     "ranking_policy": "RELEVANCE",
+                    "retrieval_timeout_seconds": "2.5",
+                    "extraction_timeout_seconds": "30",
                     "queue_max_size": "50",
                 },
             }
@@ -183,6 +187,8 @@ def test_normalize_config_coerces_graph_knowledge_settings():
         "multi_hop_expansion_cache_path_limit": 2000,
         "multi_hop_expansion_cache_preload_path_limit": 800,
         "ranking_policy": "relevance",
+        "retrieval_timeout_seconds": 2.5,
+        "extraction_timeout_seconds": 30.0,
         "queue_max_size": 50,
     }
 

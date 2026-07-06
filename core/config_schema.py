@@ -8,8 +8,10 @@ from typing import Any
 
 from core.knowledge.graph_constants import (
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_EXTRACTION_TIMEOUT_SECONDS,
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
+    GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
 )
 from core.knowledge.graph_values import (
     MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT,
@@ -142,6 +144,16 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "type": "string",
                             "default": "hybrid",
                             "enum": ["hybrid", "relevance", "latest"],
+                        },
+                        "retrieval_timeout_seconds": {
+                            "type": "number",
+                            "default": GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+                            "minimum": 0.001,
+                        },
+                        "extraction_timeout_seconds": {
+                            "type": "number",
+                            "default": GRAPH_EXTRACTION_TIMEOUT_SECONDS,
+                            "minimum": 0.001,
                         },
                         "queue_max_size": {"type": "integer", "default": 1000, "minimum": 1},
                     },

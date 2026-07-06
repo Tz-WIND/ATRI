@@ -647,6 +647,24 @@
                   </select>
                 </label>
                 <label class="setting-field">
+                  <span>Retrieval Timeout</span>
+                  <input
+                    v-model.number="form.knowledge.graph.retrieval_timeout_seconds"
+                    type="number"
+                    min="0.001"
+                    step="0.5"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Extraction Timeout</span>
+                  <input
+                    v-model.number="form.knowledge.graph.extraction_timeout_seconds"
+                    type="number"
+                    min="0.001"
+                    step="1"
+                  >
+                </label>
+                <label class="setting-field">
                   <span>Queue Size</span>
                   <input
                     v-model.number="form.knowledge.graph.queue_max_size"
@@ -1076,6 +1094,8 @@ const form = ref({
       multi_hop_expansion_cache_path_limit: 1000,
       multi_hop_expansion_cache_preload_path_limit: 200,
       ranking_policy: 'hybrid',
+      retrieval_timeout_seconds: 15,
+      extraction_timeout_seconds: 120,
       queue_max_size: 1000,
     },
   },
@@ -1377,8 +1397,16 @@ function normalizeGraphKnowledge(value = {}) {
       value.multi_hop_expansion_cache_preload_path_limit,
     ),
     ranking_policy: normalizeGraphRankingPolicy(value.ranking_policy),
+    retrieval_timeout_seconds: normalizePositiveNumber(value.retrieval_timeout_seconds, 15),
+    extraction_timeout_seconds: normalizePositiveNumber(value.extraction_timeout_seconds, 120),
     queue_max_size: Number(value.queue_max_size || 1000),
   }
+}
+
+function normalizePositiveNumber(value, fallback) {
+  const parsed = Number(value || fallback)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return parsed
 }
 
 function normalizeGraphRetrievalDepth(value) {

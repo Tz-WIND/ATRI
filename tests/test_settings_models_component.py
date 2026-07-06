@@ -137,6 +137,12 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "ranking_policy" in source
     assert "normalizeGraphRankingPolicy" in source
     assert "ranking_policy: normalizeGraphRankingPolicy" in source
+    assert "Retrieval Timeout" in source
+    assert "form.knowledge.graph.retrieval_timeout_seconds" in source
+    assert "retrieval_timeout_seconds: normalizePositiveNumber" in source
+    assert "Extraction Timeout" in source
+    assert "form.knowledge.graph.extraction_timeout_seconds" in source
+    assert "extraction_timeout_seconds: normalizePositiveNumber" in source
     assert "normalizeGraphSources" in source
     assert "graphSourceLocked" in source
     assert "sources.length <= 1" in source

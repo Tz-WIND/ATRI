@@ -29,6 +29,7 @@ from core.config_schema import CHAT_MODEL_CONFIG_DEFAULT
 from core.knowledge.graph_constants import (
     GRAPH_QUERY_ENUMERATION_TERMS,
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
+    GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
 )
 from core.pipeline.stage import Stage, register_stage
 from core.platform.daw_agent import normalize_daw_host_context
@@ -986,8 +987,23 @@ class ProcessStage(Stage):
                 retrieve_kwargs["timings"] = timings
             return cast(
                 str,
-                await graph_manager.retrieve_context(**retrieve_kwargs),
+                await asyncio.wait_for(
+                    graph_manager.retrieve_context(**retrieve_kwargs),
+                    timeout=_float_with_default(
+                        graph_cfg.get("retrieval_timeout_seconds"),
+                        GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+                    ),
+                ),
             )
+        except TimeoutError:
+            logger.warning(
+                "Graph knowledge retrieval timed out after %.3fs",
+                _float_with_default(
+                    graph_cfg.get("retrieval_timeout_seconds"),
+                    GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+                ),
+            )
+            return ""
         except Exception as e:
             logger.warning(f"Graph knowledge retrieval skipped: {e}")
             return ""
@@ -1959,6 +1975,22 @@ def _int_with_default(value: object, default: int) -> int:
         except (TypeError, ValueError):
             return default
     return default
+
+
+def _float_with_default(value: object, default: float) -> float:
+    if value is None:
+        return float(default)
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int | float | str | bytes | bytearray):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if parsed <= 0:
+            return float(default)
+        return parsed
+    return float(default)
 
 
 def _image_components_from_extras(raw_images: object) -> list[Image]:

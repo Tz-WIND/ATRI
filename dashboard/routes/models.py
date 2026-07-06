@@ -15,8 +15,10 @@ from core.config_schema import (
 )
 from core.knowledge.graph_constants import (
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
+    GRAPH_EXTRACTION_TIMEOUT_SECONDS,
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     GRAPH_RETRIEVAL_MAX_DEPTH,
+    GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
 )
 from core.knowledge.graph_values import (
     MULTI_HOP_EXPANSION_CACHE_PATH_LIMIT_DEFAULT,
@@ -99,6 +101,16 @@ def _positive_int(value: Any, field: str) -> int:
         raise ValueError(f"{field} must be a positive integer") from e
     if parsed <= 0:
         raise ValueError(f"{field} must be a positive integer")
+    return parsed
+
+
+def _positive_float(value: Any, field: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{field} must be a positive number") from e
+    if parsed <= 0:
+        raise ValueError(f"{field} must be a positive number")
     return parsed
 
 
@@ -268,6 +280,16 @@ def _merge_graph_knowledge_config(
                 "knowledge.graph.ranking_policy must be one of: hybrid, relevance, latest"
             )
         merged["ranking_policy"] = ranking_policy
+    if "retrieval_timeout_seconds" in incoming:
+        merged["retrieval_timeout_seconds"] = _positive_float(
+            incoming["retrieval_timeout_seconds"],
+            "knowledge.graph.retrieval_timeout_seconds",
+        )
+    if "extraction_timeout_seconds" in incoming:
+        merged["extraction_timeout_seconds"] = _positive_float(
+            incoming["extraction_timeout_seconds"],
+            "knowledge.graph.extraction_timeout_seconds",
+        )
     if "queue_max_size" in incoming:
         merged["queue_max_size"] = _positive_int(
             incoming["queue_max_size"],
@@ -300,6 +322,8 @@ def _merge_graph_knowledge_config(
         MULTI_HOP_EXPANSION_CACHE_PRELOAD_PATH_LIMIT_DEFAULT,
     )
     merged.setdefault("ranking_policy", "hybrid")
+    merged.setdefault("retrieval_timeout_seconds", float(GRAPH_RETRIEVAL_TIMEOUT_SECONDS))
+    merged.setdefault("extraction_timeout_seconds", float(GRAPH_EXTRACTION_TIMEOUT_SECONDS))
     merged.setdefault("queue_max_size", 1000)
     if (
         reject_empty_extraction_sources
