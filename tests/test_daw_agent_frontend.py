@@ -86,7 +86,7 @@ def test_daw_agent_page_reuses_shared_chat_attachment_normalizers():
     assert "buildUserMessageAttachments" in source
     assert "normalizeImagePayload" in source
     assert "normalizeFilePayload" in source
-    assert "attachments: buildUserMessageAttachments(imagePayload, filePayload)" in source
+    assert "attachments: buildUserMessageAttachments(dawPayload.images, dawPayload.files)" in source
     assert "images: imagePayload" in source
     assert "files: filePayload" in source
 

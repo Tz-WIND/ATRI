@@ -67,66 +67,72 @@
     />
 
     <div
-      v-if="open && hasDetails"
-      class="tool-details"
+      v-if="hasDetails"
+      :class="['tool-details', { open }]"
+      :aria-hidden="String(!open)"
     >
       <div
-        v-if="isGroup"
-        class="context-tool-list"
+        v-if="detailsLoaded"
+        class="tool-details-inner"
       >
         <div
-          v-for="item in groupTools"
-          :key="item.id || `${item.tool}-${item.status}-${toolLineSubtitle(item)}`"
-          class="context-tool-row"
-        >
-          <span
-            class="context-row-mark"
-            :data-status="item.status || 'success'"
-            aria-hidden="true"
-          />
-          <span class="context-row-title">{{ toolLineTitle(item) }}</span>
-          <span
-            v-if="toolLineSubtitle(item)"
-            class="context-row-subtitle"
-          >{{ toolLineSubtitle(item) }}</span>
-        </div>
-      </div>
-
-      <template v-else>
-        <div
-          v-if="argsEntries.length"
-          class="tool-args"
+          v-if="isGroup"
+          class="context-tool-list"
         >
           <div
-            v-for="entry in argsEntries"
-            :key="entry.key"
-            class="tool-arg"
+            v-for="item in groupTools"
+            :key="item.id || `${item.tool}-${item.status}-${toolLineSubtitle(item)}`"
+            class="context-tool-row"
           >
-            <span class="arg-key">{{ entry.key }}</span>
-            <code>{{ entry.value }}</code>
+            <span
+              class="context-row-mark"
+              :data-status="item.status || 'success'"
+              aria-hidden="true"
+            />
+            <span class="context-row-title">{{ toolLineTitle(item) }}</span>
+            <span
+              v-if="toolLineSubtitle(item)"
+              class="context-row-subtitle"
+            >{{ toolLineSubtitle(item) }}</span>
           </div>
         </div>
 
-        <DiffViewer
-          v-if="diffContent"
-          :diff="diffContent"
-          :raw="activeTool.result"
-          :file-name="targetLabel"
-        />
+        <template v-else>
+          <div
+            v-if="argsEntries.length"
+            class="tool-args"
+          >
+            <div
+              v-for="entry in argsEntries"
+              :key="entry.key"
+              class="tool-arg"
+            >
+              <span class="arg-key">{{ entry.key }}</span>
+              <code>{{ entry.value }}</code>
+            </div>
+          </div>
 
-        <div
-          v-if="resultCompressed"
-          class="tool-compressed-note"
-        >
-          <span>Full output stored</span>
-          <code v-if="resultId">{{ resultId }}</code>
-        </div>
+          <DiffViewer
+            v-if="diffContent"
+            :diff="diffContent"
+            :raw="activeTool.result"
+            :file-name="targetLabel"
+          />
 
-        <pre
-          v-if="!diffContent && detailsText && !resultCompressed"
-          class="tool-output"
-        >{{ detailsText }}</pre>
-      </template>
+          <div
+            v-if="resultCompressed"
+            class="tool-compressed-note"
+          >
+            <span>Full output stored</span>
+            <code v-if="resultId">{{ resultId }}</code>
+          </div>
+
+          <pre
+            v-if="!diffContent && detailsText && !resultCompressed"
+            class="tool-output"
+          >{{ detailsText }}</pre>
+        </template>
+      </div>
     </div>
   </div>
 </template>
@@ -165,6 +171,7 @@ const props = defineProps({
 })
 
 const open = ref(false)
+const detailsLoaded = ref(false)
 
 const groupTools = computed(() => (Array.isArray(props.toolGroup) ? props.toolGroup : []))
 const isGroup = computed(() => groupTools.value.length > 0)
@@ -186,8 +193,15 @@ const midiArtifactVisible = computed(() =>
 )
 
 watch(status, (next) => {
-  if (next === 'executing') open.value = false
+  if (next === 'executing') {
+    open.value = false
+    detailsLoaded.value = false
+  }
   if (next === 'failed') open.value = true
+})
+
+watch(open, (next) => {
+  if (next) detailsLoaded.value = true
 })
 
 const phase = computed(() => {
@@ -535,7 +549,22 @@ function normalizeToolName(value) {
 }
 
 .tool-details {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
   margin-top: 4px;
+  transition:
+    grid-template-rows 0.25s ease,
+    opacity 0.2s ease;
+}
+
+.tool-details.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.tool-details-inner {
+  overflow: hidden;
   padding: 4px 0 0 35px;
   color: var(--t3);
 }

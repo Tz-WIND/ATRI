@@ -3,6 +3,7 @@
     <button
       class="thinking-header"
       type="button"
+      :aria-expanded="thinking.content ? String(open) : undefined"
       @click="open = !open"
     >
       <svg
@@ -24,8 +25,11 @@
     <div
       v-if="thinking.content"
       :class="['thinking-content', { open }]"
+      :aria-hidden="String(!open)"
     >
-      <pre>{{ thinking.content }}</pre>
+      <div class="thinking-content-inner">
+        <pre>{{ thinking.content }}</pre>
+      </div>
     </div>
   </div>
 </template>
@@ -130,13 +134,25 @@ onUnmounted(() => {
   font-size: 11px;
 }
 
+/* 展开/收起用 grid 0fr↔1fr 做真自适应高度过渡，避免 display 硬切；
+   opacity 略快于高度，收起先淡后缩、展开先撑后显，节奏更自然 */
 .thinking-content {
-  display: none;
-  padding: 6px 0 0 34px;
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.25s ease,
+    opacity 0.2s ease;
 }
 
 .thinking-content.open {
-  display: block;
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.thinking-content-inner {
+  overflow: hidden;
+  padding: 6px 0 0 34px;
 }
 
 .thinking-content pre {
