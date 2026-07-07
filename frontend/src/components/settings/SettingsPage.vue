@@ -428,6 +428,72 @@
                 </label>
               </div>
             </div>
+
+            <div class="settings-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
+                    Approximate Dense Search
+                  </div>
+                  <p class="section-desc compact">
+                    HNSW sidecar index settings for faster vector candidate lookup.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="switch-line"
+                  :class="{ active: form.knowledge.ann.enabled }"
+                  @click="form.knowledge.ann.enabled = !form.knowledge.ann.enabled"
+                >
+                  <span class="switch-track">
+                    <span class="switch-thumb" />
+                  </span>
+                  <span>HNSW Approximate Search</span>
+                </button>
+              </div>
+
+              <div class="setting-grid">
+                <label class="setting-field full">
+                  <span>Index Directory</span>
+                  <input
+                    v-model="form.knowledge.ann.index_dir"
+                    placeholder="data/knowledge/vector_indexes"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Candidate K</span>
+                  <input
+                    v-model.number="form.knowledge.ann.candidate_k"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>EF Search</span>
+                  <input
+                    v-model.number="form.knowledge.ann.ef_search"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>M</span>
+                  <input
+                    v-model.number="form.knowledge.ann.m"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>EF Construction</span>
+                  <input
+                    v-model.number="form.knowledge.ann.ef_construction"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+              </div>
+            </div>
           </section>
 
           <section
@@ -548,6 +614,17 @@
                     <span class="switch-thumb" />
                   </span>
                   <span>Use graph context</span>
+                </button>
+                <button
+                  type="button"
+                  class="switch-line"
+                  :class="{ active: form.knowledge.graph.semantic_parameter_tuning_enabled }"
+                  @click="form.knowledge.graph.semantic_parameter_tuning_enabled = !form.knowledge.graph.semantic_parameter_tuning_enabled"
+                >
+                  <span class="switch-track">
+                    <span class="switch-thumb" />
+                  </span>
+                  <span>Semantic Tuning</span>
                 </button>
               </div>
 
@@ -1085,6 +1162,15 @@ const form = ref({
     active_bases: [],
     top_k: 5,
     embedding_cache_max_size: 20000,
+    vector_backend: 'exact',
+    ann: {
+      enabled: false,
+      index_dir: 'data/knowledge/vector_indexes',
+      candidate_k: 300,
+      ef_search: 128,
+      m: 32,
+      ef_construction: 200,
+    },
     graph: {
       enabled: false,
       uri: 'neo4j://localhost:7687',
@@ -1096,6 +1182,7 @@ const form = ref({
       extraction_enabled: true,
       extraction_sources: ['documents', 'chat'],
       retrieval_enabled: true,
+      semantic_parameter_tuning_enabled: true,
       retrieval_depth: 3,
       max_facts: 8,
       expansion_candidate_limit: 40,
@@ -1352,6 +1439,7 @@ function normalizeNovelai(value = {}) {
 
 function normalizeKnowledge(value = {}) {
   const activeBases = Array.isArray(value.active_bases) ? value.active_bases : []
+  const ann = normalizeKnowledgeAnn(value.ann, value.vector_backend)
   return {
     enabled: Boolean(value.enabled),
     active_bases: activeBases.map(item => String(item).trim()).filter(Boolean),
@@ -1359,7 +1447,21 @@ function normalizeKnowledge(value = {}) {
     embedding_cache_max_size: normalizeEmbeddingCacheMaxSize(
       value.embedding_cache_max_size,
     ),
+    vector_backend: ann.enabled ? 'hnsw' : 'exact',
+    ann,
     graph: normalizeGraphKnowledge(value.graph),
+  }
+}
+
+function normalizeKnowledgeAnn(value = {}, vectorBackend = '') {
+  const enabled = Boolean(value.enabled || String(vectorBackend || '').trim().toLowerCase() === 'hnsw')
+  return {
+    enabled,
+    index_dir: String(value.index_dir || 'data/knowledge/vector_indexes').trim(),
+    candidate_k: normalizePositiveInteger(value.candidate_k, 300),
+    ef_search: normalizePositiveInteger(value.ef_search, 128),
+    m: normalizePositiveInteger(value.m, 32),
+    ef_construction: normalizePositiveInteger(value.ef_construction, 200),
   }
 }
 
@@ -1391,6 +1493,7 @@ function normalizeGraphKnowledge(value = {}) {
     extraction_enabled: value.extraction_enabled !== false,
     extraction_sources: normalizeGraphSources(value.extraction_sources),
     retrieval_enabled: value.retrieval_enabled !== false,
+    semantic_parameter_tuning_enabled: value.semantic_parameter_tuning_enabled !== false,
     retrieval_depth: normalizeGraphRetrievalDepth(value.retrieval_depth),
     max_facts: Number(value.max_facts || 8),
     expansion_candidate_limit: normalizeGraphExpansionCandidateLimit(
@@ -1418,6 +1521,12 @@ function normalizePositiveNumber(value, fallback) {
   const parsed = Number(value || fallback)
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback
   return parsed
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const parsed = Number(value || fallback)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.trunc(parsed)
 }
 
 function normalizeGraphRetrievalDepth(value) {
@@ -1735,6 +1844,8 @@ async function saveSettings() {
       embedding_cache_max_size: normalizeEmbeddingCacheMaxSize(
         knowledge.embedding_cache_max_size,
       ),
+      vector_backend: knowledge.vector_backend,
+      ann: knowledge.ann,
       graph,
     }
     await api.saveSettings({

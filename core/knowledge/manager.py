@@ -17,6 +17,7 @@ from core.knowledge.embedding import (
 from core.knowledge.rerank import OpenAIRerankClient, RerankClient
 from core.knowledge.retrieval import HybridRetriever
 from core.knowledge.store import DEFAULT_EMBEDDING_CACHE_MAX_SIZE, KnowledgeStore
+from core.knowledge.vector_backend import DEFAULT_HNSW_INDEX_DIR, delete_hnsw_sidecar_files
 
 
 class KnowledgeBaseManager:
@@ -43,7 +44,11 @@ class KnowledgeBaseManager:
 
     async def initialize(self) -> None:
         self.store.initialize()
-        self.retriever = HybridRetriever(self.store, self.rerank_client)
+        self.retriever = HybridRetriever(
+            self.store,
+            self.rerank_client,
+            vector_config=self.config,
+        )
 
     async def close(self) -> None:
         self.store.close()
@@ -53,6 +58,12 @@ class KnowledgeBaseManager:
         merged.update(config)
         self.config = merged
         self.store.set_embedding_cache_max_size(_embedding_cache_max_size_from_config(self.config))
+        if self.retriever is not None:
+            self.retriever = HybridRetriever(
+                self.store,
+                self.rerank_client,
+                vector_config=self.config,
+            )
 
     async def create_knowledge_base(
         self,
@@ -159,7 +170,10 @@ class KnowledgeBaseManager:
         return self._require_kb(kb_id)
 
     async def delete_knowledge_base(self, kb_id: str) -> bool:
-        return self.store.delete_kb(kb_id)
+        deleted = self.store.delete_kb(kb_id)
+        if deleted:
+            self._delete_vector_index(kb_id)
+        return deleted
 
     async def import_document(
         self,
@@ -411,6 +425,14 @@ class KnowledgeBaseManager:
             raise ValueError("knowledge base not found")
         return kb
 
+    def _delete_vector_index(self, kb_id: str) -> None:
+        backend = self.retriever.vector_backend if self.retriever is not None else None
+        delete_index = getattr(backend, "delete_index", None)
+        if callable(delete_index):
+            delete_index(kb_id)
+            return
+        delete_hnsw_sidecar_files(kb_id, _hnsw_index_dir_from_config(self.config))
+
     def _enqueue_graph_document(
         self,
         kb_id: str,
@@ -467,6 +489,16 @@ def _embedding_cache_max_size_from_config(config: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         parsed = DEFAULT_EMBEDDING_CACHE_MAX_SIZE
     return max(0, parsed)
+
+
+def _hnsw_index_dir_from_config(config: dict[str, Any]) -> str | Path:
+    knowledge = config.get("knowledge", {}) if isinstance(config, dict) else {}
+    if not isinstance(knowledge, dict):
+        return DEFAULT_HNSW_INDEX_DIR
+    ann = knowledge.get("ann", {})
+    if not isinstance(ann, dict):
+        return DEFAULT_HNSW_INDEX_DIR
+    return cast(str | Path, ann.get("index_dir") or DEFAULT_HNSW_INDEX_DIR)
 
 
 def _record_timing(

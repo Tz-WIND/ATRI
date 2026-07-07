@@ -87,6 +87,15 @@ def test_normalize_config_adds_knowledge_defaults():
         "active_bases": [],
         "top_k": 5,
         "embedding_cache_max_size": 20000,
+        "vector_backend": "exact",
+        "ann": {
+            "enabled": False,
+            "index_dir": "data/knowledge/vector_indexes",
+            "candidate_k": 300,
+            "ef_search": 128,
+            "m": 32,
+            "ef_construction": 200,
+        },
         "graph": {
             "enabled": False,
             "uri": "neo4j://localhost:7687",
@@ -98,6 +107,7 @@ def test_normalize_config_adds_knowledge_defaults():
             "extraction_enabled": True,
             "extraction_sources": ["documents", "chat"],
             "retrieval_enabled": True,
+            "semantic_parameter_tuning_enabled": True,
             "retrieval_depth": EXPECTED_GRAPH_RETRIEVAL_DEFAULT_DEPTH,
             "max_facts": 8,
             "expansion_candidate_limit": 40,
@@ -295,6 +305,39 @@ async def test_process_stage_raises_graph_candidate_limit_for_each_item_question
             "retrieval_depth": 3,
             "ranking_policy": "hybrid",
             "expansion_candidate_limit": 120,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_stage_can_disable_semantic_graph_parameter_tuning():
+    stage = ProcessStage()
+    stage.image_transcription = {"enabled": False}
+    stage.knowledge = {
+        "enabled": False,
+        "active_bases": [],
+        "graph": {
+            "enabled": True,
+            "retrieval_enabled": True,
+            "semantic_parameter_tuning_enabled": False,
+            "retrieval_depth": 1,
+            "max_facts": 2,
+            "expansion_candidate_limit": 40,
+        },
+    }
+    stage.graph_manager = FakeGraphManager()
+    event = MessageEvent(message_str="Alice 有多少项目?")
+
+    await stage._knowledge_context_for_event(event)
+
+    assert stage.graph_manager.retrieve_calls == [
+        {
+            "query": "Alice 有多少项目?",
+            "source_ids": [],
+            "max_facts": 2,
+            "retrieval_depth": 1,
+            "ranking_policy": "hybrid",
+            "expansion_candidate_limit": 40,
         }
     ]
 
@@ -948,6 +991,13 @@ async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
                         "vector_fuse_ms": 0.5,
                         "vector_rerank_ms": 0.6,
                         "vector_limit_ms": 0.7,
+                        "vector_backend": "hnsw",
+                        "ann_index_hit": True,
+                        "ann_candidates": 12,
+                        "ann_query_ms": 1.4,
+                        "ann_rescore_ms": 1.5,
+                        "ann_index_load_ms": 1.6,
+                        "ann_index_build_ms": 0.0,
                         "vector_returned_hits": 1,
                         "vector_hydrated_rows": 1,
                     }
@@ -1026,9 +1076,16 @@ async def test_process_stage_logs_combined_grag_timing_summary_at_debug(caplog):
         "total_ms=",
         "vector_total_ms=12.3",
         "vector_embed_ms=1.1",
+        "vector_backend=hnsw",
         "vector_dense_ms=3.3",
         "vector_hydrate_ms=0.8",
         "vector_sparse_ms=4.4",
+        "ann_index_hit=True",
+        "ann_candidates=12",
+        "ann_query_ms=1.4",
+        "ann_rescore_ms=1.5",
+        "ann_index_load_ms=1.6",
+        "ann_index_build_ms=0.0",
         "graph_total_ms=23.4",
         "graph_single_hop_ms=5.5",
         "graph_multi_hop_ms=6.6",

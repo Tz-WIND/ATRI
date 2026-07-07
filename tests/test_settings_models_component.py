@@ -57,6 +57,16 @@ def test_settings_page_exposes_vector_knowledge_cache_limit():
     assert "form.knowledge.embedding_cache_max_size" in source
     assert "normalizeEmbeddingCacheMaxSize" in source
     assert "embedding_cache_max_size: normalizeEmbeddingCacheMaxSize" in source
+    assert "HNSW Approximate Search" in source
+    assert "form.knowledge.ann.enabled" in source
+    assert "form.knowledge.ann.index_dir" in source
+    assert "form.knowledge.ann.candidate_k" in source
+    assert "form.knowledge.ann.ef_search" in source
+    assert "form.knowledge.ann.m" in source
+    assert "form.knowledge.ann.ef_construction" in source
+    assert "normalizeKnowledgeAnn" in source
+    assert "vector_backend: ann.enabled ? 'hnsw' : 'exact'" in source
+    assert "ann," in source
 
 
 def test_settings_page_exposes_graph_knowledge_settings():
@@ -114,6 +124,12 @@ def test_settings_page_exposes_graph_knowledge_settings():
     assert "retrieval_depth" in source
     assert "7 hops" in source
     assert "Math.min(7" in source
+    assert "Semantic Tuning" in source
+    assert "semantic_parameter_tuning_enabled" in source
+    assert (
+        "semantic_parameter_tuning_enabled: value.semantic_parameter_tuning_enabled !== false"
+        in source
+    )
     assert "Expansion Candidates" in source
     assert "expansion_candidate_limit" in source
     assert "graphExpansionCandidateMax" in source

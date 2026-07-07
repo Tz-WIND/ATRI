@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
-from heapq import heappush, heapreplace
 from typing import Any, cast
 
 from core import logger
 from core.knowledge.embedding import ModelSelection
 from core.knowledge.rerank import RerankClient
 from core.knowledge.store import KnowledgeStore
+from core.knowledge.vector_backend import VectorBackend, build_default_vector_backend
 
 
 @dataclass
@@ -43,9 +42,16 @@ class RetrievalHit:
 class HybridRetriever:
     """Combine dense cosine retrieval, SQLite text retrieval, and optional rerank."""
 
-    def __init__(self, store: KnowledgeStore, rerank_client: RerankClient | None = None) -> None:
+    def __init__(
+        self,
+        store: KnowledgeStore,
+        rerank_client: RerankClient | None = None,
+        vector_backend: VectorBackend | None = None,
+        vector_config: dict[str, Any] | None = None,
+    ) -> None:
         self.store = store
         self.rerank_client = rerank_client
+        self.vector_backend = vector_backend or build_default_vector_backend(store, vector_config)
 
     async def retrieve(
         self,
@@ -98,37 +104,20 @@ class HybridRetriever:
         *,
         timings: dict[str, Any] | None = None,
     ) -> list[dict]:
-        store_started_at = time.perf_counter()
-        rows = self.store.vector_chunk_candidates(kb_ids)
-        _record_timing(timings, "vector_store_ms", store_started_at)
-        _record_count(timings, "vector_rows", len(rows))
-        query_norms = {kb_id: _vector_norm(vector) for kb_id, vector in query_vectors.items()}
-        heaps: dict[str, list[tuple[float, int, dict]]] = {}
-        sequence = 0
-        for raw_row in rows:
-            kb_id = raw_row["kb_id"]
-            vector = query_vectors.get(kb_id)
-            if not vector:
-                continue
-            similarity = _cosine(
-                vector,
-                raw_row["embedding"],
-                raw_row["embedding_norm"],
-                query_norm=query_norms.get(kb_id, 0.0),
-            )
-            row = dict(raw_row)
-            row["dense_score"] = similarity
-            limit = _positive_limit(options[kb_id].get("top_k_dense"), 30)
-            heap = heaps.setdefault(kb_id, [])
-            entry = (similarity, -sequence, row)
-            if len(heap) < limit:
-                heappush(heap, entry)
-            elif entry > heap[0]:
-                heapreplace(heap, entry)
-            sequence += 1
-        limited_entries = [entry for heap in heaps.values() for entry in heap]
-        limited_entries.sort(key=lambda item: (-item[0], -item[1]))
-        limited_candidates = [row for _, _, row in limited_entries]
+        limited_candidates = self.vector_backend.search(
+            kb_ids=kb_ids,
+            query_vectors=query_vectors,
+            options=options,
+            timings=timings,
+        )
+        return self._hydrate_dense_candidates(limited_candidates, timings=timings)
+
+    def _hydrate_dense_candidates(
+        self,
+        limited_candidates: list[dict],
+        *,
+        timings: dict[str, Any] | None = None,
+    ) -> list[dict]:
         _record_count(timings, "vector_dense_rows", len(limited_candidates))
         hydrate_started_at = time.perf_counter()
         hydrated_rows = self.store.chunks_by_ids([row["chunk_id"] for row in limited_candidates])
@@ -230,27 +219,6 @@ class HybridRetriever:
             score=score,
             char_count=int(row["char_count"]),
         )
-
-
-def _cosine(
-    query_vector: list[float],
-    doc_vector: list[float],
-    doc_norm: float,
-    *,
-    query_norm: float | None = None,
-) -> float:
-    if not query_vector or not doc_vector or doc_norm <= 0:
-        return 0.0
-    dot = sum(left * right for left, right in zip(query_vector, doc_vector, strict=False))
-    if query_norm is None:
-        query_norm = _vector_norm(query_vector)
-    if query_norm <= 0:
-        return 0.0
-    return float(dot / (query_norm * doc_norm))
-
-
-def _vector_norm(vector: list[float]) -> float:
-    return math.sqrt(sum(item * item for item in vector))
 
 
 def _positive_limit(value: object, default: int) -> int:

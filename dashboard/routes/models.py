@@ -185,6 +185,13 @@ def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
             incoming["embedding_cache_max_size"],
             "knowledge.embedding_cache_max_size",
         )
+    if "vector_backend" in incoming:
+        vector_backend = str(incoming.get("vector_backend") or "exact").strip().lower()
+        if vector_backend not in {"exact", "hnsw"}:
+            raise ValueError("knowledge.vector_backend must be one of: exact, hnsw")
+        merged["vector_backend"] = vector_backend
+    if "ann" in incoming:
+        merged["ann"] = _merge_ann_knowledge_config(merged.get("ann", {}), incoming["ann"])
     if "graph" in incoming:
         merged["graph"] = _merge_graph_knowledge_config(
             merged.get("graph", {}),
@@ -195,7 +202,30 @@ def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
     merged.setdefault("active_bases", [])
     merged.setdefault("top_k", 5)
     merged.setdefault("embedding_cache_max_size", DEFAULT_EMBEDDING_CACHE_MAX_SIZE)
+    vector_backend = str(merged.get("vector_backend") or "exact").strip().lower()
+    merged["vector_backend"] = vector_backend if vector_backend in {"exact", "hnsw"} else "exact"
+    merged["ann"] = _merge_ann_knowledge_config({}, merged.get("ann", {}))
     merged.setdefault("graph", _merge_graph_knowledge_config({}, {}))
+    return merged
+
+
+def _merge_ann_knowledge_config(current: object, incoming: object) -> dict:
+    if not isinstance(incoming, dict):
+        raise ValueError("knowledge.ann must be an object")
+    merged = dict(current if isinstance(current, dict) else {})
+    if "enabled" in incoming:
+        merged["enabled"] = _legacy_bool(incoming["enabled"])
+    if "index_dir" in incoming:
+        merged["index_dir"] = str(incoming.get("index_dir") or "").strip()
+    for key in ("candidate_k", "ef_search", "m", "ef_construction"):
+        if key in incoming:
+            merged[key] = _positive_int(incoming[key], f"knowledge.ann.{key}")
+    merged.setdefault("enabled", False)
+    merged.setdefault("index_dir", "data/knowledge/vector_indexes")
+    merged.setdefault("candidate_k", 300)
+    merged.setdefault("ef_search", 128)
+    merged.setdefault("m", 32)
+    merged.setdefault("ef_construction", 200)
     return merged
 
 
@@ -213,7 +243,12 @@ def _merge_graph_knowledge_config(
             merged[key] = str(incoming.get(key) or "").strip()
     if "password" in incoming and incoming["password"] != _MASKED_SECRET:
         merged["password"] = str(incoming.get("password") or "")
-    for key in ("enabled", "extraction_enabled", "retrieval_enabled"):
+    for key in (
+        "enabled",
+        "extraction_enabled",
+        "retrieval_enabled",
+        "semantic_parameter_tuning_enabled",
+    ):
         if key in incoming:
             merged[key] = bool(incoming[key])
     if "extraction_sources" in incoming:
@@ -308,6 +343,7 @@ def _merge_graph_knowledge_config(
     merged.setdefault("extraction_enabled", True)
     merged.setdefault("extraction_sources", ["documents", "chat"])
     merged.setdefault("retrieval_enabled", True)
+    merged.setdefault("semantic_parameter_tuning_enabled", True)
     merged.setdefault("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
     merged.setdefault("max_facts", 8)
     merged.setdefault("expansion_candidate_limit", 40)
@@ -352,6 +388,10 @@ def _mask_knowledge_config(cfg: dict | None) -> dict:
             cfg.get("embedding_cache_max_size", DEFAULT_EMBEDDING_CACHE_MAX_SIZE),
             "knowledge.embedding_cache_max_size",
         ),
+        "vector_backend": (
+            "hnsw" if str(cfg.get("vector_backend") or "").strip().lower() == "hnsw" else "exact"
+        ),
+        "ann": _merge_ann_knowledge_config({}, cfg.get("ann", {})),
         "graph": graph,
     }
 

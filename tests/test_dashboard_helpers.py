@@ -426,6 +426,36 @@ def test_dashboard_masks_and_merges_vector_knowledge_cache_limit():
     assert masked["graph"]["password"] == models._MASKED_SECRET
 
 
+def test_dashboard_masks_and_merges_vector_knowledge_ann_settings():
+    merged = models._merge_knowledge_config(
+        {"ann": {"enabled": False, "candidate_k": 100}},
+        {
+            "vector_backend": "HNSW",
+            "ann": {
+                "enabled": True,
+                "index_dir": "data/custom-indexes",
+                "candidate_k": "512",
+                "ef_search": "192",
+                "m": "48",
+                "ef_construction": "300",
+            },
+        },
+    )
+    masked = models._mask_knowledge_config(merged)
+
+    assert merged["vector_backend"] == "hnsw"
+    assert merged["ann"] == {
+        "enabled": True,
+        "index_dir": "data/custom-indexes",
+        "candidate_k": 512,
+        "ef_search": 192,
+        "m": 48,
+        "ef_construction": 300,
+    }
+    assert masked["vector_backend"] == "hnsw"
+    assert masked["ann"] == merged["ann"]
+
+
 def test_dashboard_masks_and_merges_graph_multihop_cache_limits():
     merged = models._merge_graph_knowledge_config(
         {
@@ -466,6 +496,17 @@ def test_dashboard_masks_and_merges_graph_multihop_cache_limits():
     assert clamped["multi_hop_expansion_cache_path_limit"] == 10000
     assert clamped["multi_hop_expansion_cache_preload_path_limit"] == 50000
     assert disabled["multi_hop_expansion_cache_preload_seed_limit"] == 0
+
+
+def test_dashboard_merges_graph_semantic_parameter_tuning_switch():
+    merged = models._merge_graph_knowledge_config(
+        {"semantic_parameter_tuning_enabled": True},
+        {"semantic_parameter_tuning_enabled": False},
+    )
+    masked = models._mask_knowledge_config({"graph": merged})
+
+    assert merged["semantic_parameter_tuning_enabled"] is False
+    assert masked["graph"]["semantic_parameter_tuning_enabled"] is False
 
 
 @pytest.mark.asyncio

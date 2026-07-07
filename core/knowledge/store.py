@@ -7,10 +7,29 @@ import sqlite3
 import time
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
+
+from core.knowledge.vector_backend import delete_hnsw_sidecar_files
+
 DEFAULT_EMBEDDING_CACHE_MAX_SIZE = 20_000
+_EMBEDDING_BLOB_DTYPE = "float32"
+_EMBEDDING_BLOB_REVISION = 1
+_VECTOR_BACKEND_SQLITE_BLOB_NUMPY = "sqlite_blob_numpy"
+
+
+@dataclass(frozen=True)
+class _VectorMatrix:
+    kb_id: str
+    chunk_ids: tuple[str, ...]
+    doc_ids: tuple[str, ...]
+    chunk_indexes: tuple[int, ...]
+    embeddings: np.ndarray
+    norms: np.ndarray
+    created_ats: tuple[float, ...]
 
 
 def utc_timestamp() -> float:
@@ -32,6 +51,8 @@ class KnowledgeStore:
         self._embedding_cache: OrderedDict[str, tuple[float, tuple[float, ...]]] = OrderedDict()
         self._vector_candidate_cache: OrderedDict[str, tuple[dict, ...]] = OrderedDict()
         self._vector_candidate_cache_size = 0
+        self._vector_matrix_cache: OrderedDict[str, _VectorMatrix] = OrderedDict()
+        self._vector_matrix_cache_size = 0
         self.embedding_cache_max_size = _nonnegative_int(
             embedding_cache_max_size,
             DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
@@ -53,6 +74,8 @@ class KnowledgeStore:
         self._embedding_cache.clear()
         self._vector_candidate_cache.clear()
         self._vector_candidate_cache_size = 0
+        self._vector_matrix_cache.clear()
+        self._vector_matrix_cache_size = 0
 
     def set_embedding_cache_max_size(self, value: object) -> None:
         self.embedding_cache_max_size = _nonnegative_int(
@@ -61,6 +84,7 @@ class KnowledgeStore:
         )
         self._trim_embedding_cache()
         self._trim_vector_candidate_cache()
+        self._trim_vector_matrix_cache()
 
     def _create_schema(self) -> None:
         conn = self._conn()
@@ -108,6 +132,9 @@ class KnowledgeStore:
                 content TEXT NOT NULL,
                 char_count INTEGER NOT NULL,
                 embedding TEXT NOT NULL,
+                embedding_blob BLOB,
+                embedding_dtype TEXT NOT NULL DEFAULT 'float32',
+                embedding_revision INTEGER NOT NULL DEFAULT 1,
                 embedding_norm REAL NOT NULL,
                 created_at REAL NOT NULL
             );
@@ -128,6 +155,7 @@ class KnowledgeStore:
             CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
             """
         )
+        self._ensure_chunk_vector_columns(conn)
         try:
             conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts "
@@ -137,6 +165,19 @@ class KnowledgeStore:
         except sqlite3.OperationalError:
             self.fts_available = False
         conn.commit()
+
+    def _ensure_chunk_vector_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+        if "embedding_blob" not in columns:
+            conn.execute("ALTER TABLE chunks ADD COLUMN embedding_blob BLOB")
+        if "embedding_dtype" not in columns:
+            conn.execute(
+                "ALTER TABLE chunks ADD COLUMN embedding_dtype TEXT NOT NULL DEFAULT 'float32'"
+            )
+        if "embedding_revision" not in columns:
+            conn.execute(
+                "ALTER TABLE chunks ADD COLUMN embedding_revision INTEGER NOT NULL DEFAULT 1"
+            )
 
     def create_kb(self, values: dict[str, Any]) -> dict:
         now = utc_timestamp()
@@ -225,9 +266,13 @@ class KnowledgeStore:
             self._delete_fts_doc(doc_id)
         self._delete_embedding_cache_for_kb(kb_id)
         self._delete_vector_candidate_cache_for_kb(kb_id)
+        self._delete_vector_matrix_cache_for_kb(kb_id)
         cur = self._conn().execute("DELETE FROM knowledge_bases WHERE kb_id=?", (kb_id,))
         self._conn().commit()
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+        if deleted:
+            delete_hnsw_sidecar_files(kb_id)
+        return deleted
 
     def create_document(
         self,
@@ -256,12 +301,14 @@ class KnowledgeStore:
         for index, (content, vector) in enumerate(chunks):
             chunk_id = str(uuid.uuid4())
             norm = sum(item * item for item in vector) ** 0.5
+            embedding_blob = _embedding_to_float32_blob(vector)
             conn.execute(
                 """
                 INSERT INTO chunks
                     (chunk_id, kb_id, doc_id, chunk_index, content, char_count,
-                     embedding, embedding_norm, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     embedding, embedding_blob, embedding_dtype, embedding_revision,
+                     embedding_norm, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     chunk_id,
@@ -271,6 +318,9 @@ class KnowledgeStore:
                     content,
                     len(content),
                     json.dumps(vector),
+                    embedding_blob,
+                    _EMBEDDING_BLOB_DTYPE,
+                    _EMBEDDING_BLOB_REVISION,
                     norm,
                     now,
                 ),
@@ -282,6 +332,7 @@ class KnowledgeStore:
                 )
         conn.commit()
         self._delete_vector_candidate_cache_for_kb(kb_id)
+        self._delete_vector_matrix_cache_for_kb(kb_id)
         self.refresh_counts(kb_id, doc_id)
 
     def get_document(self, doc_id: str) -> dict | None:
@@ -306,6 +357,7 @@ class KnowledgeStore:
         self._delete_fts_doc(doc_id)
         self._delete_embedding_cache_for_doc(doc_id)
         self._delete_vector_candidate_cache_for_kb(doc["kb_id"])
+        self._delete_vector_matrix_cache_for_kb(doc["kb_id"])
         cur = self._conn().execute("DELETE FROM documents WHERE doc_id=?", (doc_id,))
         self._conn().commit()
         self.refresh_counts(doc["kb_id"])
@@ -343,6 +395,7 @@ class KnowledgeStore:
             self._conn().execute("DELETE FROM chunks_fts WHERE chunk_id=?", (chunk_id,))
         self._embedding_cache.pop(chunk_id, None)
         self._delete_vector_candidate_cache_for_kb(row["kb_id"])
+        self._delete_vector_matrix_cache_for_kb(row["kb_id"])
         cur = self._conn().execute("DELETE FROM chunks WHERE chunk_id=?", (chunk_id,))
         self._conn().commit()
         self.refresh_counts(row["kb_id"], row["doc_id"])
@@ -408,6 +461,257 @@ class KnowledgeStore:
             .fetchall()
         )
         return [self._decode_chunk(row) for row in rows]
+
+    def vector_index_snapshot(self, kb_id: str) -> dict:
+        row = (
+            self._conn()
+            .execute(
+                """
+            SELECT kb_id, embedding_dimensions, chunk_count, updated_at
+            FROM knowledge_bases
+            WHERE kb_id=?
+            """,
+                (kb_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return {
+                "kb_id": kb_id,
+                "embedding_dimensions": 0,
+                "chunk_count": 0,
+                "updated_at": 0.0,
+            }
+        return dict(row)
+
+    def vector_index_rows(self, kb_id: str) -> list[dict]:
+        rows = (
+            self._conn()
+            .execute(
+                """
+            SELECT c.chunk_id, c.kb_id, c.doc_id, c.chunk_index, c.embedding,
+                   c.embedding_blob, c.embedding_dtype, c.embedding_revision,
+                   c.embedding_norm, c.created_at
+            FROM chunks c
+            WHERE c.kb_id=?
+            ORDER BY c.rowid ASC
+            """,
+                (kb_id,),
+            )
+            .fetchall()
+        )
+        return [dict(row) for row in rows]
+
+    def vector_index_rows_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        if not chunk_ids:
+            return []
+        rows = (
+            self._conn()
+            .execute(
+                """
+            SELECT c.chunk_id, c.kb_id, c.doc_id, c.chunk_index, c.embedding,
+                   c.embedding_blob, c.embedding_dtype, c.embedding_revision,
+                   c.embedding_norm, c.created_at
+            FROM chunks c
+            WHERE c.chunk_id IN (SELECT value FROM json_each(?))
+            """,
+                (json.dumps(chunk_ids),),
+            )
+            .fetchall()
+        )
+        by_id = {str(row["chunk_id"]): dict(row) for row in rows}
+        return [by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in by_id]
+
+    def dense_vector_search(
+        self,
+        kb_ids: list[str],
+        query_vectors: dict[str, list[float]],
+        limits: dict[str, int],
+        timings: dict[str, Any] | None = None,
+    ) -> list[dict]:
+        if not kb_ids:
+            _set_timing(timings, "vector_matrix_load_ms", 0.0)
+            _set_timing(timings, "vector_matmul_ms", 0.0)
+            _record_count(timings, "vector_rows", 0)
+            return []
+
+        _set_value(timings, "vector_backend", _VECTOR_BACKEND_SQLITE_BLOB_NUMPY)
+        matrices: list[_VectorMatrix] = []
+        total_rows = 0
+        load_ms = 0.0
+        for kb_id in kb_ids:
+            load_started_at = time.perf_counter()
+            matrix = self._vector_matrix_for_kb(kb_id)
+            load_ms += (time.perf_counter() - load_started_at) * 1000
+            matrices.append(matrix)
+            total_rows += len(matrix.chunk_ids)
+        _set_timing(timings, "vector_matrix_load_ms", load_ms)
+        _set_timing(timings, "vector_store_ms", load_ms)
+        _record_count(timings, "vector_rows", total_rows)
+
+        ranked_entries: list[tuple[float, int, dict]] = []
+        sequence_base = 0
+        matmul_ms = 0.0
+        dimension_mismatches = 0
+        for matrix in matrices:
+            query_vector = query_vectors.get(matrix.kb_id)
+            if not query_vector or len(matrix.chunk_ids) == 0:
+                sequence_base += len(matrix.chunk_ids)
+                continue
+            query = np.asarray(query_vector, dtype=np.float32)
+            if matrix.embeddings.shape[1] != query.shape[0]:
+                dimension_mismatches += 1
+                sequence_base += len(matrix.chunk_ids)
+                continue
+            query_norm = float(np.linalg.norm(query))
+            if query_norm <= 0:
+                sequence_base += len(matrix.chunk_ids)
+                continue
+
+            matmul_started_at = time.perf_counter()
+            dots = matrix.embeddings @ query
+            denominators = matrix.norms * query_norm
+            scores = np.divide(
+                dots,
+                denominators,
+                out=np.zeros_like(dots, dtype=np.float32),
+                where=denominators > 0,
+            )
+            matmul_ms += (time.perf_counter() - matmul_started_at) * 1000
+
+            limit = _positive_int(limits.get(matrix.kb_id), 30)
+            selected_indexes = _top_score_indexes(scores, limit)
+            for index in selected_indexes:
+                score = float(scores[index])
+                sequence = sequence_base + int(index)
+                ranked_entries.append(
+                    (
+                        score,
+                        sequence,
+                        {
+                            "chunk_id": matrix.chunk_ids[index],
+                            "kb_id": matrix.kb_id,
+                            "doc_id": matrix.doc_ids[index],
+                            "chunk_index": matrix.chunk_indexes[index],
+                            "embedding_norm": float(matrix.norms[index]),
+                            "created_at": matrix.created_ats[index],
+                            "dense_score": score,
+                        },
+                    )
+                )
+            sequence_base += len(matrix.chunk_ids)
+
+        _set_timing(timings, "vector_matmul_ms", matmul_ms)
+        if dimension_mismatches:
+            _record_count(timings, "vector_dimension_mismatches", dimension_mismatches)
+        ranked_entries.sort(key=lambda item: (-item[0], item[1]))
+        return [row for _, _, row in ranked_entries]
+
+    def _vector_matrix_for_kb(self, kb_id: str) -> _VectorMatrix:
+        if self.embedding_cache_max_size > 0:
+            cached = self._vector_matrix_cache.get(kb_id)
+            if cached is not None:
+                self._vector_matrix_cache.move_to_end(kb_id)
+                return cached
+
+        rows = (
+            self._conn()
+            .execute(
+                """
+            SELECT c.chunk_id, c.kb_id, c.doc_id, c.chunk_index, c.embedding,
+                   c.embedding_blob, c.embedding_dtype, c.embedding_revision,
+                   c.embedding_norm, c.created_at
+            FROM chunks c
+            WHERE c.kb_id=?
+            ORDER BY c.rowid ASC
+            """,
+                (kb_id,),
+            )
+            .fetchall()
+        )
+        vectors: list[np.ndarray] = []
+        chunk_ids: list[str] = []
+        doc_ids: list[str] = []
+        chunk_indexes: list[int] = []
+        norms: list[float] = []
+        created_ats: list[float] = []
+        dimension: int | None = None
+        backfilled = False
+        for row in rows:
+            vector, did_backfill = self._vector_from_blob_or_json(row)
+            backfilled = backfilled or did_backfill
+            if vector.size == 0:
+                continue
+            if dimension is None:
+                dimension = int(vector.shape[0])
+            if int(vector.shape[0]) != dimension:
+                continue
+            vectors.append(vector)
+            chunk_ids.append(str(row["chunk_id"]))
+            doc_ids.append(str(row["doc_id"]))
+            chunk_indexes.append(int(row["chunk_index"]))
+            norms.append(float(row["embedding_norm"]))
+            created_ats.append(float(row["created_at"]))
+        if backfilled:
+            self._conn().commit()
+
+        embeddings = (
+            np.vstack(vectors).astype(np.float32, copy=False)
+            if vectors
+            else np.empty((0, 0), dtype=np.float32)
+        )
+        matrix = _VectorMatrix(
+            kb_id=kb_id,
+            chunk_ids=tuple(chunk_ids),
+            doc_ids=tuple(doc_ids),
+            chunk_indexes=tuple(chunk_indexes),
+            embeddings=embeddings,
+            norms=np.asarray(norms, dtype=np.float32),
+            created_ats=tuple(created_ats),
+        )
+        self._cache_vector_matrix(kb_id, matrix)
+        return matrix
+
+    def _vector_from_blob_or_json(self, row: sqlite3.Row) -> tuple[np.ndarray, bool]:
+        blob = row["embedding_blob"]
+        dtype = str(row["embedding_dtype"] or "")
+        revision = int(row["embedding_revision"] or 0)
+        if (
+            blob is not None
+            and dtype == _EMBEDDING_BLOB_DTYPE
+            and revision == _EMBEDDING_BLOB_REVISION
+        ):
+            return np.frombuffer(blob, dtype=np.float32), False
+
+        vector = np.asarray(json.loads(row["embedding"] or "[]"), dtype=np.float32)
+        self._conn().execute(
+            """
+            UPDATE chunks
+            SET embedding_blob=?, embedding_dtype=?, embedding_revision=?
+            WHERE chunk_id=?
+            """,
+            (
+                vector.tobytes(),
+                _EMBEDDING_BLOB_DTYPE,
+                _EMBEDDING_BLOB_REVISION,
+                row["chunk_id"],
+            ),
+        )
+        return vector, True
+
+    def _cache_vector_matrix(self, kb_id: str, matrix: _VectorMatrix) -> bool:
+        if (
+            self.embedding_cache_max_size <= 0
+            or len(matrix.chunk_ids) > self.embedding_cache_max_size
+        ):
+            return False
+        existing = self._vector_matrix_cache.pop(kb_id, None)
+        if existing is not None:
+            self._vector_matrix_cache_size -= len(existing.chunk_ids)
+        self._vector_matrix_cache[kb_id] = matrix
+        self._vector_matrix_cache_size += len(matrix.chunk_ids)
+        self._trim_vector_matrix_cache()
+        return True
 
     def _cache_vector_candidates(self, kb_id: str, rows: list[dict]) -> bool:
         if self.embedding_cache_max_size <= 0 or len(rows) > self.embedding_cache_max_size:
@@ -594,6 +898,11 @@ class KnowledgeStore:
         if rows is not None:
             self._vector_candidate_cache_size -= len(rows)
 
+    def _delete_vector_matrix_cache_for_kb(self, kb_id: str) -> None:
+        matrix = self._vector_matrix_cache.pop(kb_id, None)
+        if matrix is not None:
+            self._vector_matrix_cache_size -= len(matrix.chunk_ids)
+
     def _decode_kb(self, row: sqlite3.Row) -> dict:
         data = dict(row)
         data["embedding_config"] = json.loads(data.get("embedding_config") or "{}")
@@ -642,6 +951,15 @@ class KnowledgeStore:
             _, rows = self._vector_candidate_cache.popitem(last=False)
             self._vector_candidate_cache_size -= len(rows)
 
+    def _trim_vector_matrix_cache(self) -> None:
+        if self.embedding_cache_max_size <= 0:
+            self._vector_matrix_cache.clear()
+            self._vector_matrix_cache_size = 0
+            return
+        while self._vector_matrix_cache_size > self.embedding_cache_max_size:
+            _, matrix = self._vector_matrix_cache.popitem(last=False)
+            self._vector_matrix_cache_size -= len(matrix.chunk_ids)
+
     def _conn(self) -> sqlite3.Connection:
         if self.conn is None:
             raise RuntimeError("knowledge store is not initialized")
@@ -677,6 +995,42 @@ def _nonnegative_int(value: object, default: int) -> int:
     except (TypeError, ValueError):
         parsed = default
     return max(0, parsed)
+
+
+def _positive_int(value: object, default: int) -> int:
+    try:
+        parsed = int(cast(Any, value))
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, parsed)
+
+
+def _embedding_to_float32_blob(vector: list[float]) -> bytes:
+    return np.asarray(vector, dtype=np.float32).tobytes()
+
+
+def _top_score_indexes(scores: np.ndarray, limit: int) -> list[int]:
+    if scores.size == 0:
+        return []
+    count = min(max(1, int(limit)), int(scores.size))
+    indexes = np.arange(scores.size)
+    order = np.lexsort((indexes, -scores))
+    return [int(index) for index in order[:count]]
+
+
+def _set_value(timings: dict[str, Any] | None, key: str, value: Any) -> None:
+    if timings is not None:
+        timings[key] = value
+
+
+def _set_timing(timings: dict[str, Any] | None, key: str, elapsed_ms: float) -> None:
+    if timings is not None:
+        timings[key] = float(elapsed_ms)
+
+
+def _record_count(timings: dict[str, Any] | None, key: str, value: int) -> None:
+    if timings is not None:
+        timings[key] = int(value)
 
 
 def _friendly_integrity_error(error: sqlite3.IntegrityError) -> ValueError:

@@ -91,6 +91,25 @@ CONFIG_SCHEMA: dict[str, Any] = {
                     "default": DEFAULT_EMBEDDING_CACHE_MAX_SIZE,
                     "minimum": 0,
                 },
+                "vector_backend": {
+                    "type": "string",
+                    "default": "exact",
+                    "enum": ["exact", "hnsw"],
+                },
+                "ann": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": False},
+                        "index_dir": {
+                            "type": "string",
+                            "default": "data/knowledge/vector_indexes",
+                        },
+                        "candidate_k": {"type": "integer", "default": 300, "minimum": 1},
+                        "ef_search": {"type": "integer", "default": 128, "minimum": 1},
+                        "m": {"type": "integer", "default": 32, "minimum": 1},
+                        "ef_construction": {"type": "integer", "default": 200, "minimum": 1},
+                    },
+                },
                 "graph": {
                     "type": "object",
                     "properties": {
@@ -107,6 +126,10 @@ CONFIG_SCHEMA: dict[str, Any] = {
                             "default": ["documents", "chat"],
                         },
                         "retrieval_enabled": {"type": "boolean", "default": True},
+                        "semantic_parameter_tuning_enabled": {
+                            "type": "boolean",
+                            "default": True,
+                        },
                         "retrieval_depth": {
                             "type": "integer",
                             "default": GRAPH_RETRIEVAL_DEFAULT_DEPTH,

@@ -1,12 +1,12 @@
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
 import core.knowledge.store as store_module
 from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.manager import KnowledgeBaseManager
-from core.knowledge.retrieval import HybridRetriever
 from core.knowledge.rerank import OpenAIRerankClient
+from core.knowledge.retrieval import HybridRetriever
 from core.knowledge.store import KnowledgeStore
 
 
@@ -83,6 +83,108 @@ class DenseHydrationStore:
             "content": content,
             "char_count": len(content),
         }
+
+
+class DenseBackendInjectionStore(DenseHydrationStore):
+    def vector_chunk_candidates(self, kb_ids):
+        raise AssertionError("injected vector backend should handle dense search")
+
+
+class FailingDenseBackendStore(DenseHydrationStore):
+    def dense_vector_search(self, kb_ids, query_vectors, limits, timings=None):
+        if timings is not None:
+            timings["vector_backend"] = "sqlite_blob_numpy"
+        raise RuntimeError("dense backend offline")
+
+
+class RecordingVectorBackend:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def search(self, *, kb_ids, query_vectors, options, timings=None):
+        self.calls.append(
+            {
+                "kb_ids": list(kb_ids),
+                "query_vectors": dict(query_vectors),
+                "options": dict(options),
+            }
+        )
+        if timings is not None:
+            timings["vector_backend"] = "recording"
+        return [
+            {
+                "chunk_id": "chunk-sqlite",
+                "kb_id": "kb-1",
+                "doc_id": "doc-1",
+                "chunk_index": 0,
+                "embedding_norm": 1.0,
+                "dense_score": 0.99,
+            }
+        ]
+
+
+class FailingVectorBackend:
+    def search(self, *, kb_ids, query_vectors, options, timings=None):
+        raise AssertionError("HNSW backend should not fall back to exact dense search")
+
+
+class FakeHnswLib:
+    saved_indexes: ClassVar[dict[str, dict[str, Any]]] = {}
+
+    class Index:
+        def __init__(self, *, space, dim) -> None:
+            self.space = space
+            self.dim = dim
+            self.items: list[list[float]] = []
+            self.labels: list[int] = []
+            self.ef = 0
+
+        def init_index(self, *, max_elements, ef_construction, **kwargs) -> None:
+            self.max_elements = max_elements
+            self.ef_construction = ef_construction
+            self.m = kwargs.get("M")
+
+        def add_items(self, items, labels) -> None:
+            self.items = [[float(value) for value in item] for item in items]
+            self.labels = [int(label) for label in labels]
+
+        def set_ef(self, ef) -> None:
+            self.ef = int(ef)
+
+        def knn_query(self, queries, k):
+            query = [float(value) for value in next(iter(queries))]
+            scored = []
+            for label, item in zip(self.labels, self.items, strict=False):
+                scored.append((1.0 - _cosine(query, item), label))
+            scored.sort(key=lambda item: (item[0], item[1]))
+            selected = scored[: int(k)]
+            return [[label for _, label in selected]], [[distance for distance, _ in selected]]
+
+        def save_index(self, path) -> None:
+            FakeHnswLib.saved_indexes[str(path)] = {
+                "space": self.space,
+                "dim": self.dim,
+                "items": list(self.items),
+                "labels": list(self.labels),
+            }
+            with open(path, "w", encoding="utf-8") as marker:
+                marker.write("fake hnsw index")
+
+        def load_index(self, path, max_elements=None) -> None:
+            saved = FakeHnswLib.saved_indexes[str(path)]
+            self.space = saved["space"]
+            self.dim = saved["dim"]
+            self.items = list(saved["items"])
+            self.labels = list(saved["labels"])
+            self.max_elements = max_elements or len(self.labels)
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    left_norm = sum(value * value for value in left) ** 0.5
+    right_norm = sum(value * value for value in right) ** 0.5
+    if left_norm <= 0 or right_norm <= 0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right, strict=False)) / (left_norm * right_norm)
 
 
 class MismatchedConfigEmbeddingClient:
@@ -249,6 +351,444 @@ async def test_dense_retrieval_hydrates_only_top_vector_candidates():
     assert store.hydrated_chunk_ids == ["chunk-sqlite"]
     assert [hit.chunk_id for hit in hits] == ["chunk-sqlite"]
     assert hits[0].content == "SQLite retrieval chunk"
+
+
+@pytest.mark.asyncio
+async def test_hybrid_retriever_accepts_injected_vector_backend():
+    store = DenseBackendInjectionStore()
+    backend = RecordingVectorBackend()
+    retriever = HybridRetriever(store, vector_backend=backend)
+    timings: dict[str, Any] = {}
+
+    hits = await retriever.retrieve(
+        query="sqlite",
+        kb_records=[
+            {
+                "kb_id": "kb-1",
+                "name": "Docs",
+                "top_k_dense": 3,
+                "top_k_sparse": 1,
+                "top_m_final": 1,
+            }
+        ],
+        query_vectors={"kb-1": [0.0, 0.0, 1.0]},
+        top_k=1,
+        timings=timings,
+    )
+
+    assert backend.calls == [
+        {
+            "kb_ids": ["kb-1"],
+            "query_vectors": {"kb-1": [0.0, 0.0, 1.0]},
+            "options": {
+                "kb-1": {
+                    "kb_id": "kb-1",
+                    "name": "Docs",
+                    "top_k_dense": 3,
+                    "top_k_sparse": 1,
+                    "top_m_final": 1,
+                }
+            },
+        }
+    ]
+    assert timings["vector_backend"] == "recording"
+    assert [hit.chunk_id for hit in hits] == ["chunk-sqlite"]
+
+
+def test_sqlite_json_vector_backend_ranks_without_hydrating_content():
+    from core.knowledge.vector_backend import SQLiteJsonVectorBackend
+
+    store = DenseHydrationStore()
+    backend = SQLiteJsonVectorBackend(store)
+    timings: dict[str, Any] = {}
+
+    rows = backend.search(
+        kb_ids=["kb-1"],
+        query_vectors={"kb-1": [0.0, 0.0, 1.0]},
+        options={"kb-1": {"top_k_dense": 1}},
+        timings=timings,
+    )
+
+    assert [row["chunk_id"] for row in rows] == ["chunk-sqlite"]
+    assert "content" not in rows[0]
+    assert "embedding" not in rows[0]
+    assert store.hydrated_chunk_ids == []
+    assert timings["vector_backend"] == "sqlite_json_scan"
+    assert timings["vector_rows"] == 2
+
+
+def test_hnsw_vector_backend_loads_sidecar_index_without_full_dense_scan(tmp_path, monkeypatch):
+    from core.knowledge.vector_backend import HnswVectorBackend
+
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "HNSW Dense Backend",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+            "top_k_dense": 1,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+            ("Music retrieval chunk", [0.0, 1.0, 0.0]),
+        ],
+    )
+    sqlite_chunk_id = store.list_chunks(doc["doc_id"])[1]["chunk_id"]
+    index_dir = tmp_path / "indexes"
+    query_vectors = {kb["kb_id"]: [0.0, 0.0, 1.0]}
+    options = {kb["kb_id"]: {"top_k_dense": 1}}
+
+    build_backend = HnswVectorBackend(
+        store,
+        index_dir=index_dir,
+        fallback=FailingVectorBackend(),
+        hnswlib_module=FakeHnswLib,
+        candidate_k=2,
+    )
+    build_rows = build_backend.search(
+        kb_ids=[kb["kb_id"]],
+        query_vectors=query_vectors,
+        options=options,
+    )
+    assert [row["chunk_id"] for row in build_rows] == [sqlite_chunk_id]
+
+    def fail_full_index_rows(kb_id):
+        raise AssertionError("saved HNSW index should avoid full index row scan")
+
+    def fail_exact_dense_search(*args, **kwargs):
+        raise AssertionError("saved HNSW index should avoid exact full dense search")
+
+    monkeypatch.setattr(store, "vector_index_rows", fail_full_index_rows)
+    monkeypatch.setattr(store, "dense_vector_search", fail_exact_dense_search)
+    timings: dict[str, Any] = {}
+
+    load_backend = HnswVectorBackend(
+        store,
+        index_dir=index_dir,
+        fallback=FailingVectorBackend(),
+        hnswlib_module=FakeHnswLib,
+        candidate_k=2,
+    )
+    loaded_rows = load_backend.search(
+        kb_ids=[kb["kb_id"]],
+        query_vectors=query_vectors,
+        options=options,
+        timings=timings,
+    )
+
+    assert [row["chunk_id"] for row in loaded_rows] == [sqlite_chunk_id]
+    assert timings["vector_backend"] == "hnsw"
+    assert timings["ann_index_hit"] is True
+    assert timings["ann_candidates"] == 2
+    assert timings["vector_rows"] == 3
+
+
+def test_build_default_vector_backend_uses_hnsw_when_enabled(tmp_path):
+    from core.knowledge.vector_backend import HnswVectorBackend, build_default_vector_backend
+
+    backend = build_default_vector_backend(
+        DenseHydrationStore(),
+        {
+            "knowledge": {
+                "ann": {
+                    "enabled": True,
+                    "index_dir": str(tmp_path / "indexes"),
+                }
+            }
+        },
+    )
+
+    assert isinstance(backend, HnswVectorBackend)
+
+
+@pytest.mark.asyncio
+async def test_knowledge_manager_deletes_hnsw_sidecar_files_when_kb_is_deleted(tmp_path):
+    from core.knowledge.vector_backend import HnswVectorBackend
+
+    index_dir = tmp_path / "indexes"
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config={**_config(), "knowledge": {"ann": {"enabled": True, "index_dir": str(index_dir)}}},
+        embedding_client=FakeEmbeddingClient(),
+    )
+    await manager.initialize()
+    kb = await manager.create_knowledge_base(
+        name="Deleted HNSW Sidecar",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+    )
+    assert manager.retriever is not None
+    backend = manager.retriever.vector_backend
+    assert isinstance(backend, HnswVectorBackend)
+    index_path, metadata_path = backend._index_files(kb["kb_id"])
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text("stale index", encoding="utf-8")
+    metadata_path.write_text("{}", encoding="utf-8")
+    backend._index_cache[kb["kb_id"]] = object()
+
+    deleted = await manager.delete_knowledge_base(kb["kb_id"])
+
+    assert deleted is True
+    assert not index_path.exists()
+    assert not metadata_path.exists()
+    assert kb["kb_id"] not in backend._index_cache
+
+
+@pytest.mark.asyncio
+async def test_dense_retrieval_marks_json_backend_after_blob_backend_fallback(caplog):
+    store = FailingDenseBackendStore()
+    retriever = HybridRetriever(store)
+    timings: dict[str, Any] = {}
+
+    hits = await retriever.retrieve(
+        query="sqlite",
+        kb_records=[
+            {
+                "kb_id": "kb-1",
+                "name": "Docs",
+                "top_k_dense": 1,
+                "top_k_sparse": 1,
+                "top_m_final": 1,
+            }
+        ],
+        query_vectors={"kb-1": [0.0, 0.0, 1.0]},
+        top_k=1,
+        timings=timings,
+    )
+
+    assert [hit.chunk_id for hit in hits] == ["chunk-sqlite"]
+    assert timings["vector_backend"] == "sqlite_json_scan"
+    assert "Knowledge dense vector backend failed" in caplog.text
+
+
+def test_store_writes_float32_embedding_blobs_for_new_chunks(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Blob Vectors",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [("SQLite retrieval chunk", [0.0, 0.0, 1.0])],
+    )
+
+    columns = {row["name"] for row in store._conn().execute("PRAGMA table_info(chunks)").fetchall()}
+    row = (
+        store._conn()
+        .execute("SELECT embedding_blob, embedding_dtype, embedding_revision FROM chunks")
+        .fetchone()
+    )
+
+    assert {"embedding_blob", "embedding_dtype", "embedding_revision"} <= columns
+    assert row["embedding_blob"] is not None
+    assert len(row["embedding_blob"]) == 12
+    assert row["embedding_dtype"] == "float32"
+    assert row["embedding_revision"] == 1
+
+
+def test_store_lazily_backfills_missing_embedding_blobs_for_legacy_rows(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Legacy Blob Backfill",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+    store._conn().execute("UPDATE chunks SET embedding_blob=NULL WHERE kb_id=?", (kb["kb_id"],))
+    store._conn().commit()
+
+    rows = store.dense_vector_search(
+        [kb["kb_id"]],
+        {kb["kb_id"]: [0.0, 0.0, 1.0]},
+        {kb["kb_id"]: 1},
+    )
+
+    backfilled_count = (
+        store._conn()
+        .execute(
+            "SELECT COUNT(*) AS count FROM chunks WHERE kb_id=? AND embedding_blob IS NOT NULL",
+            (kb["kb_id"],),
+        )
+        .fetchone()["count"]
+    )
+    assert [row["chunk_id"] for row in rows] == [store.list_chunks(doc["doc_id"])[1]["chunk_id"]]
+    assert "embedding" not in rows[0]
+    assert backfilled_count == 2
+
+
+@pytest.mark.asyncio
+async def test_dense_retrieval_uses_numpy_blob_backend_when_available(tmp_path, monkeypatch):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Numpy Dense Backend",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+            "top_k_dense": 1,
+            "top_k_sparse": 1,
+            "top_m_final": 1,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 42, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [
+            ("Python retrieval chunk", [1.0, 0.0, 0.0]),
+            ("SQLite retrieval chunk", [0.0, 0.0, 1.0]),
+        ],
+    )
+
+    def fail_json_candidate_scan(kb_ids):
+        raise AssertionError("dense retrieval should not use JSON vector candidate scan")
+
+    monkeypatch.setattr(store, "vector_chunk_candidates", fail_json_candidate_scan)
+    retriever = HybridRetriever(store)
+    timings: dict[str, Any] = {}
+
+    hits = await retriever.retrieve(
+        query="sqlite",
+        kb_records=[kb],
+        query_vectors={kb["kb_id"]: [0.0, 0.0, 1.0]},
+        top_k=1,
+        timings=timings,
+    )
+
+    assert [hit.content for hit in hits] == ["SQLite retrieval chunk"]
+    assert timings["vector_backend"] == "sqlite_blob_numpy"
+    assert timings["vector_matrix_load_ms"] >= 0
+    assert timings["vector_matmul_ms"] >= 0
+
+
+def test_store_invalidates_numpy_vector_matrix_cache_when_chunks_change(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Matrix Cache Invalidation",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    first_doc = store.create_document(kb["kb_id"], "first.txt", "txt", 21, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        first_doc["doc_id"],
+        [("Python retrieval chunk", [1.0, 0.0, 0.0])],
+    )
+    store.dense_vector_search(
+        [kb["kb_id"]],
+        {kb["kb_id"]: [1.0, 0.0, 0.0]},
+        {kb["kb_id"]: 1},
+    )
+
+    second_doc = store.create_document(kb["kb_id"], "second.txt", "txt", 21, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        second_doc["doc_id"],
+        [("SQLite retrieval chunk", [0.0, 0.0, 1.0])],
+    )
+    rows = store.dense_vector_search(
+        [kb["kb_id"]],
+        {kb["kb_id"]: [0.0, 0.0, 1.0]},
+        {kb["kb_id"]: 1},
+    )
+
+    assert rows[0]["chunk_id"] == store.list_chunks(second_doc["doc_id"])[0]["chunk_id"]
+
+
+def test_store_invalidates_numpy_vector_matrix_cache_when_kb_is_deleted(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Deleted Matrix Cache",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "vectors.txt", "txt", 21, "test")
+    store.add_chunks(
+        kb["kb_id"],
+        doc["doc_id"],
+        [("Python retrieval chunk", [1.0, 0.0, 0.0])],
+    )
+    store.dense_vector_search(
+        [kb["kb_id"]],
+        {kb["kb_id"]: [1.0, 0.0, 0.0]},
+        {kb["kb_id"]: 1},
+    )
+
+    assert kb["kb_id"] in store._vector_matrix_cache
+
+    store.delete_kb(kb["kb_id"])
+
+    assert kb["kb_id"] not in store._vector_matrix_cache
+
+
+def test_store_delete_kb_removes_default_hnsw_sidecar_files(tmp_path, monkeypatch):
+    from core.knowledge.vector_backend import hnsw_index_files
+
+    monkeypatch.chdir(tmp_path)
+    store = KnowledgeStore("knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Deleted Default Sidecar",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    index_path, metadata_path = hnsw_index_files(kb["kb_id"])
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text("stale index", encoding="utf-8")
+    metadata_path.write_text("{}", encoding="utf-8")
+
+    deleted = store.delete_kb(kb["kb_id"])
+
+    assert deleted is True
+    assert not index_path.exists()
+    assert not metadata_path.exists()
 
 
 def test_store_reuses_decoded_embeddings_between_vector_scans(tmp_path, monkeypatch):

@@ -14,10 +14,16 @@ dependencies = [
     "pyyaml>=6.0",
     "mutagen>=1.47.0",
     "music21>=10.1.0",
+    "numpy>=2.0",
     "rdkit>=2026.3.2",
     "neo4j>=6,<7",
     "pillow>=10.0",
     "pypdf>=5,<7",
+]
+
+[project.optional-dependencies]
+ann = [
+    "hnswlib>=0.8.0",
 ]
 
 [tool.uv]

@@ -66,7 +66,21 @@ knowledge:
   active_bases: []
   top_k: 5
   embedding_cache_max_size: 20000
+  # Dense vector backend. `exact` scans all vectors; `hnsw` uses a persisted ANN
+  # sidecar index and rescoring candidates. hnsw requires the hnswlib package.
+  vector_backend: exact
+  ann:
+    enabled: false
+    index_dir: data/knowledge/vector_indexes
+    candidate_k: 300
+    ef_search: 128
+    m: 32
+    ef_construction: 200
   graph:
+    # Allow GRAG to raise retrieval depth/candidate limits for enumeration/count
+    # queries. Set false to use the static retrieval_depth and
+    # expansion_candidate_limit values exactly.
+    semantic_parameter_tuning_enabled: true
     # Multi-hop expansion cache seed preload limit. 0 disables; range: 0-2048.
     multi_hop_expansion_cache_preload_seed_limit: 64
     # Per-seed path limit; larger values make more multi-hop seeds cache-complete.

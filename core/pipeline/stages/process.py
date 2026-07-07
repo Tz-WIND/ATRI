@@ -877,7 +877,10 @@ class ProcessStage(Stage):
                 "GRAG retrieval timings: total_ms=%.1f vector_total_ms=%.1f "
                 "vector_embed_ms=%.1f vector_store_ms=%.1f vector_dense_ms=%.1f "
                 "vector_hydrate_ms=%.1f vector_sparse_ms=%.1f vector_fuse_ms=%.1f "
-                "vector_rerank_ms=%.1f vector_limit_ms=%.1f graph_total_ms=%.1f "
+                "vector_rerank_ms=%.1f vector_limit_ms=%.1f vector_backend=%s "
+                "ann_index_hit=%s ann_candidates=%d ann_query_ms=%.1f "
+                "ann_rescore_ms=%.1f ann_index_load_ms=%.1f ann_index_build_ms=%.1f "
+                "graph_total_ms=%.1f "
                 "graph_wall_ms=%.1f "
                 "graph_single_hop_ms=%.1f graph_multi_hop_ms=%.1f "
                 "graph_scan_fallback_ms=%.1f graph_format_ms=%.1f vector_hits=%d "
@@ -897,6 +900,13 @@ class ProcessStage(Stage):
                 _timing_float(vector_timings, "vector_fuse_ms"),
                 _timing_float(vector_timings, "vector_rerank_ms"),
                 _timing_float(vector_timings, "vector_limit_ms"),
+                _timing_str(vector_timings, "vector_backend", "unknown"),
+                _timing_bool(vector_timings, "ann_index_hit"),
+                _timing_int(vector_timings, "ann_candidates"),
+                _timing_float(vector_timings, "ann_query_ms"),
+                _timing_float(vector_timings, "ann_rescore_ms"),
+                _timing_float(vector_timings, "ann_index_load_ms"),
+                _timing_float(vector_timings, "ann_index_build_ms"),
                 _timing_float(graph_combined_timings, "graph_total_ms", graph_elapsed_ms),
                 graph_elapsed_ms,
                 _timing_float(graph_combined_timings, "graph_single_hop_ms"),
@@ -1974,6 +1984,13 @@ def _timing_int(timings: dict[str, Any], key: str, default: int = 0) -> int:
         return int(default)
 
 
+def _timing_str(timings: dict[str, Any], key: str, default: str = "") -> str:
+    value = timings.get(key, default)
+    if value is None:
+        return default
+    return str(value)
+
+
 def _timing_bool(timings: dict[str, Any], key: str, default: bool = False) -> bool:
     value = timings.get(key, default)
     if isinstance(value, str):
@@ -1990,7 +2007,10 @@ def _planned_graph_retrieval_options(query: str, graph_cfg: dict) -> dict[str, A
         graph_cfg.get("expansion_candidate_limit"),
         40,
     )
-    if _is_enumeration_graph_query(query):
+    if _bool_with_default(
+        graph_cfg.get("semantic_parameter_tuning_enabled"),
+        True,
+    ) and _is_enumeration_graph_query(query):
         retrieval_depth = max(retrieval_depth, _GRAPH_ENUMERATION_RETRIEVAL_DEPTH_FLOOR)
         expansion_candidate_limit = max(
             expansion_candidate_limit,
@@ -2002,6 +2022,21 @@ def _planned_graph_retrieval_options(query: str, graph_cfg: dict) -> dict[str, A
         "ranking_policy": str(graph_cfg.get("ranking_policy") or "hybrid"),
         "expansion_candidate_limit": expansion_candidate_limit,
     }
+
+
+def _bool_with_default(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str | bytes | bytearray):
+        text = value.decode() if isinstance(value, bytes | bytearray) else value
+        normalized = text.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
 
 
 def _is_enumeration_graph_query(query: str) -> bool:

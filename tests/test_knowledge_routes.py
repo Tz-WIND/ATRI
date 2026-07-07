@@ -427,6 +427,15 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
         "active_bases": ["kb-1"],
         "top_k": 3,
         "embedding_cache_max_size": 20000,
+        "vector_backend": "exact",
+        "ann": {
+            "enabled": False,
+            "index_dir": "data/knowledge/vector_indexes",
+            "candidate_k": 300,
+            "ef_search": 128,
+            "m": 32,
+            "ef_construction": 200,
+        },
         "graph": {
             "enabled": False,
             "uri": "neo4j://localhost:7687",
@@ -438,6 +447,7 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
             "extraction_enabled": True,
             "extraction_sources": ["documents", "chat"],
             "retrieval_enabled": True,
+            "semantic_parameter_tuning_enabled": True,
             "retrieval_depth": 3,
             "max_facts": 8,
             "expansion_candidate_limit": 40,
