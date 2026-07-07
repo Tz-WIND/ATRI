@@ -11,11 +11,17 @@ import {
   hasAssistantResponse,
   shouldAppendHttpAssistantResponse,
 } from './chatHttpResponse.js'
+import { createChatRetryState } from './chatRetryState.js'
 import { createStreamingDeltaBuffer } from './streamingDeltaBuffer.js'
 import { useApi } from './useApi.js'
 import { useSession } from './useSession.js'
 
 let instance = null
+
+// Sentinel id for the most recent retryable error. Keeping a stable id lets the
+// next retryable error replace the previous one instead of stacking, and makes
+// it cheap to clear on the next successful send.
+const LAST_ERROR_MESSAGE_ID = '__atri_last_error__'
 
 export function useChat() {
   if (instance) return instance
@@ -27,6 +33,11 @@ export function useChat() {
   const sending = ref(false)
   const tokenInfo = ref(null)
   const todoSnapshot = ref(emptyTodoSnapshot())
+
+  // Tracks ids of error messages currently in the list so we can wipe them on
+  // the next send (errors shouldn't linger once the user retries or moves on).
+  let errorIds = new Set()
+  let disposed = false
 
   // Thinking state
   const thinkingText = ref('')
@@ -42,6 +53,7 @@ export function useChat() {
 
   // WebSocket event handler — called from ChatPage
   function handleWsEvent(msg) {
+    if (disposed) return
     if (msg.type === 'thinking') {
       startThinkingBlock()
     }
@@ -121,6 +133,7 @@ export function useChat() {
   }
 
   function clearThinking() {
+    if (disposed) return
     finishThinkingBlock()
     thinkingText.value = ''
     thinkingStart.value = 0
@@ -128,6 +141,7 @@ export function useChat() {
   }
 
   function clearToolCards() {
+    if (disposed) return
     toolCards.value = {}
   }
 
@@ -136,14 +150,17 @@ export function useChat() {
   }
 
   function addMessage(role, content, md = false, extra = {}) {
-    messages.value.push({
+    if (disposed) return null
+    const message = {
       id: makeId(),
       role,
       content,
       md,
       time: new Date(),
       ...extra,
-    })
+    }
+    messages.value.push(message)
+    return message
   }
 
   function hasVisibleText(content) {
@@ -152,7 +169,50 @@ export function useChat() {
     return String(content).trim().length > 0
   }
 
+  function dismissErrorMessages() {
+    if (disposed) return
+    if (!errorIds.size) return
+    const doomed = errorIds
+    errorIds = new Set()
+    messages.value = messages.value.filter((message) => !doomed.has(message.id))
+  }
+
+  // Adds (or replaces) a single error message in the transcript. replaceLast
+  // collapses repeated failures into one entry instead of stacking them.
+  function addErrorMessage({ title, detail = '', retriable = false, kind = 'error' }) {
+    if (disposed) return
+    const indexForReplace = messages.value.findIndex((m) => m.id === LAST_ERROR_MESSAGE_ID)
+    const payload = {
+      id: LAST_ERROR_MESSAGE_ID,
+      role: 'error',
+      errorKind: kind,
+      title: typeof title === 'string' && title.trim() ? title : 'Something went wrong',
+      detail: typeof detail === 'string' ? detail : '',
+      retriable: Boolean(retriable),
+      time: new Date(),
+    }
+    errorIds.add(payload.id)
+    if (indexForReplace >= 0) {
+      messages.value.splice(indexForReplace, 1, payload)
+    } else {
+      messages.value.push(payload)
+    }
+  }
+
+  const retryState = createChatRetryState({
+    getMessages: () => messages.value,
+    isSending: () => sending.value,
+    clearErrors: dismissErrorMessages,
+    addUserMessage: ({ messageText, imagePayload, filePayload }) => addMessage('user', messageText, false, {
+      attachments: [
+        ...normalizeImageAttachments(imagePayload),
+        ...normalizeFileAttachments(filePayload),
+      ],
+    }),
+  })
+
   function addOrPatchAssistantMessage(content, attachments = []) {
+    if (disposed) return
     const text = String(content || '')
     const lastIndexFromEnd = [...messages.value].reverse().findIndex((m) =>
       m.role === 'assistant' && !m.streaming && String(m.content || '') === text
@@ -170,6 +230,7 @@ export function useChat() {
   }
 
   async function addAssistantHttpResponse(result) {
+    if (disposed) return false
     const response = String(result?.response || '')
     if (Array.isArray(result?.chain)) {
       const parsed = normalizeAssistantChain(result.chain, response, makeId)
@@ -200,6 +261,7 @@ export function useChat() {
   }
 
   function startThinkingBlock() {
+    if (disposed) return
     finishThinkingBlock()
     const now = Date.now()
     const block = {
@@ -220,6 +282,7 @@ export function useChat() {
   }
 
   function patchMessage(id, patch) {
+    if (disposed) return null
     const index = findMessageIndex(id)
     if (index < 0) return null
     const next = { ...messages.value[index], ...patch }
@@ -228,6 +291,7 @@ export function useChat() {
   }
 
   function removeMessage(id) {
+    if (disposed) return
     const index = findMessageIndex(id)
     if (index >= 0) {
       messages.value.splice(index, 1)
@@ -235,6 +299,7 @@ export function useChat() {
   }
 
   function finishThinkingBlock() {
+    if (disposed) return
     const current = thinkingBlock.value
     if (!current || current.done) return
     const endTime = Date.now()
@@ -243,6 +308,7 @@ export function useChat() {
   }
 
   function ensureAssistantStream() {
+    if (disposed) return null
     if (streamingAssistantId && streamingMessage) {
       return streamingMessage
     }
@@ -262,12 +328,14 @@ export function useChat() {
   }
 
   function appendAssistantDelta(delta) {
+    if (disposed) return
     if (!delta) return
     ensureAssistantStream()
     assistantDeltaBuffer.append(delta)
   }
 
   function applyAssistantDelta(delta) {
+    if (disposed) return
     if (!delta || !streamingAssistantId || !streamingMessage) return
     const msg = streamingMessage
     streamingMessage = patchMessage(msg.id, {
@@ -277,6 +345,7 @@ export function useChat() {
   }
 
   function finishAssistantStream(finalContent = '') {
+    if (disposed) return
     assistantDeltaBuffer.flush()
     if (!streamingAssistantId || !streamingMessage) {
       const text = typeof finalContent === 'string' ? finalContent : String(finalContent || '')
@@ -311,6 +380,7 @@ export function useChat() {
   }
 
   function patchToolMessage(index, patch) {
+    if (disposed) return
     const current = messages.value[index]
     if (!current) return
     messages.value.splice(index, 1, {
@@ -323,6 +393,7 @@ export function useChat() {
   }
 
   function addToolMessage(toolCallId, toolData) {
+    if (disposed) return
     const existing = findToolMessageIndex(toolCallId)
     if (existing >= 0) {
       patchToolMessage(existing, toolData)
@@ -339,6 +410,7 @@ export function useChat() {
   }
 
   function updateToolMessage(toolCallId, patch) {
+    if (disposed) return
     const existing = findToolMessageIndex(toolCallId)
     if (existing < 0) {
       addToolMessage(toolCallId, patch)
@@ -349,11 +421,14 @@ export function useChat() {
   }
 
   function resetMessages() {
+    if (disposed) return
     assistantDeltaBuffer.clear()
     messages.value = []
     todoSnapshot.value = emptyTodoSnapshot()
     streamingAssistantId = null
     streamingMessage = null
+    errorIds = new Set()
+    retryState.reset()
   }
 
   function parseToolArgs(raw) {
@@ -367,6 +442,7 @@ export function useChat() {
   }
 
   function loadTranscript(transcript) {
+    if (disposed) return
     resetMessages()
     const callsById = new Map()
     const rawMessages = Array.isArray(transcript) ? transcript : transcript?.messages || []
@@ -731,6 +807,7 @@ export function useChat() {
   }
 
   async function cancelMessage() {
+    if (disposed) return
     if (!sending.value) return
     try {
       await api.cancelChat(sessionId.value)
@@ -739,11 +816,8 @@ export function useChat() {
     }
   }
 
-  async function sendMessage(text, images = [], files = []) {
-    const messageText = String(text || '')
-    const imagePayload = normalizeImagePayload(images)
-    const filePayload = normalizeFilePayload(files)
-    if ((!messageText.trim() && !imagePayload.length && !filePayload.length) || sending.value) return
+  async function performSend({ messageText, imagePayload, filePayload }) {
+    if (disposed) return
     sending.value = true
     clearThinking()
     clearToolCards()
@@ -751,44 +825,90 @@ export function useChat() {
     streamingAssistantId = null
     streamingMessage = null
 
-    addMessage('user', messageText, false, {
-      attachments: [
-        ...normalizeImageAttachments(imagePayload),
-        ...normalizeFileAttachments(filePayload),
-      ],
-    })
-
     try {
       const result = await api.sendMessage(messageText, sessionId.value, imagePayload, filePayload)
+      if (disposed) return
 
       if (result.session_id) {
         const newId = normalizeSessionId(result.session_id)
         if (newId !== sessionId.value) {
           await switchSession(newId)
+          if (disposed) return
         }
       }
 
       if (result.error) {
-        addMessage('assistant', `Error: ${result.error}`, false)
+        addErrorMessage({
+          title: 'Request failed',
+          detail: String(result.error || ''),
+          retriable: true,
+          kind: 'request',
+        })
       } else {
         await addAssistantHttpResponse(result)
-      }
-
-      if (!result.error) {
+        if (disposed) return
         if (result.token_usage) {
           tokenInfo.value = result.token_usage
         }
       }
     } catch (e) {
-      addMessage('assistant', `Connection error: ${e.message}`, false)
+      // Network drop / aborted request / server unreachable — offer retry.
+      addErrorMessage({
+        title: 'Connection error',
+        detail: e?.message ? String(e.message) : 'Could not reach the server.',
+        retriable: true,
+        kind: 'connection',
+      })
+    } finally {
+      sending.value = false
+      clearThinking()
+      clearToolCards()
     }
-
-    sending.value = false
-    clearThinking()
-    clearToolCards()
   }
 
-  instance = {
+  async function sendMessage(text, images = [], files = []) {
+    if (disposed) return
+    const messageText = String(text || '')
+    const imagePayload = normalizeImagePayload(images)
+    const filePayload = normalizeFilePayload(files)
+    if ((!messageText.trim() && !imagePayload.length && !filePayload.length) || sending.value) return
+
+    const payload = { messageText, imagePayload, filePayload }
+    retryState.beginFreshSend(payload)
+    await performSend(payload)
+  }
+
+  async function retryLastMessage() {
+    if (disposed) return
+    const payload = retryState.beginRetry()
+    if (!payload) return
+    await performSend(payload)
+  }
+
+  function canRetry() {
+    return !disposed && retryState.canRetry()
+  }
+
+  function dispose() {
+    if (disposed) return
+    disposed = true
+    assistantDeltaBuffer.cancel()
+    messages.value = []
+    sending.value = false
+    tokenInfo.value = null
+    todoSnapshot.value = emptyTodoSnapshot()
+    thinkingText.value = ''
+    thinkingStart.value = 0
+    thinkingBlock.value = null
+    toolCards.value = {}
+    errorIds = new Set()
+    retryState.reset()
+    streamingAssistantId = null
+    streamingMessage = null
+    if (instance === chatInstance) instance = null
+  }
+
+  const chatInstance = {
     messages,
     sending,
     tokenInfo,
@@ -799,18 +919,31 @@ export function useChat() {
     clearThinking,
     clearToolCards,
     addMessage,
+    addErrorMessage,
+    dismissErrorMessages,
     addAssistantHttpResponse,
     addToolMessage,
     updateToolMessage,
     resetMessages,
     loadTranscript,
     sendMessage,
+    retryLastMessage,
+    canRetry,
     cancelMessage,
     flushAssistantDeltas: assistantDeltaBuffer.flush,
+    dispose,
   }
+  instance = chatInstance
   return instance
 }
 
 export function clearChatInstance() {
+  instance?.dispose()
   instance = null
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    clearChatInstance()
+  })
 }

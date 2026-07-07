@@ -147,12 +147,15 @@ try {
   resetTransportState()
 
   const reconnecting = useWebSocket(ref('webchat:friend:reconnect'))
+  assert.equal(reconnecting.openedOnce.value, false)
   sockets[0].onopen()
   assert.equal(reconnecting.connected.value, true)
+  assert.equal(reconnecting.openedOnce.value, true)
 
   sockets[0].onclose({ code: 1006, reason: 'abnormal closure' })
 
   assert.equal(reconnecting.connected.value, false)
+  assert.equal(reconnecting.openedOnce.value, true)
   assert.equal(pendingTimers().length, 1)
   assert.equal(pendingTimers()[0].delay, 1000)
 

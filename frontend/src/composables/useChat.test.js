@@ -66,6 +66,63 @@ try {
 
   clearChatInstance()
 
+  const disposeFrames = []
+  const disposeCancelledFrames = []
+  globalThis.requestAnimationFrame = (callback) => {
+    const id = disposeFrames.length + 1
+    disposeFrames.push({ id, callback })
+    return id
+  }
+  globalThis.cancelAnimationFrame = (id) => {
+    disposeCancelledFrames.push(id)
+  }
+
+  const disposable = useChat()
+  disposable.handleWsEvent({ type: 'response_start' })
+  disposable.handleWsEvent({ type: 'response_delta', content: 'stale' })
+
+  assert.equal(disposeFrames.length, 1)
+  assert.equal(disposable.messages.value[0].content, '')
+
+  clearChatInstance()
+  disposeFrames[0].callback()
+
+  assert.deepEqual(disposeCancelledFrames, [1])
+  assert.deepEqual(disposable.messages.value, [])
+  assert.equal(disposable.canRetry(), false)
+
+  globalThis.requestAnimationFrame = originalRequestAnimationFrame
+  globalThis.cancelAnimationFrame = originalCancelAnimationFrame
+
+  clearChatInstance()
+
+  let resolveDisposedSend
+  globalThis.fetch = async () => new Promise((resolve) => {
+    resolveDisposedSend = resolve
+  })
+
+  const pendingSend = useChat()
+  const pendingSendPromise = pendingSend.sendMessage('will dispose')
+
+  assert.equal(pendingSend.messages.value.filter((message) => message.role === 'user').length, 1)
+
+  clearChatInstance()
+  resolveDisposedSend({
+    ok: true,
+    json: async () => ({
+      response: 'late response',
+      token_usage: { total_tokens: 9 },
+    }),
+  })
+  await pendingSendPromise
+
+  assert.deepEqual(pendingSend.messages.value, [])
+  assert.equal(pendingSend.tokenInfo.value, null)
+
+  globalThis.fetch = originalFetch
+
+  clearChatInstance()
+
   const streaming = useChat()
   streaming.handleWsEvent({ type: 'response_start' })
   streaming.handleWsEvent({ type: 'response_delta', content: 'Hel' })
@@ -388,6 +445,53 @@ try {
 
   rollover.handleWsEvent({ type: 'response_done' })
   await sendPromise
+
+  clearChatInstance()
+
+  const retryRequests = []
+  const retryResponses = [
+    { error: 'upload failed' },
+    { response: 'retried ok' },
+  ]
+  globalThis.fetch = async (_url, options = {}) => {
+    retryRequests.push(JSON.parse(options.body || '{}'))
+    return {
+      ok: true,
+      json: async () => retryResponses.shift() || { response: 'unexpected extra retry' },
+    }
+  }
+
+  const attachmentRetry = useChat()
+  const retryImage = {
+    dataUrl: 'data:image/png;base64,aW1hZ2U=',
+    name: 'photo.png',
+    type: 'image/png',
+    size: 5,
+  }
+  const retryFile = {
+    dataUrl: 'data:text/plain;base64,ZmlsZQ==',
+    name: 'notes.txt',
+    type: 'text/plain',
+    size: 4,
+  }
+
+  await attachmentRetry.sendMessage('', [retryImage], [retryFile])
+
+  assert.equal(attachmentRetry.messages.value.filter((message) => message.role === 'user').length, 1)
+  assert.equal(attachmentRetry.messages.value.at(-1).role, 'error')
+
+  await attachmentRetry.retryLastMessage()
+
+  assert.equal(attachmentRetry.messages.value.filter((message) => message.role === 'user').length, 1)
+  assert.equal(attachmentRetry.messages.value.at(-1).role, 'assistant')
+  assert.deepEqual(retryRequests.map((request) => request.images), [
+    [{ dataUrl: retryImage.dataUrl, name: retryImage.name, type: retryImage.type, size: retryImage.size }],
+    [{ dataUrl: retryImage.dataUrl, name: retryImage.name, type: retryImage.type, size: retryImage.size }],
+  ])
+  assert.deepEqual(retryRequests.map((request) => request.files), [
+    [{ dataUrl: retryFile.dataUrl, name: retryFile.name, type: retryFile.type, size: retryFile.size }],
+    [{ dataUrl: retryFile.dataUrl, name: retryFile.name, type: retryFile.type, size: retryFile.size }],
+  ])
 } finally {
   clearChatInstance()
   globalThis.localStorage = originalLocalStorage

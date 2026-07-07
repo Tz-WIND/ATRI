@@ -41,7 +41,7 @@ export function useWebSocket(sessionId, options = {}) {
   let ws = null
   let reconnectTimer = null
   let reconnectAttempts = 0
-  let openedOnce = false
+  const openedOnce = ref(false)
   let active = true
   const lastRuntimeSeqBySession = {}
 
@@ -142,8 +142,8 @@ export function useWebSocket(sessionId, options = {}) {
       lastClose.value = null
       reconnectAttempts = 0
       reconnectDelayMs.value = 0
-      if (openedOnce) requestRuntimeReplay()
-      openedOnce = true
+      if (openedOnce.value) requestRuntimeReplay()
+      openedOnce.value = true
     }
 
     socket.onmessage = (e) => {
@@ -194,6 +194,18 @@ export function useWebSocket(sessionId, options = {}) {
     connect()
   }
 
+  // Manual reconnect — used by the connection banner's "Reconnect" button.
+  // Resets the backoff so the user gets an immediate reconnect attempt instead
+  // of waiting out the current exponential delay.
+  function reconnectNow() {
+    if (!active) return
+    reconnectAttempts = 0
+    reconnectDelayMs.value = 0
+    clearReconnectTimer()
+    closeCurrentSocket()
+    connect()
+  }
+
   function handleOnline() {
     if (!active || connected.value || ws || reconnectTimer) return
     reconnectAttempts = 0
@@ -235,10 +247,12 @@ export function useWebSocket(sessionId, options = {}) {
 
   const instance = {
     connected,
+    openedOnce,
     events,
     lastError,
     lastClose,
     reconnectDelayMs,
+    reconnectNow,
     cleanup,
   }
   instances.set(cacheKey, instance)

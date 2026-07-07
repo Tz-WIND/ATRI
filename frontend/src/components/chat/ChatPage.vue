@@ -38,6 +38,12 @@
         </button>
       </template>
     </PageHeader>
+    <ConnectionBanner
+      :opened-once="wsOpenedOnce"
+      :connected="wsConnected"
+      :reconnect-delay-ms="wsReconnectDelay"
+      @reconnect="handleReconnect"
+    />
     <div
       ref="chatBodyRef"
       :class="['chat-body', { 'editor-expanded': editorExpanded }]"
@@ -86,6 +92,8 @@
             <ChatMessage
               v-else
               :message="item.message"
+              :retry-disabled="sending"
+              @retry="handleRetryMessage"
             />
           </template>
           <div
@@ -178,11 +186,12 @@ import ThinkingBlock from './ThinkingBlock.vue'
 import ToolCard from './ToolCard.vue'
 import AgentTodoPanel from './AgentTodoPanel.vue'
 import ChatInput from './ChatInput.vue'
+import ConnectionBanner from './ConnectionBanner.vue'
 import SessionPanel from './SessionPanel.vue'
 import FilePanel from './FilePanel.vue'
 import EditorTabs from './EditorTabs.vue'
 import { useApi } from '@/composables/useApi.js'
-import { buildChatDisplayItems } from '@/composables/chatDisplayItems.js'
+import { useChatDisplayItems } from '@/composables/chatDisplayItems.js'
 import { useChat } from '@/composables/useChat.js'
 import { useWebSocket } from '@/composables/useWebSocket.js'
 import { useSession } from '@/composables/useSession.js'
@@ -192,12 +201,13 @@ import { createChatEventProcessor } from './chatEventProcessor.js'
 const {
   messages, sending, thinkingBlock, toolCards,
   handleWsEvent, sendMessage, cancelMessage, clearThinking, clearToolCards,
+  retryLastMessage, canRetry,
   loadTranscript, resetMessages,
 } = useChat()
 
 const { currentId, loadSessionMessages, loadList } = useSession()
 const { activeModel, loadProviders, loadStatus } = useProviders()
-const { connected: wsConnected, events } = useWebSocket(currentId)
+const { connected: wsConnected, openedOnce: wsOpenedOnce, events, reconnectDelayMs: wsReconnectDelay, reconnectNow } = useWebSocket(currentId)
 const api = useApi()
 
 const chatArea = ref(null)
@@ -220,7 +230,37 @@ const EDITOR_MAX_WIDTH = 1200
 const PANEL_MIN_WIDTH = 200
 const PANEL_MAX_WIDTH = 600
 const HANDLE_SPACE = 4
-const displayItems = computed(() => buildChatDisplayItems(messages.value))
+const displayItems = useChatDisplayItems(messages)
+const messageScrollSignature = computed(() => {
+  const list = messages.value
+  const last = list[list.length - 1]
+  if (!last) return '0'
+  const contentLength = typeof last.content === 'string'
+    ? last.content.length
+    : String(last.content || '').length
+  const attachmentCount = Array.isArray(last.attachments) ? last.attachments.length : 0
+  const todoCount = Array.isArray(last.todoSnapshot?.items) ? last.todoSnapshot.items.length : 0
+  const toolStatus = last.toolData?.status || ''
+  const toolResultLength = last.toolData?.result ? String(last.toolData.result).length : 0
+  const errorTitleLength = last.title ? String(last.title).length : 0
+  const errorDetailLength = last.detail ? String(last.detail).length : 0
+  return [
+    list.length,
+    last.id,
+    last.role,
+    contentLength,
+    attachmentCount,
+    todoCount,
+    toolStatus,
+    toolResultLength,
+    last.streaming ? 1 : 0,
+    last.done ? 1 : 0,
+    last.errorKind || '',
+    errorTitleLength,
+    errorDetailLength,
+    last.retriable ? 1 : 0,
+  ].join(':')
+})
 
 const editorPaneStyle = computed(() => (
   editorExpanded.value
@@ -346,6 +386,18 @@ function handleCancel() {
   cancelMessage()
 }
 
+// Manual reconnect from the connection banner — bypasses backoff for an
+// immediate retry.
+function handleReconnect() {
+  reconnectNow()
+}
+
+// Retry the last failed send from an error card's Retry button.
+async function handleRetryMessage() {
+  if (!canRetry()) return
+  await retryLastMessage()
+}
+
 function normalizeMode(mode) {
   return mode === 'plan' ? 'plan' : 'agent'
 }
@@ -399,7 +451,7 @@ watch(events, () => {
   eventProcessor.schedule()
 }, { deep: false })
 
-watch(messages, () => scrollToBottom(), { deep: true })
+watch(messageScrollSignature, () => scrollToBottom())
 
 watch(currentId, async (newId, oldId) => {
   if (newId === oldId) return

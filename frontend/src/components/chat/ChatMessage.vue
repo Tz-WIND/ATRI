@@ -1,10 +1,10 @@
 <template>
   <div :class="['message', message.role]">
     <div
-      v-if="message.role !== 'user'"
+      v-if="message.role === 'assistant'"
       class="msg-head"
     >
-      <span class="msg-role">{{ message.role === 'user' ? 'You' : 'ATRI' }}</span>
+      <span class="msg-role">{{ roleLabel }}</span>
       <span class="msg-time">{{ timeStr }}</span>
       <button
         v-if="assistantCopyAvailable"
@@ -34,7 +34,73 @@
       </button>
     </div>
     <div class="msg-body">
-      <template v-if="message.role === 'user'">
+      <template v-if="message.role === 'error'">
+        <div
+          :class="['error-card', `error-${message.errorKind || 'error'}`]"
+          role="alert"
+        >
+          <div class="error-card-head">
+            <svg
+              class="error-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <circle
+                cx="12"
+                cy="12"
+                r="10"
+              />
+              <line
+                x1="12"
+                y1="8"
+                x2="12"
+                y2="12"
+              />
+              <circle
+                cx="12"
+                cy="16"
+                r="0.6"
+                fill="currentColor"
+                stroke="none"
+              />
+            </svg>
+            <span class="error-title">{{ message.title || 'Something went wrong' }}</span>
+          </div>
+          <p
+            v-if="message.detail"
+            class="error-detail"
+          >
+            {{ message.detail }}
+          </p>
+          <div
+            v-if="message.retriable"
+            class="error-actions"
+          >
+            <button
+              type="button"
+              class="error-retry-button"
+              :disabled="retryDisabled"
+              @click="emitRetry"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                aria-hidden="true"
+              >
+                <polyline points="23 4 23 10 17 10" />
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+              </svg>
+              <span>{{ retryDisabled ? 'Retrying…' : 'Retry' }}</span>
+            </button>
+          </div>
+        </div>
+      </template>
+      <template v-else-if="message.role === 'user'">
         <div class="user-bubble">
           <div class="user-content">
             <pre
@@ -99,7 +165,7 @@
         /></pre>
       </template>
       <div
-        v-if="message.role !== 'user' && assistantAttachments.length"
+        v-if="message.role !== 'user' && message.role !== 'error' && assistantAttachments.length"
         class="assistant-attachments"
       >
         <figure
@@ -118,22 +184,35 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
-import { marked } from 'marked'
-import hljs from 'highlight.js'
-import { renderMarkdownWithMath } from './mathRenderer.js'
+import { computed, onUnmounted, ref } from 'vue'
 import {
   escapeHtml,
-  escapeHtmlAttribute,
   getAssistantMessageCopyText,
-  highlightCode,
-  normalizeLanguage,
+  renderChatMarkdown,
   shouldRenderStreamingPlainText,
 } from './chatMarkdown.js'
 
 const props = defineProps({
   message: { type: Object, required: true },
+  retryDisabled: { type: Boolean, default: false },
 })
+
+const emit = defineEmits(['retry'])
+
+const retrying = ref(false)
+
+const roleLabel = computed(() => {
+  switch (props.message.role) {
+    case 'user': return 'You'
+    case 'error': return 'System'
+    default: return 'ATRI'
+  }
+})
+
+// Disable the retry button while a retry is in flight or while the global send
+// guard is holding. We let the parent disable via prop when needed, but the
+// local retrying flag also tracks the click -> emit round-trip.
+const retryDisabled = computed(() => retrying.value || props.retryDisabled)
 
 const userAttachments = computed(() => (
   Array.isArray(props.message.attachments)
@@ -158,53 +237,12 @@ const timeStr = computed(() => {
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 })
 
-// Configure marked once
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-})
-
-const renderer = new marked.Renderer()
-renderer.html = function (tokenOrHtml) {
-  const raw = typeof tokenOrHtml === 'object'
-    ? tokenOrHtml.raw || tokenOrHtml.text || ''
-    : String(tokenOrHtml ?? '')
-  return escapeHtml(raw)
-}
-
-renderer.link = function (tokenOrHref, title, text) {
-  const href = typeof tokenOrHref === 'object' ? tokenOrHref.href || '' : String(tokenOrHref ?? '')
-  const label = typeof tokenOrHref === 'object'
-    ? this.parser.parseInline(tokenOrHref.tokens || [])
-    : String(text ?? '')
-  if (!isSafeUrl(href)) return label
-  const rawTitle = typeof tokenOrHref === 'object' ? tokenOrHref.title : title
-  const titleAttr = rawTitle ? ` title="${escapeHtmlAttribute(rawTitle)}"` : ''
-  return `<a href="${escapeHtmlAttribute(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${label}</a>`
-}
-
-renderer.image = function (tokenOrHref, title, text) {
-  const href = typeof tokenOrHref === 'object' ? tokenOrHref.href || '' : String(tokenOrHref ?? '')
-  if (!isSafeUrl(href)) return ''
-  const rawTitle = typeof tokenOrHref === 'object' ? tokenOrHref.title : title
-  const alt = typeof tokenOrHref === 'object' ? tokenOrHref.text || '' : String(text ?? '')
-  const titleAttr = rawTitle ? ` title="${escapeHtmlAttribute(rawTitle)}"` : ''
-  return `<img src="${escapeHtmlAttribute(href)}" alt="${escapeHtmlAttribute(alt)}"${titleAttr}>`
-}
-
-renderer.code = function (tokenOrCode, lang) {
-  const code = typeof tokenOrCode === 'object' ? tokenOrCode.text || '' : String(tokenOrCode ?? '')
-  const language = normalizeLanguage((typeof tokenOrCode === 'object' ? tokenOrCode.lang : lang) || 'text')
-  const classLanguage = language.replace(/[^a-z0-9_-]/g, '-')
-  const highlighted = highlightCode(code, language, hljs)
-  return `<div class="code-header"><span>${escapeHtml(language)}</span><button class="btn-copy" type="button">Copy</button></div><pre><code class="hljs language-${escapeHtmlAttribute(classLanguage)}">${highlighted}</code></pre>`
-}
-
-marked.use({ renderer })
-
 const streamingPlainText = computed(() => shouldRenderStreamingPlainText(props.message))
 
 const assistantCopyState = ref('idle')
+const markdownCopyResetTimers = new Map()
+let assistantCopyResetTimer = null
+let retryResetTimer = null
 const assistantCopyText = computed(() => getAssistantMessageCopyText(props.message))
 const assistantCopyAvailable = computed(() => assistantCopyText.value.length > 0)
 const assistantCopyLabel = computed(() => {
@@ -223,7 +261,7 @@ const assistantCopyStatusText = computed(() => (
 const renderedContent = computed(() => {
   if (streamingPlainText.value) return ''
   try {
-    return renderMarkdownWithMath(props.message.content || '', (markdown) => marked.parse(markdown))
+    return renderChatMarkdown(props.message.content || '')
   } catch {
     return `<pre class="msg-text">${escapeHtml(props.message.content || '')}</pre>`
   }
@@ -233,20 +271,6 @@ const renderedContentWithCursor = computed(() => {
   if (!props.message.streaming) return renderedContent.value
   return appendStreamingCursor(renderedContent.value)
 })
-
-function isSafeUrl(url) {
-  const value = String(url || '').trim()
-  if (!value) return false
-  if (value.startsWith('#') || value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) {
-    return true
-  }
-  try {
-    const parsed = new URL(value, window.location.origin)
-    return ['http:', 'https:', 'mailto:'].includes(parsed.protocol)
-  } catch {
-    return false
-  }
-}
 
 function safeImageSrc(url) {
   const value = String(url || '').trim()
@@ -266,6 +290,55 @@ function safeImageSrc(url) {
   }
 }
 
+function clearMarkdownCopyTimer(button) {
+  const timer = markdownCopyResetTimers.get(button)
+  if (timer === undefined) return
+  window.clearTimeout(timer)
+  markdownCopyResetTimers.delete(button)
+}
+
+function scheduleMarkdownCopyReset(button, text) {
+  clearMarkdownCopyTimer(button)
+  const timer = window.setTimeout(() => {
+    button.textContent = text
+    markdownCopyResetTimers.delete(button)
+  }, 1200)
+  markdownCopyResetTimers.set(button, timer)
+}
+
+function clearAssistantCopyTimer() {
+  if (assistantCopyResetTimer === null) return
+  window.clearTimeout(assistantCopyResetTimer)
+  assistantCopyResetTimer = null
+}
+
+function scheduleAssistantCopyReset() {
+  clearAssistantCopyTimer()
+  assistantCopyResetTimer = window.setTimeout(() => {
+    assistantCopyState.value = 'idle'
+    assistantCopyResetTimer = null
+  }, 1200)
+}
+
+function clearRetryTimer() {
+  if (retryResetTimer === null) return
+  window.clearTimeout(retryResetTimer)
+  retryResetTimer = null
+}
+
+function clearCopyTimers() {
+  for (const timer of markdownCopyResetTimers.values()) {
+    window.clearTimeout(timer)
+  }
+  markdownCopyResetTimers.clear()
+  clearAssistantCopyTimer()
+}
+
+function clearMessageTimers() {
+  clearCopyTimers()
+  clearRetryTimer()
+}
+
 async function handleMarkdownClick(event) {
   const button = event.target?.closest?.('.btn-copy')
   if (!button) return
@@ -275,14 +348,10 @@ async function handleMarkdownClick(event) {
     await navigator.clipboard.writeText(code)
     const oldText = button.textContent
     button.textContent = 'Copied'
-    window.setTimeout(() => {
-      button.textContent = oldText || 'Copy'
-    }, 1200)
+    scheduleMarkdownCopyReset(button, oldText || 'Copy')
   } catch {
     button.textContent = 'Failed'
-    window.setTimeout(() => {
-      button.textContent = 'Copy'
-    }, 1200)
+    scheduleMarkdownCopyReset(button, 'Copy')
   }
 }
 
@@ -305,10 +374,27 @@ async function copyAssistantMessage() {
   } catch {
     assistantCopyState.value = 'failed'
   }
-  window.setTimeout(() => {
-    assistantCopyState.value = 'idle'
-  }, 1200)
+  scheduleAssistantCopyReset()
 }
+
+async function emitRetry() {
+  if (retryDisabled.value) return
+  retrying.value = true
+  try {
+    emit('retry')
+  } finally {
+    // Re-enable shortly after emit; the parent drives the actual send and will
+    // flip the error message out of the list on success or replace it on
+    // failure. This is just a local guard against double-clicks.
+    clearRetryTimer()
+    retryResetTimer = window.setTimeout(() => {
+      retrying.value = false
+      retryResetTimer = null
+    }, 800)
+  }
+}
+
+onUnmounted(clearMessageTimers)
 </script>
 
 <style scoped>
@@ -321,6 +407,10 @@ async function copyAssistantMessage() {
 
 .message.assistant {
   margin-bottom: 18px;
+}
+
+.message.error {
+  max-width: 900px;
 }
 
 .message.user {
@@ -694,5 +784,86 @@ async function copyAssistantMessage() {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* Error message card */
+.error-card {
+  border: 1px solid rgba(255, 141, 127, 0.34);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--red-bg);
+  padding: 11px 14px 12px;
+  color: var(--t1);
+  animation: error-in 0.18s ease-out;
+}
+
+@keyframes error-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.error-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--red);
+}
+
+.error-title {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--red);
+  letter-spacing: 0.01em;
+}
+
+.error-detail {
+  margin: 6px 0 0 23px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--t2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-actions {
+  margin: 10px 0 0 23px;
+}
+
+.error-retry-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--t1);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+}
+
+.error-retry-button:hover:not(:disabled) {
+  background: var(--bg-200);
+  border-color: var(--red);
+}
+
+.error-retry-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.error-retry-button svg {
+  width: 13px;
+  height: 13px;
 }
 </style>

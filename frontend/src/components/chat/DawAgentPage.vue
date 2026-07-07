@@ -2,7 +2,18 @@
   <div class="daw-agent-page">
     <header class="daw-agent-header">
       <span class="header-title">ATRI Bridge</span>
+      <span
+        :class="['header-status-dot', wsConnected ? 'on' : 'off']"
+        :title="wsConnected ? 'Connected' : 'Disconnected'"
+      />
     </header>
+
+    <ConnectionBanner
+      :opened-once="wsOpenedOnce"
+      :connected="wsConnected"
+      :reconnect-delay-ms="wsReconnectDelay"
+      @reconnect="handleReconnect"
+    />
 
     <div
       ref="chatArea"
@@ -88,6 +99,8 @@
         <ChatMessage
           v-else
           :message="item.message"
+          :retry-disabled="sending"
+          @retry="handleRetryMessage"
         />
       </template>
       <div
@@ -117,6 +130,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import AgentTodoPanel from './AgentTodoPanel.vue'
 import ChatInput from './ChatInput.vue'
 import ChatMessage from './ChatMessage.vue'
+import ConnectionBanner from './ConnectionBanner.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 import ToolCard from './ToolCard.vue'
 import {
@@ -124,7 +138,8 @@ import {
   normalizeFilePayload,
   normalizeImagePayload,
 } from '@/composables/chatAttachments.js'
-import { buildChatDisplayItems } from '@/composables/chatDisplayItems.js'
+import { useChatDisplayItems } from '@/composables/chatDisplayItems.js'
+import { createChatRetryState } from '@/composables/chatRetryState.js'
 import { useApi } from '@/composables/useApi.js'
 import { useChat } from '@/composables/useChat.js'
 import { useDawHost } from '@/composables/useDawHost.js'
@@ -143,6 +158,8 @@ const {
   toolCards,
   handleWsEvent,
   addMessage,
+  addErrorMessage,
+  dismissErrorMessages,
   addAssistantHttpResponse,
   clearThinking,
   clearToolCards,
@@ -176,9 +193,17 @@ const autoImportOnSend = ref(readAutoImportPreference())
 let scrollPending = false
 
 const currentThreadId = computed(() => `daw_agent:friend:${projectSessionId.value || 'default_project'}`)
-const { events } = useWebSocket(currentThreadId, { surface: 'daw-agent' })
+const { connected: wsConnected, openedOnce: wsOpenedOnce, events, reconnectDelayMs: wsReconnectDelay, reconnectNow } = useWebSocket(currentThreadId, { surface: 'daw-agent' })
 
-const displayItems = computed(() => buildChatDisplayItems(messages.value))
+const displayItems = useChatDisplayItems(messages)
+const dawRetryState = createChatRetryState({
+  getMessages: () => messages.value,
+  isSending: () => sending.value,
+  clearErrors: dismissErrorMessages,
+  addUserMessage: (dawPayload) => addMessage('user', dawPayload.message, false, {
+    attachments: buildUserMessageAttachments(dawPayload.images, dawPayload.files),
+  }),
+})
 
 const hasExecutingTool = computed(() =>
   Object.values(toolCards.value).some((tool) => tool.status === 'executing'),
@@ -245,37 +270,54 @@ async function handleSend(payload) {
   const filePayload = normalizeFilePayload(files)
   if ((!text.trim() && !imagePayload.length && !filePayload.length) || sending.value) return
 
+  const dawPayload = buildDawSendPayload(text, imagePayload, filePayload)
+  dawRetryState.beginFreshSend(dawPayload)
+  await performDawSend(dawPayload, { isRetry: false })
+}
+
+// Builds the request body for sendDawAgentMessage. Shared by fresh sends and
+// retries so the two paths can't drift.
+function buildDawSendPayload(text, imagePayload, filePayload) {
+  const hostAutoImport = workspace.value === 'host_project' && autoImportOnSend.value
+  return {
+    message: text,
+    projectSessionId: projectSessionId.value,
+    instanceId: instanceId.value,
+    workspace: workspace.value,
+    syncHostProject: hostAutoImport,
+    requestHostExport: false,
+    hostContext: {
+      host: hostName.value,
+      workspace: workspace.value,
+    },
+    images: imagePayload,
+    files: filePayload,
+    model: activeModel.value,
+    modelProvider: activeModelProvider.value,
+  }
+}
+
+async function performDawSend(dawPayload, { isRetry = false } = {}) {
   clearThinking()
   clearToolCards()
-  addMessage('user', text, false, {
-    attachments: buildUserMessageAttachments(imagePayload, filePayload),
-  })
   sending.value = true
-  const hostAutoImport = workspace.value === 'host_project' && autoImportOnSend.value
-  hostProjectSyncStatus.value = hostAutoImport
-    ? 'Importing latest DAWproject snapshot...'
-    : ''
+  const hostAutoImport = dawPayload.syncHostProject
+  if (hostAutoImport) {
+    hostProjectSyncStatus.value = 'Importing latest DAWproject snapshot...'
+  } else if (!isRetry) {
+    hostProjectSyncStatus.value = ''
+  }
   scrollToBottom()
 
   try {
-    const result = await api.sendDawAgentMessage({
-      message: text,
-      projectSessionId: projectSessionId.value,
-      instanceId: instanceId.value,
-      workspace: workspace.value,
-      syncHostProject: hostAutoImport,
-      requestHostExport: false,
-      hostContext: {
-        host: hostName.value,
-        workspace: workspace.value,
-      },
-      images: imagePayload,
-      files: filePayload,
-      model: activeModel.value,
-      modelProvider: activeModelProvider.value,
-    })
+    const result = await api.sendDawAgentMessage(dawPayload)
     if (result.error) {
-      addMessage('assistant', `Error: ${result.error}`, false)
+      addErrorMessage({
+        title: 'Request failed',
+        detail: String(result.error || ''),
+        retriable: true,
+        kind: 'request',
+      })
     } else {
       hostProjectSyncStatus.value = formatHostProjectSyncStatus(result.host_project_sync)
       await loadDawprojectSnapshotStatus()
@@ -285,13 +327,24 @@ async function handleSend(payload) {
     if (workspace.value === 'host_project') {
       hostProjectSyncStatus.value = 'DAWproject snapshot import not completed'
     }
-    addMessage('assistant', `Connection error: ${err.message}`, false)
+    addErrorMessage({
+      title: 'Connection error',
+      detail: err?.message ? String(err.message) : 'Could not reach the server.',
+      retriable: true,
+      kind: 'connection',
+    })
   } finally {
     sending.value = false
     clearThinking()
     clearToolCards()
     scrollToBottom()
   }
+}
+
+async function handleRetryMessage() {
+  const dawPayload = dawRetryState.beginRetry()
+  if (!dawPayload) return
+  await performDawSend(dawPayload, { isRetry: true })
 }
 
 async function loadDawprojectSnapshotStatus() {
@@ -356,6 +409,12 @@ async function handleCancel() {
   await api.cancelChat(currentThreadId.value).catch(() => null)
 }
 
+// Manual reconnect from the connection banner — bypasses backoff for an
+// immediate retry.
+function handleReconnect() {
+  reconnectNow()
+}
+
 async function handleSetMode(mode) {
   const nextMode = mode === 'plan' ? 'plan' : 'agent'
   if (agentMode.value === nextMode || modePending.value) return
@@ -369,6 +428,7 @@ async function handleSetMode(mode) {
 }
 
 async function loadProjectTranscript() {
+  dawRetryState.reset()
   eventProcessor.resetToEnd()
   const transcript = await loadSessionMessages(currentThreadId.value)
   loadTranscript(transcript)
@@ -402,6 +462,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  dawRetryState.reset()
   eventProcessor.cancel()
 })
 </script>
@@ -420,6 +481,7 @@ onUnmounted(() => {
   height: 34px;
   display: flex;
   align-items: center;
+  gap: 8px;
   flex-shrink: 0;
   padding: 0 12px;
   border-bottom: 1px solid var(--border);
@@ -431,6 +493,22 @@ onUnmounted(() => {
   color: var(--t1);
   font-size: 13px;
   font-weight: 700;
+}
+
+.header-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.header-status-dot.on {
+  background: var(--ok);
+  box-shadow: 0 0 8px rgba(143, 216, 199, 0.32);
+}
+
+.header-status-dot.off {
+  background: var(--red);
 }
 
 .daw-agent-messages {
