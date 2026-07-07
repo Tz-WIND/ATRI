@@ -39,6 +39,7 @@ test('getAssistantMessageCopyText_returnsOriginalCompletedAssistantContent', () 
     getAssistantMessageCopyText({ role: 'assistant', md: true, streaming: false, content: original }),
     original,
   )
+  assert.equal(getAssistantMessageCopyText({ role: 'assistant', streaming: false, content: '\n  \n' }), '')
   assert.equal(getAssistantMessageCopyText({ role: 'assistant', streaming: true, content: original }), '')
   assert.equal(getAssistantMessageCopyText({ role: 'user', content: original }), '')
 })

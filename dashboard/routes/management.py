@@ -21,6 +21,38 @@ if TYPE_CHECKING:
     from dashboard.server import Dashboard
 
 
+SESSION_RUNTIME_TOOL_KINDS = {"tool_call", "command_execution"}
+
+
+def _has_visible_text(value: object) -> bool:
+    if value is None:
+        return False
+    return bool(str(value).strip())
+
+
+def _session_runtime_items(runtime_detail: dict | None) -> list[dict]:
+    items = runtime_detail.get("items", []) if isinstance(runtime_detail, dict) else []
+    if not isinstance(items, list):
+        return []
+
+    replay_items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        if kind == "agent_reasoning":
+            if _has_visible_text(item.get("detail")):
+                replay_items.append(item)
+            continue
+        if kind in SESSION_RUNTIME_TOOL_KINDS:
+            metadata = item.get("metadata")
+            if isinstance(metadata, dict) and (
+                metadata.get("tool") or metadata.get("tool_call_id")
+            ):
+                replay_items.append(item)
+    return replay_items
+
+
 def _recent_group_messages_payload(ob: dict) -> dict:
     config = ob.get("group_recent_messages", {})
     if not isinstance(config, dict):
@@ -176,11 +208,7 @@ def register(dashboard: Dashboard) -> None:
                             normalize_session_id(candidate)
                         )
                     runtime_turns = runtime_detail.get("turns", []) if runtime_detail else []
-                    runtime_items = [
-                        item
-                        for item in (runtime_detail.get("items", []) if runtime_detail else [])
-                        if item.get("kind") == "agent_reasoning" and item.get("detail")
-                    ]
+                    runtime_items = _session_runtime_items(runtime_detail)
                     todo_snapshot = None
                     todo_store = getattr(dashboard.lifecycle.process_stage, "todo_store", None)
                     if todo_store is not None:

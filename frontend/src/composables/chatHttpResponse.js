@@ -5,6 +5,10 @@ function messageList(messagesRef) {
   return Array.isArray(messagesRef) ? messagesRef : []
 }
 
+function visibleAssistantText(value) {
+  return String(value ?? '').trim()
+}
+
 export function hasActiveAssistantStream(messagesRef) {
   return messageList(messagesRef).some((message) =>
     message?.role === 'assistant' && message.streaming
@@ -12,12 +16,12 @@ export function hasActiveAssistantStream(messagesRef) {
 }
 
 export function hasAssistantResponse(messagesRef, response) {
-  const text = String(response || '')
+  const text = visibleAssistantText(response)
   if (!text) return false
   return messageList(messagesRef).some((message) =>
     message?.role === 'assistant'
     && message.streaming !== true
-    && String(message.content || '') === text
+    && visibleAssistantText(message.content) === text
   )
 }
 
@@ -26,7 +30,7 @@ export async function shouldAppendHttpAssistantResponse(
   response,
   delayMs = HTTP_ASSISTANT_RESPONSE_DEDUPE_DELAY_MS,
 ) {
-  const text = String(response || '')
+  const text = visibleAssistantText(response)
   if (!text) return false
   if (hasActiveAssistantStream(messagesRef) || hasAssistantResponse(messagesRef, text)) {
     return false

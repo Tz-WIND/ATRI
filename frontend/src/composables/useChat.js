@@ -147,6 +147,12 @@ export function useChat() {
     })
   }
 
+  function hasVisibleText(content) {
+    if (typeof content === 'string') return content.trim().length > 0
+    if (content == null) return false
+    return String(content).trim().length > 0
+  }
+
   function addOrPatchAssistantMessage(content, attachments = []) {
     const text = String(content || '')
     const lastIndexFromEnd = [...messages.value].reverse().findIndex((m) =>
@@ -222,6 +228,13 @@ export function useChat() {
     return next
   }
 
+  function removeMessage(id) {
+    const index = findMessageIndex(id)
+    if (index >= 0) {
+      messages.value.splice(index, 1)
+    }
+  }
+
   function finishThinkingBlock() {
     const current = thinkingBlock.value
     if (!current || current.done) return
@@ -267,14 +280,25 @@ export function useChat() {
   function finishAssistantStream(finalContent = '') {
     assistantDeltaBuffer.flush()
     if (!streamingAssistantId || !streamingMessage) {
-      if (finalContent && !hasAssistantResponse(messages, finalContent)) {
-        addMessage('assistant', finalContent, true)
+      const text = typeof finalContent === 'string' ? finalContent : String(finalContent || '')
+      if (hasVisibleText(text) && !hasAssistantResponse(messages, text)) {
+        addMessage('assistant', text, true)
       }
       return
     }
 
+    const nextContent = hasVisibleText(finalContent)
+      ? String(finalContent)
+      : streamingMessage.content
+    if (!hasVisibleText(nextContent)) {
+      removeMessage(streamingAssistantId)
+      streamingMessage = null
+      streamingAssistantId = null
+      return
+    }
+
     streamingMessage = patchMessage(streamingAssistantId, {
-      content: finalContent || streamingMessage.content,
+      content: nextContent,
       streaming: false,
     })
     streamingMessage = null
@@ -340,36 +364,41 @@ export function useChat() {
     const runtimeTurns = Array.isArray(transcript?.runtimeTurns) ? transcript.runtimeTurns : []
     const runtimeItems = Array.isArray(transcript?.runtimeItems) ? transcript.runtimeItems : []
     todoSnapshot.value = normalizeTodoSnapshot(transcript?.todoSnapshot)
-    const reasoningByTurn = new Map()
+    const replayItemsByTurn = new Map()
+    const runtimeToolCallIds = new Set()
+    const replayItems = runtimeItems
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => isReplayRuntimeItem(item))
+      .sort(compareRuntimeItemOrder)
 
-    runtimeItems
-      .filter((item) => item?.kind === 'agent_reasoning' && String(item.detail || '').trim())
-      .forEach((item) => {
-        const list = reasoningByTurn.get(item.turn_id) || []
-        list.push(item)
-        reasoningByTurn.set(item.turn_id, list)
-      })
+    replayItems.forEach(({ item }) => {
+      const metadata = runtimeItemMetadata(item)
+      if (isRuntimeToolItem(item) && metadata.tool_call_id) {
+        runtimeToolCallIds.add(String(metadata.tool_call_id))
+      }
+      const list = replayItemsByTurn.get(item.turn_id) || []
+      list.push(item)
+      replayItemsByTurn.set(item.turn_id, list)
+    })
 
     const orderedTurnIds = runtimeTurns
       .map((turn) => turn?.id)
       .filter(Boolean)
-      .filter((turnId) => reasoningByTurn.has(turnId))
-    const fallbackReasoning = runtimeItems
-      .filter((item) => item?.kind === 'agent_reasoning' && String(item.detail || '').trim())
+    const fallbackReplayItems = replayItems
+      .map(({ item }) => item)
       .filter((item) => !item.turn_id || !orderedTurnIds.includes(item.turn_id))
     let turnIndex = 0
 
-    function addRuntimeThinkingForNextTurn() {
+    function addRuntimeItemsForNextTurn() {
       let items = []
-      while (turnIndex < orderedTurnIds.length && !items.length) {
+      if (turnIndex < orderedTurnIds.length) {
         const turnId = orderedTurnIds[turnIndex]
         turnIndex += 1
-        items = reasoningByTurn.get(turnId) || []
+        items = replayItemsByTurn.get(turnId) || []
+      } else if (fallbackReplayItems.length) {
+        items = [fallbackReplayItems.shift()]
       }
-      if (!items.length && fallbackReasoning.length) {
-        items = [fallbackReasoning.shift()]
-      }
-      items.forEach(addRuntimeThinkingMessage)
+      items.forEach(addRuntimeTimelineMessage)
     }
 
     rawMessages.forEach((m) => {
@@ -395,15 +424,21 @@ export function useChat() {
         // not new user requests -- skip inserting runtime thinking here.
         const isToolResult = Array.isArray(m.content) && m.content.some(part => part?.type === 'tool_result')
         if (!isToolResult) {
-          addRuntimeThinkingForNextTurn()
+          addRuntimeItemsForNextTurn()
         }
-      } else if (m.role === 'assistant' && m.content) {
-        addMessage('assistant', m.content, true, {
-          attachments: normalizeStoredAttachments(m._atri_attachments),
-        })
+      } else if (m.role === 'assistant') {
+        const attachments = normalizeStoredAttachments(m._atri_attachments)
+        if (hasVisibleText(m.content) || attachments.length) {
+          addMessage('assistant', hasVisibleText(m.content) ? String(m.content) : '', true, {
+            attachments,
+          })
+        }
       } else if (m.role === 'tool') {
         const call = callsById.get(m.tool_call_id) || {}
         if (call.tool === 'todo') {
+          return
+        }
+        if (runtimeToolCallIds.has(String(m.tool_call_id || ''))) {
           return
         }
         const result = m.content || ''
@@ -419,10 +454,67 @@ export function useChat() {
     })
 
     while (turnIndex < orderedTurnIds.length) {
-      addRuntimeThinkingForNextTurn()
+      addRuntimeItemsForNextTurn()
     }
-    fallbackReasoning.forEach(addRuntimeThinkingMessage)
+    fallbackReplayItems.forEach(addRuntimeTimelineMessage)
     addTodoMessage(todoSnapshot.value)
+  }
+
+  function isReplayRuntimeItem(item) {
+    if (!item || typeof item !== 'object') return false
+    if (item.kind === 'agent_reasoning') {
+      return hasVisibleText(item.detail)
+    }
+    return isRuntimeToolItem(item) && hasRuntimeToolMetadata(item)
+  }
+
+  function isRuntimeToolItem(item) {
+    return item?.kind === 'tool_call' || item?.kind === 'command_execution'
+  }
+
+  function hasRuntimeToolMetadata(item) {
+    const metadata = runtimeItemMetadata(item)
+    return Boolean(metadata.tool || metadata.tool_call_id)
+  }
+
+  function runtimeItemMetadata(item) {
+    return item?.metadata && typeof item.metadata === 'object' ? item.metadata : {}
+  }
+
+  function runtimeItemTime(item) {
+    return parseRuntimeTime(item?.started_at || item?.created_at || item?.ended_at)
+  }
+
+  function compareRuntimeItemOrder(left, right) {
+    const leftTime = runtimeItemTime(left.item)
+    const rightTime = runtimeItemTime(right.item)
+    if (leftTime !== rightTime) return leftTime - rightTime
+    return left.index - right.index
+  }
+
+  function addRuntimeTimelineMessage(item) {
+    if (item?.kind === 'agent_reasoning') {
+      addRuntimeThinkingMessage(item)
+      return
+    }
+    if (isRuntimeToolItem(item)) {
+      addRuntimeToolMessage(item)
+    }
+  }
+
+  function addRuntimeToolMessage(item) {
+    const metadata = runtimeItemMetadata(item)
+    const toolCallId = String(metadata.tool_call_id || item.id || makeId())
+    const result = String(item.detail || '')
+    const failed = item.status === 'failed' || metadata.success === false || result.startsWith('Error')
+    addToolMessage(toolCallId, {
+      tool: String(metadata.tool || item.summary || 'tool'),
+      args: metadata.args && typeof metadata.args === 'object' ? metadata.args : {},
+      status: failed ? 'failed' : 'success',
+      result,
+      resultCompressed: Boolean(metadata.result_compressed) || result.startsWith('<persisted-output>'),
+      resultId: String(metadata.result_id || extractToolResultId(result)),
+    })
   }
 
   function addRuntimeThinkingMessage(item) {

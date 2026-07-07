@@ -82,6 +82,249 @@ try {
 
   clearChatInstance()
 
+  const toolOnlyStream = useChat()
+  toolOnlyStream.handleWsEvent({ type: 'response_start' })
+  toolOnlyStream.handleWsEvent({
+    type: 'tool_start',
+    data: { id: 'tool-1', tool: 'search', args: { query: 'copy gap' } },
+  })
+
+  assert.equal(toolOnlyStream.messages.value.length, 1)
+  assert.equal(toolOnlyStream.messages.value[0].role, 'tool')
+
+  clearChatInstance()
+
+  const transcript = useChat()
+  transcript.loadTranscript({
+    messages: [
+      { role: 'user', content: 'Search this' },
+      {
+        role: 'assistant',
+        content: '\n\n',
+        tool_calls: [
+          {
+            id: 'call-1',
+            function: {
+              name: 'search',
+              arguments: '{"query":"copy gap"}',
+            },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'result' },
+      { role: 'assistant', content: 'Done.' },
+    ],
+  })
+
+  assert.deepEqual(
+    transcript.messages.value.map((message) => message.role),
+    ['user', 'tool', 'assistant'],
+  )
+  assert.equal(transcript.messages.value.at(-1).content, 'Done.')
+
+  clearChatInstance()
+
+  const interleavedTranscript = useChat()
+  interleavedTranscript.loadTranscript({
+    messages: [
+      { role: 'user', content: 'Investigate' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call-1',
+            function: {
+              name: 'search',
+              arguments: '{"query":"first"}',
+            },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'first result' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call-2',
+            function: {
+              name: 'read_file',
+              arguments: '{"file_path":"notes.md"}',
+            },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-2', content: 'second result' },
+      { role: 'assistant', content: 'Done.' },
+    ],
+    runtimeTurns: [
+      { id: 'turn-1' },
+    ],
+    runtimeItems: [
+      {
+        id: 'reason-1',
+        turn_id: 'turn-1',
+        kind: 'agent_reasoning',
+        detail: 'think 1',
+        created_at: '2026-07-07T01:00:00.000Z',
+        started_at: '2026-07-07T01:00:00.000Z',
+        ended_at: '2026-07-07T01:00:01.000Z',
+      },
+      {
+        id: 'tool-1',
+        turn_id: 'turn-1',
+        kind: 'tool_call',
+        status: 'completed',
+        detail: 'first result',
+        created_at: '2026-07-07T01:00:02.000Z',
+        started_at: '2026-07-07T01:00:02.000Z',
+        ended_at: '2026-07-07T01:00:03.000Z',
+        metadata: {
+          tool_call_id: 'call-1',
+          tool: 'search',
+          args: { query: 'first' },
+          success: true,
+        },
+      },
+      {
+        id: 'reason-2',
+        turn_id: 'turn-1',
+        kind: 'agent_reasoning',
+        detail: 'think 2',
+        created_at: '2026-07-07T01:00:04.000Z',
+        started_at: '2026-07-07T01:00:04.000Z',
+        ended_at: '2026-07-07T01:00:05.000Z',
+      },
+      {
+        id: 'tool-2',
+        turn_id: 'turn-1',
+        kind: 'tool_call',
+        status: 'completed',
+        detail: 'second result',
+        created_at: '2026-07-07T01:00:06.000Z',
+        started_at: '2026-07-07T01:00:06.000Z',
+        ended_at: '2026-07-07T01:00:07.000Z',
+        metadata: {
+          tool_call_id: 'call-2',
+          tool: 'read_file',
+          args: { file_path: 'notes.md' },
+          success: true,
+        },
+      },
+    ],
+  })
+
+  assert.deepEqual(
+    interleavedTranscript.messages.value.map((message) => (
+      message.role === 'thinking'
+        ? `thinking:${message.content}`
+        : message.role === 'tool'
+          ? `tool:${message.toolData.tool}:${message.toolData.result}`
+          : `${message.role}:${message.content}`
+    )),
+    [
+      'user:Investigate',
+      'thinking:think 1',
+      'tool:search:first result',
+      'thinking:think 2',
+      'tool:read_file:second result',
+      'assistant:Done.',
+    ],
+  )
+
+  clearChatInstance()
+
+  const malformedRuntimeToolTranscript = useChat()
+  malformedRuntimeToolTranscript.loadTranscript({
+    messages: [
+      { role: 'user', content: 'Run one tool' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            id: 'call-raw',
+            function: {
+              name: 'search',
+              arguments: '{"query":"raw"}',
+            },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-raw', content: 'raw result' },
+      { role: 'assistant', content: 'Done.' },
+    ],
+    runtimeTurns: [
+      { id: 'turn-1' },
+    ],
+    runtimeItems: [
+      {
+        id: 'tool-without-metadata',
+        turn_id: 'turn-1',
+        kind: 'tool_call',
+        summary: 'search',
+        detail: 'runtime result',
+        created_at: '2026-07-07T01:00:02.000Z',
+      },
+    ],
+  })
+
+  assert.deepEqual(
+    malformedRuntimeToolTranscript.messages.value.map((message) => (
+      message.role === 'tool'
+        ? `tool:${message.toolCallId}:${message.toolData.tool}:${message.toolData.result}`
+        : `${message.role}:${message.content}`
+    )),
+    [
+      'user:Run one tool',
+      'tool:call-raw:search:raw result',
+      'assistant:Done.',
+    ],
+  )
+
+  clearChatInstance()
+
+  const emptyTurnTranscript = useChat()
+  emptyTurnTranscript.loadTranscript({
+    messages: [
+      { role: 'user', content: 'First turn' },
+      { role: 'assistant', content: 'No tools here.' },
+      { role: 'user', content: 'Second turn' },
+      { role: 'assistant', content: 'Done.' },
+    ],
+    runtimeTurns: [
+      { id: 'turn-empty' },
+      { id: 'turn-with-reasoning' },
+    ],
+    runtimeItems: [
+      {
+        id: 'reason-later',
+        turn_id: 'turn-with-reasoning',
+        kind: 'agent_reasoning',
+        detail: 'later thought',
+        created_at: '2026-07-07T02:00:00.000Z',
+      },
+    ],
+  })
+
+  assert.deepEqual(
+    emptyTurnTranscript.messages.value.map((message) => (
+      message.role === 'thinking'
+        ? `thinking:${message.content}`
+        : `${message.role}:${message.content}`
+    )),
+    [
+      'user:First turn',
+      'assistant:No tools here.',
+      'user:Second turn',
+      'thinking:later thought',
+      'assistant:Done.',
+    ],
+  )
+
+  clearChatInstance()
+
   const frames = []
   const cancelledFrames = new Set()
   globalThis.requestAnimationFrame = (callback) => {

@@ -40,6 +40,25 @@ assert.equal(
 )
 
 assert.equal(
+  hasAssistantResponse({
+    value: [{ role: 'assistant', content: 'pong' }],
+  }, '\n pong \n'),
+  true,
+)
+
+assert.equal(
+  await shouldAppendHttpAssistantResponse({
+    value: [{ role: 'assistant', content: 'pong', streaming: false }],
+  }, '\n pong \n', 0),
+  false,
+)
+
+assert.equal(
+  await shouldAppendHttpAssistantResponse({ value: [] }, '\n  \n', 0),
+  false,
+)
+
+assert.equal(
   await shouldAppendHttpAssistantResponse({
     value: [{ role: 'assistant', content: 'pong', streaming: false }],
   }, 'pong', 0),

@@ -17,7 +17,8 @@ export function shouldRenderStreamingPlainText(message) {
 
 export function getAssistantMessageCopyText(message) {
   if (message?.role !== 'assistant' || message?.streaming) return ''
-  return typeof message?.content === 'string' ? message.content : ''
+  const text = typeof message?.content === 'string' ? message.content : ''
+  return text.trim() ? text : ''
 }
 
 export function normalizeLanguage(value) {

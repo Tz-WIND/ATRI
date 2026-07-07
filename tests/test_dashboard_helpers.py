@@ -846,6 +846,53 @@ def test_adapter_payload_defaults_onebot_host_to_localhost():
     assert payload["ws_reverse_host"] == "127.0.0.1"
 
 
+def test_session_runtime_items_include_reasoning_and_tool_timeline_items():
+    runtime_detail = {
+        "items": [
+            {
+                "id": "reason-1",
+                "kind": "agent_reasoning",
+                "detail": "think",
+            },
+            {
+                "id": "tool-1",
+                "kind": "tool_call",
+                "summary": "search",
+                "detail": "result",
+                "metadata": {"tool_call_id": "call-1", "tool": "search", "args": {}},
+            },
+            {
+                "id": "shell-1",
+                "kind": "command_execution",
+                "summary": "bash",
+                "detail": "output",
+                "metadata": {"tool_call_id": "call-2", "tool": "bash", "args": {}},
+            },
+            {
+                "id": "empty-reason",
+                "kind": "agent_reasoning",
+                "detail": "",
+            },
+            {
+                "id": "blank-reason",
+                "kind": "agent_reasoning",
+                "detail": " ",
+            },
+            {
+                "id": "message-1",
+                "kind": "agent_message",
+                "detail": "final",
+            },
+        ],
+    }
+
+    assert [item["id"] for item in management._session_runtime_items(runtime_detail)] == [
+        "reason-1",
+        "tool-1",
+        "shell-1",
+    ]
+
+
 def test_apply_adapter_config_updates_onebot_access_lists_without_touching_token():
     existing_value = "secret"
     existing = {

@@ -6,6 +6,32 @@
     >
       <span class="msg-role">{{ message.role === 'user' ? 'You' : 'ATRI' }}</span>
       <span class="msg-time">{{ timeStr }}</span>
+      <button
+        v-if="assistantCopyAvailable"
+        :class="['assistant-copy-button', assistantCopyState]"
+        type="button"
+        :aria-label="assistantCopyLabel"
+        :title="assistantCopyLabel"
+        @click="copyAssistantMessage"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          aria-hidden="true"
+        >
+          <rect
+            x="9"
+            y="9"
+            width="13"
+            height="13"
+            rx="2"
+          />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+        <span class="assistant-copy-status">{{ assistantCopyStatusText }}</span>
+      </button>
     </div>
     <div class="msg-body">
       <template v-if="message.role === 'user'">
@@ -102,36 +128,6 @@
             :alt="image.name || 'Generated image'"
           >
         </figure>
-      </div>
-      <div
-        v-if="assistantCopyAvailable"
-        class="assistant-copy-action"
-      >
-        <button
-          :class="['assistant-copy-button', assistantCopyState]"
-          type="button"
-          :aria-label="assistantCopyLabel"
-          :title="assistantCopyLabel"
-          @click="copyAssistantMessage"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            aria-hidden="true"
-          >
-            <rect
-              x="9"
-              y="9"
-              width="13"
-              height="13"
-              rx="2"
-            />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-          </svg>
-          <span class="assistant-copy-status">{{ assistantCopyStatusText }}</span>
-        </button>
       </div>
     </div>
   </div>
@@ -324,7 +320,7 @@ async function copyAssistantMessage() {
 }
 
 .message.assistant {
-  margin-bottom: 28px;
+  margin-bottom: 18px;
 }
 
 .message.user {
@@ -344,12 +340,14 @@ async function copyAssistantMessage() {
   min-height: 18px;
   margin-bottom: 2px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.14s ease;
 }
 
 .message:hover .msg-head,
 .message:focus-within .msg-head {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .msg-role {
@@ -668,30 +666,10 @@ async function copyAssistantMessage() {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.assistant-copy-action {
-  position: absolute;
-  left: 0;
-  bottom: -26px;
-  display: flex;
-  align-items: center;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-2px);
-  transition:
-    opacity 0.14s ease,
-    transform 0.14s ease;
-}
-
-.message.assistant:hover .assistant-copy-action,
-.message.assistant:focus-within .assistant-copy-action {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
-
 .assistant-copy-button {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
