@@ -1,4 +1,4 @@
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -184,7 +184,7 @@ def _cosine(left: list[float], right: list[float]) -> float:
     right_norm = sum(value * value for value in right) ** 0.5
     if left_norm <= 0 or right_norm <= 0:
         return 0.0
-    return sum(a * b for a, b in zip(left, right, strict=False)) / (left_norm * right_norm)
+    return float(sum(a * b for a, b in zip(left, right, strict=False)) / (left_norm * right_norm))
 
 
 class MismatchedConfigEmbeddingClient:
@@ -331,7 +331,7 @@ async def test_knowledge_manager_records_retrieval_timing_segments(tmp_path):
 @pytest.mark.asyncio
 async def test_dense_retrieval_hydrates_only_top_vector_candidates():
     store = DenseHydrationStore()
-    retriever = HybridRetriever(store)
+    retriever = HybridRetriever(cast(KnowledgeStore, store))
 
     hits = await retriever.retrieve(
         query="sqlite",
@@ -357,7 +357,7 @@ async def test_dense_retrieval_hydrates_only_top_vector_candidates():
 async def test_hybrid_retriever_accepts_injected_vector_backend():
     store = DenseBackendInjectionStore()
     backend = RecordingVectorBackend()
-    retriever = HybridRetriever(store, vector_backend=backend)
+    retriever = HybridRetriever(cast(KnowledgeStore, store), vector_backend=backend)
     timings: dict[str, Any] = {}
 
     hits = await retriever.retrieve(
@@ -512,7 +512,7 @@ def test_build_default_vector_backend_uses_hnsw_when_enabled(tmp_path):
 
 @pytest.mark.asyncio
 async def test_knowledge_manager_deletes_hnsw_sidecar_files_when_kb_is_deleted(tmp_path):
-    from core.knowledge.vector_backend import HnswVectorBackend
+    from core.knowledge.vector_backend import HnswVectorBackend, _LoadedHnswIndex
 
     index_dir = tmp_path / "indexes"
     manager = KnowledgeBaseManager(
@@ -533,7 +533,7 @@ async def test_knowledge_manager_deletes_hnsw_sidecar_files_when_kb_is_deleted(t
     index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text("stale index", encoding="utf-8")
     metadata_path.write_text("{}", encoding="utf-8")
-    backend._index_cache[kb["kb_id"]] = object()
+    backend._index_cache[kb["kb_id"]] = _LoadedHnswIndex(index=object(), metadata={})
 
     deleted = await manager.delete_knowledge_base(kb["kb_id"])
 
@@ -546,7 +546,7 @@ async def test_knowledge_manager_deletes_hnsw_sidecar_files_when_kb_is_deleted(t
 @pytest.mark.asyncio
 async def test_dense_retrieval_marks_json_backend_after_blob_backend_fallback(caplog):
     store = FailingDenseBackendStore()
-    retriever = HybridRetriever(store)
+    retriever = HybridRetriever(cast(KnowledgeStore, store))
     timings: dict[str, Any] = {}
 
     hits = await retriever.retrieve(

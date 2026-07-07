@@ -399,11 +399,14 @@ class SQLiteBlobNumpyVectorBackend:
             if kb_id in options
         }
         try:
-            return dense_vector_search(
-                kb_ids,
-                query_vectors,
-                limits,
-                timings=timings,
+            return cast(
+                list[dict],
+                dense_vector_search(
+                    kb_ids,
+                    query_vectors,
+                    limits,
+                    timings=timings,
+                ),
             )
         except Exception as e:
             logger.warning("Knowledge dense vector backend failed; using JSON scan: %s", e)
