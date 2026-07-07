@@ -75,44 +75,28 @@
               </div>
             </div>
           </div>
-          <span
-            class="user-action"
-            aria-hidden="true"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M9 14 4 9l5-5" />
-              <path d="M4 9h11a5 5 0 0 1 0 10h-1" />
-            </svg>
-          </span>
         </div>
       </template>
       <template v-else-if="message.role === 'assistant' && message.md">
         <pre
           v-if="streamingPlainText"
           class="msg-text assistant-stream-text"
-        >{{ message.content }}</pre>
+        >{{ message.content }}<span
+          v-if="message.streaming"
+          class="stream-cursor"
+        /></pre>
         <div
           v-else
           class="markdown-body"
           @click="handleMarkdownClick"
-          v-html="renderedContent"
-        />
-        <span
-          v-if="message.streaming"
-          class="stream-cursor"
+          v-html="renderedContentWithCursor"
         />
       </template>
       <template v-else>
-        <pre class="msg-text">{{ message.content }}</pre>
-        <span
+        <pre class="msg-text">{{ message.content }}<span
           v-if="message.streaming"
           class="stream-cursor"
-        />
+        /></pre>
       </template>
       <div
         v-if="message.role !== 'user' && assistantAttachments.length"
@@ -245,6 +229,11 @@ const renderedContent = computed(() => {
   }
 })
 
+const renderedContentWithCursor = computed(() => {
+  if (!props.message.streaming) return renderedContent.value
+  return appendStreamingCursor(renderedContent.value)
+})
+
 function isSafeUrl(url) {
   const value = String(url || '').trim()
   if (!value) return false
@@ -295,6 +284,17 @@ async function handleMarkdownClick(event) {
       button.textContent = 'Copy'
     }, 1200)
   }
+}
+
+function appendStreamingCursor(html) {
+  const cursor = '<span class="stream-cursor" aria-hidden="true"></span>'
+  const source = String(html || '')
+  if (!source) return cursor
+  const inlineEnd = /(<\/(?:p|li|h[1-6]|td|th)>\s*)$/i
+  if (inlineEnd.test(source)) {
+    return source.replace(inlineEnd, `${cursor}$1`)
+  }
+  return `${source}${cursor}`
 }
 
 async function copyAssistantMessage() {
@@ -472,29 +472,8 @@ async function copyAssistantMessage() {
   font-size: 10px;
 }
 
-.user-action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  color: var(--t3);
-  opacity: 0;
-  transition: opacity 0.14s ease, color 0.14s ease;
-}
-
-.message.user:hover .user-action,
-.message.user:focus-within .user-action {
-  opacity: 1;
-}
-
-.user-action svg {
-  width: 16px;
-  height: 16px;
-}
-
-.stream-cursor {
+.stream-cursor,
+.markdown-body :deep(.stream-cursor) {
   display: inline-block;
   width: 7px;
   height: 1.2em;

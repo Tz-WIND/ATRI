@@ -34,7 +34,6 @@ export function useChat() {
   const thinkingBlock = ref(null) // { content, startTime, done }
   // Tool cards
   const toolCards = ref({}) // id -> { tool, args, status: 'executing'|'success'|'failed', result }
-  const toolMessageIndex = new Map()
   let streamingAssistantId = null
   let streamingMessage = null
   const assistantDeltaBuffer = createStreamingDeltaBuffer({
@@ -305,13 +304,28 @@ export function useChat() {
     streamingAssistantId = null
   }
 
+  function findToolMessageIndex(toolCallId) {
+    return messages.value.findIndex((message) =>
+      message.role === 'tool' && message.toolCallId === toolCallId
+    )
+  }
+
+  function patchToolMessage(index, patch) {
+    const current = messages.value[index]
+    if (!current) return
+    messages.value.splice(index, 1, {
+      ...current,
+      toolData: {
+        ...current.toolData,
+        ...patch,
+      },
+    })
+  }
+
   function addToolMessage(toolCallId, toolData) {
-    const existing = toolMessageIndex.get(toolCallId)
-    if (existing !== undefined && messages.value[existing]) {
-      messages.value[existing].toolData = {
-        ...messages.value[existing].toolData,
-        ...toolData,
-      }
+    const existing = findToolMessageIndex(toolCallId)
+    if (existing >= 0) {
+      patchToolMessage(existing, toolData)
       return
     }
 
@@ -322,27 +336,22 @@ export function useChat() {
       toolData,
       time: new Date(),
     })
-    toolMessageIndex.set(toolCallId, messages.value.length - 1)
   }
 
   function updateToolMessage(toolCallId, patch) {
-    const existing = toolMessageIndex.get(toolCallId)
-    if (existing === undefined || !messages.value[existing]) {
+    const existing = findToolMessageIndex(toolCallId)
+    if (existing < 0) {
       addToolMessage(toolCallId, patch)
       return
     }
 
-    messages.value[existing].toolData = {
-      ...messages.value[existing].toolData,
-      ...patch,
-    }
+    patchToolMessage(existing, patch)
   }
 
   function resetMessages() {
     assistantDeltaBuffer.clear()
     messages.value = []
     todoSnapshot.value = emptyTodoSnapshot()
-    toolMessageIndex.clear()
     streamingAssistantId = null
     streamingMessage = null
   }

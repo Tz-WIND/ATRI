@@ -94,6 +94,35 @@ try {
 
   clearChatInstance()
 
+  const shiftedToolIndex = useChat()
+  shiftedToolIndex.addMessage('user', 'remove me')
+  shiftedToolIndex.addToolMessage('tool-1', {
+    tool: 'search',
+    args: {},
+    status: 'executing',
+    result: null,
+  })
+  shiftedToolIndex.addToolMessage('tool-2', {
+    tool: 'read_file',
+    args: {},
+    status: 'executing',
+    result: null,
+  })
+  shiftedToolIndex.messages.value.splice(0, 1)
+  shiftedToolIndex.updateToolMessage('tool-1', {
+    status: 'success',
+    result: 'first result',
+  })
+
+  assert.equal(shiftedToolIndex.messages.value[0].toolCallId, 'tool-1')
+  assert.equal(shiftedToolIndex.messages.value[0].toolData.status, 'success')
+  assert.equal(shiftedToolIndex.messages.value[0].toolData.result, 'first result')
+  assert.equal(shiftedToolIndex.messages.value[1].toolCallId, 'tool-2')
+  assert.equal(shiftedToolIndex.messages.value[1].toolData.status, 'executing')
+  assert.equal(shiftedToolIndex.messages.value[1].toolData.result, null)
+
+  clearChatInstance()
+
   const transcript = useChat()
   transcript.loadTranscript({
     messages: [

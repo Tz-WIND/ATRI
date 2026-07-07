@@ -23,5 +23,5 @@ def test_chat_message_exposes_hover_copy_for_completed_assistant_messages():
     assert "assistant-copy-button" in text
     assert "getAssistantMessageCopyText" in text
     assert "navigator.clipboard.writeText(assistantCopyText.value)" in text
-    assert ".message.assistant:hover .assistant-copy-action" in text
-    assert ".message.assistant:focus-within .assistant-copy-action" in text
+    assert ".message:hover .msg-head" in text
+    assert ".message:focus-within .msg-head" in text
