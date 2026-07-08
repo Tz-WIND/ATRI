@@ -96,6 +96,28 @@ CONFIG_SCHEMA: dict[str, Any] = {
                     "default": "exact",
                     "enum": ["exact", "hnsw"],
                 },
+                "indexing": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "default": "sync",
+                            "enum": ["sync", "async"],
+                        },
+                        "auto_start": {"type": "boolean", "default": True},
+                        "reconcile_interval_seconds": {
+                            "type": "number",
+                            "default": 5.0,
+                            "minimum": 0.1,
+                        },
+                        "max_batch_size": {"type": "integer", "default": 20, "minimum": 1},
+                        "stale_creating_timeout_seconds": {
+                            "type": "number",
+                            "default": 900.0,
+                            "minimum": 1.0,
+                        },
+                    },
+                },
                 "ann": {
                     "type": "object",
                     "properties": {

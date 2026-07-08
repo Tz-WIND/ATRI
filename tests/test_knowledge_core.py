@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, ClassVar, cast
 
 import pytest
@@ -23,6 +24,24 @@ class FakeEmbeddingClient:
                 ]
             )
         return vectors
+
+
+class RecordingEmbeddingClient(FakeEmbeddingClient):
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def embed_texts(self, selection, texts):
+        self.calls.append(list(texts))
+        return await super().embed_texts(selection, texts)
+
+
+class RecordingGraphManager:
+    def __init__(self) -> None:
+        self.document_calls: list[dict[str, Any]] = []
+
+    def enqueue_document(self, **kwargs):
+        self.document_calls.append(kwargs)
+        return "task-graph-document"
 
 
 class FakeRerankClient:
@@ -276,6 +295,362 @@ async def test_knowledge_manager_imports_and_retrieves_with_selected_models(tmp_
     assert result["results"][0]["doc_name"] == "notes.md"
     assert "SQLite stores knowledge chunks" in result["results"][0]["content"]
     assert result["context_text"].startswith("[Knowledge context]")
+
+
+@pytest.mark.asyncio
+async def test_async_import_records_payload_and_pending_index_without_embedding(tmp_path):
+    embedding = RecordingEmbeddingClient()
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config={
+            **_config(),
+            "knowledge": {"indexing": {"mode": "async", "auto_start": False}},
+        },
+        embedding_client=embedding,
+        rerank_client=FakeRerankClient(),
+    )
+    await manager.initialize()
+    kb = await manager.create_knowledge_base(
+        name="Queued Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    embedding.calls.clear()
+
+    task = await manager.import_document(
+        kb["kb_id"],
+        file_name="queued.md",
+        content="Python agents use SQLite retrieval.",
+    )
+    documents = await manager.list_documents(kb["kb_id"])
+    doc_id = documents[0]["doc_id"]
+
+    assert task["status"] == "queued"
+    assert embedding.calls == []
+    assert manager.store.get_document_payload(doc_id)["content"] == (
+        "Python agents use SQLite retrieval."
+    )
+    assert await manager.list_chunks(doc_id) == []
+    assert manager.store.list_document_indexes(doc_id) == [
+        {
+            "doc_id": doc_id,
+            "index_type": "vector_fulltext",
+            "status": "pending",
+            "version": 1,
+            "observed_version": 0,
+            "error": "",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_reconcile_builds_vector_fulltext_index_and_marks_it_active(tmp_path):
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config={
+            **_config(),
+            "knowledge": {"indexing": {"mode": "async", "auto_start": False}},
+        },
+        embedding_client=FakeEmbeddingClient(),
+        rerank_client=FakeRerankClient(),
+    )
+    await manager.initialize()
+    kb = await manager.create_knowledge_base(
+        name="Reconciled Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        rerank_provider="Local",
+        rerank_model="rerank-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    await manager.import_document(
+        kb["kb_id"],
+        file_name="reconciled.md",
+        content="Python agents can use tools. SQLite stores knowledge chunks.",
+    )
+    doc = (await manager.list_documents(kb["kb_id"]))[0]
+
+    reconciled = await manager.reconcile_indexes_once()
+    chunks = await manager.list_chunks(doc["doc_id"])
+    result = await manager.retrieve(
+        query="sqlite retrieval",
+        kb_ids=[kb["kb_id"]],
+        top_k=1,
+    )
+    indexes = manager.store.list_document_indexes(doc["doc_id"])
+
+    assert reconciled == 1
+    assert len(chunks) >= 1
+    assert result["results"][0]["doc_name"] == "reconciled.md"
+    assert indexes[0]["status"] == "active"
+    assert indexes[0]["observed_version"] == indexes[0]["version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_reconcile_enqueues_graph_index_after_vector_chunks_exist(tmp_path):
+    graph_manager = RecordingGraphManager()
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config={
+            **_config(),
+            "knowledge": {
+                "indexing": {"mode": "async", "auto_start": False},
+                "graph": {
+                    "enabled": True,
+                    "extraction_enabled": True,
+                    "extraction_sources": ["documents"],
+                },
+            },
+        },
+        embedding_client=FakeEmbeddingClient(),
+        graph_manager=graph_manager,
+    )
+    await manager.initialize()
+    kb = await manager.create_knowledge_base(
+        name="Graph Queued Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    await manager.import_document(
+        kb["kb_id"],
+        file_name="graph.md",
+        content="Alice works at Acme. SQLite stores knowledge chunks.",
+    )
+    doc = (await manager.list_documents(kb["kb_id"]))[0]
+
+    reconciled = await manager.reconcile_indexes_once()
+    indexes = {
+        item["index_type"]: item for item in manager.store.list_document_indexes(doc["doc_id"])
+    }
+
+    assert reconciled == 2
+    assert [call["doc_id"] for call in graph_manager.document_calls] == [doc["doc_id"]]
+    assert graph_manager.document_calls[0]["chunks"]
+    assert indexes["vector_fulltext"]["status"] == "active"
+    assert indexes["graph"]["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_manager_update_config_reconfigures_local_index_worker(tmp_path):
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config=_config(),
+        embedding_client=FakeEmbeddingClient(),
+    )
+    await manager.initialize()
+    try:
+        assert manager.index_worker is None
+
+        manager.update_config(
+            {
+                **_config(),
+                "knowledge": {
+                    "indexing": {
+                        "mode": "async",
+                        "auto_start": True,
+                        "reconcile_interval_seconds": 0.2,
+                        "max_batch_size": 3,
+                        "stale_creating_timeout_seconds": 7,
+                    }
+                },
+            }
+        )
+        await asyncio.sleep(0)
+        first_worker = manager.index_worker
+
+        assert first_worker is not None
+        assert first_worker.running is True
+        assert first_worker.interval_seconds == 0.2
+        assert first_worker.batch_size == 3
+        assert manager.index_reconciler is not None
+        assert manager.index_reconciler.stale_timeout_seconds == 7.0
+
+        manager.update_config(
+            {
+                **_config(),
+                "knowledge": {
+                    "indexing": {
+                        "mode": "async",
+                        "auto_start": True,
+                        "reconcile_interval_seconds": 0.4,
+                        "max_batch_size": 4,
+                        "stale_creating_timeout_seconds": 9,
+                    }
+                },
+            }
+        )
+
+        assert manager.index_worker is first_worker
+        assert first_worker.interval_seconds == 0.4
+        assert first_worker.batch_size == 4
+        assert manager.index_reconciler.stale_timeout_seconds == 9.0
+
+        manager.update_config(
+            {
+                **_config(),
+                "knowledge": {
+                    "indexing": {
+                        "mode": "async",
+                        "auto_start": False,
+                    }
+                },
+            }
+        )
+        await asyncio.sleep(0)
+
+        assert manager.index_worker is None
+        assert first_worker.running is False
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_manager_reports_index_status_and_rebuilds_sync_document(tmp_path):
+    embedding = RecordingEmbeddingClient()
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config=_config(),
+        embedding_client=embedding,
+        rerank_client=FakeRerankClient(),
+    )
+    await manager.initialize()
+    kb = await manager.create_knowledge_base(
+        name="Status Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    await manager.import_document(
+        kb["kb_id"],
+        file_name="status.md",
+        content="Python agents use SQLite retrieval.",
+    )
+    doc = (await manager.list_documents(kb["kb_id"]))[0]
+
+    status = await manager.get_index_status(kb["kb_id"])
+    embedding.calls.clear()
+    rebuild = await manager.rebuild_document_indexes(
+        kb_id=kb["kb_id"],
+        doc_id=doc["doc_id"],
+    )
+    rebuilt_status = await manager.get_index_status(kb["kb_id"])
+
+    assert status["summary"]["active"] == 1
+    assert status["summary"]["untracked"] == 0
+    assert status["documents"][0]["aggregate_status"] == "active"
+    assert status["documents"][0]["rebuildable"] is True
+    assert status["documents"][0]["index_statuses"][0]["index_type"] == "vector_fulltext"
+    assert status["documents"][0]["index_statuses"][0]["status"] == "active"
+    assert rebuild["queued"] == 1
+    assert rebuild["reconciled"] == 1
+    assert rebuild["skipped"] == []
+    assert embedding.calls
+    assert rebuilt_status["documents"][0]["index_statuses"][0]["version"] == 2
+    assert rebuilt_status["documents"][0]["index_statuses"][0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_sync_rebuild_reconciles_requested_index_when_older_pending_exists(tmp_path):
+    embedding = RecordingEmbeddingClient()
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config=_config(),
+        embedding_client=embedding,
+        rerank_client=FakeRerankClient(),
+    )
+    await manager.initialize()
+    kb = await manager.create_knowledge_base(
+        name="Target Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    other_kb = await manager.create_knowledge_base(
+        name="Other Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    await manager.import_document(
+        kb["kb_id"],
+        file_name="target.md",
+        content="Python agents use SQLite retrieval.",
+    )
+    target_doc = (await manager.list_documents(kb["kb_id"]))[0]
+    other_doc = manager.store.create_document(
+        other_kb["kb_id"],
+        "older.md",
+        "md",
+        38,
+        "test",
+    )
+    manager.store.save_document_payload(other_doc["doc_id"], "Older pending SQLite document.")
+    manager.store.request_document_indexes(
+        kb_id=other_kb["kb_id"],
+        doc_id=other_doc["doc_id"],
+        index_types=["vector_fulltext"],
+    )
+
+    rebuild = await manager.rebuild_document_indexes(
+        kb_id=kb["kb_id"],
+        doc_id=target_doc["doc_id"],
+    )
+    target_index = manager.store.list_document_indexes(target_doc["doc_id"])[0]
+    other_index = manager.store.list_document_indexes(other_doc["doc_id"])[0]
+
+    assert rebuild["reconciled"] == 1
+    assert target_index["version"] == 2
+    assert target_index["status"] == "active"
+    assert target_index["observed_version"] == 2
+    assert other_index["status"] == "pending"
+    assert other_index["observed_version"] == 0
+
+
+@pytest.mark.asyncio
+async def test_knowledge_manager_marks_payloadless_documents_as_untracked(tmp_path):
+    manager = KnowledgeBaseManager(
+        db_path=tmp_path / "knowledge.db",
+        config=_config(),
+        embedding_client=FakeEmbeddingClient(),
+    )
+    await manager.initialize()
+    kb = await manager.create_knowledge_base(
+        name="Legacy Docs",
+        embedding_provider="OpenAI",
+        embedding_model="embed-a",
+        chunk_size=80,
+        chunk_overlap=10,
+    )
+    doc = manager.store.create_document(
+        kb["kb_id"],
+        "legacy.md",
+        "md",
+        42,
+        "legacy",
+    )
+
+    status = await manager.get_index_status(kb["kb_id"])
+    rebuild = await manager.rebuild_document_indexes(
+        kb_id=kb["kb_id"],
+        doc_id=doc["doc_id"],
+    )
+
+    assert status["summary"]["untracked"] == 1
+    assert status["summary"]["source_missing"] == 1
+    assert status["documents"][0]["aggregate_status"] == "untracked"
+    assert status["documents"][0]["rebuildable"] is False
+    assert status["documents"][0]["index_statuses"][0]["status"] == "untracked"
+    assert rebuild["queued"] == 0
+    assert rebuild["reconciled"] == 0
+    assert rebuild["skipped"] == [{"doc_id": doc["doc_id"], "reason": "source_missing"}]
 
 
 @pytest.mark.asyncio
@@ -602,6 +977,45 @@ def test_store_writes_float32_embedding_blobs_for_new_chunks(tmp_path):
     assert len(row["embedding_blob"]) == 12
     assert row["embedding_dtype"] == "float32"
     assert row["embedding_revision"] == 1
+
+
+def test_store_resets_stale_creating_indexes_to_pending(tmp_path):
+    store = KnowledgeStore(tmp_path / "knowledge.db")
+    store.initialize()
+    kb = store.create_kb(
+        {
+            "name": "Stale Index",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "embedding_config": {"dimensions": 3},
+            "embedding_dimensions": 3,
+        }
+    )
+    doc = store.create_document(kb["kb_id"], "stale.txt", "txt", 42, "test")
+    store.request_document_indexes(
+        kb_id=kb["kb_id"],
+        doc_id=doc["doc_id"],
+        index_types=["vector_fulltext"],
+    )
+    candidate = store.list_indexes_needing_reconciliation(limit=1)[0]
+    claimed = store.claim_document_index(candidate["index_id"])
+    assert claimed is not None
+    store._conn().execute(
+        """
+        UPDATE document_indexes
+        SET updated_at=0, last_reconciled_at=0
+        WHERE index_id=?
+        """,
+        (candidate["index_id"],),
+    )
+    store._conn().commit()
+
+    reset_count = store.reset_stale_document_indexes(timeout_seconds=1)
+    indexes = store.list_document_indexes(doc["doc_id"])
+
+    assert reset_count == 1
+    assert indexes[0]["status"] == "pending"
+    assert indexes[0]["observed_version"] == 0
 
 
 def test_store_lazily_backfills_missing_embedding_blobs_for_legacy_rows(tmp_path):

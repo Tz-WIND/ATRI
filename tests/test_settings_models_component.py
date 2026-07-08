@@ -69,6 +69,20 @@ def test_settings_page_exposes_vector_knowledge_cache_limit():
     assert "ann," in source
 
 
+def test_settings_page_exposes_indexing_lifecycle_controls():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+
+    assert "Indexing Lifecycle" in source
+    assert "form.knowledge.indexing.mode" in source
+    assert "form.knowledge.indexing.auto_start" in source
+    assert "form.knowledge.indexing.reconcile_interval_seconds" in source
+    assert "form.knowledge.indexing.max_batch_size" in source
+    assert "form.knowledge.indexing.stale_creating_timeout_seconds" in source
+    assert "normalizeKnowledgeIndexing" in source
+    assert "indexing: normalizeKnowledgeIndexing" in source
+    assert "indexing: knowledge.indexing" in source
+
+
 def test_settings_page_exposes_graph_knowledge_settings():
     source = _read("frontend/src/components/settings/SettingsPage.vue")
     api_source = _read("frontend/src/composables/useApi.js")

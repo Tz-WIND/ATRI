@@ -88,6 +88,13 @@ def test_normalize_config_adds_knowledge_defaults():
         "top_k": 5,
         "embedding_cache_max_size": 20000,
         "vector_backend": "exact",
+        "indexing": {
+            "mode": "sync",
+            "auto_start": True,
+            "reconcile_interval_seconds": 5.0,
+            "max_batch_size": 20,
+            "stale_creating_timeout_seconds": 900.0,
+        },
         "ann": {
             "enabled": False,
             "index_dir": "data/knowledge/vector_indexes",

@@ -267,6 +267,72 @@ async def test_knowledge_routes_create_import_retrieve_and_delete(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_knowledge_index_status_and_rebuild_routes(monkeypatch, tmp_path):
+    dashboard = await _dashboard(monkeypatch, tmp_path)
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    create_response = await client.post(
+        "/api/knowledge/bases",
+        json={
+            "name": "Index Docs",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "embed-a",
+            "chunk_size": 80,
+            "chunk_overlap": 10,
+        },
+        headers=headers,
+    )
+    kb = await create_response.get_json()
+    import_response = await client.post(
+        f"/api/knowledge/bases/{kb['kb_id']}/documents/import",
+        json={
+            "file_name": "indexes.md",
+            "content": "Python tools and SQLite retrieval notes.",
+        },
+        headers=headers,
+    )
+    documents_response = await client.get(
+        f"/api/knowledge/bases/{kb['kb_id']}/documents",
+        headers=headers,
+    )
+    documents = await documents_response.get_json()
+    doc_id = documents["items"][0]["doc_id"]
+
+    status_response = await client.get(
+        f"/api/knowledge/bases/{kb['kb_id']}/indexes",
+        headers=headers,
+    )
+    rebuild_doc_response = await client.post(
+        f"/api/knowledge/documents/{doc_id}/indexes/rebuild",
+        headers=headers,
+    )
+    rebuild_base_response = await client.post(
+        f"/api/knowledge/bases/{kb['kb_id']}/indexes/rebuild",
+        json={"failed_only": True},
+        headers=headers,
+    )
+    status_payload = await status_response.get_json()
+    rebuild_doc_payload = await rebuild_doc_response.get_json()
+    rebuild_base_payload = await rebuild_base_response.get_json()
+
+    assert create_response.status_code == 200
+    assert import_response.status_code == 200
+    assert status_response.status_code == 200
+    assert rebuild_doc_response.status_code == 200
+    assert rebuild_base_response.status_code == 200
+    assert status_payload["summary"]["active"] == 1
+    assert status_payload["documents"][0]["aggregate_status"] == "active"
+    assert status_payload["documents"][0]["index_statuses"][0]["index_type"] == "vector_fulltext"
+    assert status_payload["documents"][0]["index_statuses"][0]["status"] == "active"
+    assert rebuild_doc_payload["queued"] == 1
+    assert rebuild_doc_payload["reconciled"] == 1
+    assert rebuild_doc_payload["status"]["summary"]["active"] == 1
+    assert rebuild_base_payload["queued"] == 0
+
+
+@pytest.mark.asyncio
 async def test_knowledge_upload_extracts_xlsx_before_import(monkeypatch, tmp_path):
     dashboard = await _dashboard(monkeypatch, tmp_path)
     token = dashboard._create_auth_session()
@@ -435,6 +501,13 @@ async def test_settings_route_persists_knowledge_chat_context(monkeypatch, tmp_p
             "ef_search": 128,
             "m": 32,
             "ef_construction": 200,
+        },
+        "indexing": {
+            "mode": "sync",
+            "auto_start": True,
+            "reconcile_interval_seconds": 5.0,
+            "max_batch_size": 20,
+            "stale_creating_timeout_seconds": 900.0,
         },
         "graph": {
             "enabled": False,

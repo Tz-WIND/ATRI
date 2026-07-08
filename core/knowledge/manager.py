@@ -14,6 +14,13 @@ from core.knowledge.embedding import (
     OpenAIEmbeddingClient,
     resolve_model_selection,
 )
+from core.knowledge.indexing import (
+    INDEX_TYPE_GRAPH,
+    INDEX_TYPE_VECTOR_FULLTEXT,
+    DocumentIndexExecutor,
+    DocumentIndexReconciler,
+    LocalIndexWorker,
+)
 from core.knowledge.rerank import OpenAIRerankClient, RerankClient
 from core.knowledge.retrieval import HybridRetriever
 from core.knowledge.store import DEFAULT_EMBEDDING_CACHE_MAX_SIZE, KnowledgeStore
@@ -41,6 +48,9 @@ class KnowledgeBaseManager:
             embedding_cache_max_size=_embedding_cache_max_size_from_config(self.config),
         )
         self.retriever: HybridRetriever | None = None
+        self.index_reconciler: DocumentIndexReconciler | None = None
+        self.index_worker: LocalIndexWorker | None = None
+        self._stopping_index_workers: list[LocalIndexWorker] = []
 
     async def initialize(self) -> None:
         self.store.initialize()
@@ -49,8 +59,27 @@ class KnowledgeBaseManager:
             self.rerank_client,
             vector_config=self.config,
         )
+        self.index_reconciler = DocumentIndexReconciler(
+            self.store,
+            DocumentIndexExecutor(self),
+            stale_timeout_seconds=_indexing_stale_timeout_seconds(self.config),
+        )
+        if _async_indexing_enabled(self.config) and _indexing_auto_start(self.config):
+            self.index_worker = LocalIndexWorker(
+                self.index_reconciler,
+                interval_seconds=_indexing_interval_seconds(self.config),
+                batch_size=_indexing_batch_size(self.config),
+            )
+            self.index_worker.start()
 
     async def close(self) -> None:
+        workers = [*self._stopping_index_workers]
+        if self.index_worker is not None:
+            workers.append(self.index_worker)
+            self.index_worker = None
+        for worker in workers:
+            await worker.close()
+        self._stopping_index_workers.clear()
         self.store.close()
 
     def update_config(self, config: dict[str, Any]) -> None:
@@ -58,6 +87,11 @@ class KnowledgeBaseManager:
         merged.update(config)
         self.config = merged
         self.store.set_embedding_cache_max_size(_embedding_cache_max_size_from_config(self.config))
+        if self.index_reconciler is not None:
+            self.index_reconciler.stale_timeout_seconds = _indexing_stale_timeout_seconds(
+                self.config
+            )
+            self._sync_index_worker_config()
         if self.retriever is not None:
             self.retriever = HybridRetriever(
                 self.store,
@@ -184,6 +218,15 @@ class KnowledgeBaseManager:
         file_type: str | None = None,
         source: str = "import",
     ) -> dict:
+        if _async_indexing_enabled(self.config):
+            return await self._queue_document_import(
+                kb_id,
+                file_name=file_name,
+                content=content,
+                file_type=file_type,
+                source=source,
+            )
+
         task = self.store.create_task("import", kb_id=kb_id, status="processing")
         try:
             kb = self._require_kb(kb_id)
@@ -216,8 +259,27 @@ class KnowledgeBaseManager:
                 file_size=len(content.encode("utf-8")),
                 source=source,
             )
+            self.store.save_document_payload(doc["doc_id"], content)
             self.store.add_chunks(kb_id, doc["doc_id"], list(zip(chunks, vectors, strict=True)))
-            self._enqueue_graph_document(kb_id, doc["doc_id"], file_name, len(chunks))
+            self.store.record_document_index_active(
+                kb_id=kb_id,
+                doc_id=doc["doc_id"],
+                index_type=INDEX_TYPE_VECTOR_FULLTEXT,
+                result={"chunk_count": len(chunks)},
+            )
+            graph_task_id = self._enqueue_graph_document(
+                kb_id,
+                doc["doc_id"],
+                file_name,
+                len(chunks),
+            )
+            if graph_task_id is not None:
+                self.store.record_document_index_queued(
+                    kb_id=kb_id,
+                    doc_id=doc["doc_id"],
+                    index_type=INDEX_TYPE_GRAPH,
+                    result={"task_id": graph_task_id, "chunk_count": len(chunks)},
+                )
             result = {
                 "uploaded": [self.store.get_document(doc["doc_id"])],
                 "failed": [],
@@ -253,6 +315,88 @@ class KnowledgeBaseManager:
     async def list_documents(self, kb_id: str) -> list[dict]:
         self._require_kb(kb_id)
         return self.store.list_documents(kb_id)
+
+    async def get_index_status(self, kb_id: str) -> dict[str, Any]:
+        kb = self._require_kb(kb_id)
+        documents = [self._document_index_status(doc) for doc in self.store.list_documents(kb_id)]
+        summary = {
+            "document_count": len(documents),
+            "index_count": 0,
+            "active": 0,
+            "pending": 0,
+            "creating": 0,
+            "queued": 0,
+            "failed": 0,
+            "untracked": 0,
+            "source_missing": 0,
+        }
+        for document in documents:
+            if document["source_missing"]:
+                summary["source_missing"] += 1
+            for index in document["index_statuses"]:
+                summary["index_count"] += 1
+                status = str(index["status"])
+                if status in summary:
+                    summary[status] += 1
+        return {
+            "kb_id": kb_id,
+            "kb_name": kb["name"],
+            "indexing": {
+                "mode": "async" if _async_indexing_enabled(self.config) else "sync",
+                "auto_start": _indexing_auto_start(self.config),
+                "worker_running": bool(self.index_worker is not None and self.index_worker.running),
+            },
+            "summary": summary,
+            "documents": documents,
+        }
+
+    async def rebuild_document_indexes(
+        self,
+        *,
+        kb_id: str,
+        doc_id: str | None = None,
+        failed_only: bool = False,
+    ) -> dict[str, Any]:
+        self._require_kb(kb_id)
+        documents = self.store.list_documents(kb_id)
+        if doc_id is not None:
+            documents = [doc for doc in documents if doc["doc_id"] == doc_id]
+            if not documents:
+                raise ValueError("document not found")
+
+        queued = 0
+        skipped: list[dict[str, str]] = []
+        targets: dict[str, list[str]] = {}
+        for doc in documents:
+            current_doc_id = str(doc["doc_id"])
+            if self.store.get_document_payload(current_doc_id) is None:
+                skipped.append({"doc_id": current_doc_id, "reason": "source_missing"})
+                continue
+            existing = self.store.list_document_indexes(current_doc_id)
+            index_types = self._rebuild_index_types(existing, failed_only=failed_only)
+            if not index_types:
+                continue
+            self.store.request_document_indexes(
+                kb_id=kb_id,
+                doc_id=current_doc_id,
+                index_types=index_types,
+            )
+            queued += len(index_types)
+            targets[current_doc_id] = index_types
+
+        reconciled = 0
+        if queued and not _async_indexing_enabled(self.config):
+            reconciled = await self._reconcile_requested_indexes(targets)
+
+        return {
+            "ok": True,
+            "kb_id": kb_id,
+            "doc_id": doc_id or "",
+            "queued": queued,
+            "reconciled": reconciled,
+            "skipped": skipped,
+            "status": await self.get_index_status(kb_id),
+        }
 
     async def delete_document(self, doc_id: str) -> bool:
         return self.store.delete_document(doc_id)
@@ -313,6 +457,13 @@ class KnowledgeBaseManager:
         if not task:
             raise ValueError("task not found")
         return task
+
+    async def reconcile_indexes_once(self, *, limit: int | None = None) -> int:
+        if self.index_reconciler is None:
+            raise RuntimeError("knowledge manager is not initialized")
+        return await self.index_reconciler.reconcile_once(
+            limit=limit or _indexing_batch_size(self.config)
+        )
 
     def _resolve_embedding(self, provider: str | None, model: str | None) -> ModelSelection:
         selection = resolve_model_selection(
@@ -425,6 +576,170 @@ class KnowledgeBaseManager:
             raise ValueError("knowledge base not found")
         return kb
 
+    def _sync_index_worker_config(self) -> None:
+        self._stopping_index_workers = [
+            worker for worker in self._stopping_index_workers if worker.running
+        ]
+        if not (_async_indexing_enabled(self.config) and _indexing_auto_start(self.config)):
+            self._stop_index_worker_nowait()
+            return
+        if self.index_reconciler is None:
+            return
+        interval_seconds = _indexing_interval_seconds(self.config)
+        batch_size = _indexing_batch_size(self.config)
+        if self.index_worker is None or not self.index_worker.running:
+            self.index_worker = LocalIndexWorker(
+                self.index_reconciler,
+                interval_seconds=interval_seconds,
+                batch_size=batch_size,
+            )
+            self.index_worker.start()
+            return
+        self.index_worker.update_settings(
+            interval_seconds=interval_seconds,
+            batch_size=batch_size,
+        )
+
+    def _stop_index_worker_nowait(self) -> None:
+        if self.index_worker is None:
+            return
+        self.index_worker.stop()
+        self._stopping_index_workers.append(self.index_worker)
+        self.index_worker = None
+
+    async def _reconcile_requested_indexes(self, targets: dict[str, list[str]]) -> int:
+        if self.index_reconciler is None:
+            raise RuntimeError("knowledge manager is not initialized")
+        self.store.reset_stale_document_indexes(
+            timeout_seconds=self.index_reconciler.stale_timeout_seconds
+        )
+        claimed = []
+        for doc_id, index_types in targets.items():
+            candidates = self.store.list_indexes_needing_reconciliation_for_document(
+                doc_id=doc_id,
+                index_types=index_types,
+            )
+            for candidate in candidates:
+                claim = self.store.claim_document_index(str(candidate["index_id"]))
+                if claim is not None:
+                    claimed.append(claim)
+        claimed.sort(key=_index_claim_sort_key)
+        for item in claimed:
+            await self.index_reconciler.executor.execute(item)
+        return len(claimed)
+
+    def _document_index_status(self, doc: dict[str, Any]) -> dict[str, Any]:
+        doc_id = str(doc["doc_id"])
+        existing_indexes = self.store.list_document_indexes(doc_id)
+        existing_by_type = {str(item["index_type"]): item for item in existing_indexes}
+        source_missing = self.store.get_document_payload(doc_id) is None
+        index_statuses = []
+        for index_type in self._status_index_types(existing_indexes):
+            existing = existing_by_type.get(index_type)
+            if existing is None:
+                index_statuses.append(
+                    {
+                        "doc_id": doc_id,
+                        "index_type": index_type,
+                        "status": "untracked",
+                        "version": 0,
+                        "observed_version": 0,
+                        "error": "source document payload is missing" if source_missing else "",
+                        "tracked": False,
+                        "rebuildable": not source_missing,
+                    }
+                )
+                continue
+            index_statuses.append(
+                {
+                    **existing,
+                    "tracked": True,
+                    "rebuildable": not source_missing,
+                }
+            )
+        return {
+            "doc_id": doc_id,
+            "doc_name": doc["doc_name"],
+            "file_type": doc["file_type"],
+            "chunk_count": int(doc.get("chunk_count") or 0),
+            "source_missing": source_missing,
+            "rebuildable": not source_missing,
+            "aggregate_status": _aggregate_index_status(index_statuses),
+            "index_statuses": index_statuses,
+        }
+
+    def _status_index_types(self, existing_indexes: list[dict]) -> list[str]:
+        index_types = [INDEX_TYPE_VECTOR_FULLTEXT]
+        if self._graph_document_index_enabled() or any(
+            item.get("index_type") == INDEX_TYPE_GRAPH for item in existing_indexes
+        ):
+            index_types.append(INDEX_TYPE_GRAPH)
+        for item in existing_indexes:
+            index_type = str(item.get("index_type") or "").strip()
+            if index_type and index_type not in index_types:
+                index_types.append(index_type)
+        return index_types
+
+    def _rebuild_index_types(self, existing_indexes: list[dict], *, failed_only: bool) -> list[str]:
+        if failed_only:
+            return [
+                str(item["index_type"])
+                for item in existing_indexes
+                if str(item.get("status") or "") == "failed"
+            ]
+        index_types = [INDEX_TYPE_VECTOR_FULLTEXT]
+        if self._graph_document_index_enabled():
+            index_types.append(INDEX_TYPE_GRAPH)
+        return index_types
+
+    async def _queue_document_import(
+        self,
+        kb_id: str,
+        *,
+        file_name: str,
+        content: str,
+        file_type: str | None,
+        source: str,
+    ) -> dict:
+        task = self.store.create_task("import", kb_id=kb_id, status="processing")
+        try:
+            kb = self._require_kb(kb_id)
+            chunks = RecursiveTextChunker(
+                chunk_size=int(kb["chunk_size"]),
+                chunk_overlap=int(kb["chunk_overlap"]),
+            ).chunk(content)
+            if not chunks:
+                raise ValueError("document content is empty")
+            doc = self.store.create_document(
+                kb_id=kb_id,
+                file_name=file_name,
+                file_type=file_type or _file_type(file_name),
+                file_size=len(content.encode("utf-8")),
+                source=source,
+            )
+            self.store.save_document_payload(doc["doc_id"], content)
+            index_types = [INDEX_TYPE_VECTOR_FULLTEXT]
+            if self._graph_document_index_enabled():
+                index_types.append(INDEX_TYPE_GRAPH)
+            index_statuses = self.store.request_document_indexes(
+                kb_id=kb_id,
+                doc_id=doc["doc_id"],
+                index_types=index_types,
+            )
+            result = {
+                "uploaded": [self.store.get_document(doc["doc_id"])],
+                "failed": [],
+                "success_count": 1,
+                "failed_count": 0,
+                "index_statuses": index_statuses,
+            }
+            return self.store.update_task(task["task_id"], status="queued", result=result) or task
+        except Exception as e:
+            failed = self.store.update_task(task["task_id"], status="failed", error=str(e))
+            if failed:
+                failed["error"] = str(e)
+            raise
+
     def _delete_vector_index(self, kb_id: str) -> None:
         backend = self.retriever.vector_backend if self.retriever is not None else None
         delete_index = getattr(backend, "delete_index", None)
@@ -439,13 +754,13 @@ class KnowledgeBaseManager:
         doc_id: str,
         file_name: str,
         chunk_count: int,
-    ) -> None:
+    ) -> str | None:
         graph_manager = getattr(self, "graph_manager", None)
         if graph_manager is None:
-            return
+            return None
         try:
             chunks = self.store.list_chunks(doc_id, offset=0, limit=max(1, chunk_count))
-            graph_manager.enqueue_document(
+            return graph_manager.enqueue_document(
                 kb_id=kb_id,
                 doc_id=doc_id,
                 doc_name=file_name,
@@ -455,6 +770,25 @@ class KnowledgeBaseManager:
             from core import logger
 
             logger.warning("Graph document extraction enqueue skipped: %s", e)
+        return None
+
+    def _graph_document_index_enabled(self) -> bool:
+        if self.graph_manager is None:
+            return False
+        knowledge = self.config.get("knowledge", {}) if isinstance(self.config, dict) else {}
+        if not isinstance(knowledge, dict):
+            return False
+        graph = knowledge.get("graph", {})
+        if not isinstance(graph, dict):
+            return False
+        sources = graph.get("extraction_sources", ["documents", "chat"])
+        if not isinstance(sources, list):
+            sources = ["documents", "chat"]
+        return (
+            bool(graph.get("enabled"))
+            and bool(graph.get("extraction_enabled", True))
+            and "documents" in {str(source) for source in sources}
+        )
 
 
 def format_context(results: list[dict]) -> str:
@@ -491,6 +825,46 @@ def _embedding_cache_max_size_from_config(config: dict[str, Any]) -> int:
     return max(0, parsed)
 
 
+def _indexing_config(config: dict[str, Any]) -> dict[str, Any]:
+    knowledge = config.get("knowledge", {}) if isinstance(config, dict) else {}
+    if not isinstance(knowledge, dict):
+        return {}
+    indexing = knowledge.get("indexing", {})
+    return indexing if isinstance(indexing, dict) else {}
+
+
+def _async_indexing_enabled(config: dict[str, Any]) -> bool:
+    return str(_indexing_config(config).get("mode") or "sync").lower() == "async"
+
+
+def _indexing_auto_start(config: dict[str, Any]) -> bool:
+    value = _indexing_config(config).get("auto_start", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
+def _indexing_interval_seconds(config: dict[str, Any]) -> float:
+    try:
+        return max(0.1, float(_indexing_config(config).get("reconcile_interval_seconds", 5.0)))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _indexing_batch_size(config: dict[str, Any]) -> int:
+    try:
+        return max(1, int(_indexing_config(config).get("max_batch_size", 20)))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _indexing_stale_timeout_seconds(config: dict[str, Any]) -> float:
+    try:
+        return max(1.0, float(_indexing_config(config).get("stale_creating_timeout_seconds", 900)))
+    except (TypeError, ValueError):
+        return 900.0
+
+
 def _hnsw_index_dir_from_config(config: dict[str, Any]) -> str | Path:
     knowledge = config.get("knowledge", {}) if isinstance(config, dict) else {}
     if not isinstance(knowledge, dict):
@@ -499,6 +873,35 @@ def _hnsw_index_dir_from_config(config: dict[str, Any]) -> str | Path:
     if not isinstance(ann, dict):
         return DEFAULT_HNSW_INDEX_DIR
     return cast(str | Path, ann.get("index_dir") or DEFAULT_HNSW_INDEX_DIR)
+
+
+def _aggregate_index_status(index_statuses: list[dict[str, Any]]) -> str:
+    statuses = {str(item.get("status") or "") for item in index_statuses}
+    for status in (
+        "failed",
+        "creating",
+        "deletion_in_progress",
+        "pending",
+        "deleting",
+        "queued",
+        "untracked",
+    ):
+        if status in statuses:
+            return status
+    return "active"
+
+
+def _index_claim_sort_key(item: dict[str, Any]) -> tuple[str, int, str]:
+    index_type = str(item.get("index_type") or "")
+    return (
+        str(item.get("doc_id") or ""),
+        0
+        if index_type == INDEX_TYPE_VECTOR_FULLTEXT
+        else 1
+        if index_type == INDEX_TYPE_GRAPH
+        else 99,
+        index_type,
+    )
 
 
 def _record_timing(

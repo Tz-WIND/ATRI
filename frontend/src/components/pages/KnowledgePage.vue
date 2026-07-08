@@ -249,6 +249,91 @@
               </div>
             </section>
 
+            <section class="card index-card">
+              <div class="card-header">
+                <div class="title-stack">
+                  <span class="card-title">Index Status</span>
+                  <span class="card-meta">
+                    {{ indexStatus?.indexing?.mode || 'sync' }}
+                    {{ indexStatus?.indexing?.worker_running ? '/ worker on' : '/ worker idle' }}
+                  </span>
+                </div>
+                <div class="inline-actions">
+                  <button
+                    class="btn btn-ghost"
+                    :disabled="indexLoading || indexRebuilding"
+                    @click="loadIndexStatus"
+                  >
+                    {{ indexLoading ? 'Loading' : 'Refresh' }}
+                  </button>
+                  <button
+                    class="btn btn-ghost"
+                    :disabled="indexRebuilding || !hasFailedIndexes"
+                    @click="rebuildSelectedBaseIndexes(true)"
+                  >
+                    Retry Failed
+                  </button>
+                  <button
+                    class="btn btn-primary"
+                    :disabled="indexRebuilding || !selectedKb"
+                    @click="rebuildSelectedBaseIndexes(false)"
+                  >
+                    {{ indexRebuilding ? 'Rebuilding' : 'Rebuild Base' }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="index-summary">
+                <span>active {{ indexSummary.active }}</span>
+                <span>pending {{ indexSummary.pending }}</span>
+                <span>creating {{ indexSummary.creating }}</span>
+                <span>queued {{ indexSummary.queued }}</span>
+                <span>failed {{ indexSummary.failed }}</span>
+                <span>untracked {{ indexSummary.untracked }}</span>
+                <span>source_missing {{ indexSummary.source_missing }}</span>
+              </div>
+
+              <div
+                v-if="indexDocuments.length === 0"
+                class="empty compact-empty"
+              >
+                No index records.
+              </div>
+              <div class="rows">
+                <div
+                  v-for="item in indexDocuments"
+                  :key="item.doc_id"
+                  class="row index-row"
+                >
+                  <button
+                    class="row-main"
+                    @click="selectDocument(item.doc_id)"
+                  >
+                    <span class="row-name">{{ item.doc_name }}</span>
+                    <span class="row-meta">
+                      {{ item.chunk_count || 0 }} chunks / {{ item.aggregate_status }}
+                    </span>
+                    <span class="index-badges">
+                      <StatusBadge
+                        v-for="index in item.index_statuses"
+                        :key="`${item.doc_id}-${index.index_type}`"
+                        :type="statusBadgeType(index.status)"
+                      >
+                        {{ index.index_type }} {{ index.status }}
+                      </StatusBadge>
+                    </span>
+                  </button>
+                  <button
+                    class="btn btn-ghost"
+                    :disabled="indexRebuilding || !item.rebuildable"
+                    @click="rebuildDocumentIndexes(item.doc_id)"
+                  >
+                    Rebuild Index
+                  </button>
+                </div>
+              </div>
+            </section>
+
             <section class="card import-card">
               <div class="card-header">
                 <span class="card-title">Documents</span>
@@ -469,6 +554,9 @@ const contextSaving = ref(false)
 const showCreate = ref(false)
 const error = ref('')
 const taskStatus = ref(null)
+const indexStatus = ref(null)
+const indexLoading = ref(false)
+const indexRebuilding = ref(false)
 const retrievalResults = ref([])
 const fileInput = ref(null)
 const uploadProgress = ref({
@@ -517,6 +605,17 @@ const summary = computed(() => ({
   docs: bases.value.reduce((sum, base) => sum + (base.doc_count || 0), 0),
   chunks: bases.value.reduce((sum, base) => sum + (base.chunk_count || 0), 0),
 }))
+const indexSummary = computed(() => indexStatus.value?.summary || {
+  active: 0,
+  pending: 0,
+  creating: 0,
+  queued: 0,
+  failed: 0,
+  untracked: 0,
+  source_missing: 0,
+})
+const indexDocuments = computed(() => indexStatus.value?.documents || [])
+const hasFailedIndexes = computed(() => Number(indexSummary.value.failed || 0) > 0)
 
 const embeddingOptions = computed(() => activeEmbeddingModels.value.map(modelOption))
 const rerankOptions = computed(() => activeRerankModels.value.map(modelOption))
@@ -556,10 +655,12 @@ async function loadBases() {
       selectedKbId.value = bases.value[0]?.kb_id || ''
     }
     await loadDocuments()
+    await loadIndexStatus()
   } catch (err) {
     bases.value = []
     documents.value = []
     chunks.value = []
+    indexStatus.value = null
     error.value = err.message || 'failed to load knowledge bases'
   } finally {
     loading.value = false
@@ -610,8 +711,10 @@ async function selectBase(kbId) {
   selectedKbId.value = kbId
   selectedDocId.value = ''
   chunks.value = []
+  indexStatus.value = null
   retrievalResults.value = []
   await loadDocuments()
+  await loadIndexStatus()
 }
 
 async function removeBase() {
@@ -722,6 +825,19 @@ async function onFileSelected(event) {
   }
 }
 
+async function loadIndexStatus() {
+  indexStatus.value = null
+  if (!selectedKbId.value) return
+  indexLoading.value = true
+  try {
+    indexStatus.value = await api.getKnowledgeIndexStatus(selectedKbId.value)
+  } catch (err) {
+    error.value = err.message || 'failed to load index status'
+  } finally {
+    indexLoading.value = false
+  }
+}
+
 function uploadFailureSummary(failedUploads) {
   const visible = failedUploads.slice(0, 5).join('; ')
   const more = failedUploads.length > 5 ? `; +${failedUploads.length - 5} more` : ''
@@ -772,6 +888,38 @@ async function removeChunk(chunkId) {
     await loadBases()
   } catch (err) {
     error.value = err.message || 'failed to delete chunk'
+  }
+}
+
+async function rebuildSelectedBaseIndexes(failedOnly = false) {
+  if (!selectedKb.value) return
+  indexRebuilding.value = true
+  error.value = ''
+  try {
+    const result = await api.rebuildKnowledgeBaseIndexes(selectedKb.value.kb_id, {
+      failed_only: failedOnly,
+    })
+    indexStatus.value = result.status || null
+    await loadBases()
+  } catch (err) {
+    error.value = err.message || 'failed to rebuild indexes'
+  } finally {
+    indexRebuilding.value = false
+  }
+}
+
+async function rebuildDocumentIndexes(docId) {
+  if (!docId) return
+  indexRebuilding.value = true
+  error.value = ''
+  try {
+    const result = await api.rebuildKnowledgeDocumentIndexes(docId)
+    indexStatus.value = result.status || null
+    await loadBases()
+  } catch (err) {
+    error.value = err.message || 'failed to rebuild document index'
+  } finally {
+    indexRebuilding.value = false
   }
 }
 
@@ -885,6 +1033,13 @@ function formatBytes(value) {
 function scoreLabel(item) {
   const score = item.score ?? item.final_score ?? item.dense_score ?? 0
   return Number(score).toFixed(3)
+}
+
+function statusBadgeType(status) {
+  if (status === 'active') return 'on'
+  if (status === 'failed') return 'off'
+  if (['pending', 'creating', 'queued', 'deleting', 'deletion_in_progress'].includes(status)) return 'info'
+  return 'default'
 }
 </script>
 
@@ -1072,6 +1227,36 @@ function scoreLabel(item) {
   border-radius: 999px;
   padding: 2px 8px;
   overflow-wrap: anywhere;
+}
+
+.index-summary {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.index-summary span {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(24, 24, 24, 0.42);
+  color: var(--t2);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 5px 7px;
+  overflow-wrap: anywhere;
+}
+
+.index-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.index-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
 }
 
 .context-controls {

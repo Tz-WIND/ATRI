@@ -117,6 +117,22 @@ def _positive_float(value: Any, field: str) -> float:
     return parsed
 
 
+def _float_at_least(value: Any, field: str, minimum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{field} must be a number") from e
+    return max(float(minimum), parsed)
+
+
+def _int_at_least(value: Any, field: str, minimum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{field} must be an integer") from e
+    return max(int(minimum), parsed)
+
+
 def _nonnegative_int(value: Any, field: str) -> int:
     try:
         parsed = int(value)
@@ -192,6 +208,11 @@ def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
         merged["vector_backend"] = vector_backend
     if "ann" in incoming:
         merged["ann"] = _merge_ann_knowledge_config(merged.get("ann", {}), incoming["ann"])
+    if "indexing" in incoming:
+        merged["indexing"] = _merge_indexing_knowledge_config(
+            merged.get("indexing", {}),
+            incoming["indexing"],
+        )
     if "graph" in incoming:
         merged["graph"] = _merge_graph_knowledge_config(
             merged.get("graph", {}),
@@ -205,6 +226,7 @@ def _merge_knowledge_config(current: dict, incoming: dict) -> dict:
     vector_backend = str(merged.get("vector_backend") or "exact").strip().lower()
     merged["vector_backend"] = vector_backend if vector_backend in {"exact", "hnsw"} else "exact"
     merged["ann"] = _merge_ann_knowledge_config({}, merged.get("ann", {}))
+    merged["indexing"] = _merge_indexing_knowledge_config({}, merged.get("indexing", {}))
     merged.setdefault("graph", _merge_graph_knowledge_config({}, {}))
     return merged
 
@@ -226,6 +248,43 @@ def _merge_ann_knowledge_config(current: object, incoming: object) -> dict:
     merged.setdefault("ef_search", 128)
     merged.setdefault("m", 32)
     merged.setdefault("ef_construction", 200)
+    return merged
+
+
+def _merge_indexing_knowledge_config(current: object, incoming: object) -> dict:
+    if not isinstance(incoming, dict):
+        raise ValueError("knowledge.indexing must be an object")
+    merged = dict(current if isinstance(current, dict) else {})
+    if "mode" in incoming:
+        mode = str(incoming.get("mode") or "sync").strip().lower()
+        if mode not in {"sync", "async"}:
+            raise ValueError("knowledge.indexing.mode must be one of: sync, async")
+        merged["mode"] = mode
+    if "auto_start" in incoming:
+        merged["auto_start"] = _legacy_bool(incoming["auto_start"])
+    if "reconcile_interval_seconds" in incoming:
+        merged["reconcile_interval_seconds"] = _float_at_least(
+            incoming["reconcile_interval_seconds"],
+            "knowledge.indexing.reconcile_interval_seconds",
+            0.1,
+        )
+    if "max_batch_size" in incoming:
+        merged["max_batch_size"] = _int_at_least(
+            incoming["max_batch_size"],
+            "knowledge.indexing.max_batch_size",
+            1,
+        )
+    if "stale_creating_timeout_seconds" in incoming:
+        merged["stale_creating_timeout_seconds"] = _float_at_least(
+            incoming["stale_creating_timeout_seconds"],
+            "knowledge.indexing.stale_creating_timeout_seconds",
+            1.0,
+        )
+    merged.setdefault("mode", "sync")
+    merged.setdefault("auto_start", True)
+    merged.setdefault("reconcile_interval_seconds", 5.0)
+    merged.setdefault("max_batch_size", 20)
+    merged.setdefault("stale_creating_timeout_seconds", 900.0)
     return merged
 
 
@@ -392,6 +451,7 @@ def _mask_knowledge_config(cfg: dict | None) -> dict:
             "hnsw" if str(cfg.get("vector_backend") or "").strip().lower() == "hnsw" else "exact"
         ),
         "ann": _merge_ann_knowledge_config({}, cfg.get("ann", {})),
+        "indexing": _merge_indexing_knowledge_config({}, cfg.get("indexing", {})),
         "graph": graph,
     }
 
@@ -1014,6 +1074,9 @@ def register(dashboard: Dashboard) -> None:
             )
         ):
             graph_manager.update_config(lc.config)
+        knowledge_manager = getattr(lc, "knowledge_manager", None)
+        if knowledge_manager is not None and "knowledge" in data:
+            knowledge_manager.update_config(lc.config)
         lc.save_config()
         if audio_host_restart_needed:
             try:

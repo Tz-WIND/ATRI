@@ -8,6 +8,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
@@ -139,6 +140,31 @@ class KnowledgeStore:
                 created_at REAL NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS document_payloads (
+                doc_id TEXT PRIMARY KEY REFERENCES documents(doc_id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                parser_metadata TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS document_indexes (
+                index_id TEXT PRIMARY KEY,
+                kb_id TEXT NOT NULL REFERENCES knowledge_bases(kb_id) ON DELETE CASCADE,
+                doc_id TEXT NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+                index_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                observed_version INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '',
+                result TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                last_reconciled_at REAL,
+                UNIQUE(doc_id, index_type)
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -153,6 +179,9 @@ class KnowledgeStore:
             CREATE INDEX IF NOT EXISTS idx_documents_kb_id ON documents(kb_id);
             CREATE INDEX IF NOT EXISTS idx_chunks_kb_id ON chunks(kb_id);
             CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
+            CREATE INDEX IF NOT EXISTS idx_document_indexes_doc_id ON document_indexes(doc_id);
+            CREATE INDEX IF NOT EXISTS idx_document_indexes_reconcile
+                ON document_indexes(status, observed_version, version);
             """
         )
         self._ensure_chunk_vector_columns(conn)
@@ -335,6 +364,23 @@ class KnowledgeStore:
         self._delete_vector_matrix_cache_for_kb(kb_id)
         self.refresh_counts(kb_id, doc_id)
 
+    def replace_chunks(
+        self,
+        kb_id: str,
+        doc_id: str,
+        chunks: list[tuple[str, list[float]]],
+    ) -> None:
+        self._delete_fts_doc(doc_id)
+        self._delete_embedding_cache_for_doc(doc_id)
+        self._delete_vector_candidate_cache_for_kb(kb_id)
+        self._delete_vector_matrix_cache_for_kb(kb_id)
+        self._conn().execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+        self._conn().commit()
+        if chunks:
+            self.add_chunks(kb_id, doc_id, chunks)
+        else:
+            self.refresh_counts(kb_id, doc_id)
+
     def get_document(self, doc_id: str) -> dict | None:
         row = self._conn().execute("SELECT * FROM documents WHERE doc_id=?", (doc_id,)).fetchone()
         return dict(row) if row else None
@@ -399,6 +445,432 @@ class KnowledgeStore:
         cur = self._conn().execute("DELETE FROM chunks WHERE chunk_id=?", (chunk_id,))
         self._conn().commit()
         self.refresh_counts(row["kb_id"], row["doc_id"])
+        return cur.rowcount > 0
+
+    def save_document_payload(
+        self,
+        doc_id: str,
+        content: str,
+        *,
+        parser_metadata: dict[str, Any] | None = None,
+    ) -> dict:
+        now = utc_timestamp()
+        digest = sha256(content.encode("utf-8")).hexdigest()
+        self._conn().execute(
+            """
+            INSERT INTO document_payloads
+                (doc_id, content, content_sha256, parser_metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(doc_id) DO UPDATE SET
+                content=excluded.content,
+                content_sha256=excluded.content_sha256,
+                parser_metadata=excluded.parser_metadata,
+                updated_at=excluded.updated_at
+            """,
+            (
+                doc_id,
+                content,
+                digest,
+                json.dumps(parser_metadata or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        self._conn().commit()
+        return self.get_document_payload(doc_id) or {}
+
+    def get_document_payload(self, doc_id: str) -> dict | None:
+        row = (
+            self._conn()
+            .execute("SELECT * FROM document_payloads WHERE doc_id=?", (doc_id,))
+            .fetchone()
+        )
+        if not row:
+            return None
+        data = dict(row)
+        data["parser_metadata"] = json.loads(data.get("parser_metadata") or "{}")
+        return data
+
+    def request_document_indexes(
+        self,
+        *,
+        kb_id: str,
+        doc_id: str,
+        index_types: list[str],
+    ) -> list[dict]:
+        now = utc_timestamp()
+        conn = self._conn()
+        for index_type in index_types:
+            cleaned_type = str(index_type).strip()
+            if not cleaned_type:
+                continue
+            existing = conn.execute(
+                """
+                SELECT index_id, version
+                FROM document_indexes
+                WHERE doc_id=? AND index_type=?
+                """,
+                (doc_id, cleaned_type),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE document_indexes
+                    SET status='pending',
+                        version=?,
+                        error='',
+                        result='{}',
+                        updated_at=?
+                    WHERE index_id=?
+                    """,
+                    (int(existing["version"]) + 1, now, existing["index_id"]),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO document_indexes
+                        (index_id, kb_id, doc_id, index_type, status, version,
+                         observed_version, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'pending', 1, 0, ?, ?)
+                    """,
+                    (str(uuid.uuid4()), kb_id, doc_id, cleaned_type, now, now),
+                )
+        conn.commit()
+        return self.list_document_indexes(doc_id)
+
+    def record_document_index_active(
+        self,
+        *,
+        kb_id: str,
+        doc_id: str,
+        index_type: str,
+        result: dict[str, Any] | None = None,
+    ) -> dict | None:
+        now = utc_timestamp()
+        self._conn().execute(
+            """
+            INSERT INTO document_indexes
+                (index_id, kb_id, doc_id, index_type, status, version,
+                 observed_version, error, result, created_at, updated_at,
+                 last_reconciled_at)
+            VALUES (?, ?, ?, ?, 'active', 1, 1, '', ?, ?, ?, ?)
+            ON CONFLICT(doc_id, index_type) DO UPDATE SET
+                status='active',
+                observed_version=document_indexes.version,
+                error='',
+                result=excluded.result,
+                updated_at=excluded.updated_at,
+                last_reconciled_at=excluded.last_reconciled_at
+            """,
+            (
+                str(uuid.uuid4()),
+                kb_id,
+                doc_id,
+                str(index_type).strip(),
+                json.dumps(result or {}, ensure_ascii=False),
+                now,
+                now,
+                now,
+            ),
+        )
+        self._conn().commit()
+        indexes = self.list_document_indexes(doc_id)
+        return next(
+            (item for item in indexes if item["index_type"] == str(index_type).strip()),
+            None,
+        )
+
+    def record_document_index_queued(
+        self,
+        *,
+        kb_id: str,
+        doc_id: str,
+        index_type: str,
+        result: dict[str, Any] | None = None,
+    ) -> dict | None:
+        now = utc_timestamp()
+        self._conn().execute(
+            """
+            INSERT INTO document_indexes
+                (index_id, kb_id, doc_id, index_type, status, version,
+                 observed_version, error, result, created_at, updated_at,
+                 last_reconciled_at)
+            VALUES (?, ?, ?, ?, 'queued', 1, 1, '', ?, ?, ?, ?)
+            ON CONFLICT(doc_id, index_type) DO UPDATE SET
+                status='queued',
+                observed_version=document_indexes.version,
+                error='',
+                result=excluded.result,
+                updated_at=excluded.updated_at,
+                last_reconciled_at=excluded.last_reconciled_at
+            """,
+            (
+                str(uuid.uuid4()),
+                kb_id,
+                doc_id,
+                str(index_type).strip(),
+                json.dumps(result or {}, ensure_ascii=False),
+                now,
+                now,
+                now,
+            ),
+        )
+        self._conn().commit()
+        indexes = self.list_document_indexes(doc_id)
+        return next(
+            (item for item in indexes if item["index_type"] == str(index_type).strip()),
+            None,
+        )
+
+    def list_document_indexes(self, doc_id: str) -> list[dict]:
+        rows = (
+            self._conn()
+            .execute(
+                """
+                SELECT doc_id, index_type, status, version, observed_version, error
+                FROM document_indexes
+                WHERE doc_id=?
+                ORDER BY
+                    CASE index_type
+                        WHEN 'vector_fulltext' THEN 0
+                        WHEN 'graph' THEN 1
+                        ELSE 2
+                    END,
+                    index_type ASC
+                """,
+                (doc_id,),
+            )
+            .fetchall()
+        )
+        return [dict(row) for row in rows]
+
+    def list_indexes_needing_reconciliation_for_document(
+        self,
+        *,
+        doc_id: str,
+        index_types: list[str],
+    ) -> list[dict]:
+        cleaned_types = [str(item).strip() for item in index_types if str(item).strip()]
+        if not cleaned_types:
+            return []
+        rows = (
+            self._conn()
+            .execute(
+                """
+                SELECT index_id, kb_id, doc_id, index_type, status, version,
+                       observed_version, error
+                FROM document_indexes
+                WHERE doc_id=?
+                    AND index_type IN (SELECT value FROM json_each(?))
+                    AND (
+                        (status='pending' AND observed_version < version)
+                        OR status='deleting'
+                    )
+                ORDER BY
+                    CASE index_type
+                        WHEN 'vector_fulltext' THEN 0
+                        WHEN 'graph' THEN 1
+                        ELSE 2
+                    END,
+                    index_type ASC
+                """,
+                (doc_id, json.dumps(cleaned_types)),
+            )
+            .fetchall()
+        )
+        return [dict(row) for row in rows]
+
+    def list_indexes_needing_reconciliation(self, *, limit: int = 20) -> list[dict]:
+        rows = (
+            self._conn()
+            .execute(
+                """
+                SELECT index_id, kb_id, doc_id, index_type, status, version,
+                       observed_version, error
+                FROM document_indexes
+                WHERE
+                    (status='pending' AND observed_version < version)
+                    OR status='deleting'
+                ORDER BY
+                    updated_at ASC,
+                    CASE index_type
+                        WHEN 'vector_fulltext' THEN 0
+                        WHEN 'graph' THEN 1
+                        ELSE 2
+                    END,
+                    index_type ASC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            )
+            .fetchall()
+        )
+        return [dict(row) for row in rows]
+
+    def claim_document_index(self, index_id: str) -> dict | None:
+        row = (
+            self._conn()
+            .execute(
+                """
+                SELECT index_id, kb_id, doc_id, index_type, status, version, observed_version
+                FROM document_indexes
+                WHERE index_id=?
+                """,
+                (index_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        now = utc_timestamp()
+        if data["status"] == "pending" and int(data["observed_version"]) < int(data["version"]):
+            cur = self._conn().execute(
+                """
+                UPDATE document_indexes
+                SET status='creating',
+                    updated_at=?,
+                    last_reconciled_at=?
+                WHERE index_id=?
+                    AND status='pending'
+                    AND observed_version < version
+                """,
+                (now, now, index_id),
+            )
+            self._conn().commit()
+            if cur.rowcount <= 0:
+                return None
+            data["action"] = "create" if int(data["version"]) == 1 else "update"
+            data["target_version"] = int(data["version"])
+            data["status"] = "creating"
+            return data
+        if data["status"] == "deleting":
+            cur = self._conn().execute(
+                """
+                UPDATE document_indexes
+                SET status='deletion_in_progress',
+                    updated_at=?,
+                    last_reconciled_at=?
+                WHERE index_id=? AND status='deleting'
+                """,
+                (now, now, index_id),
+            )
+            self._conn().commit()
+            if cur.rowcount <= 0:
+                return None
+            data["action"] = "delete"
+            data["target_version"] = None
+            data["status"] = "deletion_in_progress"
+            return data
+        return None
+
+    def complete_document_index(
+        self,
+        *,
+        doc_id: str,
+        index_type: str,
+        target_version: int,
+        result: dict[str, Any] | None = None,
+    ) -> bool:
+        cur = self._conn().execute(
+            """
+            UPDATE document_indexes
+            SET status='active',
+                observed_version=?,
+                error='',
+                result=?,
+                updated_at=?
+            WHERE doc_id=?
+                AND index_type=?
+                AND status='creating'
+                AND version=?
+            """,
+            (
+                int(target_version),
+                json.dumps(result or {}, ensure_ascii=False),
+                utc_timestamp(),
+                doc_id,
+                index_type,
+                int(target_version),
+            ),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    def queue_document_index(
+        self,
+        *,
+        doc_id: str,
+        index_type: str,
+        target_version: int,
+        result: dict[str, Any] | None = None,
+    ) -> bool:
+        cur = self._conn().execute(
+            """
+            UPDATE document_indexes
+            SET status='queued',
+                observed_version=?,
+                error='',
+                result=?,
+                updated_at=?
+            WHERE doc_id=?
+                AND index_type=?
+                AND status='creating'
+                AND version=?
+            """,
+            (
+                int(target_version),
+                json.dumps(result or {}, ensure_ascii=False),
+                utc_timestamp(),
+                doc_id,
+                index_type,
+                int(target_version),
+            ),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    def fail_document_index(self, *, index_id: str, error: str) -> bool:
+        cur = self._conn().execute(
+            """
+            UPDATE document_indexes
+            SET status='failed',
+                error=?,
+                updated_at=?
+            WHERE index_id=?
+                AND status IN ('creating', 'deletion_in_progress')
+            """,
+            (error, utc_timestamp(), index_id),
+        )
+        self._conn().commit()
+        return cur.rowcount > 0
+
+    def reset_stale_document_indexes(self, *, timeout_seconds: float) -> int:
+        cutoff = utc_timestamp() - max(1.0, float(timeout_seconds))
+        cur = self._conn().execute(
+            """
+            UPDATE document_indexes
+            SET status='pending',
+                error='index claim timed out; queued for retry',
+                updated_at=?
+            WHERE status='creating'
+                AND COALESCE(last_reconciled_at, updated_at) < ?
+                AND observed_version < version
+            """,
+            (utc_timestamp(), cutoff),
+        )
+        self._conn().commit()
+        return int(cur.rowcount)
+
+    def delete_document_index(self, *, doc_id: str, index_type: str) -> bool:
+        cur = self._conn().execute(
+            """
+            DELETE FROM document_indexes
+            WHERE doc_id=? AND index_type=? AND status='deletion_in_progress'
+            """,
+            (doc_id, index_type),
+        )
+        self._conn().commit()
         return cur.rowcount > 0
 
     def vector_chunks(self, kb_ids: list[str]) -> list[dict]:

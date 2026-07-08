@@ -39,6 +39,9 @@ def test_api_exposes_knowledge_routes():
         "deleteKnowledgeChunk",
         "retrieveKnowledge",
         "getKnowledgeTask",
+        "getKnowledgeIndexStatus",
+        "rebuildKnowledgeBaseIndexes",
+        "rebuildKnowledgeDocumentIndexes",
         "getDocumentSupport",
     ]
     for method in expected_methods:
@@ -55,6 +58,9 @@ def test_api_exposes_knowledge_routes():
         "/api/knowledge/chunks/${encodeURIComponent(chunkId)}",
         "/api/knowledge/retrieve",
         "/api/knowledge/tasks/${encodeURIComponent(taskId)}",
+        "/api/knowledge/bases/${encodeURIComponent(kbId)}/indexes",
+        "/api/knowledge/bases/${encodeURIComponent(kbId)}/indexes/rebuild",
+        "/api/knowledge/documents/${encodeURIComponent(docId)}/indexes/rebuild",
         "/api/knowledge/document-support",
     ]
     for path in expected_paths:
@@ -89,6 +95,15 @@ def test_knowledge_page_supports_complete_workflow():
         "top_k_sparse",
         "top_m_final",
         "taskStatus",
+        "indexStatus",
+        "loadIndexStatus",
+        "rebuildSelectedBaseIndexes",
+        "rebuildDocumentIndexes",
+        "Index Status",
+        "Rebuild Base",
+        "Rebuild Index",
+        "source_missing",
+        "untracked",
         "retrievalResults",
         "knowledgeConfig",
         "toggleSelectedBaseForChat",

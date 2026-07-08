@@ -69,6 +69,15 @@ knowledge:
   # Dense vector backend. `exact` scans all vectors; `hnsw` uses a persisted ANN
   # sidecar index and rescoring candidates. hnsw requires the hnswlib package.
   vector_backend: exact
+  # Document indexing lifecycle. `sync` keeps upload behavior immediate and
+  # backward-compatible. `async` stores document payloads first, then a local
+  # reconciler builds vector/fulltext and graph indexes in the background.
+  indexing:
+    mode: sync
+    auto_start: true
+    reconcile_interval_seconds: 5
+    max_batch_size: 20
+    stale_creating_timeout_seconds: 900
   ann:
     enabled: false
     index_dir: data/knowledge/vector_indexes

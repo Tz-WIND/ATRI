@@ -95,6 +95,11 @@ export function useApi() {
     updateKnowledgeBase: (kbId, data) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}`, { method: 'PATCH', body: JSON.stringify(data) }),
     deleteKnowledgeBase: (kbId) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}`, { method: 'DELETE' }),
     getKnowledgeDocuments: (kbId) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}/documents`),
+    getKnowledgeIndexStatus: (kbId) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}/indexes`),
+    rebuildKnowledgeBaseIndexes: (kbId, options = {}) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}/indexes/rebuild`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
     importKnowledgeDocument: (kbId, data) => request(`/api/knowledge/bases/${encodeURIComponent(kbId)}/documents/import`, { method: 'POST', body: JSON.stringify(data) }),
     uploadKnowledgeDocument: (kbId, file) => {
       const formData = new FormData()
@@ -102,6 +107,10 @@ export function useApi() {
       return requestForm(`/api/knowledge/bases/${encodeURIComponent(kbId)}/documents/upload`, formData)
     },
     deleteKnowledgeDocument: (docId) => request(`/api/knowledge/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' }),
+    rebuildKnowledgeDocumentIndexes: (docId, options = {}) => request(`/api/knowledge/documents/${encodeURIComponent(docId)}/indexes/rebuild`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
     getKnowledgeChunks: (docId, page = 1, pageSize = 100) => request(`/api/knowledge/documents/${encodeURIComponent(docId)}/chunks?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`),
     deleteKnowledgeChunk: (chunkId) => request(`/api/knowledge/chunks/${encodeURIComponent(chunkId)}`, { method: 'DELETE' }),
     retrieveKnowledge: (data) => request('/api/knowledge/retrieve', { method: 'POST', body: JSON.stringify(data) }),

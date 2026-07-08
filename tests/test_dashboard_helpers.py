@@ -456,6 +456,53 @@ def test_dashboard_masks_and_merges_vector_knowledge_ann_settings():
     assert masked["ann"] == merged["ann"]
 
 
+def test_dashboard_masks_and_merges_knowledge_indexing_settings():
+    merged = models._merge_knowledge_config(
+        {"indexing": {"mode": "sync", "max_batch_size": 10}},
+        {
+            "indexing": {
+                "mode": "ASYNC",
+                "auto_start": False,
+                "reconcile_interval_seconds": "2.5",
+                "max_batch_size": "12",
+                "stale_creating_timeout_seconds": "30",
+            }
+        },
+    )
+    masked = models._mask_knowledge_config(merged)
+
+    assert merged["indexing"] == {
+        "mode": "async",
+        "auto_start": False,
+        "reconcile_interval_seconds": 2.5,
+        "max_batch_size": 12,
+        "stale_creating_timeout_seconds": 30.0,
+    }
+    assert masked["indexing"] == merged["indexing"]
+
+
+def test_dashboard_rejects_invalid_knowledge_indexing_mode():
+    with pytest.raises(ValueError, match=r"knowledge\.indexing\.mode must be one of: sync, async"):
+        models._merge_knowledge_config({}, {"indexing": {"mode": "batch"}})
+
+
+def test_dashboard_clamps_knowledge_indexing_numeric_minima():
+    merged = models._merge_knowledge_config(
+        {},
+        {
+            "indexing": {
+                "reconcile_interval_seconds": 0,
+                "max_batch_size": 0,
+                "stale_creating_timeout_seconds": 0,
+            }
+        },
+    )
+
+    assert merged["indexing"]["reconcile_interval_seconds"] == 0.1
+    assert merged["indexing"]["max_batch_size"] == 1
+    assert merged["indexing"]["stale_creating_timeout_seconds"] == 1.0
+
+
 def test_dashboard_masks_and_merges_graph_multihop_cache_limits():
     merged = models._merge_graph_knowledge_config(
         {

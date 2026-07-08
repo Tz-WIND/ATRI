@@ -95,6 +95,29 @@ def register(dashboard: Dashboard) -> None:
         except ValueError as e:
             return jsonify({"error": str(e)}), 404
 
+    @app.route("/api/knowledge/bases/<kb_id>/indexes", methods=["GET"])
+    async def get_index_status(kb_id: str):
+        manager = _knowledge_manager(dashboard)
+        try:
+            return jsonify(await manager.get_index_status(kb_id))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+
+    @app.route("/api/knowledge/bases/<kb_id>/indexes/rebuild", methods=["POST"])
+    async def rebuild_base_indexes(kb_id: str):
+        manager = _knowledge_manager(dashboard)
+        data = await request.get_json(silent=True) or {}
+        try:
+            return jsonify(
+                await manager.rebuild_document_indexes(
+                    kb_id=kb_id,
+                    failed_only=_bool_flag(data.get("failed_only")),
+                )
+            )
+        except ValueError as e:
+            status = 404 if "not found" in str(e) else 400
+            return jsonify({"error": str(e)}), status
+
     @app.route("/api/knowledge/bases/<kb_id>/documents/import", methods=["POST"])
     async def import_document(kb_id: str):
         manager = _knowledge_manager(dashboard)
@@ -138,6 +161,25 @@ def register(dashboard: Dashboard) -> None:
         if not deleted:
             return jsonify({"error": "document not found"}), 404
         return jsonify({"ok": True})
+
+    @app.route("/api/knowledge/documents/<doc_id>/indexes/rebuild", methods=["POST"])
+    async def rebuild_document_indexes(doc_id: str):
+        manager = _knowledge_manager(dashboard)
+        doc = manager.store.get_document(doc_id)
+        if doc is None:
+            return jsonify({"error": "document not found"}), 404
+        data = await request.get_json(silent=True) or {}
+        try:
+            return jsonify(
+                await manager.rebuild_document_indexes(
+                    kb_id=str(doc["kb_id"]),
+                    doc_id=doc_id,
+                    failed_only=_bool_flag(data.get("failed_only")),
+                )
+            )
+        except ValueError as e:
+            status = 404 if "not found" in str(e) else 400
+            return jsonify({"error": str(e)}), status
 
     @app.route("/api/knowledge/documents/<doc_id>/chunks", methods=["GET"])
     async def list_chunks(doc_id: str):
@@ -346,6 +388,12 @@ def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _bool_flag(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _ranking_policy(value: object) -> str:

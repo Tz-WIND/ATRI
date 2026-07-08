@@ -433,6 +433,70 @@
               <div class="section-title-row">
                 <div>
                   <div class="subsection-title">
+                    Indexing Lifecycle
+                  </div>
+                  <p class="section-desc compact">
+                    Queue reconciliation settings for document vector and graph indexes.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="switch-line"
+                  :class="{ active: form.knowledge.indexing.auto_start }"
+                  @click="form.knowledge.indexing.auto_start = !form.knowledge.indexing.auto_start"
+                >
+                  <span class="switch-track">
+                    <span class="switch-thumb" />
+                  </span>
+                  <span>Auto Start Worker</span>
+                </button>
+              </div>
+
+              <div class="setting-grid">
+                <label class="setting-field">
+                  <span>Indexing Mode</span>
+                  <select v-model="form.knowledge.indexing.mode">
+                    <option value="sync">
+                      Sync
+                    </option>
+                    <option value="async">
+                      Async
+                    </option>
+                  </select>
+                </label>
+                <label class="setting-field">
+                  <span>Reconcile Interval</span>
+                  <input
+                    v-model.number="form.knowledge.indexing.reconcile_interval_seconds"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Max Batch Size</span>
+                  <input
+                    v-model.number="form.knowledge.indexing.max_batch_size"
+                    type="number"
+                    min="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Stale Claim Timeout</span>
+                  <input
+                    v-model.number="form.knowledge.indexing.stale_creating_timeout_seconds"
+                    type="number"
+                    min="1"
+                    step="1"
+                  >
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
                     Approximate Dense Search
                   </div>
                   <p class="section-desc compact">
@@ -1171,6 +1235,13 @@ const form = ref({
       m: 32,
       ef_construction: 200,
     },
+    indexing: {
+      mode: 'sync',
+      auto_start: true,
+      reconcile_interval_seconds: 5,
+      max_batch_size: 20,
+      stale_creating_timeout_seconds: 900,
+    },
     graph: {
       enabled: false,
       uri: 'neo4j://localhost:7687',
@@ -1449,6 +1520,7 @@ function normalizeKnowledge(value = {}) {
     ),
     vector_backend: ann.enabled ? 'hnsw' : 'exact',
     ann,
+    indexing: normalizeKnowledgeIndexing(value.indexing),
     graph: normalizeGraphKnowledge(value.graph),
   }
 }
@@ -1469,6 +1541,23 @@ function normalizeEmbeddingCacheMaxSize(value) {
   const parsed = Number(value ?? 20000)
   if (!Number.isFinite(parsed)) return 20000
   return Math.max(0, Math.trunc(parsed))
+}
+
+function normalizeKnowledgeIndexing(value = {}) {
+  const mode = String(value.mode || 'sync').trim().toLowerCase()
+  return {
+    mode: mode === 'async' ? 'async' : 'sync',
+    auto_start: value.auto_start !== false,
+    reconcile_interval_seconds: Math.max(
+      0.1,
+      normalizePositiveNumber(value.reconcile_interval_seconds, 5),
+    ),
+    max_batch_size: normalizePositiveInteger(value.max_batch_size, 20),
+    stale_creating_timeout_seconds: Math.max(
+      1,
+      normalizePositiveNumber(value.stale_creating_timeout_seconds, 900),
+    ),
+  }
 }
 
 function normalizeGraphSources(value) {
@@ -1846,6 +1935,7 @@ async function saveSettings() {
       ),
       vector_backend: knowledge.vector_backend,
       ann: knowledge.ann,
+      indexing: knowledge.indexing,
       graph,
     }
     await api.saveSettings({
