@@ -65,6 +65,7 @@ DriverFactory = Callable[[str, tuple[str, str]], Any]
 _ENTITY_FULLTEXT_INDEX = "entity_text"
 _FACT_FULLTEXT_INDEX = "fact_text"
 _GRAPH_REVISION_METADATA_KEY = "graph_revision"
+_GRAPH_SOURCE_PROJECTION_BACKFILL_METADATA_KEY = "graph_source_projection_backfill_v1"
 _PERSISTENT_MULTI_HOP_EXPANSION_CACHE_VERSION = "persistent_multi_hop_expansion:v2"
 _MULTI_HOP_EXPANSION_CACHE_MODES = {"off", "memory", "persistent"}
 _ACTIVE_FACT_STATUS = "active"
@@ -961,27 +962,6 @@ class Neo4jGraphClient:
             "CREATE INDEX fact_updated_at IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.updated_at)",
             "CREATE INDEX fact_predicate IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.predicate)",
             "CREATE INDEX entity_name_key IF NOT EXISTS FOR (e:Entity) ON (e.name_key)",
-            """
-            MATCH (s:Entity)-[r:FACT]->(o:Entity)
-            WHERE r.fact_key IS NOT NULL
-            MERGE (fact_node:GraphFact {fact_key: r.fact_key})
-              ON CREATE SET fact_node.created_at = coalesce(r.created_at, r.updated_at)
-            SET fact_node.updated_at = coalesce(r.updated_at, fact_node.updated_at),
-                fact_node.predicate = r.predicate
-            MERGE (fact_node)-[:FACT_SUBJECT]->(s)
-            MERGE (fact_node)-[:FACT_OBJECT]->(o)
-            WITH r, fact_node,
-                 CASE
-                   WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
-                   WHEN r.source_id IS NULL THEN []
-                   ELSE [r.source_id]
-                 END AS source_ids
-            UNWIND source_ids AS source_id
-            WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
-            WHERE source_id <> ''
-            MERGE (source_node:GraphSource {source_id: source_id})
-            MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)
-            """,
             "CREATE FULLTEXT INDEX entity_text IF NOT EXISTS "
             "FOR (e:Entity) ON EACH [e.name, e.name_key, e.type, e.type_key]",
             "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS "
@@ -1010,6 +990,7 @@ class Neo4jGraphClient:
                         )
                     else:
                         logger.debug("Neo4j graph constraint skipped: %s", e)
+            self._ensure_source_projection_backfill(session)
             try:
                 revision_rows = list(
                     session.run(
@@ -1033,6 +1014,140 @@ class Neo4jGraphClient:
         self._fulltext_indexes_ready = fulltext_ready
         self._fulltext_index_unavailable_reason = (
             None if fulltext_ready else "; ".join(fulltext_unavailable_reasons)
+        )
+
+    def _ensure_source_projection_backfill(self, session: Any) -> None:
+        if self._source_projection_backfill_marked_complete(session):
+            return
+        try:
+            if self._source_projection_summary_is_complete(session):
+                self._mark_source_projection_backfill_complete(session)
+                return
+        except Exception as e:
+            logger.debug("Neo4j graph source projection summary skipped: %s", e)
+        try:
+            session.run(
+                """
+                MATCH (s:Entity)-[r:FACT]->(o:Entity)
+                WHERE r.fact_key IS NOT NULL
+                MERGE (fact_node:GraphFact {fact_key: r.fact_key})
+                  ON CREATE SET fact_node.created_at = coalesce(r.created_at, r.updated_at)
+                SET fact_node.updated_at = coalesce(r.updated_at, fact_node.updated_at),
+                    fact_node.predicate = r.predicate
+                MERGE (fact_node)-[:FACT_SUBJECT]->(s)
+                MERGE (fact_node)-[:FACT_OBJECT]->(o)
+                WITH r, fact_node,
+                     CASE
+                       WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
+                       WHEN r.source_id IS NULL THEN []
+                       ELSE [r.source_id]
+                     END AS source_ids
+                UNWIND source_ids AS source_id
+                WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
+                WHERE source_id <> ''
+                MERGE (source_node:GraphSource {source_id: source_id})
+                MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)
+                """,
+                timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+            )
+            self._mark_source_projection_backfill_complete(session)
+        except Exception as e:
+            logger.debug("Neo4j graph source projection backfill skipped: %s", e)
+
+    def _source_projection_backfill_marked_complete(self, session: Any) -> bool:
+        rows = list(
+            session.run(
+                """
+                MATCH (meta:GraphMetadata {key: $key})
+                RETURN meta.value AS value
+                """,
+                key=_GRAPH_SOURCE_PROJECTION_BACKFILL_METADATA_KEY,
+                timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+            )
+        )
+        if not rows:
+            return False
+        value = _row_value(rows[0], "value")
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "no", "off"}
+        return bool(value)
+
+    def _source_projection_summary_is_complete(self, session: Any) -> bool:
+        rows = list(
+            session.run(
+                """
+                CALL () {
+                  MATCH ()-[r:FACT]->()
+                  WHERE r.fact_key IS NOT NULL
+                  RETURN count(r) AS fact_count
+                }
+                CALL () {
+                  MATCH (f:GraphFact)
+                  RETURN count(f) AS graph_fact_count
+                }
+                CALL () {
+                  MATCH (:GraphFact)-[r:FACT_SUBJECT]->(:Entity)
+                  RETURN count(r) AS subject_link_count
+                }
+                CALL () {
+                  MATCH (:GraphFact)-[r:FACT_OBJECT]->(:Entity)
+                  RETURN count(r) AS object_link_count
+                }
+                CALL () {
+                  MATCH ()-[r:FACT]->()
+                  WHERE r.fact_key IS NOT NULL
+                  RETURN sum(
+                    CASE
+                      WHEN r.source_count IS NOT NULL THEN toInteger(r.source_count)
+                      WHEN size(coalesce(r.source_ids, [])) > 0 THEN size(r.source_ids)
+                      WHEN r.source_id IS NULL OR trim(toString(r.source_id)) = '' THEN 0
+                      ELSE 1
+                    END
+                  ) AS expected_source_link_count
+                }
+                CALL () {
+                  MATCH (:GraphSource)-[r:SUPPORTS_FACT]->(:GraphFact)
+                  RETURN count(r) AS actual_source_link_count
+                }
+                RETURN fact_count,
+                       graph_fact_count,
+                       subject_link_count,
+                       object_link_count,
+                       expected_source_link_count,
+                       actual_source_link_count
+                """,
+                timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+            )
+        )
+        if not rows:
+            return False
+        fact_count = _row_int(rows[0], "fact_count", -1)
+        graph_fact_count = _row_int(rows[0], "graph_fact_count", -1)
+        subject_link_count = _row_int(rows[0], "subject_link_count", -1)
+        object_link_count = _row_int(rows[0], "object_link_count", -1)
+        expected_source_link_count = _row_int(rows[0], "expected_source_link_count", -1)
+        actual_source_link_count = _row_int(rows[0], "actual_source_link_count", -1)
+        return (
+            fact_count >= 0
+            and fact_count == graph_fact_count
+            and subject_link_count >= fact_count
+            and object_link_count >= fact_count
+            and expected_source_link_count >= 0
+            and actual_source_link_count >= expected_source_link_count
+        )
+
+    def _mark_source_projection_backfill_complete(self, session: Any) -> None:
+        session.run(
+            """
+            MERGE (meta:GraphMetadata {key: $key})
+              ON CREATE SET meta.created_at = $updated_at
+            SET meta.value = $marker_value,
+                meta.updated_at = $updated_at
+            """,
+            key=_GRAPH_SOURCE_PROJECTION_BACKFILL_METADATA_KEY,
+            marker_value=1,
+            updated_at=time.time(),
+            timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
         )
 
     def upsert_facts(self, facts: list[dict]) -> int:

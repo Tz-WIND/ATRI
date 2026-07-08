@@ -1910,6 +1910,123 @@ def test_neo4j_graph_client_backfills_source_index_nodes_for_existing_facts():
     assert "MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)" in queries
 
 
+def test_neo4j_graph_client_skips_source_index_backfill_when_marked_complete():
+    class BackfillCompleteSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if params.get("key") == "graph_source_projection_backfill_v1":
+                return [{"value": 1}]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = BackfillCompleteSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" not in queries
+
+
+def test_neo4j_graph_client_marks_source_index_backfill_complete_when_projection_is_ready():
+    class ProjectionReadySession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "expected_source_link_count" in query:
+                return [
+                    {
+                        "fact_count": 7,
+                        "graph_fact_count": 7,
+                        "subject_link_count": 7,
+                        "object_link_count": 7,
+                        "expected_source_link_count": 4,
+                        "actual_source_link_count": 4,
+                    }
+                ]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = ProjectionReadySession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" not in queries
+    assert any(
+        call["params"].get("key") == "graph_source_projection_backfill_v1"
+        and call["params"].get("marker_value") == 1
+        for call in driver.session_obj.calls
+    )
+
+
+def test_neo4j_graph_client_summary_allows_source_less_projected_facts():
+    class SourceLessProjectionSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "fact_count" in query and "graph_fact_count" in query:
+                assert "expected_source_link_count" in query
+                assert "actual_source_link_count" in query
+                assert "NOT EXISTS { MATCH (:GraphSource)-[:SUPPORTS_FACT]->(f) }" not in query
+                return [
+                    {
+                        "fact_count": 1,
+                        "graph_fact_count": 1,
+                        "subject_link_count": 1,
+                        "object_link_count": 1,
+                        "expected_source_link_count": 0,
+                        "actual_source_link_count": 0,
+                    }
+                ]
+            return []
+
+    client = Neo4jGraphClient({"enabled": True})
+    session = SourceLessProjectionSession()
+
+    assert client._source_projection_summary_is_complete(session) is True
+
+
+def test_neo4j_graph_client_summary_requires_expected_source_projection_links():
+    class MissingSourceProjectionSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "fact_count" in query and "graph_fact_count" in query:
+                return [
+                    {
+                        "fact_count": 1,
+                        "graph_fact_count": 1,
+                        "subject_link_count": 1,
+                        "object_link_count": 1,
+                        "expected_source_link_count": 1,
+                        "actual_source_link_count": 0,
+                    }
+                ]
+            return []
+
+    client = Neo4jGraphClient({"enabled": True})
+    session = MissingSourceProjectionSession()
+
+    assert client._source_projection_summary_is_complete(session) is False
+
+
 def test_neo4j_graph_client_uses_source_index_nodes_for_single_hop_source_seed():
     driver = FakeNeo4jDriver()
     client = Neo4jGraphClient(
