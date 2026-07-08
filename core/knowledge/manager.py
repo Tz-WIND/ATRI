@@ -760,11 +760,14 @@ class KnowledgeBaseManager:
             return None
         try:
             chunks = self.store.list_chunks(doc_id, offset=0, limit=max(1, chunk_count))
-            return graph_manager.enqueue_document(
-                kb_id=kb_id,
-                doc_id=doc_id,
-                doc_name=file_name,
-                chunks=chunks,
+            return cast(
+                str | None,
+                graph_manager.enqueue_document(
+                    kb_id=kb_id,
+                    doc_id=doc_id,
+                    doc_name=file_name,
+                    chunks=chunks,
+                ),
             )
         except Exception as e:
             from core import logger

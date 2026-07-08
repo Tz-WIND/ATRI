@@ -329,9 +329,9 @@ async def test_async_import_records_payload_and_pending_index_without_embedding(
 
     assert task["status"] == "queued"
     assert embedding.calls == []
-    assert manager.store.get_document_payload(doc_id)["content"] == (
-        "Python agents use SQLite retrieval."
-    )
+    payload = manager.store.get_document_payload(doc_id)
+    assert payload is not None
+    assert payload["content"] == "Python agents use SQLite retrieval."
     assert await manager.list_chunks(doc_id) == []
     assert manager.store.list_document_indexes(doc_id) == [
         {
