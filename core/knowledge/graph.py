@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
+import sys
 import time
+import warnings
 from collections.abc import Callable
 from hashlib import sha256
 from typing import Any, TypeVar, cast
@@ -3056,12 +3059,75 @@ class Neo4jGraphClient:
                 return operation(session)
 
 
+_neo4j_notification_warning_hooks_installed = False
+_original_showwarning = warnings.showwarning
+
+
+def _compact_neo4j_warning_message(message: Any) -> str | None:
+    notification = getattr(message, "notification", None)
+    if notification is None:
+        return None
+    status = str(getattr(notification, "gql_status", "") or "").strip()
+    description = str(getattr(notification, "status_description", "") or "").strip()
+    if not status and not description:
+        return None
+    if status and description:
+        return f"Neo4j {status}: {description}"
+    return f"Neo4j {status or description}"
+
+
+def _show_neo4j_notification_warning(
+    message: Any,
+    category: type[Warning],
+    filename: str,
+    lineno: int,
+    file: Any | None = None,
+    line: str | None = None,
+) -> None:
+    try:
+        from neo4j.warnings import Neo4jWarning
+    except ImportError:
+        Neo4jWarning = ()  # type: ignore[misc, assignment]
+
+    if isinstance(message, Neo4jWarning):
+        compact = _compact_neo4j_warning_message(message)
+        if compact is not None:
+            stream = sys.stderr if file is None else file
+            stream.write(warnings.formatwarning(compact, category, filename, lineno, line))
+            return
+    _original_showwarning(message, category, filename, lineno, file=file, line=line)
+
+
+def _configure_neo4j_notification_warnings() -> None:
+    """Surface DBMS notifications as compact Python warnings.
+
+    The driver logs full GqlStatusObject dumps (including the entire Cypher
+    query) to ``neo4j.notifications``. Keep the notifications themselves, but
+    mute that verbose logger and reformat ``Neo4jWarning`` output.
+    """
+    global _neo4j_notification_warning_hooks_installed, _original_showwarning
+    if _neo4j_notification_warning_hooks_installed:
+        return
+    _neo4j_notification_warning_hooks_installed = True
+    _original_showwarning = warnings.showwarning
+    logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+    warnings.showwarning = _show_neo4j_notification_warning
+
+
 def _default_driver_factory(uri: str, auth: tuple[str, str]):
     try:
-        from neo4j import GraphDatabase
+        from neo4j import GraphDatabase, NotificationMinimumSeverity
     except ImportError as e:
         raise RuntimeError("neo4j package is required for graph knowledge") from e
-    return GraphDatabase.driver(uri, auth=auth)
+    _configure_neo4j_notification_warnings()
+    # Route server notifications through Python's warnings module instead of
+    # the driver's raw ``Received notification from DBMS server: ... for query``
+    # logger dump (which reprints the full Cypher text).
+    return GraphDatabase.driver(
+        uri,
+        auth=auth,
+        warn_notification_severity=NotificationMinimumSeverity.WARNING,
+    )
 
 
 def _result_seed_element_ids(result: list[Any]) -> list[str]:

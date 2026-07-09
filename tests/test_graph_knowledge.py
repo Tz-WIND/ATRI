@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import threading
+import warnings
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,7 +24,14 @@ from core.knowledge.extraction import (
     normalize_extracted_facts,
     parse_extraction_json,
 )
-from core.knowledge.graph import Neo4jGraphClient, _query_terms
+from core.knowledge.graph import (
+    Neo4jGraphClient,
+    _compact_neo4j_warning_message,
+    _configure_neo4j_notification_warnings,
+    _default_driver_factory,
+    _query_terms,
+    _show_neo4j_notification_warning,
+)
 from core.knowledge.graph_constants import (
     CHAIN_ORDER_KEY_SEPARATOR,
     GRAPH_EXTRACTION_BATCH_CHARS,
@@ -1669,6 +1677,106 @@ class FailingOnceRetrieveSession(FakeNeo4jSession):
             self.failed = True
             raise self.error
         return super().run(query, **params)
+
+
+def test_default_driver_factory_routes_notifications_to_python_warnings(monkeypatch):
+    captured: dict[str, Any] = {}
+    configured: list[bool] = []
+
+    class FakeGraphDatabase:
+        @staticmethod
+        def driver(uri, auth=None, **config):
+            captured["uri"] = uri
+            captured["auth"] = auth
+            captured["config"] = config
+            return object()
+
+    import neo4j
+
+    monkeypatch.setattr(neo4j, "GraphDatabase", FakeGraphDatabase)
+    monkeypatch.setattr(
+        "core.knowledge.graph._configure_neo4j_notification_warnings",
+        lambda: configured.append(True),
+    )
+
+    driver = _default_driver_factory("bolt://localhost:7687", ("neo4j", "secret"))
+
+    assert driver is not None
+    assert configured == [True]
+    assert captured["uri"] == "bolt://localhost:7687"
+    assert captured["auth"] == ("neo4j", "secret")
+    assert (
+        captured["config"]["warn_notification_severity"]
+        == neo4j.NotificationMinimumSeverity.WARNING
+    )
+    assert "notifications_disabled_classifications" not in captured["config"]
+
+
+def test_compact_neo4j_warning_message_keeps_status_without_query_dump():
+    class FakeNotification:
+        gql_status = "01N52"
+        status_description = (
+            "warn: property key does not exist. The property `source_scope` "
+            "does not exist in database `neo4j`."
+        )
+
+    class FakeNeo4jWarning(Warning):
+        def __init__(self):
+            self.notification = FakeNotification()
+
+    message = _compact_neo4j_warning_message(FakeNeo4jWarning())
+    assert message == (
+        "Neo4j 01N52: warn: property key does not exist. "
+        "The property `source_scope` does not exist in database `neo4j`."
+    )
+    assert "for query" not in message
+    assert "CALL ()" not in message
+
+
+def test_show_neo4j_notification_warning_writes_compact_text(monkeypatch, capsys):
+    class FakeNotification:
+        gql_status = "01N52"
+        status_description = "warn: property key does not exist."
+
+    class FakeNeo4jWarning(Warning):
+        def __init__(self):
+            super().__init__("Received notification from DBMS server: huge dump")
+            self.notification = FakeNotification()
+
+    import neo4j.warnings as neo4j_warnings
+
+    monkeypatch.setattr(neo4j_warnings, "Neo4jWarning", FakeNeo4jWarning)
+    monkeypatch.setattr(
+        "core.knowledge.graph._original_showwarning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fallback used")),
+    )
+
+    _show_neo4j_notification_warning(
+        FakeNeo4jWarning(),
+        FakeNeo4jWarning,
+        filename="graph.py",
+        lineno=42,
+    )
+    err = capsys.readouterr().err
+    assert "Neo4j 01N52: warn: property key does not exist." in err
+    assert "Received notification from DBMS server" not in err
+
+
+def test_configure_neo4j_notification_warnings_mutes_verbose_logger(monkeypatch):
+    import logging
+
+    import core.knowledge.graph as graph_module
+
+    monkeypatch.setattr(graph_module, "_neo4j_notification_warning_hooks_installed", False)
+    monkeypatch.setattr(warnings, "showwarning", warnings.showwarning)
+
+    _configure_neo4j_notification_warnings()
+
+    assert logging.getLogger("neo4j.notifications").level == logging.ERROR
+    assert warnings.showwarning is _show_neo4j_notification_warning
+    # Idempotent
+    _configure_neo4j_notification_warnings()
+    assert logging.getLogger("neo4j.notifications").level == logging.ERROR
 
 
 def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
