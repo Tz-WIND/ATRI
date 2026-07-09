@@ -3086,10 +3086,12 @@ def _show_neo4j_notification_warning(
 ) -> None:
     try:
         from neo4j.warnings import Neo4jWarning
-    except ImportError:
-        Neo4jWarning = ()  # type: ignore[misc, assignment]
 
-    if isinstance(message, Neo4jWarning):
+        neo4j_warning_types: tuple[type, ...] = (Neo4jWarning,)
+    except ImportError:
+        neo4j_warning_types = ()
+
+    if isinstance(message, neo4j_warning_types):
         compact = _compact_neo4j_warning_message(message)
         if compact is not None:
             stream = sys.stderr if file is None else file
