@@ -10,6 +10,7 @@ from core.knowledge.graph_constants import (
     CHAIN_ORDER_KEY_SEPARATOR,
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
     GRAPH_RETRIEVAL_MAX_DEPTH,
+    SOURCE_SCOPE_BATCH_FALLBACK,
 )
 
 _DEFAULT_MULTIHOP_EXPANSION_LIMIT = 40
@@ -117,7 +118,9 @@ def _multi_hop_expansion_cache_preload_path_limit(value: Any) -> int:
 def _fact_source_ids(fact: dict[str, Any]) -> list[str]:
     raw = fact.get("source_ids")
     values = raw if isinstance(raw, list) else []
-    values = [*values, fact.get("source_id")]
+    source_scope = str(fact.get("source_scope") or "").strip().lower()
+    if source_scope != SOURCE_SCOPE_BATCH_FALLBACK:
+        values = [*values, fact.get("source_id")]
     result = []
     for value in values:
         text = str(value or "").strip()

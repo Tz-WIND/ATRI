@@ -412,6 +412,7 @@ class GraphKnowledgeManager:
                         "chunk_id": source_id,
                         "chunk_ids": chunk_ids,
                         "source_ids": chunk_ids,
+                        "source_ref_map": _document_batch_source_ref_map(batch),
                         "chunk_count": len(chunk_ids),
                     }
                     batch_facts, batch_failed = await self._extract_segmented_text(
@@ -786,6 +787,14 @@ def _document_batch_text(batch: list[dict[str, str]]) -> str:
     return "\n\n".join(
         f"[Chunk {index}]\n{item['text']}" for index, item in enumerate(batch, start=1)
     )
+
+
+def _document_batch_source_ref_map(batch: list[dict[str, str]]) -> dict[str, str]:
+    return {
+        f"Chunk {index}": item["chunk_id"]
+        for index, item in enumerate(batch, start=1)
+        if item.get("chunk_id")
+    }
 
 
 def _extraction_text_segments(

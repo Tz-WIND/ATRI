@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import time
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Any, TypeVar, cast
 
 from core import logger
@@ -26,6 +27,10 @@ from core.knowledge.graph_constants import (
     GRAPH_QUERY_ENUMERATION_TERMS,
     GRAPH_RETRIEVAL_DEFAULT_DEPTH,
     HYPER_ROLE_PREDICATE,
+    SOURCE_SCOPE_BATCH_FALLBACK,
+    SOURCE_SCOPE_EXACT,
+    SOURCE_SCOPE_INFERRED,
+    SOURCE_SCOPE_LEGACY,
     format_graph_context,
 )
 from core.knowledge.graph_format import (
@@ -65,7 +70,8 @@ DriverFactory = Callable[[str, tuple[str, str]], Any]
 _ENTITY_FULLTEXT_INDEX = "entity_text"
 _FACT_FULLTEXT_INDEX = "fact_text"
 _GRAPH_REVISION_METADATA_KEY = "graph_revision"
-_GRAPH_SOURCE_PROJECTION_BACKFILL_METADATA_KEY = "graph_source_projection_backfill_v1"
+_GRAPH_SOURCE_PROJECTION_BACKFILL_METADATA_KEY = "graph_source_projection_backfill_v2"
+_GRAPH_EVIDENCE_LEDGER_BACKFILL_METADATA_KEY = "graph_evidence_ledger_backfill_v2"
 _PERSISTENT_MULTI_HOP_EXPANSION_CACHE_VERSION = "persistent_multi_hop_expansion:v2"
 _MULTI_HOP_EXPANSION_CACHE_MODES = {"off", "memory", "persistent"}
 _ACTIVE_FACT_STATUS = "active"
@@ -163,6 +169,156 @@ def _fold_current_single_fact_rows(rows: list[dict[str, Any]]) -> list[dict[str,
 def _fulltext_fact_seed_candidate_limit(seed_limit: int) -> int:
     normalized_limit = max(1, int(seed_limit or 1))
     return normalized_limit * _FULLTEXT_FACT_SEED_CANDIDATE_MULTIPLIER
+
+
+def _fact_batch_source_ids(fact: dict[str, Any]) -> list[str]:
+    raw = fact.get("batch_source_ids")
+    values = raw if isinstance(raw, list) else []
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _fact_source_refs(fact: dict[str, Any]) -> list[str]:
+    values: list[Any] = []
+    raw_refs = fact.get("source_refs")
+    if isinstance(raw_refs, list):
+        values.extend(raw_refs)
+    source_ref = _optional_text(fact.get("source_ref"))
+    if source_ref:
+        values.append(source_ref)
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _fact_evidence_items(fact: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_items = fact.get("evidence_items")
+    items = raw_items if isinstance(raw_items, list) else []
+    normalized_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        evidence_text = _optional_text(item.get("text"))
+        if not evidence_text:
+            continue
+        normalized_text = _normalized_evidence_text(item.get("normalized_text") or evidence_text)
+        source_scope = _source_scope(item.get("source_scope") or fact.get("source_scope"))
+        batch_source_ids = _fact_batch_source_ids(
+            {"batch_source_ids": item.get("batch_source_ids") or fact.get("batch_source_ids")}
+        )
+        source_id = _optional_text(item.get("source_id")) or ""
+        evidence_key_source = (
+            source_id
+            if source_id
+            else "batch:" + sha256("|".join(batch_source_ids).encode("utf-8")).hexdigest()[:16]
+        )
+        evidence_key = _optional_text(item.get("evidence_key")) or _evidence_key(
+            fact_key=str(fact.get("fact_key") or ""),
+            source_key=evidence_key_source,
+            normalized_text=normalized_text,
+        )
+        normalized_items.append(
+            {
+                "evidence_key": evidence_key,
+                "fact_key": str(fact.get("fact_key") or ""),
+                "source_id": source_id,
+                "source_kind": (
+                    _optional_text(item.get("source_kind") or fact.get("source_kind")) or ""
+                ),
+                "source_ref": _optional_text(item.get("source_ref")) or "",
+                "source_scope": source_scope,
+                "text": evidence_text,
+                "normalized_text": normalized_text,
+                "confidence": _evidence_confidence(item.get("confidence")),
+                "exact_source": source_scope in {SOURCE_SCOPE_EXACT, SOURCE_SCOPE_INFERRED},
+                "batch_source_ids": batch_source_ids,
+            }
+        )
+    if normalized_items:
+        return _dedupe_evidence_items(normalized_items)
+    evidence = _optional_text(fact.get("evidence"))
+    if not evidence:
+        return []
+    source_scope = _source_scope(fact.get("source_scope"))
+    source_ids = _fact_source_ids(fact)
+    source_id_values = source_ids if source_ids else [""]
+    batch_source_ids = _fact_batch_source_ids(fact)
+    normalized_text = _normalized_evidence_text(evidence)
+    fallback_items = []
+    for source_id in source_id_values:
+        evidence_key_source = (
+            source_id
+            if source_id
+            else "batch:" + sha256("|".join(batch_source_ids).encode("utf-8")).hexdigest()[:16]
+        )
+        fallback_items.append(
+            {
+                "evidence_key": _evidence_key(
+                    fact_key=str(fact.get("fact_key") or ""),
+                    source_key=evidence_key_source,
+                    normalized_text=normalized_text,
+                ),
+                "fact_key": str(fact.get("fact_key") or ""),
+                "source_id": source_id,
+                "source_kind": _optional_text(fact.get("source_kind")) or "",
+                "source_ref": _optional_text(fact.get("source_ref")) or "",
+                "source_scope": source_scope,
+                "text": evidence,
+                "normalized_text": normalized_text,
+                "confidence": _evidence_confidence(fact.get("confidence")),
+                "exact_source": source_scope in {SOURCE_SCOPE_EXACT, SOURCE_SCOPE_INFERRED},
+                "batch_source_ids": batch_source_ids,
+            }
+        )
+    return fallback_items
+
+
+def _source_scope(value: Any) -> str:
+    scope = str(value or "").strip().lower()
+    if scope in {
+        SOURCE_SCOPE_EXACT,
+        SOURCE_SCOPE_INFERRED,
+        SOURCE_SCOPE_BATCH_FALLBACK,
+        SOURCE_SCOPE_LEGACY,
+    }:
+        return scope
+    return SOURCE_SCOPE_LEGACY
+
+
+def _evidence_confidence(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(1.0, parsed))
+
+
+def _normalized_evidence_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _evidence_key(*, fact_key: str, source_key: str, normalized_text: str) -> str:
+    payload = "|".join([fact_key, source_key, normalized_text])
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _dedupe_evidence_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(item.get("evidence_key") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 class Neo4jGraphClient:
@@ -952,6 +1108,8 @@ class Neo4jGraphClient:
             "FOR (source:GraphSource) REQUIRE source.source_id IS UNIQUE",
             "CREATE CONSTRAINT graph_fact_key IF NOT EXISTS "
             "FOR (fact:GraphFact) REQUIRE fact.fact_key IS UNIQUE",
+            "CREATE CONSTRAINT graph_evidence_key IF NOT EXISTS "
+            "FOR (evidence:GraphEvidence) REQUIRE evidence.evidence_key IS UNIQUE",
             "CREATE CONSTRAINT graph_metadata_key IF NOT EXISTS "
             "FOR (meta:GraphMetadata) REQUIRE meta.key IS UNIQUE",
             "CREATE CONSTRAINT graph_expansion_cache_key IF NOT EXISTS "
@@ -961,13 +1119,20 @@ class Neo4jGraphClient:
             "CREATE INDEX fact_source_id IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.source_id)",
             "CREATE INDEX fact_updated_at IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.updated_at)",
             "CREATE INDEX fact_predicate IF NOT EXISTS FOR ()-[r:FACT]-() ON (r.predicate)",
+            "CREATE INDEX graph_evidence_fact_key IF NOT EXISTS "
+            "FOR (evidence:GraphEvidence) ON (evidence.fact_key)",
+            "CREATE INDEX graph_evidence_source_id IF NOT EXISTS "
+            "FOR (evidence:GraphEvidence) ON (evidence.source_id)",
+            "CREATE INDEX graph_evidence_fact_source_text IF NOT EXISTS "
+            "FOR (evidence:GraphEvidence) ON "
+            "(evidence.fact_key, evidence.source_id, evidence.normalized_text)",
             "CREATE INDEX entity_name_key IF NOT EXISTS FOR (e:Entity) ON (e.name_key)",
             "CREATE FULLTEXT INDEX entity_text IF NOT EXISTS "
             "FOR (e:Entity) ON EACH [e.name, e.name_key, e.type, e.type_key]",
             "CREATE FULLTEXT INDEX fact_text IF NOT EXISTS "
             "FOR ()-[r:FACT]-() ON EACH "
             "[r.predicate, r.evidence, r.hyper_event, r.hyper_role, "
-            "r.chain_id, r.chain_ids_text]",
+            "r.chain_id, r.chain_ids_text, r.evidence_text]",
         ]
         fulltext_ready = True
         fulltext_unavailable_reasons: list[str] = []
@@ -991,6 +1156,7 @@ class Neo4jGraphClient:
                     else:
                         logger.debug("Neo4j graph constraint skipped: %s", e)
             self._ensure_source_projection_backfill(session)
+            self._ensure_evidence_ledger_backfill(session)
             try:
                 revision_rows = list(
                     session.run(
@@ -1038,15 +1204,30 @@ class Neo4jGraphClient:
                 MERGE (fact_node)-[:FACT_OBJECT]->(o)
                 WITH r, fact_node,
                      CASE
+                       WHEN size(coalesce(r.retrieval_source_ids, [])) > 0
+                         THEN coalesce(r.retrieval_source_ids, [])
                        WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
+                       WHEN size(coalesce(r.batch_source_ids, [])) > 0
+                            AND coalesce(r.source_scope, '') = 'batch_fallback'
+                         THEN coalesce(r.batch_source_ids, [])
                        WHEN r.source_id IS NULL THEN []
                        ELSE [r.source_id]
-                     END AS source_ids
+                     END AS source_ids,
+                     coalesce(r.source_scope, '') IN ['exact', 'inferred']
+                       AS exact_source_scope
                 UNWIND source_ids AS source_id
-                WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
+                WITH DISTINCT fact_node, r, exact_source_scope,
+                     trim(toString(source_id)) AS source_id
                 WHERE source_id <> ''
                 MERGE (source_node:GraphSource {source_id: source_id})
-                MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)
+                MERGE (source_node)-[support:SUPPORTS_FACT]->(fact_node)
+                SET support.exact_source = exact_source_scope
+                    AND source_id IN coalesce(r.source_ids, []),
+                    support.source_scope = CASE
+                      WHEN exact_source_scope AND source_id IN coalesce(r.source_ids, [])
+                        THEN r.source_scope
+                      ELSE 'batch_fallback'
+                    END
                 """,
                 timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
             )
@@ -1098,8 +1279,13 @@ class Neo4jGraphClient:
                   WHERE r.fact_key IS NOT NULL
                   RETURN sum(
                     CASE
-                      WHEN r.source_count IS NOT NULL THEN toInteger(r.source_count)
+                      WHEN size(coalesce(r.retrieval_source_ids, [])) > 0
+                        THEN size(r.retrieval_source_ids)
+                      WHEN size(coalesce(r.batch_source_ids, [])) > 0
+                           AND coalesce(r.source_scope, '') = 'batch_fallback'
+                        THEN size(r.batch_source_ids)
                       WHEN size(coalesce(r.source_ids, [])) > 0 THEN size(r.source_ids)
+                      WHEN r.source_count IS NOT NULL THEN toInteger(r.source_count)
                       WHEN r.source_id IS NULL OR trim(toString(r.source_id)) = '' THEN 0
                       ELSE 1
                     END
@@ -1109,12 +1295,20 @@ class Neo4jGraphClient:
                   MATCH (:GraphSource)-[r:SUPPORTS_FACT]->(:GraphFact)
                   RETURN count(r) AS actual_source_link_count
                 }
+                CALL () {
+                  MATCH (:GraphSource)-[r:SUPPORTS_FACT]->(:GraphFact)
+                  WHERE r.exact_source IS NULL
+                     OR r.source_scope IS NULL
+                     OR trim(toString(r.source_scope)) = ''
+                  RETURN count(r) AS missing_support_property_count
+                }
                 RETURN fact_count,
                        graph_fact_count,
                        subject_link_count,
                        object_link_count,
                        expected_source_link_count,
-                       actual_source_link_count
+                       actual_source_link_count,
+                       missing_support_property_count
                 """,
                 timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
             )
@@ -1127,6 +1321,11 @@ class Neo4jGraphClient:
         object_link_count = _row_int(rows[0], "object_link_count", -1)
         expected_source_link_count = _row_int(rows[0], "expected_source_link_count", -1)
         actual_source_link_count = _row_int(rows[0], "actual_source_link_count", -1)
+        missing_support_property_count = _row_int(
+            rows[0],
+            "missing_support_property_count",
+            -1,
+        )
         return (
             fact_count >= 0
             and fact_count == graph_fact_count
@@ -1134,6 +1333,7 @@ class Neo4jGraphClient:
             and object_link_count >= fact_count
             and expected_source_link_count >= 0
             and actual_source_link_count >= expected_source_link_count
+            and missing_support_property_count == 0
         )
 
     def _mark_source_projection_backfill_complete(self, session: Any) -> None:
@@ -1145,6 +1345,252 @@ class Neo4jGraphClient:
                 meta.updated_at = $updated_at
             """,
             key=_GRAPH_SOURCE_PROJECTION_BACKFILL_METADATA_KEY,
+            marker_value=1,
+            updated_at=time.time(),
+            timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+        )
+
+    def _ensure_evidence_ledger_backfill(self, session: Any) -> None:
+        if self._evidence_ledger_backfill_marked_complete(session):
+            return
+        try:
+            session.run(
+                """
+                MATCH (s:Entity)-[r:FACT]->(o:Entity)
+                WHERE r.fact_key IS NOT NULL
+                  AND coalesce(r.evidence, '') <> ''
+                MERGE (fact_node:GraphFact {fact_key: r.fact_key})
+                  ON CREATE SET fact_node.created_at = coalesce(r.created_at, r.updated_at)
+                SET fact_node.updated_at = coalesce(r.updated_at, fact_node.updated_at),
+                    fact_node.predicate = r.predicate
+                MERGE (fact_node)-[:FACT_SUBJECT]->(s)
+                MERGE (fact_node)-[:FACT_OBJECT]->(o)
+                OPTIONAL MATCH (existing_evidence:GraphEvidence)-[:SUPPORTS_FACT]->(fact_node)
+                WITH r, fact_node, count(existing_evidence) AS existing_evidence_count
+                WITH r, fact_node, existing_evidence_count,
+                     CASE
+                       WHEN coalesce(r.source_scope, '') IN [
+                         'exact',
+                         'inferred',
+                         'batch_fallback',
+                         'legacy'
+                       ] THEN r.source_scope
+                       ELSE 'legacy'
+                     END AS source_scope,
+                     CASE
+                       WHEN size(coalesce(r.batch_source_ids, [])) > 0
+                         THEN coalesce(r.batch_source_ids, [])
+                       WHEN size(coalesce(r.retrieval_source_ids, [])) > 0
+                         THEN coalesce(r.retrieval_source_ids, [])
+                       WHEN size(coalesce(r.source_ids, [])) > 0
+                         THEN coalesce(r.source_ids, [])
+                       WHEN r.source_id IS NULL OR trim(toString(r.source_id)) = '' THEN []
+                       ELSE [trim(toString(r.source_id))]
+                     END AS batch_source_ids,
+                     CASE
+                       WHEN size(coalesce(r.retrieval_source_ids, [])) > 0
+                         THEN coalesce(r.retrieval_source_ids, [])
+                       WHEN size(coalesce(r.source_ids, [])) > 0
+                         THEN coalesce(r.source_ids, [])
+                       WHEN size(coalesce(r.batch_source_ids, [])) > 0
+                            AND coalesce(r.source_scope, '') = 'batch_fallback'
+                         THEN coalesce(r.batch_source_ids, [])
+                       WHEN r.source_id IS NULL OR trim(toString(r.source_id)) = '' THEN []
+                       ELSE [trim(toString(r.source_id))]
+                     END AS retrieval_source_ids
+                WITH r, fact_node, source_scope, batch_source_ids, retrieval_source_ids,
+                     CASE
+                       WHEN existing_evidence_count > 0 THEN []
+                       WHEN source_scope = 'batch_fallback' THEN ['']
+                       WHEN source_scope IN ['exact', 'inferred']
+                            AND size(coalesce(r.source_ids, [])) > 0
+                         THEN coalesce(r.source_ids, [])
+                       WHEN source_scope IN ['exact', 'inferred']
+                            AND r.source_id IS NOT NULL
+                            AND trim(toString(r.source_id)) <> ''
+                         THEN [trim(toString(r.source_id))]
+                       WHEN source_scope = 'legacy'
+                            AND size(coalesce(r.source_ids, [])) > 0
+                         THEN coalesce(r.source_ids, [])
+                       WHEN source_scope = 'legacy'
+                            AND r.source_id IS NOT NULL
+                            AND trim(toString(r.source_id)) <> ''
+                         THEN [trim(toString(r.source_id))]
+                       ELSE ['']
+                     END AS evidence_source_ids
+                CALL (r, fact_node, source_scope, batch_source_ids, evidence_source_ids) {
+                  UNWIND evidence_source_ids AS raw_evidence_source_id
+                  WITH r, fact_node, source_scope, batch_source_ids,
+                       trim(toString(raw_evidence_source_id)) AS evidence_source_id
+                  WITH r, fact_node, source_scope, batch_source_ids, evidence_source_id,
+                       'legacy:' + toString(elementId(r)) + ':' + evidence_source_id
+                       AS evidence_key
+                  MERGE (evidence:GraphEvidence {evidence_key: evidence_key})
+                    ON CREATE SET evidence.created_at = coalesce(r.created_at, r.updated_at)
+                  SET evidence.updated_at = coalesce(r.updated_at, evidence.updated_at),
+                      evidence.fact_key = r.fact_key,
+                      evidence.source_id = evidence_source_id,
+                      evidence.source_kind = coalesce(r.source_kind, ''),
+                      evidence.source_ref = coalesce(r.source_ref, ''),
+                      evidence.source_scope = source_scope,
+                      evidence.text = r.evidence,
+                      evidence.normalized_text = toLower(trim(toString(r.evidence))),
+                      evidence.confidence = coalesce(toFloat(r.confidence), 1.0),
+                      evidence.exact_source = source_scope IN ['exact', 'inferred']
+                        AND evidence_source_id <> '',
+                      evidence.batch_source_ids = batch_source_ids
+                  MERGE (evidence)-[:SUPPORTS_FACT]->(fact_node)
+                  WITH evidence, evidence_source_id
+                  CALL (evidence, evidence_source_id) {
+                    WITH evidence, evidence_source_id
+                    WHERE evidence_source_id <> ''
+                      AND coalesce(evidence.exact_source, false) = true
+                    MERGE (source_node:GraphSource {source_id: evidence_source_id})
+                    MERGE (source_node)-[:PROVIDES_EVIDENCE]->(evidence)
+                    RETURN count(*) AS provided_evidence_source_count
+                  }
+                  RETURN count(DISTINCT evidence) AS backfilled_evidence_count
+                }
+                WITH DISTINCT r, fact_node, retrieval_source_ids
+                CALL (fact_node) {
+                  OPTIONAL MATCH (evidence:GraphEvidence)-[:SUPPORTS_FACT]->(fact_node)
+                  WITH [item IN collect(evidence) WHERE item IS NOT NULL] AS evidences
+                  WITH evidences,
+                       [item IN evidences WHERE coalesce(item.source_id, '') <> '']
+                         AS sourced_evidences,
+                       [
+                         item IN evidences
+                         WHERE coalesce(item.exact_source, false) = true
+                           AND coalesce(item.source_id, '') <> ''
+                       ] AS strong_evidences
+                  WITH evidences,
+                       reduce(evidence_source_ids = [], item IN sourced_evidences |
+                         CASE
+                           WHEN item.source_id IN evidence_source_ids THEN evidence_source_ids
+                           ELSE evidence_source_ids + [item.source_id]
+                         END
+                       ) AS evidence_source_ids,
+                       reduce(strong_source_ids = [], item IN strong_evidences |
+                         CASE
+                           WHEN item.source_id IN strong_source_ids THEN strong_source_ids
+                           ELSE strong_source_ids + [item.source_id]
+                         END
+                       ) AS strong_source_ids,
+                       reduce(total_confidence = 0.0, item IN evidences |
+                         total_confidence + coalesce(toFloat(item.confidence), 0.0)
+                       ) AS total_confidence,
+                       reduce(confidence_max = 0.0, item IN evidences |
+                         CASE
+                           WHEN coalesce(toFloat(item.confidence), 0.0) > confidence_max
+                             THEN coalesce(toFloat(item.confidence), 0.0)
+                           ELSE confidence_max
+                         END
+                       ) AS confidence_max,
+                       [item IN evidences WHERE coalesce(item.text, '') <> '' | item.text][..3]
+                         AS evidence_samples
+                  WITH evidences, evidence_source_ids, strong_source_ids, total_confidence,
+                       confidence_max, evidence_samples, size(evidences) AS evidence_count
+                  WITH evidence_count, evidence_source_ids, strong_source_ids, confidence_max,
+                       CASE
+                         WHEN evidence_count = 0 THEN 0.0
+                         ELSE total_confidence / toFloat(evidence_count)
+                       END AS confidence_avg,
+                       evidence_samples,
+                       reduce(evidence_text = '', sample IN evidence_samples |
+                         evidence_text
+                         + CASE WHEN evidence_text = '' THEN '' ELSE ' ' END
+                         + sample
+                       ) AS evidence_text
+                  RETURN {
+                    mention_count: evidence_count,
+                    evidence_count: evidence_count,
+                    source_ids: strong_source_ids,
+                    source_count: size(strong_source_ids),
+                    strong_source_count: size(strong_source_ids),
+                    confidence_max: confidence_max,
+                    confidence_avg: confidence_avg,
+                    evidence_samples: evidence_samples,
+                    representative_evidence: CASE
+                      WHEN size(evidence_samples) > 0 THEN evidence_samples[0]
+                      ELSE NULL
+                    END,
+                    evidence_text: evidence_text,
+                    support_weight: CASE
+                      WHEN evidence_count = 0 THEN 0.0
+                      ELSE log(1.0 + toFloat(evidence_count)) * 0.45
+                        + CASE
+                            WHEN size(strong_source_ids) > 5 THEN 1.0
+                            ELSE toFloat(size(strong_source_ids)) / 5.0
+                          END * 0.35
+                        + confidence_max * 0.20
+                    END
+                  } AS aggregate
+                }
+                WITH r, retrieval_source_ids, aggregate,
+                     CASE
+                       WHEN size(retrieval_source_ids) > 5 THEN 1.0
+                       ELSE toFloat(size(retrieval_source_ids)) / 5.0
+                     END AS weak_source_count_score
+                SET r.source_ids = CASE
+                      WHEN size(aggregate.source_ids) > 0 THEN aggregate.source_ids
+                      ELSE coalesce(r.source_ids, [])
+                    END,
+                    r.retrieval_source_ids = retrieval_source_ids,
+                    r.source_count = CASE
+                      WHEN aggregate.source_count > 0 THEN aggregate.source_count
+                      ELSE size(retrieval_source_ids)
+                    END,
+                    r.strong_source_count = aggregate.strong_source_count,
+                    r.mention_count = aggregate.mention_count,
+                    r.evidence_count = aggregate.evidence_count,
+                    r.support_weight = CASE
+                      WHEN aggregate.source_count = 0 AND aggregate.evidence_count > 0
+                        THEN aggregate.support_weight + weak_source_count_score * 0.15
+                      ELSE aggregate.support_weight
+                    END,
+                    r.confidence_max = aggregate.confidence_max,
+                    r.confidence_avg = aggregate.confidence_avg,
+                    r.evidence_samples = aggregate.evidence_samples,
+                    r.evidence_text = aggregate.evidence_text,
+                    r.evidence = coalesce(aggregate.representative_evidence, r.evidence),
+                    r.confidence = CASE
+                      WHEN aggregate.evidence_count > 0 THEN aggregate.confidence_max
+                      ELSE r.confidence
+                    END
+                """,
+                timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+            )
+            self._mark_evidence_ledger_backfill_complete(session)
+        except Exception as e:
+            logger.warning("Neo4j graph evidence ledger backfill skipped: %s", e)
+
+    def _evidence_ledger_backfill_marked_complete(self, session: Any) -> bool:
+        rows = list(
+            session.run(
+                """
+                MATCH (meta:GraphMetadata {key: $key})
+                RETURN meta.value AS value
+                """,
+                key=_GRAPH_EVIDENCE_LEDGER_BACKFILL_METADATA_KEY,
+                timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
+            )
+        )
+        if not rows:
+            return False
+        value = _row_value(rows[0], "value")
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "no", "off"}
+        return bool(value)
+
+    def _mark_evidence_ledger_backfill_complete(self, session: Any) -> None:
+        session.run(
+            """
+            MERGE (meta:GraphMetadata {key: $key})
+              ON CREATE SET meta.created_at = $updated_at
+            SET meta.value = $marker_value,
+                meta.updated_at = $updated_at
+            """,
+            key=_GRAPH_EVIDENCE_LEDGER_BACKFILL_METADATA_KEY,
             marker_value=1,
             updated_at=time.time(),
             timeout=GRAPH_CYPHER_QUERY_TIMEOUT_SECONDS,
@@ -1168,6 +1614,11 @@ class Neo4jGraphClient:
                 row.get("object_type_key") or row.get("object_type")
             )
             row["source_ids"] = _fact_source_ids(row)
+            row["batch_source_ids"] = _fact_batch_source_ids(row)
+            row["source_refs"] = _fact_source_refs(row)
+            row["source_ref"] = row["source_refs"][0] if row["source_refs"] else ""
+            row["source_scope"] = _source_scope(row.get("source_scope"))
+            row["evidence_items"] = _fact_evidence_items(row)
             row["chain_id"] = _optional_text(row.get("chain_id"))
             row["chain_ids"] = _fact_chain_ids(row)
             row["chain_order"] = _optional_int(row.get("chain_order"))
@@ -1230,24 +1681,65 @@ class Neo4jGraphClient:
           RETURN count(old) AS superseded_count
         }
         WITH s, o, r, fact,
-             coalesce(r.source_ids, []) + coalesce(fact.source_ids, [fact.source_id])
-             AS raw_source_ids
+             coalesce(r.source_ids, []) + coalesce(fact.source_ids, [])
+             AS raw_source_ids,
+             coalesce(r.batch_source_ids, []) + coalesce(fact.batch_source_ids, [])
+             AS raw_batch_source_ids,
+             coalesce(r.source_refs, []) + coalesce(fact.source_refs, [])
+             AS raw_source_refs,
+             coalesce(r.chain_ids, []) + coalesce(fact.chain_ids, []) AS raw_chain_ids,
+             coalesce(r.chain_order_keys, []) + coalesce(fact.chain_order_keys, [])
+             AS raw_chain_order_keys
         WITH s, o, r, fact,
              reduce(source_ids = [], source_id IN raw_source_ids |
                   CASE
                     WHEN source_id IN source_ids THEN source_ids
                     ELSE source_ids + [source_id]
                   END) AS source_ids,
-             coalesce(r.chain_ids, []) + coalesce(fact.chain_ids, []) AS raw_chain_ids
-        WITH s, o, r, fact, source_ids,
+             reduce(batch_source_ids = [], source_id IN raw_batch_source_ids |
+                  CASE
+                    WHEN source_id IN batch_source_ids THEN batch_source_ids
+                    ELSE batch_source_ids + [source_id]
+                  END) AS batch_source_ids,
+             reduce(source_refs = [], source_ref IN raw_source_refs |
+                  CASE
+                    WHEN source_ref IN source_refs THEN source_refs
+                    ELSE source_refs + [source_ref]
+                  END) AS source_refs,
+             raw_chain_ids,
+             raw_chain_order_keys
+        WITH s, o, r, fact, source_ids, batch_source_ids, source_refs,
+             coalesce(r.retrieval_source_ids, [])
+             + source_ids + batch_source_ids AS raw_retrieval_source_ids,
+             raw_chain_ids,
+             raw_chain_order_keys
+        WITH s, o, r, fact, source_ids, batch_source_ids, source_refs,
+             reduce(retrieval_source_ids = [], source_id IN raw_retrieval_source_ids |
+                  CASE
+                    WHEN source_id IN retrieval_source_ids THEN retrieval_source_ids
+                    ELSE retrieval_source_ids + [source_id]
+                  END) AS retrieval_source_ids,
              reduce(chain_ids = [], chain_id IN raw_chain_ids |
                   CASE
                     WHEN chain_id IN chain_ids THEN chain_ids
                     ELSE chain_ids + [chain_id]
                   END) AS chain_ids,
-             coalesce(r.chain_order_keys, []) + coalesce(fact.chain_order_keys, [])
-             AS raw_chain_order_keys
-        WITH s, o, r, fact, source_ids, chain_ids,
+             raw_chain_order_keys,
+             CASE
+               WHEN coalesce(r.source_scope, '') = 'exact'
+                 OR coalesce(fact.source_scope, '') = 'exact'
+                 THEN 'exact'
+               WHEN coalesce(r.source_scope, '') = 'inferred'
+                 OR coalesce(fact.source_scope, '') = 'inferred'
+                 THEN 'inferred'
+               WHEN coalesce(r.source_scope, '') = 'batch_fallback'
+                 OR coalesce(fact.source_scope, '') = 'batch_fallback'
+                 THEN 'batch_fallback'
+               ELSE coalesce(fact.source_scope, r.source_scope, 'legacy')
+             END AS source_scope
+        WITH s, o, r, fact, source_ids, batch_source_ids, source_refs,
+             retrieval_source_ids, chain_ids,
+             source_scope,
              reduce(chain_order_keys = [], chain_order_key IN raw_chain_order_keys |
                   CASE
                     WHEN chain_order_key IN chain_order_keys THEN chain_order_keys
@@ -1262,6 +1754,14 @@ class Neo4jGraphClient:
               r.superseded_by = fact.superseded_by,
               r.source_id = fact.source_id,
               r.source_ids = source_ids,
+              r.retrieval_source_ids = retrieval_source_ids,
+              r.batch_source_ids = batch_source_ids,
+              r.source_refs = source_refs,
+              r.source_ref = CASE
+                WHEN size(source_refs) > 0 THEN source_refs[0]
+                ELSE coalesce(fact.source_ref, r.source_ref, '')
+              END,
+              r.source_scope = source_scope,
               r.source_kind = fact.source_kind,
               r.evidence = fact.evidence,
               r.confidence = fact.confidence,
@@ -1295,23 +1795,209 @@ class Neo4jGraphClient:
                 false
               ),
               r.structural = coalesce(fact.structural, r.structural, false),
-              r.updated_at = fact.now,
-              r.source_count = size(source_ids)
+              r.updated_at = fact.now
         MERGE (fact_node:GraphFact {fact_key: fact.fact_key})
           ON CREATE SET fact_node.created_at = fact.now
         SET fact_node.updated_at = fact.now,
             fact_node.predicate = fact.predicate
         MERGE (fact_node)-[:FACT_SUBJECT]->(s)
         MERGE (fact_node)-[:FACT_OBJECT]->(o)
-        WITH s, o, r, fact_node, source_ids
-        CALL (fact_node, source_ids) {
-          UNWIND source_ids AS source_id
-          WITH DISTINCT fact_node, trim(toString(source_id)) AS source_id
+        WITH s, o, r, fact_node, source_ids, retrieval_source_ids, source_scope
+        CALL (fact_node, source_ids, retrieval_source_ids, source_scope) {
+          UNWIND retrieval_source_ids AS source_id
+          WITH DISTINCT fact_node, source_ids, source_scope, trim(toString(source_id)) AS source_id
           WHERE source_id <> ''
           MERGE (source_node:GraphSource {source_id: source_id})
-          MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)
+          MERGE (source_node)-[support:SUPPORTS_FACT]->(fact_node)
+          SET support.exact_source = source_id IN source_ids,
+              support.source_scope = CASE
+                WHEN source_id IN source_ids THEN source_scope
+                ELSE 'batch_fallback'
+              END
           RETURN count(*) AS linked_source_count
         }
+        WITH s, o, r, fact, fact_node, source_ids, retrieval_source_ids
+        CALL (fact_node, fact) {
+          UNWIND coalesce(fact.evidence_items, []) AS evidence_row
+          WITH fact_node, fact, evidence_row
+          WHERE coalesce(evidence_row.evidence_key, '') <> ''
+          OPTIONAL MATCH (existing_evidence:GraphEvidence {
+            fact_key: evidence_row.fact_key,
+            source_id: coalesce(evidence_row.source_id, '')
+          })
+          WHERE existing_evidence.normalized_text = evidence_row.normalized_text
+          WITH fact_node, fact, evidence_row,
+               coalesce(existing_evidence.evidence_key, evidence_row.evidence_key)
+                 AS evidence_key
+          MERGE (evidence:GraphEvidence {evidence_key: evidence_key})
+            ON CREATE SET evidence.created_at = fact.now
+          WITH fact_node, fact, evidence, evidence_row,
+               CASE
+                 WHEN coalesce(evidence.source_scope, '') = 'exact'
+                   OR coalesce(evidence_row.source_scope, fact.source_scope) = 'exact'
+                   THEN 'exact'
+                 WHEN coalesce(evidence.source_scope, '') = 'inferred'
+                   OR coalesce(evidence_row.source_scope, fact.source_scope) = 'inferred'
+                   THEN 'inferred'
+                 WHEN coalesce(evidence.source_scope, '') = 'batch_fallback'
+                   OR coalesce(evidence_row.source_scope, fact.source_scope) = 'batch_fallback'
+                   THEN 'batch_fallback'
+                 ELSE coalesce(evidence_row.source_scope, evidence.source_scope, fact.source_scope)
+               END AS evidence_source_scope,
+               coalesce(evidence.batch_source_ids, [])
+               + coalesce(evidence_row.batch_source_ids, []) AS raw_evidence_batch_source_ids
+          WITH fact_node, fact, evidence, evidence_row, evidence_source_scope,
+               reduce(evidence_batch_source_ids = [],
+                 source_id IN raw_evidence_batch_source_ids |
+                   CASE
+                     WHEN source_id IN evidence_batch_source_ids THEN evidence_batch_source_ids
+                     ELSE evidence_batch_source_ids + [source_id]
+                   END
+               ) AS evidence_batch_source_ids
+          SET evidence.updated_at = fact.now,
+              evidence.fact_key = evidence_row.fact_key,
+              evidence.source_id = coalesce(evidence_row.source_id, ''),
+              evidence.source_kind = coalesce(evidence_row.source_kind, fact.source_kind),
+              evidence.source_ref = CASE
+                WHEN coalesce(evidence.source_ref, '') <> '' THEN evidence.source_ref
+                ELSE coalesce(evidence_row.source_ref, '')
+              END,
+              evidence.source_scope = evidence_source_scope,
+              evidence.text = evidence_row.text,
+              evidence.normalized_text = evidence_row.normalized_text,
+              evidence.confidence = CASE
+                WHEN coalesce(toFloat(evidence.confidence), 0.0)
+                     > coalesce(toFloat(evidence_row.confidence), 1.0)
+                  THEN coalesce(toFloat(evidence.confidence), 0.0)
+                ELSE coalesce(toFloat(evidence_row.confidence), 1.0)
+              END,
+              evidence.exact_source = evidence_source_scope IN ['exact', 'inferred'],
+              evidence.batch_source_ids = evidence_batch_source_ids
+          MERGE (evidence)-[:SUPPORTS_FACT]->(fact_node)
+          WITH evidence, evidence_row
+          CALL (evidence, evidence_row) {
+            WITH evidence, evidence_row
+            WHERE coalesce(evidence_row.source_id, '') <> ''
+              AND coalesce(evidence_row.exact_source, false) = true
+            MERGE (source_node:GraphSource {source_id: evidence_row.source_id})
+            MERGE (source_node)-[:PROVIDES_EVIDENCE]->(evidence)
+            RETURN count(*) AS evidence_source_link_count
+          }
+          RETURN count(DISTINCT evidence) AS evidence_write_count
+        }
+        WITH s, o, r, fact, fact_node, source_ids, retrieval_source_ids
+        CALL (fact_node) {
+          OPTIONAL MATCH (evidence:GraphEvidence)-[:SUPPORTS_FACT]->(fact_node)
+          WITH [item IN collect(evidence) WHERE item IS NOT NULL] AS evidences
+          WITH evidences,
+               [item IN evidences WHERE coalesce(item.source_id, '') <> '']
+                 AS sourced_evidences,
+               [
+                 item IN evidences
+                 WHERE coalesce(item.exact_source, false) = true
+                   AND coalesce(item.source_id, '') <> ''
+               ] AS strong_evidences
+          WITH evidences,
+               reduce(evidence_source_ids = [], item IN sourced_evidences |
+                 CASE
+                   WHEN item.source_id IN evidence_source_ids THEN evidence_source_ids
+                   ELSE evidence_source_ids + [item.source_id]
+                 END
+               ) AS evidence_source_ids,
+               reduce(strong_source_ids = [], item IN strong_evidences |
+                 CASE
+                   WHEN item.source_id IN strong_source_ids THEN strong_source_ids
+                   ELSE strong_source_ids + [item.source_id]
+                 END
+               ) AS strong_source_ids,
+               reduce(total_confidence = 0.0, item IN evidences |
+                 total_confidence + coalesce(toFloat(item.confidence), 0.0)
+               ) AS total_confidence,
+               reduce(confidence_max = 0.0, item IN evidences |
+                 CASE
+                   WHEN coalesce(toFloat(item.confidence), 0.0) > confidence_max
+                     THEN coalesce(toFloat(item.confidence), 0.0)
+                   ELSE confidence_max
+                 END
+               ) AS confidence_max,
+               [item IN evidences WHERE coalesce(item.text, '') <> '' | item.text][..3]
+                 AS evidence_samples
+          WITH evidences, evidence_source_ids, strong_source_ids, total_confidence,
+               confidence_max, evidence_samples, size(evidences) AS evidence_count
+          WITH evidence_count, evidence_source_ids, strong_source_ids, confidence_max,
+               CASE
+                 WHEN evidence_count = 0 THEN 0.0
+                 ELSE total_confidence / toFloat(evidence_count)
+               END AS confidence_avg,
+               evidence_samples,
+               reduce(evidence_text = '', sample IN evidence_samples |
+                 evidence_text
+                 + CASE WHEN evidence_text = '' THEN '' ELSE ' ' END
+                 + sample
+               ) AS evidence_text
+          RETURN {
+            mention_count: evidence_count,
+            evidence_count: evidence_count,
+            source_ids: strong_source_ids,
+            source_count: size(strong_source_ids),
+            strong_source_count: size(strong_source_ids),
+            confidence_max: confidence_max,
+            confidence_avg: confidence_avg,
+            evidence_samples: evidence_samples,
+            representative_evidence: CASE
+              WHEN size(evidence_samples) > 0 THEN evidence_samples[0]
+              ELSE NULL
+            END,
+            evidence_text: evidence_text,
+            support_weight: CASE
+              WHEN evidence_count = 0 THEN 0.0
+              ELSE log(1.0 + toFloat(evidence_count)) * 0.45
+                + CASE
+                    WHEN size(strong_source_ids) > 5 THEN 1.0
+                    ELSE toFloat(size(strong_source_ids)) / 5.0
+                  END * 0.35
+                + confidence_max * 0.20
+            END
+          } AS aggregate
+        }
+        WITH s, o, r, fact, source_ids, retrieval_source_ids, aggregate,
+             CASE
+               WHEN size(retrieval_source_ids) > 5 THEN 1.0
+               ELSE toFloat(size(retrieval_source_ids)) / 5.0
+             END AS weak_source_count_score,
+             reduce(
+               merged_source_ids = [],
+               source_id IN source_ids + coalesce(aggregate.source_ids, []) |
+                 CASE
+                   WHEN source_id IN merged_source_ids THEN merged_source_ids
+                   ELSE merged_source_ids + [source_id]
+                 END
+             ) AS merged_source_ids
+        SET r.source_ids = CASE
+              WHEN aggregate.evidence_count > 0 THEN merged_source_ids
+              ELSE source_ids
+            END,
+            r.source_count = CASE
+              WHEN aggregate.source_count > 0 THEN aggregate.source_count
+              ELSE size(retrieval_source_ids)
+            END,
+            r.strong_source_count = aggregate.strong_source_count,
+            r.mention_count = aggregate.mention_count,
+            r.evidence_count = aggregate.evidence_count,
+            r.support_weight = CASE
+              WHEN aggregate.source_count = 0 AND aggregate.evidence_count > 0
+                THEN aggregate.support_weight + weak_source_count_score * 0.15
+              ELSE aggregate.support_weight
+            END,
+            r.confidence_max = aggregate.confidence_max,
+            r.confidence_avg = aggregate.confidence_avg,
+            r.evidence_samples = aggregate.evidence_samples,
+            r.evidence_text = aggregate.evidence_text,
+            r.evidence = coalesce(aggregate.representative_evidence, r.evidence),
+            r.confidence = CASE
+              WHEN aggregate.evidence_count > 0 THEN aggregate.confidence_max
+              ELSE r.confidence
+            END
         RETURN count(DISTINCT r) AS count,
                collect(DISTINCT elementId(s)) + collect(DISTINCT elementId(o))
                  AS seed_element_ids
@@ -1566,16 +2252,32 @@ class Neo4jGraphClient:
         WHERE coalesce(r[$status_property], 'active') = 'active'
         WITH s, r, o, index_score,
              CASE
+               WHEN size(coalesce(r.source_ids, [])) > 0
+                    AND coalesce(r.source_scope, '') IN ['exact', 'inferred']
+                 THEN coalesce(r.source_ids, [])
+               WHEN size(coalesce(r.retrieval_source_ids, [])) > 0
+                 THEN coalesce(r.retrieval_source_ids, [])
+               WHEN size(coalesce(r.batch_source_ids, [])) > 0
+                 THEN coalesce(r.batch_source_ids, [])
                WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
                WHEN r.source_id IS NULL THEN []
                ELSE [r.source_id]
              END AS fact_source_ids
         WITH s, r, o, index_score, fact_source_ids,
-             CASE WHEN EXISTS {{
-               MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
-               WHERE source_node.source_id IN $source_ids
-                 AND fact_node.fact_key = r.fact_key
-             }} THEN 3.0 ELSE 0.0 END AS source_match_score,
+             CASE
+               WHEN EXISTS {{
+                 MATCH (source_node:GraphSource)-[support:SUPPORTS_FACT]->(fact_node:GraphFact)
+                 WHERE source_node.source_id IN $source_ids
+                   AND fact_node.fact_key = r.fact_key
+                   AND coalesce(support.exact_source, false) = true
+               }} THEN 3.0
+               WHEN EXISTS {{
+                 MATCH (source_node:GraphSource)-[support:SUPPORTS_FACT]->(fact_node:GraphFact)
+                 WHERE source_node.source_id IN $source_ids
+                   AND fact_node.fact_key = r.fact_key
+               }} THEN 1.0
+               ELSE 0.0
+             END AS source_match_score,
              reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
                CASE
                  WHEN source_score.source_id IN fact_source_ids
@@ -1608,17 +2310,21 @@ class Neo4jGraphClient:
              ) AS term_match_score,
              coalesce(toFloat(r.confidence), 0.0) AS confidence_score,
              CASE
-               WHEN coalesce(
-                 toFloat(r.source_count),
-                 toFloat(size(coalesce(r.source_ids, []))),
-                 0.0
-               ) > 5.0 THEN 1.0
-               ELSE coalesce(
-                 toFloat(r.source_count),
-                 toFloat(size(coalesce(r.source_ids, []))),
-                 0.0
-               ) / 5.0
+               WHEN coalesce(toFloat(r.source_count), 0.0) > 5.0 THEN 1.0
+               WHEN coalesce(toFloat(r.source_count), 0.0) > 0.0
+                 THEN toFloat(r.source_count) / 5.0
+               WHEN toFloat(size(fact_source_ids)) > 5.0 THEN 1.0
+               ELSE toFloat(size(fact_source_ids)) / 5.0
              END AS source_count_score,
+             coalesce(toFloat(r.support_weight),
+               CASE
+                 WHEN coalesce(toFloat(r.source_count), 0.0) > 5.0 THEN 1.0
+                 WHEN coalesce(toFloat(r.source_count), 0.0) > 0.0
+                   THEN toFloat(r.source_count) / 5.0
+                 WHEN toFloat(size(fact_source_ids)) > 5.0 THEN 1.0
+                 ELSE toFloat(size(fact_source_ids)) / 5.0
+               END
+             ) AS support_weight_score,
              coalesce(toFloat(r.updated_at), 0.0) / 2000000000.0 AS recency_score,
              CASE
                WHEN coalesce(r[$structural_property], false) OR r.predicate = $hyper_role_predicate
@@ -1630,10 +2336,10 @@ class Neo4jGraphClient:
                  THEN -2.0
                ELSE 0.0
              END AS structural_role_score
-        WITH s, r, o, confidence_score, source_count_score, recency_score,
+        WITH s, r, o, confidence_score, source_count_score, support_weight_score, recency_score,
              structural_role,
              source_match_score + source_vector_score * 2.0
-             + term_match_score + confidence_score + source_count_score
+             + term_match_score + confidence_score + support_weight_score
              + structural_role_score + coalesce(toFloat(index_score), 0.0)
              AS relevance_score
         WITH s, r, o, structural_role,
@@ -1643,7 +2349,7 @@ class Neo4jGraphClient:
                ELSE relevance_score * 0.65
                     + recency_score * 0.20
                     + confidence_score * 0.10
-                    + source_count_score * 0.05
+                    + support_weight_score * 0.05
              END AS graph_score
         RETURN s.name AS subject,
                s.type AS subject_type,
@@ -1816,17 +2522,33 @@ class Neo4jGraphClient:
              chain_order_path, seed_score,
              path_term_match_score,
              CASE
+               WHEN size(coalesce(r.source_ids, [])) > 0
+                    AND coalesce(r.source_scope, '') IN ['exact', 'inferred']
+                 THEN coalesce(r.source_ids, [])
+               WHEN size(coalesce(r.retrieval_source_ids, [])) > 0
+                 THEN coalesce(r.retrieval_source_ids, [])
+               WHEN size(coalesce(r.batch_source_ids, [])) > 0
+                 THEN coalesce(r.batch_source_ids, [])
                WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])
                WHEN r.source_id IS NULL THEN []
                ELSE [r.source_id]
              END AS fact_source_ids
         WITH rels, s, r, o, hop, chain_path, chain_order_path, seed_score, fact_source_ids,
              path_term_match_score,
-             CASE WHEN EXISTS {{
-               MATCH (source_node:GraphSource)-[:SUPPORTS_FACT]->(fact_node:GraphFact)
-               WHERE source_node.source_id IN $source_ids
-                 AND fact_node.fact_key = r.fact_key
-             }} THEN 3.0 ELSE 0.0 END AS source_match_score,
+             CASE
+               WHEN EXISTS {{
+                 MATCH (source_node:GraphSource)-[support:SUPPORTS_FACT]->(fact_node:GraphFact)
+                 WHERE source_node.source_id IN $source_ids
+                   AND fact_node.fact_key = r.fact_key
+                   AND coalesce(support.exact_source, false) = true
+               }} THEN 3.0
+               WHEN EXISTS {{
+                 MATCH (source_node:GraphSource)-[support:SUPPORTS_FACT]->(fact_node:GraphFact)
+                 WHERE source_node.source_id IN $source_ids
+                   AND fact_node.fact_key = r.fact_key
+               }} THEN 1.0
+               ELSE 0.0
+             END AS source_match_score,
              reduce(source_vector_score = 0.0, source_score IN $source_score_rows |
                CASE
                  WHEN source_score.source_id IN fact_source_ids
@@ -1865,17 +2587,21 @@ class Neo4jGraphClient:
              ) AS term_match_score,
              coalesce(toFloat(r.confidence), 0.0) AS confidence_score,
              CASE
-               WHEN coalesce(
-                 toFloat(r.source_count),
-                 toFloat(size(coalesce(r.source_ids, []))),
-                 0.0
-               ) > 5.0 THEN 1.0
-               ELSE coalesce(
-                 toFloat(r.source_count),
-                 toFloat(size(coalesce(r.source_ids, []))),
-                 0.0
-               ) / 5.0
+               WHEN coalesce(toFloat(r.source_count), 0.0) > 5.0 THEN 1.0
+               WHEN coalesce(toFloat(r.source_count), 0.0) > 0.0
+                 THEN toFloat(r.source_count) / 5.0
+               WHEN toFloat(size(fact_source_ids)) > 5.0 THEN 1.0
+               ELSE toFloat(size(fact_source_ids)) / 5.0
              END AS source_count_score,
+             coalesce(toFloat(r.support_weight),
+               CASE
+                 WHEN coalesce(toFloat(r.source_count), 0.0) > 5.0 THEN 1.0
+                 WHEN coalesce(toFloat(r.source_count), 0.0) > 0.0
+                   THEN toFloat(r.source_count) / 5.0
+                 WHEN toFloat(size(fact_source_ids)) > 5.0 THEN 1.0
+                 ELSE toFloat(size(fact_source_ids)) / 5.0
+               END
+             ) AS support_weight_score,
              coalesce(toFloat(r.updated_at), 0.0) / 2000000000.0 AS recency_score,
              1.0 / toFloat(hop) AS hop_score,
              CASE WHEN chain_path THEN 1.5 ELSE 0.0 END AS chain_path_score,
@@ -1890,11 +2616,12 @@ class Neo4jGraphClient:
                  THEN -2.0
                ELSE 0.0
              END AS structural_role_score
-        WITH rels, s, r, o, hop, confidence_score, source_count_score, recency_score, hop_score,
-             chain_path_score, chain_order_score, structural_role, path_term_match_score,
+        WITH rels, s, r, o, hop, confidence_score, source_count_score, support_weight_score,
+             recency_score, hop_score, chain_path_score, chain_order_score, structural_role,
+             path_term_match_score,
              source_match_score + source_vector_score * 2.0
              + term_match_score + confidence_score
-             + source_count_score + hop_score + chain_path_score + chain_order_score
+             + support_weight_score + hop_score + chain_path_score + chain_order_score
              + structural_role_score + path_term_match_score
              + coalesce(toFloat(seed_score), 0.0)
              AS relevance_score
@@ -1905,7 +2632,7 @@ class Neo4jGraphClient:
                ELSE relevance_score * 0.65
                     + recency_score * 0.20
                     + confidence_score * 0.10
-                    + source_count_score * 0.05
+                    + support_weight_score * 0.05
                     + hop_score * 0.10
                     + chain_path_score * 0.10
                     + chain_order_score * 0.05

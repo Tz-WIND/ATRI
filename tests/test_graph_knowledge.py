@@ -27,6 +27,11 @@ from core.knowledge.graph import Neo4jGraphClient, _query_terms
 from core.knowledge.graph_constants import (
     CHAIN_ORDER_KEY_SEPARATOR,
     GRAPH_EXTRACTION_BATCH_CHARS,
+    SOURCE_SCOPE_BATCH_FALLBACK,
+    SOURCE_SCOPE_EXACT,
+    SOURCE_SCOPE_INFERRED,
+    SOURCE_SCOPE_LEGACY,
+    SOURCE_SCOPE_PRIORITY,
     format_graph_context,
 )
 from core.knowledge.graph_worker import (
@@ -54,6 +59,61 @@ def test_graph_module_split_keeps_compatibility_imports():
     assert GraphRetrievalCache(ttl_seconds=0).get("x", "y") is None
     assert _retrieval_depth(99) == 7
     assert _format_retrieved_fact_lines([], depth=1, limit=3) == []
+
+
+def test_source_scope_constants_are_shared_from_graph_constants():
+    assert SOURCE_SCOPE_EXACT == "exact"
+    assert SOURCE_SCOPE_INFERRED == "inferred"
+    assert SOURCE_SCOPE_BATCH_FALLBACK == "batch_fallback"
+    assert SOURCE_SCOPE_LEGACY == "legacy"
+    assert SOURCE_SCOPE_PRIORITY == {
+        SOURCE_SCOPE_EXACT: 4,
+        SOURCE_SCOPE_INFERRED: 3,
+        SOURCE_SCOPE_BATCH_FALLBACK: 2,
+        SOURCE_SCOPE_LEGACY: 1,
+    }
+
+
+def test_source_scope_defaults_unknown_and_empty_to_legacy():
+    from core.knowledge.graph import _fact_evidence_items, _source_scope
+
+    assert _source_scope(None) == SOURCE_SCOPE_LEGACY
+    assert _source_scope("") == SOURCE_SCOPE_LEGACY
+    assert _source_scope("unknown") == SOURCE_SCOPE_LEGACY
+    assert _source_scope(SOURCE_SCOPE_INFERRED) == SOURCE_SCOPE_INFERRED
+
+    items = _fact_evidence_items(
+        {
+            "fact_key": "company:acme|uses|tool:neo4j",
+            "evidence": "Acme uses Neo4j.",
+            "source_id": "chunk-1",
+            "source_ids": ["chunk-1"],
+            "confidence": 0.9,
+        }
+    )
+    assert items
+    assert items[0]["source_scope"] == SOURCE_SCOPE_LEGACY
+    assert items[0]["exact_source"] is False
+
+
+def test_fact_source_ids_preserves_scalar_source_id_as_non_batch_fallback():
+    from core.knowledge.graph_values import _fact_source_ids
+
+    assert _fact_source_ids({"source_ids": [], "source_id": "chunk-1"}) == ["chunk-1"]
+    assert _fact_source_ids({"source_ids": ["chunk-2"], "source_id": "chunk-1"}) == [
+        "chunk-2",
+        "chunk-1",
+    ]
+    assert (
+        _fact_source_ids(
+            {
+                "source_ids": [],
+                "source_id": "chunk-1",
+                "source_scope": SOURCE_SCOPE_BATCH_FALLBACK,
+            }
+        )
+        == []
+    )
 
 
 def test_default_multihop_expansion_cache_preload_seed_limit_is_64():
@@ -121,6 +181,15 @@ def test_build_extraction_prompt_documents_segmented_input():
     prompt = build_extraction_prompt("document")
 
     assert "[文本分段 i/n]" in prompt
+
+
+def test_build_extraction_prompt_requires_source_ref_for_chunked_document_batches():
+    prompt = build_extraction_prompt("document")
+
+    assert '"source_ref":"Chunk 1"' in prompt
+    assert "[Chunk N]" in prompt
+    assert "多 chunk 输入" in prompt
+    assert "必须填写 source_ref" in prompt
 
 
 def test_build_extraction_prompt_handles_noisy_input_text():
@@ -378,6 +447,202 @@ def test_normalize_extracted_facts_filters_and_deduplicates_graph_tuples():
     assert facts[0]["confidence"] == 0.9
     assert facts[0]["evidence"] == "Alice works at Acme."
     assert facts[0]["fact_key"] == "person:alice|works_at|company:acme"
+
+
+def test_normalize_extracted_facts_maps_source_ref_to_exact_chunk_source():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "confidence": 0.91,
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2", "chunk-3"],
+            "source_ref_map": {
+                "Chunk 1": "chunk-1",
+                "Chunk 2": "chunk-2",
+                "Chunk 3": "chunk-3",
+            },
+        },
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact["source_id"] == "chunk-2"
+    assert fact["source_ids"] == ["chunk-2"]
+    assert fact["batch_source_ids"] == ["chunk-1", "chunk-2", "chunk-3"]
+    assert fact["source_scope"] == "exact"
+    assert fact["source_ref"] == "Chunk 2"
+    assert fact["evidence_items"] == [
+        {
+            "source_id": "chunk-2",
+            "source_kind": "document",
+            "source_ref": "Chunk 2",
+            "source_scope": "exact",
+            "text": "Acme uses Neo4j.",
+            "normalized_text": "acme uses neo4j.",
+            "confidence": 0.91,
+            "exact_source": True,
+            "batch_source_ids": ["chunk-1", "chunk-2", "chunk-3"],
+        }
+    ]
+
+
+def test_normalize_extracted_facts_marks_multi_chunk_missing_source_ref_as_batch_fallback():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "confidence": 0.91,
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={"chunk_ids": ["chunk-1", "chunk-2", "chunk-3"]},
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact["source_id"] == ""
+    assert fact["source_ids"] == []
+    assert fact["batch_source_ids"] == ["chunk-1", "chunk-2", "chunk-3"]
+    assert fact["source_scope"] == "batch_fallback"
+    assert fact["evidence_items"] == [
+        {
+            "source_id": "",
+            "source_kind": "document",
+            "source_ref": "",
+            "source_scope": "batch_fallback",
+            "text": "Acme uses Neo4j.",
+            "normalized_text": "acme uses neo4j.",
+            "confidence": 0.91,
+            "exact_source": False,
+            "batch_source_ids": ["chunk-1", "chunk-2", "chunk-3"],
+        }
+    ]
+
+
+def test_normalize_extracted_facts_retains_unmapped_source_ref_as_batch_fallback():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "confidence": 0.91,
+                    "source_ref": "Chunk 99",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact["source_ids"] == []
+    assert fact["source_scope"] == "batch_fallback"
+    assert fact["source_ref"] == "Chunk 99"
+    assert fact["source_refs"] == ["Chunk 99"]
+    assert fact["evidence_items"][0]["source_ref"] == "Chunk 99"
+    assert fact["evidence_items"][0]["source_scope"] == "batch_fallback"
+    assert fact["evidence_items"][0]["exact_source"] is False
+
+
+def test_normalize_extracted_facts_maps_hyper_tuple_source_ref_to_exact_chunk_source():
+    facts = normalize_extracted_facts(
+        {
+            "hyper_tuples": [
+                {
+                    "event": "Acme Neo4j rollout",
+                    "event_type": "Decision",
+                    "predicate": "uses_for",
+                    "roles": [
+                        {"role": "actor", "entity": "Acme", "entity_type": "Company"},
+                        {"role": "tool", "entity": "Neo4j", "entity_type": "Tool"},
+                    ],
+                    "evidence": "Acme rolls out Neo4j.",
+                    "confidence": 0.91,
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )
+
+    assert facts
+    assert {fact["source_id"] for fact in facts} == {"chunk-2"}
+    assert all(fact["source_ids"] == ["chunk-2"] for fact in facts)
+    assert all(fact["source_scope"] == "exact" for fact in facts)
+    assert all(fact["source_ref"] == "Chunk 2" for fact in facts)
+
+
+def test_normalize_extracted_facts_keeps_all_exact_source_refs_for_duplicate_facts():
+    facts = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j in chunk one.",
+                    "source_ref": "Chunk 1",
+                },
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j in chunk two.",
+                    "source_ref": "Chunk 2",
+                },
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )
+
+    assert len(facts) == 1
+    assert facts[0]["source_ids"] == ["chunk-1", "chunk-2"]
+    assert facts[0]["source_refs"] == ["Chunk 1", "Chunk 2"]
 
 
 def test_normalize_extracted_facts_filters_chat_metadata_and_numeric_entities():
@@ -1458,7 +1723,9 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
     assert "apoc." not in queries
     assert "r.metadata_json = fact.metadata_json" in queries
     assert "source_count = coalesce" not in queries
-    assert "r.source_count = size(source_ids)" in queries
+    assert "r.source_count = CASE" in queries
+    assert "WHEN aggregate.source_count > 0 THEN aggregate.source_count" in queries
+    assert "ELSE size(retrieval_source_ids)" in queries
     upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
     upsert_row = upsert_call["params"]["facts"][0]
     assert json.loads(upsert_row["metadata_json"]) == {
@@ -1869,7 +2136,7 @@ def test_neo4j_graph_client_builds_source_index_nodes_for_fact_source_ids():
 
     queries = "\n".join(call["query"] for call in driver.session_obj.calls)
     assert re.search(r"(?m)^\s*CALL\s+\{", queries) is None
-    assert "CALL (fact_node, source_ids) {" in queries
+    assert "CALL (fact_node, source_ids, retrieval_source_ids, source_scope) {" in queries
     assert (
         "CREATE CONSTRAINT graph_source_id IF NOT EXISTS "
         "FOR (source:GraphSource) REQUIRE source.source_id IS UNIQUE"
@@ -1882,7 +2149,353 @@ def test_neo4j_graph_client_builds_source_index_nodes_for_fact_source_ids():
     assert "MERGE (fact_node)-[:FACT_SUBJECT]->(s)" in queries
     assert "MERGE (fact_node)-[:FACT_OBJECT]->(o)" in queries
     assert "MERGE (source_node:GraphSource {source_id: source_id})" in queries
-    assert "MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)" in queries
+    assert "MERGE (source_node)-[support:SUPPORTS_FACT]->(fact_node)" in queries
+
+
+def test_neo4j_graph_client_links_batch_fallback_facts_to_batch_sources_for_retrieval():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Acme",
+                "subject_type": "Company",
+                "predicate": "uses",
+                "object": "Neo4j",
+                "object_type": "Tool",
+                "evidence": "Acme uses Neo4j.",
+            }
+        ],
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={"chunk_ids": ["chunk-1", "chunk-2", "chunk-3"]},
+    )[0]
+
+    client.upsert_facts([fact])
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    upsert_fact = upsert_call["params"]["facts"][0]
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert upsert_fact["source_ids"] == []
+    assert upsert_fact["batch_source_ids"] == ["chunk-1", "chunk-2", "chunk-3"]
+    assert "coalesce(r.retrieval_source_ids, [])" in queries
+    assert "+ source_ids + batch_source_ids AS raw_retrieval_source_ids" in queries
+    assert "AS retrieval_source_ids" in queries
+    assert "UNWIND retrieval_source_ids AS source_id" in queries
+    assert "SET support.exact_source = source_id IN source_ids" in queries
+    assert "ELSE size(retrieval_source_ids)" in queries
+    assert "weak_source_count_score" in queries
+
+
+def test_neo4j_graph_client_merges_duplicate_upsert_provenance_without_downgrading_scope():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    exact_fact = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )[0]
+    fallback_fact = normalize_extracted_facts(
+        [
+            {
+                "subject": "Acme",
+                "subject_type": "Company",
+                "predicate": "uses",
+                "object": "Neo4j",
+                "object_type": "Tool",
+                "evidence": "Acme uses Neo4j.",
+            }
+        ],
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={"chunk_ids": ["chunk-1", "chunk-3"]},
+    )[0]
+
+    client.upsert_facts([exact_fact, fallback_fact])
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "coalesce(r.batch_source_ids, []) + coalesce(fact.batch_source_ids, [])" in queries
+    assert "AS batch_source_ids" in queries
+    assert "r.batch_source_ids = batch_source_ids" in queries
+    assert "r.source_scope = source_scope" in queries
+    assert "WHEN coalesce(r.source_scope, '') = 'exact'" in queries
+    assert "+ source_ids + batch_source_ids AS raw_retrieval_source_ids" in queries
+    assert "WHEN source_id IN source_ids THEN source_scope" in queries
+
+
+def test_neo4j_graph_client_persists_source_refs_on_fact_upsert():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )[0]
+
+    client.upsert_facts([fact])
+
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    upsert_fact = upsert_call["params"]["facts"][0]
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert upsert_fact["source_ref"] == "Chunk 2"
+    assert upsert_fact["source_refs"] == ["Chunk 2"]
+    assert "coalesce(r.source_refs, []) + coalesce(fact.source_refs, [])" in queries
+    assert "AS source_refs" in queries
+    assert "r.source_refs = source_refs" in queries
+    assert "r.source_ref = CASE" in queries
+    assert "WHEN size(source_refs) > 0 THEN source_refs[0]" in queries
+
+
+def test_neo4j_graph_client_upsert_unions_prior_source_ids_with_evidence_aggregate():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )[0]
+
+    client.upsert_facts([fact])
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "source_ids + coalesce(aggregate.source_ids, [])" in queries
+    assert "AS merged_source_ids" in queries
+    assert "WHEN aggregate.evidence_count > 0 THEN merged_source_ids" in queries
+    assert "WHEN aggregate.evidence_count > 0 THEN aggregate.source_ids" not in queries
+
+
+def test_neo4j_graph_client_upsert_uses_existing_semantic_graph_evidence():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )[0]
+
+    client.upsert_facts([fact])
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "OPTIONAL MATCH (existing_evidence:GraphEvidence {" in queries
+    assert "fact_key: evidence_row.fact_key" in queries
+    assert "source_id: coalesce(evidence_row.source_id, '')" in queries
+    assert "existing_evidence.normalized_text = evidence_row.normalized_text" in queries
+    assert "coalesce(existing_evidence.evidence_key, evidence_row.evidence_key)" in queries
+
+
+def test_neo4j_graph_client_merges_graph_evidence_without_losing_stronger_provenance():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "confidence": 0.91,
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )[0]
+
+    client.upsert_facts([fact])
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "AS evidence_source_scope" in queries
+    assert "AS evidence_batch_source_ids" in queries
+    assert "evidence.source_ref = CASE" in queries
+    assert "evidence.source_scope = evidence_source_scope" in queries
+    assert "evidence.batch_source_ids = evidence_batch_source_ids" in queries
+
+
+def test_neo4j_graph_client_upserts_graph_evidence_and_fact_strength_aggregates():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    fact = normalize_extracted_facts(
+        {
+            "tuples": [
+                {
+                    "subject": "Acme",
+                    "subject_type": "Company",
+                    "predicate": "uses",
+                    "object": "Neo4j",
+                    "object_type": "Tool",
+                    "evidence": "Acme uses Neo4j.",
+                    "confidence": 0.91,
+                    "source_ref": "Chunk 2",
+                }
+            ]
+        },
+        source_id="chunk-1",
+        source_kind="document",
+        metadata={
+            "chunk_ids": ["chunk-1", "chunk-2"],
+            "source_ref_map": {"Chunk 1": "chunk-1", "Chunk 2": "chunk-2"},
+        },
+    )[0]
+
+    client.upsert_facts([fact])
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert (
+        "CREATE CONSTRAINT graph_evidence_key IF NOT EXISTS "
+        "FOR (evidence:GraphEvidence) REQUIRE evidence.evidence_key IS UNIQUE"
+    ) in queries
+    assert "CREATE INDEX graph_evidence_fact_key IF NOT EXISTS" in queries
+    assert "MERGE (evidence:GraphEvidence {evidence_key: evidence_key})" in queries
+    assert "MERGE (source_node)-[:PROVIDES_EVIDENCE]->(evidence)" in queries
+    assert "MERGE (evidence)-[:SUPPORTS_FACT]->(fact_node)" in queries
+    assert "r.mention_count = aggregate.mention_count" in queries
+    assert "r.strong_source_count = aggregate.strong_source_count" in queries
+    assert "r.support_weight = CASE" in queries
+    assert "ELSE aggregate.support_weight" in queries
+    assert "source_ids: strong_source_ids" in queries
+    assert "source_count: size(strong_source_ids)" in queries
+    upsert_call = next(call for call in driver.session_obj.calls if "facts" in call["params"])
+    evidence = upsert_call["params"]["facts"][0]["evidence_items"][0]
+    assert evidence["evidence_key"]
+    assert evidence["fact_key"] == fact["fact_key"]
+    assert evidence["source_id"] == "chunk-2"
+    assert evidence["source_scope"] == "exact"
+    assert evidence["exact_source"] is True
 
 
 def test_neo4j_graph_client_backfills_source_index_nodes_for_existing_facts():
@@ -1906,15 +2519,211 @@ def test_neo4j_graph_client_backfills_source_index_nodes_for_existing_facts():
     assert "MERGE (fact_node)-[:FACT_SUBJECT]->(s)" in queries
     assert "MERGE (fact_node)-[:FACT_OBJECT]->(o)" in queries
     assert "UNWIND source_ids AS source_id" in queries
+    assert "WITH DISTINCT fact_node, r, exact_source_scope" in queries
+    assert "trim(toString(source_id)) AS source_id" in queries
     assert "MERGE (source_node:GraphSource {source_id: source_id})" in queries
-    assert "MERGE (source_node)-[:SUPPORTS_FACT]->(fact_node)" in queries
+    assert "MERGE (source_node)-[support:SUPPORTS_FACT]->(fact_node)" in queries
+
+
+def test_neo4j_graph_client_source_backfill_keeps_legacy_source_ids_weak():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "AS exact_source_scope" in queries
+    assert "support.exact_source = exact_source_scope" in queries
+    assert "WHEN exact_source_scope AND source_id IN coalesce(r.source_ids, [])" in queries
+    assert "THEN r.source_scope" in queries
+    assert "THEN coalesce(r.source_scope, 'exact')" not in queries
+
+
+def test_neo4j_graph_client_backfills_graph_evidence_ledger_for_existing_facts():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert any(
+        call["params"].get("key") == "graph_evidence_ledger_backfill_v2"
+        for call in driver.session_obj.calls
+    )
+    assert "MERGE (evidence:GraphEvidence {evidence_key: evidence_key})" in queries
+    assert "MERGE (evidence)-[:SUPPORTS_FACT]->(fact_node)" in queries
+    assert "MERGE (source_node)-[:PROVIDES_EVIDENCE]->(evidence)" in queries
+    assert "r.mention_count = aggregate.mention_count" in queries
+    assert "WHEN size(aggregate.source_ids) > 0 THEN aggregate.source_ids" in queries
+    assert "ELSE coalesce(r.source_ids, [])" in queries
+    assert "r.support_weight = CASE" in queries
+    assert "ELSE aggregate.support_weight" in queries
+    assert any(
+        call["params"].get("key") == "graph_evidence_ledger_backfill_v2"
+        and call["params"].get("marker_value") == 1
+        for call in driver.session_obj.calls
+    )
+
+
+def test_neo4j_graph_client_evidence_backfill_preserves_legacy_source_ids():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "WHEN source_scope = 'legacy'" in queries
+    assert "THEN coalesce(r.source_ids, [])" in queries
+    assert "WHEN size(aggregate.source_ids) > 0 THEN aggregate.source_ids" in queries
+    assert "ELSE coalesce(r.source_ids, [])" in queries
+    assert "r.source_ids = aggregate.source_ids" not in queries
+
+
+def test_neo4j_graph_client_evidence_backfill_avoids_duplicate_existing_evidence():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert (
+        "OPTIONAL MATCH (existing_evidence:GraphEvidence)-[:SUPPORTS_FACT]->(fact_node)" in queries
+    )
+    assert "count(existing_evidence) AS existing_evidence_count" in queries
+    assert "WHEN existing_evidence_count > 0 THEN []" in queries
+
+
+def test_neo4j_graph_client_evidence_backfill_keeps_batch_fallback_sources_weak():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "WHEN source_scope = 'batch_fallback' THEN ['']" in queries
+    assert "WHEN source_scope IN ['exact', 'inferred']" in queries
+    assert "evidence.exact_source = source_scope IN ['exact', 'inferred']" in queries
+    assert "source_ids: strong_source_ids" in queries
+    assert "source_count: size(strong_source_ids)" in queries
+    assert "WHEN aggregate.source_count = 0 AND aggregate.evidence_count > 0" in queries
+
+
+def test_neo4j_graph_client_skips_graph_evidence_backfill_when_marked_complete():
+    class EvidenceBackfillCompleteSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if params.get("key") == "graph_evidence_ledger_backfill_v2":
+                return [{"value": 1}]
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = EvidenceBackfillCompleteSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.initialize()
+
+    queries = "\n".join(call["query"] for call in driver.session_obj.calls)
+    assert "MERGE (evidence:GraphEvidence {evidence_key: evidence_key})" not in queries
+
+
+def test_neo4j_graph_client_logs_warning_when_evidence_backfill_fails(caplog):
+    class EvidenceBackfillFailingSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "MERGE (evidence:GraphEvidence {evidence_key: evidence_key})" in query:
+                raise RuntimeError("backfill timeout")
+            if params.get("key") == "graph_evidence_ledger_backfill_v2":
+                return []
+            return []
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = EvidenceBackfillFailingSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        client.initialize()
+
+    assert any(
+        "evidence ledger backfill skipped" in record.message.lower()
+        or "evidence ledger backfill" in record.message.lower()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    )
+    assert not any(
+        call["params"].get("key") == "graph_evidence_ledger_backfill_v2"
+        and call["params"].get("marker_value") == 1
+        for call in driver.session_obj.calls
+    )
 
 
 def test_neo4j_graph_client_skips_source_index_backfill_when_marked_complete():
     class BackfillCompleteSession(FakeNeo4jSession):
         def run(self, query, **params):
             self.calls.append({"query": query, "params": params})
-            if params.get("key") == "graph_source_projection_backfill_v1":
+            if params.get("key") == "graph_source_projection_backfill_v2":
                 return [{"value": 1}]
             return []
 
@@ -1934,7 +2743,8 @@ def test_neo4j_graph_client_skips_source_index_backfill_when_marked_complete():
     client.initialize()
 
     queries = "\n".join(call["query"] for call in driver.session_obj.calls)
-    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" not in queries
+    assert "UNWIND source_ids AS source_id" not in queries
+    assert "MERGE (source_node)-[support:SUPPORTS_FACT]->(fact_node)" not in queries
 
 
 def test_neo4j_graph_client_marks_source_index_backfill_complete_when_projection_is_ready():
@@ -1950,6 +2760,7 @@ def test_neo4j_graph_client_marks_source_index_backfill_complete_when_projection
                         "object_link_count": 7,
                         "expected_source_link_count": 4,
                         "actual_source_link_count": 4,
+                        "missing_support_property_count": 0,
                     }
                 ]
             return []
@@ -1970,9 +2781,21 @@ def test_neo4j_graph_client_marks_source_index_backfill_complete_when_projection
     client.initialize()
 
     queries = "\n".join(call["query"] for call in driver.session_obj.calls)
-    assert "MATCH (s:Entity)-[r:FACT]->(o:Entity)" not in queries
+    summary_query = next(
+        call["query"]
+        for call in driver.session_obj.calls
+        if "expected_source_link_count" in call["query"]
+    )
+    assert summary_query.index("WHEN size(coalesce(r.retrieval_source_ids, [])) > 0") < (
+        summary_query.index("WHEN r.source_count IS NOT NULL")
+    )
+    assert summary_query.index("WHEN size(coalesce(r.batch_source_ids, [])) > 0") < (
+        summary_query.index("WHEN r.source_count IS NOT NULL")
+    )
+    assert "UNWIND source_ids AS source_id" not in queries
+    assert "MERGE (source_node)-[support:SUPPORTS_FACT]->(fact_node)" not in queries
     assert any(
-        call["params"].get("key") == "graph_source_projection_backfill_v1"
+        call["params"].get("key") == "graph_source_projection_backfill_v2"
         and call["params"].get("marker_value") == 1
         for call in driver.session_obj.calls
     )
@@ -1985,6 +2808,7 @@ def test_neo4j_graph_client_summary_allows_source_less_projected_facts():
             if "fact_count" in query and "graph_fact_count" in query:
                 assert "expected_source_link_count" in query
                 assert "actual_source_link_count" in query
+                assert "missing_support_property_count" in query
                 assert "NOT EXISTS { MATCH (:GraphSource)-[:SUPPORTS_FACT]->(f) }" not in query
                 return [
                     {
@@ -1994,6 +2818,7 @@ def test_neo4j_graph_client_summary_allows_source_less_projected_facts():
                         "object_link_count": 1,
                         "expected_source_link_count": 0,
                         "actual_source_link_count": 0,
+                        "missing_support_property_count": 0,
                     }
                 ]
             return []
@@ -2017,12 +2842,37 @@ def test_neo4j_graph_client_summary_requires_expected_source_projection_links():
                         "object_link_count": 1,
                         "expected_source_link_count": 1,
                         "actual_source_link_count": 0,
+                        "missing_support_property_count": 0,
                     }
                 ]
             return []
 
     client = Neo4jGraphClient({"enabled": True})
     session = MissingSourceProjectionSession()
+
+    assert client._source_projection_summary_is_complete(session) is False
+
+
+def test_neo4j_graph_client_summary_requires_support_link_properties():
+    class MissingSourceSupportPropertiesSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            self.calls.append({"query": query, "params": params})
+            if "fact_count" in query and "graph_fact_count" in query:
+                return [
+                    {
+                        "fact_count": 1,
+                        "graph_fact_count": 1,
+                        "subject_link_count": 1,
+                        "object_link_count": 1,
+                        "expected_source_link_count": 1,
+                        "actual_source_link_count": 1,
+                        "missing_support_property_count": 1,
+                    }
+                ]
+            return []
+
+    client = Neo4jGraphClient({"enabled": True})
+    session = MissingSourceSupportPropertiesSession()
 
     assert client._source_projection_summary_is_complete(session) is False
 
@@ -5674,6 +6524,95 @@ def test_neo4j_graph_client_adds_vector_source_score_to_graph_ranking():
     assert "3.0 + source_vector_score * 2.0 AS seed_score" in multi_hop_call["query"]
 
 
+def test_neo4j_graph_client_uses_support_weight_for_graph_ranking_with_source_count_fallback():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(query="Alice Acme", source_ids=[], max_facts=2, retrieval_depth=2)
+
+    single_hop_query = _single_hop_retrieve_call(driver.session_obj.calls)["query"]
+    multi_hop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
+    for query in (single_hop_query, multi_hop_query):
+        assert "AS support_weight_score" in query
+        assert "coalesce(toFloat(r.support_weight)," in query
+        assert "+ support_weight_score" in query
+
+
+def test_neo4j_graph_client_uses_batch_source_ids_as_retrieval_source_fallback():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-2"],
+        source_scores={"chunk-2": 0.9},
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    single_hop_query = _single_hop_retrieve_call(driver.session_obj.calls)["query"]
+    multi_hop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
+    for query in (single_hop_query, multi_hop_query):
+        assert (
+            "WHEN size(coalesce(r.source_ids, [])) > 0\n"
+            "                    AND coalesce(r.source_scope, '') IN ['exact', 'inferred']"
+        ) in query
+        assert "WHEN size(coalesce(r.batch_source_ids, [])) > 0" in query
+        assert "THEN coalesce(r.batch_source_ids, [])" in query
+        assert "WHEN size(coalesce(r.source_ids, [])) > 0 THEN coalesce(r.source_ids, [])" in (
+            query
+        )
+        assert "source_score.source_id IN fact_source_ids" in query
+        assert "toFloat(size(fact_source_ids))" in query
+
+
+def test_neo4j_graph_client_scores_weak_source_links_below_exact_source_links():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-2"],
+        max_facts=2,
+        retrieval_depth=2,
+    )
+
+    single_hop_query = _single_hop_retrieve_call(driver.session_obj.calls)["query"]
+    multi_hop_query = _multi_hop_retrieve_call(driver.session_obj.calls)["query"]
+    for query in (single_hop_query, multi_hop_query):
+        assert "[support:SUPPORTS_FACT]" in query
+        assert "coalesce(support.exact_source, false)" in query
+        assert "THEN 3.0" in query
+        assert "THEN 1.0" in query
+
+
 def test_neo4j_graph_client_latest_ranking_preserves_recency_order():
     driver = FakeNeo4jDriver()
     client = Neo4jGraphClient(
@@ -6719,8 +7658,15 @@ async def test_graph_manager_batches_document_chunks_without_losing_source_ids(t
             "chunk-2",
             "chunk-3",
         ]
-        assert graph.facts[0]["source_id"] == "chunk-1"
-        assert graph.facts[0]["source_ids"] == ["chunk-1", "chunk-2", "chunk-3"]
+        assert extractor.calls[0]["metadata"]["source_ref_map"] == {
+            "Chunk 1": "chunk-1",
+            "Chunk 2": "chunk-2",
+            "Chunk 3": "chunk-3",
+        }
+        assert graph.facts[0]["source_id"] == ""
+        assert graph.facts[0]["source_ids"] == []
+        assert graph.facts[0]["batch_source_ids"] == ["chunk-1", "chunk-2", "chunk-3"]
+        assert graph.facts[0]["source_scope"] == "batch_fallback"
     finally:
         await manager.close()
         store.close()

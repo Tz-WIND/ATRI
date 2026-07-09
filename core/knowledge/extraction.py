@@ -17,6 +17,10 @@ from core.knowledge.graph_constants import (
     CHAIN_ORDER_KEY_SEPARATOR,
     GRAPH_EXTRACTION_INPUT_MAX_CHARS,
     HYPER_ROLE_PREDICATE,
+    SOURCE_SCOPE_BATCH_FALLBACK,
+    SOURCE_SCOPE_EXACT,
+    SOURCE_SCOPE_INFERRED,
+    SOURCE_SCOPE_PRIORITY,
 )
 
 
@@ -33,6 +37,7 @@ MAX_HYPER_CHAIN_EDGES = 5
 MAX_EXTRACTION_TUPLES = 32
 EXISTING_GRAPH_CONTEXT_METADATA_KEY = "existing_graph_context"
 REFERENCE_DATE_METADATA_KEY = "reference_date"
+SOURCE_REF_METADATA_KEY = "source_ref_map"
 _TYPED_GRAPH_FACT_RE = re.compile(
     r"^(?P<subject>.+?) \((?P<subject_type>[A-Za-z][A-Za-z0-9_ ]*)\) "
     r"-\[[^\]]+\]-> "
@@ -625,10 +630,24 @@ def normalize_extracted_facts(
         fact_key = (
             f"{subject_type_key}:{subject_key}|{predicate_key}|{object_type_key}:{object_key}"
         )
+        provenance = _source_provenance(
+            item,
+            source_id=source_id,
+            source_kind=source_kind,
+            metadata=metadata,
+        )
+        evidence = _clean_text(item.get("evidence")) or default_evidence
+        confidence = _confidence(item.get("confidence"))
         if fact_key in seen:
             fact = facts_by_key[fact_key]
             _attach_hyper_fact_fields(fact, item)
-            _merge_duplicate_fact_values(fact, item)
+            _merge_duplicate_fact_values(
+                fact,
+                item,
+                provenance=provenance,
+                evidence=evidence,
+                confidence=confidence,
+            )
             continue
         seen.add(fact_key)
         fact = {
@@ -642,11 +661,21 @@ def normalize_extracted_facts(
             "object_key": object_key,
             "object_type": values["object_type"],
             "object_type_key": object_type_key,
-            "source_id": str(source_id or ""),
-            "source_ids": _source_ids(source_id, metadata),
+            "source_id": provenance["source_id"],
+            "source_ids": provenance["source_ids"],
+            "batch_source_ids": provenance["batch_source_ids"],
+            "source_scope": provenance["source_scope"],
+            "source_ref": provenance["source_ref"],
+            "source_refs": provenance["source_refs"],
             "source_kind": str(source_kind or ""),
-            "evidence": _clean_text(item.get("evidence")) or default_evidence,
-            "confidence": _confidence(item.get("confidence")),
+            "evidence": evidence,
+            "confidence": confidence,
+            "evidence_items": _evidence_items(
+                evidence=evidence,
+                confidence=confidence,
+                source_kind=source_kind,
+                provenance=provenance,
+            ),
             "metadata": dict(metadata or {}),
         }
         _attach_hyper_fact_fields(fact, item)
@@ -703,7 +732,8 @@ def build_extraction_prompt(source_kind: str) -> str:
             '"object":"原文实体名或原文中的简洁取值（不翻译）",'
             '"object_type":"Person|Organization|Project|Tool|System|Component|Library|File|Event|Process|Concept|Preference|Error|Other",'
             '"evidence":"short quote or close paraphrase from the text",'
-            '"confidence":0.0}]}'
+            '"confidence":0.0,'
+            '"source_ref":"Chunk 1"}]}'
         ),
         "",
         "若同一事实包含三个及以上角色，另用 hyper_tuples：",
@@ -719,7 +749,8 @@ def build_extraction_prompt(source_kind: str) -> str:
             '"chain":[{"from_role":"actor","predicate":"uses","to_role":"tool"},'
             '{"from_role":"tool","predicate":"configured_with","to_role":"config"}],'
             '"evidence":"short quote or close paraphrase from the text",'
-            '"confidence":0.0}]}'
+            '"confidence":0.0,'
+            '"source_ref":"Chunk 1"}]}'
         ),
         "",
         "规则：",
@@ -741,6 +772,12 @@ def build_extraction_prompt(source_kind: str) -> str:
         (
             "- 若用户消息以 [文本分段 i/n] 开头，说明这是长文的一段；"
             "只根据本段内容抽取事实，不要假设未出现的上下文。"
+        ),
+        (
+            "- 若输入包含 [Chunk 1]、[Chunk 2] ... [Chunk N] 这样的多 chunk 输入，"
+            "每条 tuple/hyper_tuple 必须填写 source_ref；source_ref 必须精确写成"
+            '最直接支持该事实证据的 chunk 标签（如 "Chunk 1"），'
+            "不要填写文件名、内部 chunk_id 或多个 chunk。"
         ),
         (
             "- 保留细节：一句里有多个人名、物品、地点、动作时，"
@@ -1192,6 +1229,7 @@ def _expand_hyper_tuples(payload: Any, *, default_evidence: str) -> list[dict[st
         predicate = normalize_predicate(item.get("predicate")) or "related_to"
         evidence = _clean_text(item.get("evidence")) or default_evidence
         confidence = item.get("confidence")
+        source_ref_fields = _source_ref_fields(item)
         chain_id = _clean_text(item.get("chain_id") or item.get("hyper_id")) or _hyper_chain_id(
             event=event,
             event_type=event_type,
@@ -1217,6 +1255,7 @@ def _expand_hyper_tuples(payload: Any, *, default_evidence: str) -> list[dict[st
                     hyper_event_type=event_type,
                     hyper_role=role["role"],
                     structural=True,
+                    source_ref_fields=source_ref_fields,
                 )
             )
 
@@ -1241,6 +1280,7 @@ def _expand_hyper_tuples(payload: Any, *, default_evidence: str) -> list[dict[st
                     chain_order=order,
                     chain_from_role=from_role["role"],
                     chain_to_role=to_role["role"],
+                    source_ref_fields=source_ref_fields,
                 )
             )
     return expanded
@@ -1380,6 +1420,7 @@ def _hyper_fact_item(
     chain_to_role: str = "",
     hyper_role: str = "",
     structural: bool = False,
+    source_ref_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "subject": subject,
@@ -1404,7 +1445,17 @@ def _hyper_fact_item(
         item["chain_to_role"] = chain_to_role
     if hyper_role:
         item["hyper_role"] = hyper_role
+    if source_ref_fields:
+        item.update(source_ref_fields)
     return item
+
+
+def _source_ref_fields(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item[key]
+        for key in ("source_ref", "source_refs", "chunk_ref", "chunk_refs")
+        if key in item
+    }
 
 
 def _attach_hyper_fact_fields(fact: dict[str, Any], item: dict[str, Any]) -> None:
@@ -1472,17 +1523,51 @@ def _sync_scalar_chain_order(fact: dict[str, Any]) -> None:
         fact.pop("chain_order", None)
 
 
-def _merge_duplicate_fact_values(fact: dict[str, Any], item: dict[str, Any]) -> None:
-    evidence = _clean_text(item.get("evidence"))
+def _merge_duplicate_fact_values(
+    fact: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    provenance: dict[str, Any],
+    evidence: str,
+    confidence: float,
+) -> None:
     if item.get("derived_from_hyper_tuple") is True and evidence:
         fact["evidence"] = evidence
     elif not _clean_text(fact.get("evidence")) and evidence:
         fact["evidence"] = evidence
-    if item.get("confidence") is not None and item.get("confidence") != "":
-        fact["confidence"] = max(
-            _confidence(fact.get("confidence")),
-            _confidence(item.get("confidence")),
-        )
+    if _has_explicit_confidence(item):
+        fact["confidence"] = max(_confidence(fact.get("confidence")), confidence)
+    fact["source_ids"] = _merge_unique(
+        [*fact.get("source_ids", []), *provenance.get("source_ids", [])]
+    )
+    fact["batch_source_ids"] = _merge_unique(
+        [*fact.get("batch_source_ids", []), *provenance.get("batch_source_ids", [])]
+    )
+    fact["source_refs"] = _merge_unique(
+        [*fact.get("source_refs", []), *provenance.get("source_refs", [])]
+    )
+    fact["source_scope"] = _strongest_source_scope(
+        [fact.get("source_scope"), provenance.get("source_scope")]
+    )
+    if fact["source_ids"]:
+        fact["source_id"] = fact["source_ids"][0]
+    elif not _clean_text(fact.get("source_id")):
+        fact["source_id"] = provenance.get("source_id", "")
+    if provenance.get("source_ref"):
+        fact["source_ref"] = _merge_unique(
+            [fact.get("source_ref", ""), provenance.get("source_ref", "")]
+        )[0]
+    fact["evidence_items"] = _merge_evidence_items(
+        [
+            *fact.get("evidence_items", []),
+            *_evidence_items(
+                evidence=evidence,
+                confidence=confidence,
+                source_kind=fact.get("source_kind", ""),
+                provenance=provenance,
+            ),
+        ]
+    )
 
 
 def _hyper_chain_id(
@@ -1519,6 +1604,178 @@ def _confidence(value: Any) -> float:
     except (TypeError, ValueError):
         return 1.0
     return max(0.0, min(1.0, parsed))
+
+
+def _has_explicit_confidence(item: dict[str, Any]) -> bool:
+    if "confidence" not in item:
+        return False
+    value = item.get("confidence")
+    if value is None:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    return True
+
+
+def _source_provenance(
+    item: dict[str, Any],
+    *,
+    source_id: str,
+    source_kind: str,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    batch_source_ids = _source_ids(source_id, metadata)
+    refs = _source_ref_values(item)
+    mapped_source_ids = _source_ids_from_refs(refs, metadata)
+    if mapped_source_ids:
+        source_scope = SOURCE_SCOPE_EXACT
+        source_ids = mapped_source_ids
+        primary_source_id = source_ids[0]
+        source_ref = refs[0] if refs else ""
+        source_refs = refs
+    elif len(batch_source_ids) == 1:
+        source_scope = SOURCE_SCOPE_INFERRED
+        source_ids = batch_source_ids
+        primary_source_id = source_ids[0]
+        source_ref = refs[0] if refs else ""
+        source_refs = refs
+    elif batch_source_ids:
+        source_scope = SOURCE_SCOPE_BATCH_FALLBACK
+        source_ids = []
+        primary_source_id = ""
+        source_ref = refs[0] if refs else ""
+        source_refs = refs
+    else:
+        source_scope = (
+            SOURCE_SCOPE_INFERRED if str(source_id or "").strip() else SOURCE_SCOPE_BATCH_FALLBACK
+        )
+        primary_source_id = (
+            str(source_id or "").strip() if source_scope == SOURCE_SCOPE_INFERRED else ""
+        )
+        source_ids = (
+            [primary_source_id]
+            if primary_source_id and source_scope == SOURCE_SCOPE_INFERRED
+            else []
+        )
+        source_ref = refs[0] if refs else ""
+        source_refs = refs
+    return {
+        "source_id": primary_source_id,
+        "source_ids": source_ids,
+        "batch_source_ids": batch_source_ids,
+        "source_scope": source_scope,
+        "source_ref": source_ref,
+        "source_refs": source_refs,
+        "source_kind": str(source_kind or ""),
+    }
+
+
+def _source_ref_values(item: dict[str, Any]) -> list[str]:
+    values: list[Any] = []
+    for key in ("source_ref", "source_refs", "chunk_ref", "chunk_refs"):
+        raw = item.get(key)
+        if isinstance(raw, list):
+            values.extend(raw)
+        else:
+            values.append(raw)
+    return _merge_unique([_clean_text(value) for value in values])
+
+
+def _source_ids_from_refs(
+    refs: list[str],
+    metadata: dict[str, Any] | None,
+) -> list[str]:
+    if not refs or not isinstance(metadata, dict):
+        return []
+    lookup = _source_ref_lookup(metadata)
+    source_ids = []
+    for ref in refs:
+        source_id = lookup.get(_source_ref_key(ref))
+        if source_id:
+            source_ids.append(source_id)
+    return _merge_unique(source_ids)
+
+
+def _source_ref_lookup(metadata: dict[str, Any]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    raw_map = metadata.get(SOURCE_REF_METADATA_KEY)
+    if isinstance(raw_map, dict):
+        for raw_ref, raw_source_id in raw_map.items():
+            ref = _source_ref_key(raw_ref)
+            source_id = _clean_text(raw_source_id)
+            if ref and source_id:
+                lookup[ref] = source_id
+    raw_chunk_ids = metadata.get("chunk_ids")
+    if isinstance(raw_chunk_ids, list):
+        for index, raw_source_id in enumerate(raw_chunk_ids, start=1):
+            source_id = _clean_text(raw_source_id)
+            if not source_id:
+                continue
+            for ref in (f"Chunk {index}", f"[Chunk {index}]", str(index)):
+                lookup.setdefault(_source_ref_key(ref), source_id)
+    return lookup
+
+
+def _source_ref_key(value: Any) -> str:
+    text = _clean_text(value).strip("[]")
+    return " ".join(text.lower().split())
+
+
+def _evidence_items(
+    *,
+    evidence: str,
+    confidence: float,
+    source_kind: str,
+    provenance: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not evidence:
+        return []
+    source_scope = str(provenance.get("source_scope") or SOURCE_SCOPE_BATCH_FALLBACK)
+    source_ids = list(provenance.get("source_ids") or [])
+    if not source_ids:
+        source_ids = [""]
+    exact_source = source_scope in {SOURCE_SCOPE_EXACT, SOURCE_SCOPE_INFERRED}
+    return [
+        {
+            "source_id": source_id,
+            "source_kind": str(source_kind or ""),
+            "source_ref": str(provenance.get("source_ref") or ""),
+            "source_scope": source_scope,
+            "text": evidence,
+            "normalized_text": normalize_entity_key(evidence),
+            "confidence": confidence,
+            "exact_source": exact_source,
+            "batch_source_ids": list(provenance.get("batch_source_ids") or []),
+        }
+        for source_id in source_ids
+    ]
+
+
+def _merge_evidence_items(items: list[Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = (
+            _clean_text(item.get("source_id")),
+            _clean_text(item.get("source_scope")),
+            _clean_text(item.get("normalized_text")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(dict(item))
+    return result
+
+
+def _strongest_source_scope(values: list[Any]) -> str:
+    scopes = [_clean_text(value) for value in values]
+    return max(
+        scopes,
+        key=lambda value: SOURCE_SCOPE_PRIORITY.get(value, 0),
+        default=SOURCE_SCOPE_BATCH_FALLBACK,
+    )
 
 
 def _source_ids(source_id: str, metadata: dict[str, Any] | None) -> list[str]:
