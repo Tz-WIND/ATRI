@@ -31,6 +31,7 @@ class WebChatAdapter(Platform):
         images: list[dict] | None = None,
         display_user_input: str | None = None,
         file_attachments: list[dict] | None = None,
+        agent_mode: str | None = None,
     ) -> tuple[MessageEvent, asyncio.Future]:
         """Create a MessageEvent from a WebUI chat message.
 
@@ -63,11 +64,14 @@ class WebChatAdapter(Platform):
 
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         req_id = uuid.uuid4().hex
+        event._extras["_request_id"] = req_id
         event._extras["_webchat_req_id"] = req_id
         if display_user_input is not None:
             event._extras["display_user_input"] = display_user_input
         if file_attachments:
             event._extras["file_attachments"] = list(file_attachments)
+        if agent_mode is not None:
+            event._extras["agent_mode"] = str(agent_mode)
         self._pending[req_id] = future
 
         self.commit_event(event)
@@ -105,6 +109,20 @@ class WebChatAdapter(Platform):
                 logger.info("WebChat.send_message_chain: future already done")
         else:
             logger.info("WebChat.send_message_chain: req_id not found in pending!")
+
+    def cancel_request(self, event: MessageEvent) -> bool:
+        """Cancel only the waiter and queued work associated with *event*."""
+
+        event._extras["_request_cancelled"] = True
+        req_id = event._extras.get("_request_id") or event._extras.get("_webchat_req_id")
+        if not req_id:
+            return False
+        fut = self._pending.pop(str(req_id), None)
+        if fut is None:
+            return False
+        if not fut.done():
+            fut.cancel()
+        return True
 
     async def run(self):
         # WebChat doesn't need a persistent connection loop -- it's driven by

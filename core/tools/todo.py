@@ -65,7 +65,7 @@ class AgentTodoTool(Tool):
     }
     capabilities = ToolCapabilities(
         capability="agent.todo",
-        read_only=True,
+        read_only=False,
     )
 
     def __init__(

@@ -16,8 +16,8 @@ from dashboard.routes.chat import (
     _normalize_chat_files,
     _normalize_chat_images,
     _serialize_response_chain,
-    agent_timeout_seconds,
     format_timeout_seconds,
+    research_timeout_seconds,
 )
 
 if TYPE_CHECKING:
@@ -92,6 +92,12 @@ def register(dashboard: Dashboard) -> None:
                     strict=True,
                 )
 
+        process_stage = getattr(dashboard.lifecycle, "process_stage", None)
+        request_mode = (
+            process_stage.agent_mode
+            if process_stage
+            else dashboard.lifecycle.config.get("agent_mode", "agent")
+        )
         event, future = adapter.create_event(
             message,
             project_session_id,
@@ -103,10 +109,14 @@ def register(dashboard: Dashboard) -> None:
             file_attachments=_file_display_attachments(files),
             model=model,
             model_provider=model_provider,
+            agent_mode=request_mode,
         )
         await dashboard.broadcast({"type": "thinking", "session_id": event.unified_msg_origin})
 
-        timeout_seconds = agent_timeout_seconds(dashboard.lifecycle.config)
+        timeout_seconds = research_timeout_seconds(
+            dashboard.lifecycle.config,
+            request_mode,
+        )
         try:
             result = await asyncio.wait_for(future, timeout=timeout_seconds)
             return jsonify(
@@ -139,7 +149,13 @@ def _cancel_daw_agent_request(dashboard: Dashboard, adapter: Any, event: Any) ->
     cancel_operation = getattr(lifecycle, "cancel_operation", None) if lifecycle else None
     if not callable(cancel_operation):
         return
+    request_id = str(event._extras.get("_request_id") or "").strip()
+    if not request_id:
+        return
     try:
-        cancel_operation(session_id=event.unified_msg_origin)
+        cancel_operation(
+            session_id=event.unified_msg_origin,
+            request_id=request_id,
+        )
     except Exception as e:
         logger.warning("Failed to cancel DAW agent operation: %s", e)

@@ -335,6 +335,19 @@ async def test_webchat_adapter_resolves_chain_response_and_cancels_pending_on_te
     assert adapter.status == PlatformStatus.STOPPED
 
 
+@pytest.mark.asyncio
+async def test_webchat_adapter_cancel_request_marks_exact_event_and_removes_waiter():
+    queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
+    adapter = WebChatAdapter(queue)
+    event, future = adapter.create_event("hello", "session-1")
+
+    assert event._extras["_request_id"] == event._extras["_webchat_req_id"]
+    assert adapter.cancel_request(event) is True
+    assert event._extras["_request_cancelled"] is True
+    assert future.cancelled() is True
+    assert adapter._pending == {}
+
+
 # DawAgentAdapter
 
 
@@ -421,8 +434,10 @@ async def test_daw_agent_adapter_cancel_request_removes_pending_future():
 
     event, future = adapter.create_event("hello", project_session_id="song-a")
 
+    assert event._extras["_request_id"] == event._extras["_daw_agent_req_id"]
     assert future.done() is False
     assert adapter.cancel_request(event) is True
+    assert event._extras["_request_cancelled"] is True
     assert future.cancelled() is True
     assert adapter._pending == {}
 

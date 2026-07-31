@@ -44,22 +44,31 @@ class PluginManager:
     async def initialize(self, ctx: dict) -> None:
         """Load all plugins from the plugins directory."""
         self._ctx = ctx
-        self.plugins_dir.mkdir(parents=True, exist_ok=True)
-
-        # Add plugins dir to sys.path so we can import from it
-        plugins_path = str(self.plugins_dir.resolve())
+        plugins_path, plugin_sources = await asyncio.to_thread(self._discover_plugin_sources)
         if plugins_path not in sys.path:
             sys.path.insert(0, plugins_path)
 
-        for item in sorted(self.plugins_dir.iterdir()):
-            if item.is_dir() and (item / "__init__.py").exists():
-                await self._load_plugin_package(item.name)
-            elif item.is_file() and item.suffix == ".py" and item.name != "__init__.py":
-                await self._load_plugin_module(item.stem)
+        for source_kind, module_name in plugin_sources:
+            if source_kind == "package":
+                await self._load_plugin_package(module_name)
+            else:
+                await self._load_plugin_module(module_name)
 
         logger.info(
             f"Loaded {len(self._plugins)} plugins: {[p.metadata.name for p in self._plugins]}"
         )
+
+    def _discover_plugin_sources(self) -> tuple[str, list[tuple[str, str]]]:
+        """Keep filesystem discovery off the event loop used by message processing."""
+
+        self.plugins_dir.mkdir(parents=True, exist_ok=True)
+        sources: list[tuple[str, str]] = []
+        for item in sorted(self.plugins_dir.iterdir()):
+            if item.is_dir() and (item / "__init__.py").exists():
+                sources.append(("package", item.name))
+            elif item.is_file() and item.suffix == ".py" and item.name != "__init__.py":
+                sources.append(("module", item.stem))
+        return str(self.plugins_dir.resolve()), sources
 
     async def _load_plugin_package(self, package_name: str) -> None:
         await self._load_plugin_source(package_name, "package")

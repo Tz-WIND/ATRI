@@ -2,7 +2,7 @@
 
 **本地优先的 AI Agent 框架，顺带把 DAW 也做成 Agent 能直接操作的界面。**
 
-ATRI 首先是一个可本地运行的 **AI Agent Runtime**：多 Provider LLM、工具调用、Plan / Agent 模式、会话持久化、子任务、MCP、Skills、知识库、Web 搜索，以及 WebChat / OneBot11 等接入。你可以把它当成 coding agent 用——读改文件、跑终端、管 workspace、接外部工具——也可以在 Dashboard 里完成日常对话与任务编排。
+ATRI 首先是一个可本地运行的 **AI Agent Runtime**：多 Provider LLM、工具调用、Plan / Agent / DeepResearch 模式、会话持久化、子任务、MCP、Skills、知识库、Web 搜索，以及 WebChat / OneBot11 等接入。你可以把它当成 coding agent 用——读改文件、跑终端、管 workspace、接外部工具——也可以在 Dashboard 里完成日常对话与任务编排。
 
 在此之上，ATRI 又是一个 **Agent 原生音乐工作站**。它尝试的是一条和「输入提示词，生成一段完整音频」完全不同的 AI 音乐路线：让同一个 Agent 进入 DAW 工程内部，读取时间线、轨道、clip、和声标记、MIDI notes、controller events 与自动化数据，然后把自己的判断写回底层音乐结构。
 
@@ -28,7 +28,7 @@ ATRI 的设计反过来：
 ## 技术亮点
 
 - **完整的本地 Agent Runtime**
-  多 Provider（OpenAI 兼容 / Anthropic）、工具调用、Plan / Agent 模式、会话与 timeline 持久化、子任务 / todo、MCP、Skills、Knowledge、图片转录、Web 搜索，以及 WebChat / OneBot11 / DAW Agent 接入。音乐工具只是工具面的一部分，不是唯一用途。
+  多 Provider（OpenAI 兼容 / Anthropic）、工具调用、Plan / Agent / DeepResearch 模式、会话与 timeline 持久化、子任务 / todo、MCP、Skills、Knowledge、图片转录、Web 搜索，以及 WebChat / OneBot11 / DAW Agent 接入。音乐工具只是工具面的一部分，不是唯一用途。
 
 - **Agent 直接操作 DAW 底层数据**
   `midi_write`、`midi_diff`、`midi_batch_edit`、`studio_piano_lane_write` 等工具让 Agent 不只是聊天，而是能真实写入工程结构。它可以追加 notes、替换片段、精确编辑单个事件、批量生成人性化曲线，也可以先写和声轨再按和声生成旋律与伴奏。
@@ -50,6 +50,9 @@ ATRI 的设计反过来：
 
 - **可选 Neo4j 知识图谱**
   除向量检索外，Knowledge 还可把文档与聊天中的结构化事实写入 Neo4j，按 hybrid / relevance / latest 策略检索，并注入 Agent 上下文。支持 entity / fact 全文索引、并行 single / multi-hop 查询、持久化 multi-hop expansion cache、冲突策略与 source reference 证据映射，以及可配置的检索深度、timeout 与 ranking policy。也可在 Dashboard 中手动上传文件或粘贴文本，把内容直接喂给图谱抽取流水线；Settings 可查看图谱查询诊断（耗时、cache hit、degradation 等）。
+
+- **带证据账本的 DeepResearch**
+  DeepResearch 复用同一 Agent 循环，通过独立的 `rag_search`、`graphrag_search` 和联网工具主动取证；它按 turn 共享预算、deadline 与稳定引用，可按问题需要自主派发最多 3 个受限研究子 Agent，并在 Chat / DAW Agent 中持续显示阶段、证据和额度进度。
 
 - **向量后端与文档索引生命周期**
   Knowledge 支持 `exact` 全量扫描与可选 `hnsw` ANN sidecar（需 `hnswlib`），并提供 embedding cache。文档索引支持 `sync` / `async` 两种模式：异步模式下先落盘文档，再由本地 reconciler 后台构建 vector / fulltext / graph 索引，Dashboard 可查看索引状态并触发重建。
@@ -81,13 +84,29 @@ ATRI 可以生成完整段落，但它更重要的价值是嵌入细碎的制作
 
 ## 核心能力
 
-- **Agent Runtime**：支持 OpenAI 兼容接口和 Anthropic Messages API、工具调用、会话持久化、Plan / Agent 模式、子任务调度、MCP、Skills、Web 搜索和文件工作区；可配置 `agent_timeout_seconds`，避免 Chat / DAW Agent 长时间无响应挂起。
+- **Agent Runtime**：支持 OpenAI 兼容接口和 Anthropic Messages API、工具调用、会话持久化、Plan / Agent / DeepResearch 模式、子任务调度、MCP、Skills、Web 搜索和文件工作区；可配置 `agent_timeout_seconds`，避免 Chat / DAW Agent 长时间无响应挂起。
 - **AI DAW / Studio**：支持轨道、MIDI clip、audio clip 占位、piano roll、tempo / meter、controller lane、automation、mixer、插件 rack、transport 和工程持久化；Studio UI 覆盖 arrangement / automation 编辑与键盘快捷键，工程写入带跨进程锁以保证并发安全。
 - **Rust Audio Host**：基于 CPAL 的本地实时音频 Host，支持内置 Basic Synth、VST3 扫描 / 加载、VST2 扫描信息、插件 state、原生插件编辑器窗口和音频设备配置。
 - **音乐库与播放器**：扫描本地音乐目录，读取元数据、封面、歌词，支持搜索、队列、播放控制和全屏播放器。
 - **Knowledge**：本地知识库导入、切分、embedding、rerank、检索和 Chat 上下文注入；可选 `exact` / `hnsw` 向量后端、文档索引 sync / async 生命周期、embedding cache；可选 Neo4j 图谱抽取与检索，支持手动导入（多文件上传与进度）、全文索引、multi-hop cache、检索 / 抽取 timeout、冲突策略、source reference，以及 Dashboard 图谱查询诊断。
 - **工程导入 / 导出**：Studio 支持导出 WAV / FLAC / MP3 / MIDI / DAWproject，也可从 `.dawproject` 导入外部 DAW 工程；Host Project 工作区通过快照目录与宿主 DAW 协作。
 - **平台接入**：内置 WebChat、OneBot11 和 DAW Agent（VST3 Bridge）适配，可用于 Dashboard 对话、QQ / Napcat 反向 WebSocket，或宿主 DAW 内嵌 Agent。
+
+## Agent 模式与 DeepResearch
+
+Chat 和 DAW Agent 共用三种全局模式；切换只影响后续 turn，正在运行的 DeepResearch 会继续使用启动时冻结的策略。
+
+| 模式 | 行为 |
+| --- | --- |
+| `plan` | 只读分析与规划，不执行写入操作 |
+| `agent` | 完整 Agent 工具能力，适合实现、编辑和执行任务 |
+| `deepresearch` | 自主拆题、检索、交叉核验并生成带来源的只读研究报告 |
+
+可以从模式菜单选择 DeepResearch，也可以输入 `/research` 或 `/deepresearch`。`rag_search` 与 `graphrag_search` 在三种模式中都是独立、可直接调用的只读工具；GraphRAG 可以接收 RAG 引用作为 anchor，也可以完全独立检索。
+
+DeepResearch 不使用每轮自动 Knowledge / GraphRAG 注入，而是显式调用 RAG、GraphRAG、`web_search` 和 `web_fetch`。搜索摘要只算 discovery 线索；网页正文读取后才会升级为正式 Web 证据。报告引用格式为 `[R1]`（RAG chunk）、`[G1]`（图事实）和 `[W1]`（网页），最终回复会重建规范的 `## Sources` 清单，并标明冲突、未知项与限制。
+
+该模式默认禁止文件编辑、终端和其他写入工具。主 Agent 会自行判断是否存在至少两个独立研究分支，再决定是否派发受限子 Agent；所有分支共享同一预算、deadline 和证据账本。只有用户明确要求“保存/导出报告”时，才会开放报告导出，且只能写入 workspace 内 `deep_research.report_directory` 指定的目录（默认 `research/`），支持 `.md`、`.txt`、`.json`，默认不覆盖已有文件。
 
 ## Agent 与音乐工程
 
@@ -187,7 +206,9 @@ http://localhost:6185
 | 配置项 | 说明 |
 | --- | --- |
 | `providers` / `active_models` | 聊天模型 Provider 与可用模型池 |
+| `agent_mode` | 全局模式：`plan`、`agent` 或 `deepresearch` |
 | `agent_timeout_seconds` | Chat / DAW Agent 等待回复的超时时间（秒） |
+| `deep_research` | 缺口轮数、研究工具调用、网页正文、并行子 Agent、总时限、综合预留和报告导出目录；热更新只影响新 turn |
 | `embedding_model` / `rerank_model` | Knowledge 检索使用的 embedding 和 rerank 模型 |
 | `knowledge.embedding_cache_max_size` | embedding 结果缓存上限；`0` 关闭缓存 |
 | `knowledge.vector_backend` | 向量后端：`exact`（全量扫描）或 `hnsw`（持久化 ANN sidecar，需 `hnswlib`） |
@@ -372,6 +393,7 @@ ATRI/
 ├── config.yaml.example        # 配置示例
 ├── core/
 │   ├── agent/                 # Agent 主循环、LLM、上下文和模式
+│   ├── research/              # DeepResearch 策略、预算、证据账本、报告与跨线程服务
 │   ├── tools/                 # 文件、终端、MIDI、Studio、音乐、MCP、Skills 等工具
 │   ├── pipeline/              # 平台消息处理流水线
 │   ├── platform/              # WebChat / OneBot11 / DawAgent 适配

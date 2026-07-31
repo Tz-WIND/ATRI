@@ -13,7 +13,7 @@ from core import logger
 from core.agent.llm import LLM
 from core.knowledge.chunking import RecursiveTextChunker
 from core.knowledge.extraction import MAX_EXTRACTION_TUPLES, GraphTupleExtractor
-from core.knowledge.graph import Neo4jGraphClient
+from core.knowledge.graph import GraphSearchResult, Neo4jGraphClient
 from core.knowledge.graph_constants import (
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
     GRAPH_EXTRACTION_BATCH_CHARS,
@@ -326,6 +326,79 @@ class GraphKnowledgeManager:
         except Exception as e:
             logger.warning("Graph knowledge retrieval skipped: %s", e)
             return ""
+
+    async def search_facts(
+        self,
+        *,
+        query: str,
+        source_ids: list[str] | None = None,
+        source_scores: dict[str, float] | None = None,
+        max_facts: int = 8,
+        retrieval_depth: int | None = None,
+        ranking_policy: str | None = None,
+        expansion_candidate_limit: int | None = None,
+        timings: dict[str, Any] | None = None,
+    ) -> GraphSearchResult:
+        """Return structured facts for explicit GraphRAG tool calls."""
+
+        if not self.graph_config.get("enabled") or not self.graph_config.get("retrieval_enabled"):
+            return GraphSearchResult(
+                query=query,
+                facts=[],
+                context_text="",
+                diagnostics={"status": "unavailable", "graph_cache_hit": False},
+            )
+        depth = _retrieval_depth(
+            retrieval_depth
+            if retrieval_depth is not None
+            else self.graph_config.get("retrieval_depth", GRAPH_RETRIEVAL_DEFAULT_DEPTH)
+        )
+        policy = _ranking_policy(ranking_policy or self.graph_config.get("ranking_policy"))
+        candidate_limit = _expansion_candidate_limit(
+            expansion_candidate_limit
+            if expansion_candidate_limit is not None
+            else self.graph_config.get("expansion_candidate_limit")
+        )
+        retrieval_timings = timings if timings is not None else {}
+        retrieve_kwargs: dict[str, Any] = {
+            "query": query,
+            "source_ids": source_ids or [],
+            "source_scores": source_scores or {},
+            "max_facts": max_facts,
+            "retrieval_depth": depth,
+            "ranking_policy": policy,
+            "expansion_candidate_limit": candidate_limit,
+        }
+        if _accepts_keyword(self.graph_client.search_facts, "timings"):
+            retrieve_kwargs["timings"] = retrieval_timings
+        timeout_seconds = _timeout_seconds(
+            self.graph_config.get("retrieval_timeout_seconds"),
+            GRAPH_RETRIEVAL_TIMEOUT_SECONDS,
+        )
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.graph_client.search_facts, **retrieve_kwargs),
+                timeout=timeout_seconds,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Structured graph knowledge retrieval timed out after %.3fs",
+                timeout_seconds,
+            )
+            return GraphSearchResult(
+                query=query,
+                facts=[],
+                context_text="",
+                diagnostics={"status": "timeout", **retrieval_timings},
+            )
+        except Exception as e:
+            logger.warning("Structured graph knowledge retrieval skipped: %s", e)
+            return GraphSearchResult(
+                query=query,
+                facts=[],
+                context_text="",
+                diagnostics={"status": "unavailable", **retrieval_timings},
+            )
 
     def _can_enqueue(
         self,

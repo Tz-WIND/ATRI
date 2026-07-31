@@ -34,6 +34,63 @@ try {
   assert.notEqual(second, first)
   assert.deepEqual(second.messages.value, [])
 
+  second.handleWsEvent({ type: 'research_started', phase: 'created' })
+  second.handleWsEvent({ type: 'research_phase', phase: 'gathering' })
+  second.handleWsEvent({
+    type: 'research_budget',
+    research_tool_calls: 7,
+    web_fetches: 2,
+    active_subagents: 1,
+    total_subagents: 2,
+  })
+  second.handleWsEvent({ type: 'research_evidence', evidence_count: 4 })
+
+  assert.deepEqual(second.researchStatus.value, {
+    visible: true,
+    active: true,
+    phase: 'gathering',
+    state: 'researching',
+    evidenceCount: 4,
+    toolCalls: 7,
+    webFetches: 2,
+    activeSubagents: 1,
+    totalSubagents: 2,
+  })
+
+  second.handleWsEvent({
+    type: 'research_budget',
+    active_subagents: 2,
+    total_subagents: 2,
+  })
+  second.handleWsEvent({ type: 'research_subagent_started', branch_id: 'branch-a' })
+  second.handleWsEvent({ type: 'research_subagent_started', branch_id: 'branch-b' })
+  assert.equal(second.researchStatus.value.activeSubagents, 2)
+  assert.equal(second.researchStatus.value.totalSubagents, 2)
+  second.handleWsEvent({ type: 'research_subagent_finished', branch_id: 'branch-a' })
+  second.handleWsEvent({ type: 'research_subagent_finished', branch_id: 'branch-b' })
+  assert.equal(second.researchStatus.value.activeSubagents, 2)
+  second.handleWsEvent({
+    type: 'research_budget',
+    active_subagents: 0,
+    total_subagents: 2,
+  })
+  assert.equal(second.researchStatus.value.activeSubagents, 0)
+
+  second.handleWsEvent({ type: 'research_completed', phase: 'completed' })
+  assert.equal(second.researchStatus.value.active, false)
+  assert.equal(second.researchStatus.value.visible, true)
+
+  second.beginTranscriptTurn()
+  assert.equal(second.researchStatus.value.visible, false)
+
+  second.handleWsEvent({ type: 'research_started', phase: 'created' })
+  second.handleWsEvent({ type: 'research_phase', phase: 'verifying' })
+  second.handleWsEvent({ type: 'research_cancelled', phase: 'verifying' })
+  assert.equal(second.researchStatus.value.phase, 'cancelled')
+  assert.equal(second.researchStatus.value.state, 'cancelled')
+
+  second.beginTranscriptTurn()
+
   second.loadTranscript({
     messages: [
       {

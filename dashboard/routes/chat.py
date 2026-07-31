@@ -36,6 +36,21 @@ def agent_timeout_seconds(config: dict[str, Any]) -> float:
     return timeout
 
 
+def research_timeout_seconds(config: dict[str, Any], mode: str) -> float:
+    """Select the per-request timeout without changing an in-flight turn."""
+
+    if str(mode or "").strip().lower() != "deepresearch":
+        return agent_timeout_seconds(config)
+    deep_research = config.get("deep_research", {})
+    if not isinstance(deep_research, dict):
+        return 900.0
+    try:
+        timeout = float(deep_research.get("timeout_seconds", 900.0))
+    except (TypeError, ValueError):
+        return 900.0
+    return timeout if timeout >= 60.0 else 900.0
+
+
 def format_timeout_seconds(timeout: float) -> str:
     return str(int(timeout)) if float(timeout).is_integer() else f"{timeout:g}"
 
@@ -198,6 +213,26 @@ def _file_display_attachments(files: list[dict[str, Any]]) -> list[dict[str, Any
 # ── Route registration ──
 
 
+def _cancel_webchat_request(dashboard: Dashboard, adapter: Any, event: Any) -> None:
+    cancel_request = getattr(adapter, "cancel_request", None)
+    if callable(cancel_request):
+        try:
+            cancel_request(event)
+        except Exception as e:
+            logger.warning("Failed to cancel WebChat request: %s", e)
+
+    request_id = str(event._extras.get("_request_id") or "").strip()
+    if not request_id:
+        return
+    try:
+        dashboard.lifecycle.cancel_operation(
+            session_id=event.unified_msg_origin,
+            request_id=request_id,
+        )
+    except Exception as e:
+        logger.warning("Failed to cancel WebChat operation: %s", e)
+
+
 def register(dashboard: Dashboard) -> None:
     app = dashboard.app
 
@@ -249,16 +284,26 @@ def register(dashboard: Dashboard) -> None:
         if not webchat:
             return jsonify({"error": "webchat adapter not available"}), 503
 
+        process_stage = getattr(dashboard.lifecycle, "process_stage", None)
+        request_mode = (
+            process_stage.agent_mode
+            if process_stage
+            else dashboard.lifecycle.config.get("agent_mode", "agent")
+        )
         event, future = webchat.create_event(
             message,
             session_id,
             images=images,
             display_user_input=display_message,
             file_attachments=_file_display_attachments(files),
+            agent_mode=request_mode,
         )
         await dashboard.broadcast({"type": "thinking", "session_id": session_id})
 
-        timeout_seconds = agent_timeout_seconds(dashboard.lifecycle.config)
+        timeout_seconds = research_timeout_seconds(
+            dashboard.lifecycle.config,
+            request_mode,
+        )
         try:
             result = await asyncio.wait_for(future, timeout=timeout_seconds)
             response_text = result.get("text", "")
@@ -281,6 +326,7 @@ def register(dashboard: Dashboard) -> None:
                 }
             )
         except TimeoutError:
+            _cancel_webchat_request(dashboard, webchat, event)
             timeout_label = format_timeout_seconds(timeout_seconds)
             return jsonify({"error": f"Agent timed out ({timeout_label}s)"}), 504
         except Exception as e:
@@ -302,10 +348,14 @@ def register(dashboard: Dashboard) -> None:
         from core.tools import create_tools
 
         ws = dashboard.lifecycle.config.get("workspace", ".")
+        process_stage = getattr(dashboard.lifecycle, "process_stage", None)
         tools = await asyncio.to_thread(
             create_tools,
             ws,
             mcp_servers=dashboard.lifecycle.config.get("mcp_servers", {}),
+            research_services=(
+                getattr(process_stage, "research_services", None) if process_stage else None
+            ),
         )
         return jsonify(
             [

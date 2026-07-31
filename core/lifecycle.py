@@ -160,6 +160,7 @@ class Lifecycle:
             "extra_instructions": self.config.get("extra_instructions", ""),
             "persona": self.config.get("persona", ""),
             "agent_mode": self.config.get("agent_mode", "agent"),
+            "deep_research": self.config.get("deep_research", {}),
             "skills_root": self.config.get("skills_root", "skills"),
             "skill_search_roots": self.config.get("skill_search_roots", []),
             "skills_config": self.config.get("skills", {}),
@@ -281,15 +282,23 @@ class Lifecycle:
         if dashboard:
             await dashboard.reconcile_audio_streaming_state()
 
-    def cancel_operation(self, session_id: str | None = None) -> bool:
+    def cancel_operation(
+        self,
+        session_id: str | None = None,
+        request_id: str | None = None,
+    ) -> bool:
         """Cancel the currently running agent operation (if any).
 
-        If session_id is given, cancels that specific session's agent.
-        Otherwise cancels whichever agent is currently active.
+        A request ID scopes cancellation to one HTTP request. Without one,
+        ``session_id`` retains the explicit user-interrupt behavior.
 
         Returns True if an operation was cancelled, False if nothing was active.
         """
         if self.process_stage:
+            if request_id:
+                if not session_id:
+                    return False
+                return bool(self.process_stage.cancel_request(session_id, request_id))
             if session_id:
                 return bool(self.process_stage.cancel_session(session_id))
             return bool(self.process_stage.cancel_current())

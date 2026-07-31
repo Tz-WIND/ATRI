@@ -9,6 +9,7 @@ import sys
 import time
 import warnings
 from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from typing import Any, TypeVar, cast
 
@@ -92,7 +93,104 @@ _CURRENT_SINGLE_PREDICATES = frozenset(
     }
 )
 T = TypeVar("T")
-__all__ = ["GRAPH_QUERY_ENUMERATION_TERMS", "Neo4jGraphClient", "_query_terms"]
+__all__ = [
+    "GRAPH_QUERY_ENUMERATION_TERMS",
+    "GraphFactHit",
+    "GraphSearchResult",
+    "Neo4jGraphClient",
+    "_query_terms",
+]
+
+
+@dataclass(frozen=True)
+class GraphFactHit:
+    """One ranked graph fact with enough provenance to cite independently."""
+
+    fact_key: str
+    subject: str
+    predicate: str
+    object: str
+    hop: int
+    graph_score: float
+    confidence: float
+    evidence: str
+    source_ids: list[str]
+    source_refs: list[str]
+    provenance_incomplete: bool = False
+    subject_type: str = ""
+    object_type: str = ""
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> GraphFactHit:
+        return cls(
+            fact_key=str(value.get("fact_key") or ""),
+            subject=str(value.get("subject") or ""),
+            predicate=str(value.get("predicate") or ""),
+            object=str(value.get("object") or ""),
+            hop=max(1, int(value.get("hop") or 1)),
+            graph_score=float(value.get("graph_score") or 0.0),
+            confidence=float(value.get("confidence") or 0.0),
+            evidence=str(value.get("evidence") or ""),
+            source_ids=_unique_text_values(value.get("source_ids") or []),
+            source_refs=_unique_text_values(value.get("source_refs") or []),
+            provenance_incomplete=bool(value.get("provenance_incomplete")),
+            subject_type=str(value.get("subject_type") or ""),
+            object_type=str(value.get("object_type") or ""),
+            diagnostics=dict(value.get("diagnostics") or {}),
+        )
+
+
+@dataclass(frozen=True)
+class GraphSearchResult:
+    """Structured GraphRAG result while retaining the legacy context text."""
+
+    query: str
+    facts: list[GraphFactHit]
+    context_text: str
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "facts": [fact.to_dict() for fact in self.facts],
+            "context_text": self.context_text,
+            "diagnostics": dict(self.diagnostics),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> GraphSearchResult:
+        return cls(
+            query=str(value.get("query") or ""),
+            facts=[
+                GraphFactHit.from_dict(item)
+                for item in value.get("facts", [])
+                if isinstance(item, dict)
+            ],
+            context_text=str(value.get("context_text") or ""),
+            diagnostics=dict(value.get("diagnostics") or {}),
+        )
+
+
+def _graph_row_text_values(row: Any, *keys: str) -> list[str]:
+    values: list[Any] = []
+    for key in keys:
+        value = row.get(key) if hasattr(row, "get") else None
+        if isinstance(value, (list, tuple, set)):
+            values.extend(value)
+        elif value is not None:
+            values.append(value)
+    return _unique_text_values(values)
+
+
+def _graph_row_float(row: Any, key: str) -> float:
+    try:
+        return float(row.get(key) or 0.0)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
 
 
 def _legacy_persistent_cache_enabled(value: Any) -> bool | None:
@@ -2028,7 +2126,7 @@ class Neo4jGraphClient:
                 logger.debug("Neo4j graph multi-hop cache prewarm skipped: %s", e)
         return count
 
-    def retrieve_context(
+    def search_facts(
         self,
         *,
         query: str,
@@ -2040,13 +2138,25 @@ class Neo4jGraphClient:
         expansion_candidate_limit: int | None = None,
         include_entity_types: bool = False,
         timings: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> GraphSearchResult:
+        if timings is None:
+            timings = {}
         if not self.enabled:
-            return ""
+            return GraphSearchResult(
+                query=query,
+                facts=[],
+                context_text="",
+                diagnostics={"status": "unavailable", "graph_cache_hit": False},
+            )
         started_at = time.perf_counter()
         self.initialize()
         if self.driver is None:
-            return ""
+            return GraphSearchResult(
+                query=query,
+                facts=[],
+                context_text="",
+                diagnostics={"status": "unavailable", "graph_cache_hit": False},
+            )
         self._refresh_graph_revision_from_store()
         term_rows = _query_term_rows(query)
         terms = [str(row["term"]) for row in term_rows]
@@ -2081,7 +2191,12 @@ class Neo4jGraphClient:
                 multihop_persistent_cache_hit_count,
             )
             _set_bool(timings, "graph_multihop_degraded", False)
-            return ""
+            return GraphSearchResult(
+                query=query,
+                facts=[],
+                context_text="",
+                diagnostics={**timings, "graph_cache_hit": False},
+            )
         depth = _retrieval_depth(retrieval_depth)
         policy = _ranking_policy(ranking_policy)
         source_score_rows = _source_score_rows(source_ids or [], source_scores or {})
@@ -2130,8 +2245,12 @@ class Neo4jGraphClient:
             include_entity_types=include_entity_types,
             fulltext_ready=self._fulltext_indexes_ready,
         )
-        cached_context = self._retrieval_cache.get("final_context", final_cache_key)
-        if cached_context is not None:
+        cached_value = self._retrieval_cache.get("final_context", final_cache_key)
+        if not (isinstance(cached_value, dict) and "context_text" in cached_value):
+            # Pre-structured cache entries cannot provide provenance-safe facts.
+            cached_value = None
+        if cached_value is not None:
+            cached_result = GraphSearchResult.from_dict(cached_value)
             _record_timing(timings, "graph_total_ms", started_at)
             _set_timing(timings, "graph_single_hop_ms", 0.0)
             _set_timing(timings, "graph_multi_hop_ms", 0.0)
@@ -2141,7 +2260,9 @@ class Neo4jGraphClient:
             _record_count(
                 timings,
                 "graph_returned_facts",
-                _graph_context_fact_count(cached_context),
+                len(cached_result.facts)
+                if cached_result.facts
+                else _graph_context_fact_count(cached_result.context_text),
             )
             _set_bool(timings, "graph_used_fulltext", bool(fulltext_query))
             _set_bool(timings, "graph_used_scan_fallback", False)
@@ -2169,7 +2290,13 @@ class Neo4jGraphClient:
                 multihop_persistent_cache_hit_count,
             )
             _set_bool(timings, "graph_multihop_degraded", multihop_degraded)
-            return str(cached_context)
+            diagnostics = {**cached_result.diagnostics, **timings, "graph_cache_hit": True}
+            return GraphSearchResult(
+                query=cached_result.query or query,
+                facts=cached_result.facts,
+                context_text=cached_result.context_text,
+                diagnostics=diagnostics,
+            )
         _set_bool(timings, "graph_cache_hit", False)
         fulltext_seed_rows = self._cached_fulltext_seed_rows(fulltext_query, seed_limit)
         entity_seed_rows = fulltext_seed_rows["entity_seed_rows"]
@@ -2359,7 +2486,14 @@ class Neo4jGraphClient:
                r.predicate AS predicate,
                o.name AS object,
                o.type AS object_type,
+               r.fact_key AS fact_key,
                r.evidence AS evidence,
+               r.source_id AS source_id,
+               r.source_ids AS source_ids,
+               r.retrieval_source_ids AS retrieval_source_ids,
+               r.batch_source_ids AS batch_source_ids,
+               r.source_ref AS source_ref,
+               r.source_refs AS source_refs,
                r[$hyper_event_property] AS hyper_event,
                r[$hyper_role_property] AS hyper_role,
                r[$chain_order_property] AS chain_order,
@@ -2651,7 +2785,14 @@ class Neo4jGraphClient:
                r.predicate AS predicate,
                endNode(r).name AS object,
                endNode(r).type AS object_type,
+               r.fact_key AS fact_key,
                r.evidence AS evidence,
+               r.source_id AS source_id,
+               r.source_ids AS source_ids,
+               r.retrieval_source_ids AS retrieval_source_ids,
+               r.batch_source_ids AS batch_source_ids,
+               r.source_ref AS source_ref,
+               r.source_refs AS source_refs,
                r[$hyper_event_property] AS hyper_event,
                r[$hyper_role_property] AS hyper_role,
                r[$chain_order_property] AS chain_order,
@@ -2928,6 +3069,7 @@ class Neo4jGraphClient:
             _set_timing(timings, "graph_scan_fallback_ms", 0.0)
         format_started_at = time.perf_counter()
         entries: list[dict[str, Any]] = []
+        fact_hits: list[GraphFactHit] = []
         seen_positions = set()
         for row in _rank_retrieved_rows(rows):
             subject = _canonical_retrieved_entity_name(row.get("subject"))
@@ -2981,6 +3123,39 @@ class Neo4jGraphClient:
                     "subject_key": _entity_alias_key(subject),
                     "object_key": _entity_alias_key(obj),
                 }
+            )
+            source_ids_for_hit = _graph_row_text_values(
+                row,
+                "source_ids",
+                "retrieval_source_ids",
+                "batch_source_ids",
+                "source_id",
+            )
+            source_refs_for_hit = _graph_row_text_values(row, "source_refs", "source_ref")
+            fact_hits.append(
+                GraphFactHit(
+                    fact_key=str(row.get("fact_key") or "").strip(),
+                    subject=subject,
+                    predicate=predicate,
+                    object=obj,
+                    hop=hop,
+                    graph_score=_graph_row_float(row, "graph_score"),
+                    confidence=_graph_row_float(row, "confidence"),
+                    evidence=evidence,
+                    source_ids=source_ids_for_hit,
+                    source_refs=source_refs_for_hit,
+                    provenance_incomplete=not bool(source_ids_for_hit or source_refs_for_hit),
+                    subject_type=subject_type,
+                    object_type=object_type,
+                    diagnostics={
+                        key: value
+                        for key, value in {
+                            "updated_at": row.get("updated_at"),
+                            "structural_role": row.get("structural_role"),
+                        }.items()
+                        if value is not None
+                    },
+                )
             )
         lines = _format_retrieved_fact_lines(entries, depth=depth, limit=query_limit)
         _record_timing(timings, "graph_format_ms", format_started_at)
@@ -3036,8 +3211,48 @@ class Neo4jGraphClient:
             multihop_persistent_cache_hit_count,
         )
         context = format_graph_context(lines)
-        self._retrieval_cache.set("final_context", final_cache_key, context)
-        return context
+        diagnostics = {
+            **timings,
+            "graph_cache_hit": False,
+            "retrieval_depth": depth,
+            "ranking_policy": policy,
+            "expansion_candidate_limit": expansion_query_limit,
+        }
+        result = GraphSearchResult(
+            query=query,
+            facts=fact_hits[:query_limit],
+            context_text=context,
+            diagnostics=diagnostics,
+        )
+        self._retrieval_cache.set("final_context", final_cache_key, result.to_dict())
+        return result
+
+    def retrieve_context(
+        self,
+        *,
+        query: str,
+        source_ids: list[str] | None = None,
+        source_scores: dict[str, float] | None = None,
+        max_facts: int = 8,
+        retrieval_depth: int = GRAPH_RETRIEVAL_DEFAULT_DEPTH,
+        ranking_policy: str = "hybrid",
+        expansion_candidate_limit: int | None = None,
+        include_entity_types: bool = False,
+        timings: dict[str, Any] | None = None,
+    ) -> str:
+        """Return the legacy formatted context while sharing structured retrieval/cache."""
+
+        return self.search_facts(
+            query=query,
+            source_ids=source_ids,
+            source_scores=source_scores,
+            max_facts=max_facts,
+            retrieval_depth=retrieval_depth,
+            ranking_policy=ranking_policy,
+            expansion_candidate_limit=expansion_candidate_limit,
+            include_entity_types=include_entity_types,
+            timings=timings,
+        ).context_text
 
     def _session(self):
         if self.driver is None:

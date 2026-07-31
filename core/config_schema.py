@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from ipaddress import ip_address
+from pathlib import Path
 from typing import Any
 
 from core.knowledge.graph_constants import (
@@ -211,11 +212,41 @@ CONFIG_SCHEMA: dict[str, Any] = {
         "wake_words": {"type": "array", "default": ["atri"]},
         "extra_instructions": {"type": "string", "default": ""},
         "persona": {"type": "string", "default": ""},
-        "agent_mode": {"type": "string", "default": "agent", "enum": ["plan", "agent"]},
+        "agent_mode": {
+            "type": "string",
+            "default": "agent",
+            "enum": ["plan", "agent", "deepresearch"],
+        },
         "agent_timeout_seconds": {
             "type": "number",
             "default": AGENT_TIMEOUT_SECONDS_DEFAULT,
             "minimum": AGENT_TIMEOUT_SECONDS_MINIMUM,
+        },
+        "deep_research": {
+            "type": "object",
+            "properties": {
+                "max_gap_rounds": {"type": "integer", "default": 8, "minimum": 1},
+                "max_research_tool_calls": {
+                    "type": "integer",
+                    "default": 100,
+                    "minimum": 1,
+                },
+                "max_web_fetches": {"type": "integer", "default": 40, "minimum": 1},
+                "max_parallel_subagents": {
+                    "type": "integer",
+                    "default": 3,
+                    "minimum": 1,
+                    "maximum": 3,
+                },
+                "timeout_seconds": {"type": "number", "default": 900.0, "minimum": 60.0},
+                "synthesis_reserve_seconds": {
+                    "type": "number",
+                    "default": 60.0,
+                    "minimum": 15.0,
+                },
+                "allow_report_export": {"type": "boolean", "default": True},
+                "report_directory": {"type": "string", "default": "research"},
+            },
         },
         "image_transcription": {
             "type": "object",
@@ -700,6 +731,35 @@ def _validate_onebot11_security(config: dict[str, Any]) -> None:
     )
 
 
+def _validate_deep_research_config(config: dict[str, Any]) -> None:
+    deep_research = config.get("deep_research", {})
+    if not isinstance(deep_research, dict):
+        return
+    timeout = float(deep_research.get("timeout_seconds", 900.0))
+    reserve = float(deep_research.get("synthesis_reserve_seconds", 60.0))
+    if reserve >= timeout:
+        raise ConfigValidationError(
+            "deep_research.synthesis_reserve_seconds must be less than timeout_seconds"
+        )
+
+    workspace_root = Path(str(config.get("workspace") or ".")).expanduser().resolve()
+    report_value = str(deep_research.get("report_directory") or "").strip()
+    if not report_value:
+        raise ConfigValidationError("deep_research.report_directory must not be empty")
+    report_path = Path(report_value).expanduser()
+    resolved = (
+        report_path.resolve()
+        if report_path.is_absolute()
+        else (workspace_root / report_path).resolve()
+    )
+    try:
+        resolved.relative_to(workspace_root)
+    except ValueError as exc:
+        raise ConfigValidationError(
+            "deep_research.report_directory must resolve inside workspace"
+        ) from exc
+
+
 def _legacy_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -746,4 +806,5 @@ def normalize_config(
     if migrate_legacy_onebot11_public_bind:
         changed = _migrate_legacy_onebot11_public_bind(config) or changed
     _validate_onebot11_security(config)
+    _validate_deep_research_config(config)
     return config, changed

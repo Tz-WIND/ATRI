@@ -47,6 +47,37 @@ def test_settings_page_exposes_agent_timeout_setting():
     )
 
 
+def test_settings_page_exposes_deep_research_controls():
+    source = _read("frontend/src/components/settings/SettingsPage.vue")
+
+    assert "Deep Research" in source
+    assert "Gap Rounds" in source
+    assert "Tool Calls" in source
+    assert "Web Pages" in source
+    assert "Parallel Agents" in source
+    assert "Research Timeout" in source
+    assert "Synthesis Reserve" in source
+    assert "Report Directory" in source
+    assert "Allow Report Export" in source
+    for field in (
+        "max_gap_rounds",
+        "max_research_tool_calls",
+        "max_web_fetches",
+        "max_parallel_subagents",
+        "timeout_seconds",
+        "synthesis_reserve_seconds",
+        "report_directory",
+        "allow_report_export",
+    ):
+        assert f"form.deep_research.{field}" in source
+
+    assert "deep_research: {" in source
+    assert "function normalizeDeepResearch" in source
+    assert "form.value.deep_research = normalizeDeepResearch(d.deep_research)" in source
+    assert "const deepResearch = normalizeDeepResearch(form.value.deep_research)" in source
+    assert "deep_research: deepResearch" in source
+
+
 def test_settings_page_exposes_vector_knowledge_cache_limit():
     source = _read("frontend/src/components/settings/SettingsPage.vue")
 

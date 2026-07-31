@@ -17,6 +17,7 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from core import logger
@@ -35,6 +36,12 @@ from core.knowledge.graph_constants import (
 from core.pipeline.stage import Stage, register_stage
 from core.platform.daw_agent import normalize_daw_host_context
 from core.platform.message import Image, MessageEvent, MessageType, Plain, resolve_session_id
+from core.research import (
+    ResearchPolicy,
+    ResearchServices,
+    ResearchSession,
+    detect_report_export_intent,
+)
 from core.runtime import RuntimeTimelineStore, TaskStore, TodoStore, summarize_text
 from core.skills import SkillManager, build_skills_prompt
 from core.tools.bash import CONFIRM_MARKER
@@ -47,6 +54,12 @@ _GRAPH_SOURCE_ANCHOR_LATENCY_ALPHA = 0.35
 _GRAPH_LATE_ANCHOR_RETRY_MIN_VECTOR_SCORE = 0.75
 _GRAPH_ENUMERATION_RETRIEVAL_DEPTH_FLOOR = 3
 _GRAPH_ENUMERATION_EXPANSION_CANDIDATE_FLOOR = 120
+
+
+class _ResearchDeadlineError(TimeoutError):
+    """Identify the wall-clock deadline without masking in-turn timeouts."""
+
+
 _LOW_SIGNAL_KNOWLEDGE_QUERIES = {
     "hi",
     "hello",
@@ -87,6 +100,20 @@ _LOW_SIGNAL_KNOWLEDGE_QUERIES = {
 
 if TYPE_CHECKING:
     pass
+
+
+async def _await_research_response(
+    response_awaitable: Coroutine[Any, Any, str],
+    *,
+    deadline_seconds: float,
+) -> str:
+    response_task = asyncio.ensure_future(response_awaitable)
+    try:
+        return await asyncio.wait_for(response_task, timeout=deadline_seconds)
+    except TimeoutError as e:
+        if response_task.done() and not response_task.cancelled():
+            raise
+        raise _ResearchDeadlineError("Deep research deadline exceeded") from e
 
 
 def _event_images(event: MessageEvent) -> list[Image]:
@@ -147,6 +174,35 @@ def _event_display_user_attachments(event: MessageEvent) -> list[dict]:
     if not isinstance(attachments, list):
         return []
     return [item for item in attachments if isinstance(item, dict)]
+
+
+def _event_requests_report_export(event: MessageEvent) -> bool:
+    """Use only the user's visible request, never appended attachment contents."""
+
+    display_input = event._extras.get("display_user_input")
+    if isinstance(display_input, str):
+        request_text = display_input
+    else:
+        request_text = _event_plain_text(event) or event.message_str
+    return detect_report_export_intent(request_text)
+
+
+def _event_agent_mode(event: MessageEvent, fallback: str) -> str:
+    frozen = event._extras.get("agent_mode")
+    if frozen is None:
+        return normalize_agent_mode(fallback)
+    try:
+        return normalize_agent_mode(frozen)
+    except ValueError:
+        return normalize_agent_mode(fallback)
+
+
+def _event_request_id(event: MessageEvent) -> str:
+    return str(event._extras.get("_request_id") or "").strip()
+
+
+def _event_request_cancelled(event: MessageEvent) -> bool:
+    return event._extras.get("_request_cancelled") is True
 
 
 def _event_user_content_with_transcription(event: MessageEvent, transcription: str) -> str:
@@ -364,6 +420,7 @@ class ProcessStage(Stage):
         self.mcp_servers: dict = dict(ctx.get("mcp_servers", {}))
         self.image_transcription: dict = dict(ctx.get("image_transcription", {}) or {})
         self.knowledge: dict = dict(ctx.get("knowledge", {}) or {})
+        self.deep_research: dict = dict(ctx.get("deep_research", {}) or {})
         self.knowledge_manager = ctx.get("knowledge_manager")
         self.graph_manager = ctx.get("graph_manager")
         self._graph_source_anchor_vector_latency_seconds: float | None = None
@@ -410,10 +467,18 @@ class ProcessStage(Stage):
 
         self.broadcast_fn: Callable[[dict], Coroutine[Any, Any, None]] | None = None
         self._active_session_ids: set[str] = set()
+        self._active_request_ids: dict[str, str] = {}
         self._active_lock = threading.Lock()
 
         # Store event loop reference for thread-safe broadcasting from agent executor
         self._loop = asyncio.get_running_loop()
+        self.research_services = ResearchServices(
+            loop=self._loop,
+            knowledge_manager=self.knowledge_manager,
+            graph_manager=self.graph_manager,
+            knowledge_config_provider=lambda: self.knowledge,
+            graph_config_provider=lambda: self.knowledge.get("graph", {}),
+        )
 
     def _on_agent_mode_changed(self, mode: str, source: str, reason: str) -> None:
         self._fire(
@@ -427,7 +492,7 @@ class ProcessStage(Stage):
 
     @property
     def agent_mode(self) -> str:
-        return self.mode_controller.mode
+        return getattr(getattr(self, "mode_controller", None), "mode", "agent")
 
     def set_agent_mode(self, mode: object, *, source: str = "user", reason: str = "") -> str:
         next_mode, changed = self.mode_controller.set_mode(mode, source=source, reason=reason)
@@ -496,6 +561,7 @@ class ProcessStage(Stage):
                     mode_controller=self.mode_controller,
                     llm_factory=self._create_llm_for_model,
                     model_catalog=self._model_catalog,
+                    research_services=self.research_services,
                 )
                 # Try to restore session from disk
                 loaded = self.session_store.load(session_id)
@@ -637,6 +703,18 @@ class ProcessStage(Stage):
 
         return _callback
 
+    def _record_research_event(
+        self,
+        turn: _RuntimeTurnRecorder,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        wire_payload = turn.record_event(
+            event_type,
+            {"type": event_type, **payload},
+        )
+        self._fire(wire_payload)
+
     def _fire(self, data: dict):
         """Thread-safe broadcast: schedule the async broadcast on the event loop."""
         if not self.broadcast_fn:
@@ -653,10 +731,16 @@ class ProcessStage(Stage):
         if not event.message_str.strip() and not _event_images(event):
             yield
             return
+        if _event_request_cancelled(event):
+            event.stop()
+            return
 
         session_id = event.unified_msg_origin
         session_lock = self._get_session_lock(session_id)
         async with session_lock:
+            if _event_request_cancelled(event):
+                event.stop()
+                return
             async for item in self._process_locked(event, session_id):
                 yield item
 
@@ -665,19 +749,41 @@ class ProcessStage(Stage):
         event: MessageEvent,
         session_id: str,
     ) -> AsyncGenerator[None, None]:
+        turn_mode = _event_agent_mode(event, self.agent_mode)
         agent = self._get_or_create_agent(session_id)
         self._apply_event_llm_override(agent, event)
+        request_id = _event_request_id(event)
         turn = _RuntimeTurnRecorder(self, event, session_id, agent.llm.model)
         turn.record_turn_started()
+        research_session: ResearchSession | None = None
+        if turn_mode == "deepresearch":
+            policy = ResearchPolicy.from_config(self.deep_research, self.workspace)
+
+            research_session = ResearchSession(
+                policy=policy,
+                turn_id=turn.turn_id,
+                session_id=session_id,
+                original_user_request=event.message_str,
+                services=self.research_services,
+                report_export_allowed=_event_requests_report_export(event),
+                event_callback=partial(self._record_research_event, turn),
+            )
+            research_session.start()
+
+        with self._active_lock:
+            if _event_request_cancelled(event):
+                event.stop()
+                return
+            self._active_session_ids.add(session_id)
+            if request_id:
+                self._active_request_ids[session_id] = request_id
 
         try:
             logger.info(f"[{session_id}] Processing: {event.message_str[:80]}")
-            with self._active_lock:
-                self._active_session_ids.add(session_id)
             agent.high_privilege_tools_allowed = _event_allows_high_privilege_tools(event)
             display_user_content = _event_display_user_content(event)
-            user_content = await self._event_content_for_agent(event)
-            response = await agent.chat_async(
+            user_content = await self._event_content_for_agent(event, turn_mode=turn_mode)
+            response_awaitable = agent.chat_async(
                 user_content,
                 on_token=turn.on_token,
                 on_tool=turn.on_tool,
@@ -687,8 +793,24 @@ class ProcessStage(Stage):
                 on_tool_end=turn.on_tool_end,
                 display_user_input=display_user_content,
                 display_user_attachments=_event_display_user_attachments(event),
+                turn_mode=turn_mode,
+                research_session=research_session,
+                research_branch_id="main",
             )
+            if research_session is not None:
+                response = await _await_research_response(
+                    response_awaitable,
+                    deadline_seconds=research_session.budget.seconds_until_deadline(),
+                )
+            else:
+                response = await response_awaitable
             response_text = response or ""
+            if research_session is not None and not response_text.startswith("[Interrupted"):
+                research_session.begin_synthesis(reason="response_ready")
+                response_text = research_session.report_validator.finalize_chat_report(
+                    response_text
+                ).content
+                _replace_latest_assistant_message_content(agent.messages, response_text)
             turn.mark_thinking_done()
             await turn.drain_pending_broadcasts()
 
@@ -704,7 +826,13 @@ class ProcessStage(Stage):
                 event.set_result(response_text)
             event._extras["tool_events"] = turn.tool_events
             await turn.finish_success(response_text)
-            self._enqueue_graph_chat_turn(event, response_text)
+            if research_session is not None:
+                if response_text.startswith("[Interrupted"):
+                    research_session.cancel(reason="interrupted")
+                else:
+                    research_session.complete()
+            if turn_mode != "deepresearch":
+                self._enqueue_graph_chat_turn(event, response_text)
 
             self.session_store.save(
                 agent.messages,
@@ -712,17 +840,37 @@ class ProcessStage(Stage):
                 session_id,
             )
 
+        except _ResearchDeadlineError as e:
+            logger.warning("DeepResearch timed out for %s", session_id)
+            deadline_session = cast(ResearchSession, research_session)
+            deadline_session.cancel(reason="timeout")
+            agent.cancel()
+            event.set_result("Deep research timed out before completion.")
+            turn.finish_error(e)
         except Exception as e:
             logger.exception(f"Agent error for {session_id}: {e}")
+            if research_session is not None:
+                research_session.cancel(reason="error")
             event.set_result(f"Error: {e}")
             turn.finish_error(e)
         finally:
             with self._active_lock:
+                active_request_ids = getattr(self, "_active_request_ids", None)
+                if (
+                    active_request_ids is not None
+                    and active_request_ids.get(session_id) == request_id
+                ):
+                    active_request_ids.pop(session_id, None)
                 self._active_session_ids.discard(session_id)
 
         yield
 
-    async def _event_content_for_agent(self, event: MessageEvent) -> str | list[dict]:
+    async def _event_content_for_agent(
+        self,
+        event: MessageEvent,
+        *,
+        turn_mode: str | None = None,
+    ) -> str | list[dict]:
         images = _event_images(event)
         content: str | list[dict]
         if images and self.image_transcription.get("enabled"):
@@ -730,9 +878,13 @@ class ProcessStage(Stage):
             content = _event_user_content_with_transcription(event, transcription)
         else:
             content = _event_user_content(event)
+        mode = turn_mode or getattr(getattr(self, "mode_controller", None), "mode", "agent")
+        knowledge_context = (
+            "" if mode == "deepresearch" else await self._knowledge_context_for_event(event)
+        )
         context_parts = [
             _daw_context_text(event),
-            await self._knowledge_context_for_event(event),
+            knowledge_context,
             _recent_group_context_text(event),
         ]
         context_text = "\n\n".join(part for part in context_parts if part.strip())
@@ -1166,7 +1318,29 @@ class ProcessStage(Stage):
                 agent.cancel()
                 logger.info(f"Cancelled agent for session {resolved}")
                 return True
-        return self.cancel_current()
+        return False
+
+    def cancel_request(self, session_id: str, request_id: str) -> bool:
+        """Cancel an active agent only when both session and request match."""
+
+        clean_request_id = str(request_id or "").strip()
+        if not clean_request_id:
+            return False
+        with self._active_lock:
+            resolved = resolve_session_id(session_id, set(self._active_request_ids))
+            if self._active_request_ids.get(resolved) != clean_request_id:
+                return False
+            with self._agents_lock:
+                agent = self._agents.get(resolved)
+                if agent is None:
+                    return False
+                agent.cancel()
+                logger.info(
+                    "Cancelled agent request %s for session %s",
+                    clean_request_id,
+                    resolved,
+                )
+                return True
 
     def prepare_shutdown(self) -> None:
         """Cancel active agent work before the framework shuts down."""
@@ -1176,6 +1350,7 @@ class ProcessStage(Stage):
     async def shutdown(self) -> None:
         """Release runtime resources opened by this stage."""
         self.prepare_shutdown()
+        self.research_services.cancel_pending()
         self.task_store.mark_incomplete_as_interrupted(
             reason="ATRI shut down before the background task finished"
         )
@@ -1299,10 +1474,14 @@ class ProcessStage(Stage):
             self.image_transcription = dict(kwargs["image_transcription"] or {})
         if "knowledge" in kwargs:
             self.knowledge = dict(kwargs["knowledge"] or {})
+        if "deep_research" in kwargs:
+            self.deep_research = dict(kwargs["deep_research"] or {})
         if "knowledge_manager" in kwargs:
             self.knowledge_manager = kwargs["knowledge_manager"]
+            self.research_services.knowledge_manager = self.knowledge_manager
         if "graph_manager" in kwargs:
             self.graph_manager = kwargs["graph_manager"]
+            self.research_services.graph_manager = self.graph_manager
         knowledge_manager = getattr(self, "knowledge_manager", None)
         if knowledge_manager is not None and any(
             key in kwargs
@@ -2129,6 +2308,18 @@ def _attach_generated_images_to_assistant_message(
                 *(existing if isinstance(existing, list) else []),
                 *attachments,
             ]
+            return
+
+
+def _replace_latest_assistant_message_content(
+    messages: list[dict],
+    content: str,
+) -> None:
+    """Keep the persisted assistant turn identical to the finalized response."""
+
+    for message in reversed(messages):
+        if message.get("role") == "assistant":
+            message["content"] = content
             return
 
 

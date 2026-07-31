@@ -44,6 +44,7 @@ _MAX_RESULT_CHARS = 5000
 _MAX_EVENT_PREVIEW_CHARS = 800
 _MAX_REPORT_CHARS = 12000
 _TEXT_SNAPSHOT_INTERVAL_SECONDS = 1.0
+_TERMINAL_RUN_STATUSES = {"done", "error"}
 
 
 @dataclass
@@ -52,6 +53,7 @@ class SubAgentRun:
     task: str
     model: str = ""
     provider: str = ""
+    branch_id: str = ""
     status: str = "queued"
     events: list[dict] = field(default_factory=list)
     text_parts: list[str] = field(default_factory=list)
@@ -61,19 +63,23 @@ class SubAgentRun:
     agent: Agent | None = None
     task_store: TaskStore | None = field(default=None, repr=False, compare=False)
     _last_text_snapshot_at: float = field(default=0.0, init=False, repr=False, compare=False)
+    _cancelled: bool = field(default=False, init=False, repr=False, compare=False)
     lock: threading.Lock = field(
         default_factory=threading.Lock,
         repr=False,
         compare=False,
     )
 
-    def set_status(self, status: str):
+    def set_status(self, status: str) -> bool:
         with self.lock:
+            if self.status in _TERMINAL_RUN_STATUSES:
+                return False
             self.status = status
         if status == "running":
             self._persist_start()
         else:
             self._persist_update(status=status)
+        return True
 
     def add_text(self, text: str):
         if not text:
@@ -126,19 +132,37 @@ class SubAgentRun:
             self.events.append(event)
         self._persist_event(str(event.get("type") or "event"), event)
 
-    def finish(self, result: str):
+    def finish(self, result: str) -> bool:
         with self.lock:
+            if self.status in _TERMINAL_RUN_STATUSES:
+                return False
             self.status = "done"
             self.result = _truncate(result, _MAX_RESULT_CHARS)
             visible_text = "".join(self.text_parts)
         self._persist_finish("completed", result=self.result, metadata={"text": visible_text})
+        return True
 
-    def fail(self, error: str):
+    def fail(self, error: str) -> bool:
         with self.lock:
+            if self.status in _TERMINAL_RUN_STATUSES:
+                return False
             self.status = "error"
             self.error = error
             visible_text = "".join(self.text_parts)
         self._persist_finish("failed", error=error, metadata={"text": visible_text})
+        return True
+
+    def cancel(self, error: str) -> bool:
+        with self.lock:
+            if self._cancelled:
+                return False
+            self._cancelled = True
+            self.status = "error"
+            self.result = ""
+            self.error = error
+            visible_text = "".join(self.text_parts)
+        self._persist_finish("failed", error=error, metadata={"text": visible_text})
+        return True
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -147,6 +171,7 @@ class SubAgentRun:
                 "task": self.task,
                 "model": self.model,
                 "provider": self.provider,
+                "branch_id": self.branch_id,
                 "status": self.status,
                 "events": list(self.events),
                 "text": "".join(self.text_parts),
@@ -349,6 +374,25 @@ class AgentTool(Tool):
         if not all_tasks:
             return "Error: no task or tasks provided"
 
+        research_session = self._research_session()
+        if research_session is not None:
+            if background:
+                return "Error: background sub-agents are prohibited in Deep Research mode"
+            limit = research_session.policy.max_parallel_subagents
+            if len(all_tasks) > limit:
+                return f"Error: Deep Research allows at most {limit} sub-agents per call"
+            decision = research_session.reserve_subagents(len(all_tasks))
+            if not decision.allowed:
+                return f"Error: research sub-agent dispatch blocked: {decision.reason}"
+            for task_spec in all_tasks:
+                branch_id = f"branch-{uuid.uuid4().hex[:8]}"
+                task_spec["branch_id"] = branch_id
+                research_session.register_branch(branch_id, task_spec["task"])
+            try:
+                return self._run_parallel_blocking(all_tasks)
+            finally:
+                research_session.release_subagents(len(all_tasks))
+
         if background:
             return self._run_background(all_tasks)
 
@@ -370,17 +414,49 @@ class AgentTool(Tool):
             task=task_spec["task"],
             model=_clean(task_spec.get("model")),
             provider=_clean(task_spec.get("provider")),
+            branch_id=_clean(task_spec.get("branch_id")),
             task_store=self.task_store if persist else None,
         )
+
+    def _research_session(self):
+        parent = self._parent_agent
+        if parent is None or getattr(parent, "effective_mode", "agent") != "deepresearch":
+            return None
+        return parent.current_research_session()
 
     def _create_child_agent(self, task_spec: dict) -> Agent:
         if self._parent_agent is None:
             raise RuntimeError("agent tool not initialized (no parent agent)")
 
         from core.agent.agent import Agent
+        from core.agent.mode import AgentModeController
         from core.agent.tools_bridge import get_all_tools
 
         parent = self._parent_agent
+        research_session = self._research_session()
+        branch_id = _clean(task_spec.get("branch_id")) or "main"
+        if research_session is not None:
+            mode_controller = AgentModeController("deepresearch")
+
+            def session_provider():
+                return research_session
+
+            def branch_provider():
+                return branch_id
+
+            excluded = {
+                "agent",
+                "agent_result",
+                "task_result",
+                "set_agent_mode",
+                "export_research_report",
+                "research_checkpoint",
+            }
+        else:
+            mode_controller = parent.mode_controller
+            session_provider = parent.research_session_provider
+            branch_provider = parent.research_branch_provider
+            excluded = {"agent", "agent_result"}
         child_tools = [
             t
             for t in get_all_tools(
@@ -392,9 +468,12 @@ class AgentTool(Tool):
                 todo_session_id=getattr(parent, "todo_session_id", ""),
                 todo_on_change=getattr(parent, "todo_on_change", None),
                 mcp_servers=parent.mcp_servers,
-                mode_controller=parent.mode_controller,
+                mode_controller=mode_controller,
+                research_services=parent.research_services,
+                research_session_provider=session_provider,
+                research_branch_provider=branch_provider,
             )
-            if t.name not in ("agent", "agent_result")
+            if t.name not in excluded
         ]
         return Agent(
             llm=parent.create_child_llm(
@@ -413,8 +492,11 @@ class AgentTool(Tool):
             todo_store=getattr(parent, "todo_store", None),
             todo_session_id=getattr(parent, "todo_session_id", ""),
             todo_on_change=getattr(parent, "todo_on_change", None),
-            mode_controller=parent.mode_controller,
+            mode_controller=mode_controller,
             mcp_servers=parent.mcp_servers,
+            research_services=parent.research_services,
+            research_session_provider=session_provider,
+            research_branch_provider=branch_provider,
         )
 
     def _run_subagent_task(self, run: SubAgentRun, task_spec: dict) -> str:
@@ -432,37 +514,82 @@ class AgentTool(Tool):
             return run.error
 
         try:
-            run.set_status("running")
+            if not run.set_status("running"):
+                return run.error
+            research_session = self._research_session()
+            task_text = task_spec["task"]
+            chat_kwargs: dict[str, Any] = {}
+            if research_session is not None:
+                branch_id = _clean(task_spec.get("branch_id")) or run.branch_id
+                task_text = _research_branch_prompt(branch_id, task_text)
+                chat_kwargs = {
+                    "turn_mode": "deepresearch",
+                    "research_session": research_session,
+                    "research_branch_id": branch_id,
+                }
             result = sub.chat(
-                task_spec["task"],
+                task_text,
                 on_token=run.add_text,
                 on_tool_start=run.add_tool_start,
                 on_tool_end=run.add_tool_end,
+                **chat_kwargs,
             )
-            run.finish(result)
+            finished = run.finish(result)
+            if research_session is not None and finished:
+                research_session.finish_branch(run.branch_id, status="completed")
             return result
         except (RuntimeError, ValueError, OSError) as e:
-            run.fail(f"Sub-agent error: {e}")
+            failed = run.fail(f"Sub-agent error: {e}")
+            research_session = self._research_session()
+            if research_session is not None and failed:
+                research_session.finish_branch(run.branch_id, status="failed", error=str(e))
             return run.error
         finally:
             with self._active_runs_lock:
                 self._active_runs.pop(run.task_id, None)
 
     def _run_parallel_blocking(self, tasks: list[dict]) -> str:
-        max_workers = min(len(tasks), 5)
+        research_session = self._research_session()
+        max_workers = min(
+            len(tasks),
+            research_session.policy.max_parallel_subagents if research_session else 5,
+        )
         runs = [self._new_run(task_spec) for task_spec in tasks]
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(self._run_subagent_task, run, task_spec): i
-                for i, (run, task_spec) in enumerate(zip(runs, tasks, strict=False))
-            }
-            for future in concurrent.futures.as_completed(futures):
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        futures = {
+            pool.submit(self._run_subagent_task, run, task_spec): i
+            for i, (run, task_spec) in enumerate(zip(runs, tasks, strict=False))
+        }
+        try:
+            timeout = (
+                research_session.budget.seconds_until_synthesis()
+                if research_session is not None
+                else None
+            )
+            done, pending = concurrent.futures.wait(futures, timeout=timeout)
+            for future in done:
                 idx = futures[future]
                 try:
                     future.result()
                 except (RuntimeError, ValueError, OSError, concurrent.futures.CancelledError) as e:
                     runs[idx].fail(f"Sub-agent error: {e}")
+            for future in pending:
+                idx = futures[future]
+                run = runs[idx]
+                run.cancel("Sub-agent stopped at the synthesis deadline")
+                if research_session is not None:
+                    research_session.finish_branch(
+                        run.branch_id,
+                        status="cancelled",
+                        error="synthesis deadline",
+                    )
+                agent = run.agent
+                if agent is not None:
+                    agent.cancel()
+                future.cancel()
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
 
         parts = []
         for i, run in enumerate(runs):
@@ -539,6 +666,16 @@ def _clean(value) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _research_branch_prompt(branch_id: str, task: str) -> str:
+    return (
+        f"[Deep Research branch: {branch_id}]\n"
+        f"{task}\n\n"
+        "Return a concise branch report with these explicit sections: Findings with "
+        "evidence IDs; Conflicts; Open gaps; Confidence. Use only shared-ledger [R#], "
+        "[G#], and [W#] citations. Do not delegate further or export files."
+    )
+
+
 def _truncate(text: object, max_chars: int) -> str:
     s = "" if text is None else str(text)
     if len(s) <= max_chars:
@@ -579,6 +716,7 @@ def _format_run_report(run: SubAgentRun, *, total: int = 1, index: int = 0) -> s
     title = f"### Sub-agent{index_tag}{_format_run_model_tag(run)}"
     lines = [
         title,
+        *([f"Branch: {snap['branch_id']}"] if snap["branch_id"] else []),
         f"Task: {snap['task'][:200]}",
         f"Status: {snap['status']}",
     ]

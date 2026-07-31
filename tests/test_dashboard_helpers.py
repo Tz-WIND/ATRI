@@ -36,6 +36,16 @@ EXPECTED_RERANK_MODEL_CONFIG_DEFAULT = {
     "score_threshold": 0.0,
     "max_input_tokens": 8192,
 }
+EXPECTED_DEEP_RESEARCH_CONFIG = {
+    "max_gap_rounds": 8,
+    "max_research_tool_calls": 100,
+    "max_web_fetches": 40,
+    "max_parallel_subagents": 3,
+    "timeout_seconds": 900.0,
+    "synthesis_reserve_seconds": 60.0,
+    "allow_report_export": True,
+    "report_directory": "research",
+}
 
 
 class _FakeDashboardLifecycle:
@@ -94,6 +104,7 @@ class _FakeWebChat:
         images=None,
         display_user_input=None,
         file_attachments=None,
+        agent_mode=None,
     ):
         self.calls.append(
             {
@@ -102,6 +113,7 @@ class _FakeWebChat:
                 "images": images,
                 "display_user_input": display_user_input,
                 "file_attachments": file_attachments,
+                "agent_mode": agent_mode,
             }
         )
         event = MessageEvent(
@@ -1350,6 +1362,7 @@ async def test_dashboard_chat_route_extracts_file_attachments(monkeypatch, tmp_p
             "session_id": "default",
             "images": [],
             "display_user_input": "Remember this",
+            "agent_mode": "agent",
             "file_attachments": [
                 {
                     "kind": "file",
@@ -1429,6 +1442,96 @@ async def test_settings_route_rejects_agent_timeout_below_schema_minimum(monkeyp
 
     assert response.status_code == 400
     assert (await response.get_json())["error"] == "agent_timeout_seconds must be >= 0.001"
+
+
+@pytest.mark.asyncio
+async def test_settings_route_persists_validated_deep_research_config(monkeypatch, tmp_path):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    process_stage = _FakeProcessStage()
+    dashboard.lifecycle.process_stage = process_stage  # type: ignore[assignment]
+    token = dashboard._create_auth_session()
+    headers = {"Authorization": f"Bearer {token}"}
+    client = dashboard.app.test_client()
+
+    defaults_response = await client.get("/api/settings", headers=headers)
+    defaults = (await defaults_response.get_json())["deep_research"]
+    assert defaults == EXPECTED_DEEP_RESEARCH_CONFIG
+
+    requested = {
+        "max_gap_rounds": "6",
+        "max_research_tool_calls": "80",
+        "max_web_fetches": "24",
+        "max_parallel_subagents": "2",
+        "timeout_seconds": "600",
+        "synthesis_reserve_seconds": "45",
+        "allow_report_export": "false",
+        "report_directory": "reports/deep",
+    }
+    update_response = await client.post(
+        "/api/settings",
+        json={"deep_research": requested},
+        headers=headers,
+    )
+    get_response = await client.get("/api/settings", headers=headers)
+    saved = (await get_response.get_json())["deep_research"]
+
+    assert update_response.status_code == 200
+    assert saved == {
+        "max_gap_rounds": 6,
+        "max_research_tool_calls": 80,
+        "max_web_fetches": 24,
+        "max_parallel_subagents": 2,
+        "timeout_seconds": 600.0,
+        "synthesis_reserve_seconds": 45.0,
+        "allow_report_export": False,
+        "report_directory": "reports/deep",
+    }
+    assert dashboard.lifecycle.config["deep_research"] == saved  # type: ignore[attr-defined]
+    assert process_stage.updated[-1] == {"deep_research": saved}
+    assert dashboard.lifecycle.saved == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("deep_research", "message"),
+    [
+        ({"max_parallel_subagents": 4}, "deep_research.max_parallel_subagents must be <= 3"),
+        (
+            {"timeout_seconds": 60, "synthesis_reserve_seconds": 60},
+            "deep_research.synthesis_reserve_seconds must be less than timeout_seconds",
+        ),
+        (
+            {"report_directory": "../outside"},
+            "deep_research.report_directory must resolve inside workspace",
+        ),
+        (
+            {"unexpected": 1},
+            "deep_research contains unknown fields: unexpected",
+        ),
+    ],
+)
+async def test_settings_route_rejects_invalid_deep_research_config(
+    monkeypatch,
+    tmp_path,
+    deep_research,
+    message,
+):
+    dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
+    process_stage = _FakeProcessStage()
+    dashboard.lifecycle.process_stage = process_stage  # type: ignore[assignment]
+    token = dashboard._create_auth_session()
+
+    response = await dashboard.app.test_client().post(
+        "/api/settings",
+        json={"deep_research": deep_research},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert (await response.get_json())["error"] == message
+    assert "deep_research" not in dashboard.lifecycle.config  # type: ignore[attr-defined]
+    assert process_stage.updated == []
+    assert dashboard.lifecycle.saved == 0  # type: ignore[attr-defined]
 
 
 def test_dashboard_csp_allows_chat_image_previews():

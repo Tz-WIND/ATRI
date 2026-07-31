@@ -65,6 +65,7 @@
           </button>
         </div>
       </div>
+      <ResearchProgress :status="researchStatus" />
       <div
         v-if="messages.length === 0"
         class="empty-state"
@@ -131,6 +132,7 @@ import AgentTodoPanel from './AgentTodoPanel.vue'
 import ChatInput from './ChatInput.vue'
 import ChatMessage from './ChatMessage.vue'
 import ConnectionBanner from './ConnectionBanner.vue'
+import ResearchProgress from './ResearchProgress.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 import ToolCard from './ToolCard.vue'
 import {
@@ -141,6 +143,7 @@ import {
 import { useChatDisplayItems } from '@/composables/chatDisplayItems.js'
 import { createChatRetryState } from '@/composables/chatRetryState.js'
 import { useApi } from '@/composables/useApi.js'
+import { normalizeAgentMode } from '@/composables/agentMode.js'
 import { useChat } from '@/composables/useChat.js'
 import { useDawHost } from '@/composables/useDawHost.js'
 import { useProviders } from '@/composables/useProviders.js'
@@ -156,6 +159,7 @@ const {
   sending,
   thinkingBlock,
   toolCards,
+  researchStatus,
   handleWsEvent,
   beginTranscriptTurn,
   addMessage,
@@ -249,7 +253,7 @@ const eventProcessor = createChatEventProcessor({
   events,
   handleEvent: handleDawWsEvent,
   handleModeChanged: (mode) => {
-    agentMode.value = mode === 'plan' ? 'plan' : 'agent'
+    agentMode.value = normalizeAgentMode(mode)
   },
   scrollToBottom,
 })
@@ -418,12 +422,12 @@ function handleReconnect() {
 }
 
 async function handleSetMode(mode) {
-  const nextMode = mode === 'plan' ? 'plan' : 'agent'
+  const nextMode = normalizeAgentMode(mode)
   if (agentMode.value === nextMode || modePending.value) return
   modePending.value = true
   try {
     const data = await api.setAgentMode(nextMode, 'daw agent mode switch')
-    agentMode.value = data.mode === 'plan' ? 'plan' : 'agent'
+    agentMode.value = normalizeAgentMode(data.mode)
   } finally {
     modePending.value = false
   }
@@ -457,7 +461,7 @@ onMounted(async () => {
   await loadStatus().catch(() => null)
   try {
     const data = await api.getAgentMode()
-    agentMode.value = data.mode === 'plan' ? 'plan' : 'agent'
+    agentMode.value = normalizeAgentMode(data.mode)
   } catch {
     agentMode.value = 'agent'
   }

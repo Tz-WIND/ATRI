@@ -45,3 +45,22 @@ def test_music_workflow_prompt_is_omitted_when_any_workflow_tool_is_missing():
     prompt = build_system_prompt(tools, "/workspace")
 
     assert "# Music Studio Generation Workflow" not in prompt
+
+
+def test_deepresearch_prompt_defines_evidence_workflow_and_no_background_agents():
+    tools = [
+        SimpleNamespace(name="rag_search", description="search knowledge"),
+        SimpleNamespace(name="graphrag_search", description="search graph"),
+        SimpleNamespace(name="web_search", description="discover pages"),
+        SimpleNamespace(name="web_fetch", description="read pages"),
+        SimpleNamespace(name="agent", description="delegate branches"),
+    ]
+
+    prompt = build_system_prompt(tools, "/workspace", agent_mode="deepresearch")
+
+    assert "Current mode: DEEP RESEARCH" in prompt
+    assert "planning → gathering → verifying → synthesizing" in prompt
+    assert "[R#], [G#], or [W#]" in prompt
+    assert "search snippets are discovery evidence" in prompt
+    assert "Conflicts, unknowns, and limitations" in prompt
+    assert "background: true" not in prompt

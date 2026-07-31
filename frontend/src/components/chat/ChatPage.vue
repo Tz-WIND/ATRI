@@ -69,6 +69,7 @@
               AI Coding Agent &middot; Type a message to start
             </div>
           </div>
+          <ResearchProgress :status="researchStatus" />
           <template
             v-for="item in displayItems"
             :key="item.id"
@@ -186,11 +187,13 @@ import ThinkingBlock from './ThinkingBlock.vue'
 import ToolCard from './ToolCard.vue'
 import AgentTodoPanel from './AgentTodoPanel.vue'
 import ChatInput from './ChatInput.vue'
+import ResearchProgress from './ResearchProgress.vue'
 import ConnectionBanner from './ConnectionBanner.vue'
 import SessionPanel from './SessionPanel.vue'
 import FilePanel from './FilePanel.vue'
 import EditorTabs from './EditorTabs.vue'
 import { useApi } from '@/composables/useApi.js'
+import { normalizeAgentMode } from '@/composables/agentMode.js'
 import { useChatDisplayItems } from '@/composables/chatDisplayItems.js'
 import { useChat } from '@/composables/useChat.js'
 import { useWebSocket } from '@/composables/useWebSocket.js'
@@ -199,7 +202,7 @@ import { useProviders } from '@/composables/useProviders.js'
 import { createChatEventProcessor } from './chatEventProcessor.js'
 
 const {
-  messages, sending, thinkingBlock, toolCards,
+  messages, sending, thinkingBlock, toolCards, researchStatus,
   handleWsEvent, sendMessage, cancelMessage, clearThinking, clearToolCards,
   retryLastMessage, canRetry,
   loadTranscript, resetMessages,
@@ -222,6 +225,7 @@ const editorWidth = ref(500)
 const editorExpanded = ref(false)
 const autoScroll = ref(true)
 let scrollPending = false
+let programmaticScroll = false
 let resizeState = null
 
 const CHAT_MIN_WIDTH = 340
@@ -278,7 +282,7 @@ function setEditorExpanded(expanded) {
 }
 
 function onScroll() {
-  if (!chatArea.value) return
+  if (!chatArea.value || programmaticScroll) return
   const el = chatArea.value
   autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 60
 }
@@ -288,9 +292,20 @@ function scrollToBottom() {
   scrollPending = true
   nextTick(() => {
     scrollPending = false
-    if (chatArea.value && autoScroll.value) {
-      chatArea.value.scrollTop = chatArea.value.scrollHeight
-    }
+    const el = chatArea.value
+    if (!el || !autoScroll.value) return
+    // Instant stick-to-bottom. Smooth CSS scrolling overshoots while tool
+    // cards grow/shrink rapidly and briefly shows empty "black" space.
+    programmaticScroll = true
+    el.scrollTop = el.scrollHeight
+    requestAnimationFrame(() => {
+      if (chatArea.value && autoScroll.value) {
+        chatArea.value.scrollTop = chatArea.value.scrollHeight
+      }
+      requestAnimationFrame(() => {
+        programmaticScroll = false
+      })
+    })
   })
 }
 
@@ -399,7 +414,7 @@ async function handleRetryMessage() {
 }
 
 function normalizeMode(mode) {
-  return mode === 'plan' ? 'plan' : 'agent'
+  return normalizeAgentMode(mode)
 }
 
 const eventProcessor = createChatEventProcessor({
@@ -504,7 +519,8 @@ onUnmounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: 22px 22px 20px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
+  overscroll-behavior: contain;
 }
 
 .welcome {

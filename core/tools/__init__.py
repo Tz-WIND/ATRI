@@ -18,6 +18,7 @@ from .find_replace import FindReplaceTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
 from .harmony import MusicHarmonyAnalyzeTool, MusicTransposeTool
+from .knowledge_search import GraphRagSearchTool, RagSearchTool
 from .lint import LintTool
 from .list_dir import ListDirTool
 from .mcp import create_mcp_tools
@@ -34,6 +35,7 @@ from .music import MusicTool
 from .novelai_image import NovelAIImageTool
 from .piano_lane import StudioPianoLaneDiffTool, StudioPianoLaneWriteTool
 from .read import ReadFileTool
+from .research import ExportResearchReportTool, ResearchCheckpointTool, ResearchEvidenceTool
 from .retrieve_tool_result import RetrieveToolResultTool
 from .screenshot import ScreenshotTool
 from .search import SearchTool
@@ -67,6 +69,9 @@ def create_tools(
     todo_on_change=None,
     mcp_servers: dict | None = None,
     mode_controller=None,
+    research_services=None,
+    research_session_provider=None,
+    research_branch_provider=None,
 ) -> list[Tool]:
     """Create a full set of tools bound to the given workspace."""
     tools: list[Tool] = [
@@ -85,6 +90,30 @@ def create_tools(
         TreeTool(workspace),
         ChemDrawTool(workspace),
         ScreenshotTool(workspace),
+        RagSearchTool(
+            workspace,
+            services=research_services,
+            research_session_provider=research_session_provider,
+            research_branch_provider=research_branch_provider,
+        ),
+        GraphRagSearchTool(
+            workspace,
+            services=research_services,
+            research_session_provider=research_session_provider,
+            research_branch_provider=research_branch_provider,
+        ),
+        ResearchCheckpointTool(
+            workspace,
+            research_session_provider=research_session_provider,
+        ),
+        ResearchEvidenceTool(
+            workspace,
+            research_session_provider=research_session_provider,
+        ),
+        ExportResearchReportTool(
+            workspace,
+            research_session_provider=research_session_provider,
+        ),
         AgentTool(workspace, task_store=task_store),
         AgentResultTool(workspace, task_store=task_store),
         TaskResultTool(workspace, task_store=task_store),
@@ -130,8 +159,16 @@ def create_tools(
         StudioPianoLaneWriteTool(workspace),
         StudioPianoLaneDiffTool(workspace),
         StudioSyncTool(workspace),
-        WebSearchTool(workspace),
-        WebFetchTool(workspace),
+        WebSearchTool(
+            workspace,
+            research_session_provider=research_session_provider,
+            research_branch_provider=research_branch_provider,
+        ),
+        WebFetchTool(
+            workspace,
+            research_session_provider=research_session_provider,
+            research_branch_provider=research_branch_provider,
+        ),
     ]
     tools.extend(create_mcp_tools(workspace, mcp_servers))
     return tools

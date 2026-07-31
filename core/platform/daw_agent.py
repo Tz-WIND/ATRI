@@ -73,6 +73,7 @@ class DawAgentAdapter(Platform):
         file_attachments: list[dict] | None = None,
         model: str = "",
         model_provider: str = "",
+        agent_mode: str | None = None,
     ) -> tuple[MessageEvent, asyncio.Future]:
         """Create a project-scoped MessageEvent from a DAW plugin message."""
         chain: MessageChain = []
@@ -103,6 +104,7 @@ class DawAgentAdapter(Platform):
 
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         req_id = uuid.uuid4().hex
+        event._extras["_request_id"] = req_id
         event._extras["_daw_agent_req_id"] = req_id
         event._extras["daw_agent_instance_id"] = str(instance_id or "")
         event._extras["daw_agent_workspace"] = normalize_daw_workspace(workspace)
@@ -111,6 +113,8 @@ class DawAgentAdapter(Platform):
             event._extras["display_user_input"] = display_user_input
         if file_attachments:
             event._extras["file_attachments"] = list(file_attachments)
+        if agent_mode is not None:
+            event._extras["agent_mode"] = str(agent_mode)
         selected_model = str(model or "").strip()
         if selected_model:
             event._extras["daw_agent_model"] = selected_model
@@ -144,10 +148,11 @@ class DawAgentAdapter(Platform):
                 fut.set_result({"text": "\n".join(texts), "chain": chain})
 
     def cancel_request(self, event: MessageEvent) -> bool:
-        req_id = event._extras.get("_daw_agent_req_id")
+        event._extras["_request_cancelled"] = True
+        req_id = event._extras.get("_request_id") or event._extras.get("_daw_agent_req_id")
         if not req_id:
             return False
-        fut = self._pending.pop(req_id, None)
+        fut = self._pending.pop(str(req_id), None)
         if fut is None:
             return False
         if not fut.done():

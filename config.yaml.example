@@ -55,9 +55,20 @@ wake_words:
   - atri
 persona: ''
 extra_instructions: ''
-agent_mode: agent  # agent or plan
+agent_mode: agent  # agent, plan, or deepresearch
 # Maximum time to wait for an agent response in WebUI/DAW chat before timing out.
 agent_timeout_seconds: 300
+
+# Turn-scoped limits for DeepResearch. The final reserve is kept for synthesis.
+deep_research:
+  max_gap_rounds: 8
+  max_research_tool_calls: 100
+  max_web_fetches: 40
+  max_parallel_subagents: 3
+  timeout_seconds: 900
+  synthesis_reserve_seconds: 60
+  allow_report_export: true
+  report_directory: research
 
 # Knowledge base retrieval. `active_bases` stores knowledge base IDs created
 # through the backend API and is used to inject retrieved context into chat.

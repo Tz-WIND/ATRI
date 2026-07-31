@@ -23,6 +23,25 @@ let instance = null
 // it cheap to clear on the next successful send.
 const LAST_ERROR_MESSAGE_ID = '__atri_last_error__'
 
+function emptyResearchStatus() {
+  return {
+    visible: false,
+    active: false,
+    phase: '',
+    state: '',
+    evidenceCount: 0,
+    toolCalls: 0,
+    webFetches: 0,
+    activeSubagents: 0,
+    totalSubagents: 0,
+  }
+}
+
+function safeCount(value, fallback = 0) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback
+}
+
 export function useChat() {
   if (instance) return instance
 
@@ -33,6 +52,7 @@ export function useChat() {
   const sending = ref(false)
   const tokenInfo = ref(null)
   const todoSnapshot = ref(emptyTodoSnapshot())
+  const researchStatus = ref(emptyResearchStatus())
 
   // Tracks ids of error messages currently in the list so we can wipe them on
   // the next send (errors shouldn't linger once the user retries or moves on).
@@ -59,6 +79,7 @@ export function useChat() {
   function beginTranscriptTurn() {
     liveTranscriptSeen = false
     httpFallbackMessageIds.clear()
+    researchStatus.value = emptyResearchStatus()
   }
 
   function discardHttpFallbackMessages() {
@@ -96,6 +117,7 @@ export function useChat() {
   // WebSocket event handler — called from ChatPage
   function handleWsEvent(msg) {
     if (disposed) return
+    updateResearchStatus(msg)
     noteLiveTranscript(msg.type)
     if (msg.type === 'thinking') {
       startThinkingBlock()
@@ -171,6 +193,64 @@ export function useChat() {
           resultCompressed: Boolean(msg.data.result_compressed),
           resultId: msg.data.result_id || '',
         },
+      }
+    }
+  }
+
+  function updateResearchStatus(msg) {
+    const type = String(msg?.type || '')
+    if (type === 'research_started') {
+      researchStatus.value = {
+        ...emptyResearchStatus(),
+        visible: true,
+        active: true,
+        phase: String(msg.phase || 'created'),
+        state: 'researching',
+      }
+      return
+    }
+    if (!type.startsWith('research_')) return
+    const current = researchStatus.value.visible
+      ? researchStatus.value
+      : { ...emptyResearchStatus(), visible: true, active: true }
+    if (type === 'research_phase') {
+      researchStatus.value = { ...current, phase: String(msg.phase || current.phase) }
+      return
+    }
+    if (type === 'research_budget') {
+      researchStatus.value = {
+        ...current,
+        state: String(msg.state || current.state || 'researching'),
+        toolCalls: safeCount(msg.research_tool_calls, current.toolCalls),
+        webFetches: safeCount(msg.web_fetches, current.webFetches),
+        activeSubagents: safeCount(msg.active_subagents, current.activeSubagents),
+        totalSubagents: safeCount(msg.total_subagents, current.totalSubagents),
+      }
+      return
+    }
+    if (type === 'research_evidence') {
+      const fallback = current.evidenceCount + (msg.created === false ? 0 : 1)
+      researchStatus.value = {
+        ...current,
+        evidenceCount: safeCount(msg.evidence_count, fallback),
+      }
+      return
+    }
+    if (type === 'research_subagent_started') {
+      // research_budget is authoritative and is emitted before branch events.
+      return
+    }
+    if (type === 'research_subagent_finished') {
+      // The following research_budget event releases the authoritative slot count.
+      return
+    }
+    if (type === 'research_completed' || type === 'research_cancelled') {
+      researchStatus.value = {
+        ...current,
+        active: false,
+        phase: type === 'research_completed' ? 'completed' : 'cancelled',
+        state: type === 'research_completed' ? 'completed' : 'cancelled',
+        activeSubagents: 0,
       }
     }
   }
@@ -471,6 +551,7 @@ export function useChat() {
     assistantDeltaBuffer.clear()
     messages.value = []
     todoSnapshot.value = emptyTodoSnapshot()
+    researchStatus.value = emptyResearchStatus()
     streamingAssistantId = null
     streamingMessage = null
     errorIds = new Set()
@@ -944,6 +1025,7 @@ export function useChat() {
     sending.value = false
     tokenInfo.value = null
     todoSnapshot.value = emptyTodoSnapshot()
+    researchStatus.value = emptyResearchStatus()
     thinkingText.value = ''
     thinkingStart.value = 0
     thinkingBlock.value = null
@@ -961,6 +1043,7 @@ export function useChat() {
     sending,
     tokenInfo,
     todoSnapshot,
+    researchStatus,
     thinkingBlock,
     toolCards,
     handleWsEvent,

@@ -83,6 +83,6 @@ def test_create_tools_registers_session_bound_todo_tool(tmp_path):
 
         assert "todo" in tools
         assert tools["todo"].metadata()["capability"] == "agent.todo"
-        assert tools["todo"].metadata()["read_only"] is True
+        assert tools["todo"].metadata()["read_only"] is False
     finally:
         store.close()

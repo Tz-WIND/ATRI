@@ -87,3 +87,30 @@ test('createChatEventProcessor_waitsForAsyncHandlersBeforeScrolling', async () =
   assert.deepEqual(handled, ['music_project'])
   assert.equal(scrollCount, 1)
 })
+
+test('createChatEventProcessor forwards research lifecycle events in order', async () => {
+  const frames = []
+  const events = ref([
+    { type: 'research_started' },
+    { type: 'research_phase', phase: 'gathering' },
+    { type: 'research_completed' },
+  ])
+  const handled = []
+  const processor = createChatEventProcessor({
+    events,
+    handleEvent: (event) => handled.push(event.type),
+    requestFrame(callback) {
+      frames.push(callback)
+      return frames.length
+    },
+  })
+
+  processor.schedule()
+  await frames[0]()
+
+  assert.deepEqual(handled, [
+    'research_started',
+    'research_phase',
+    'research_completed',
+  ])
+})

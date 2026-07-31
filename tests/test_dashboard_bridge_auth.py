@@ -33,6 +33,7 @@ class _FakeDawAgent:
         file_attachments=None,
         model="",
         model_provider="",
+        agent_mode=None,
     ):
         event = MessageEvent(
             message_str=message,

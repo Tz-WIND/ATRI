@@ -25,6 +25,8 @@ from core.knowledge.extraction import (
     parse_extraction_json,
 )
 from core.knowledge.graph import (
+    GraphFactHit,
+    GraphSearchResult,
     Neo4jGraphClient,
     _compact_neo4j_warning_message,
     _configure_neo4j_notification_warnings,
@@ -1845,6 +1847,151 @@ def test_neo4j_graph_client_initializes_upserts_and_retrieves_context():
         ["- [1-hop] Alice -[works_at]-> Acme (Alice works at Acme.)"]
     )
     assert driver.closed is True
+
+
+def test_neo4j_graph_client_search_facts_returns_structured_provenance():
+    class StructuredSession(FakeNeo4jSession):
+        def run(self, query, **params):
+            rows = list(super().run(query, **params))
+            for row in rows:
+                row.update(
+                    {
+                        "fact_key": f"fact:{row['subject']}:{row['predicate']}:{row['object']}",
+                        "source_ids": ["chunk-1"],
+                        "source_refs": ["Architecture/cache.md#12"],
+                        "graph_score": 0.91,
+                    }
+                )
+            return rows
+
+    driver = FakeNeo4jDriver()
+    driver.session_obj = StructuredSession()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    result = client.search_facts(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=3,
+        retrieval_depth=1,
+    )
+
+    assert isinstance(result, GraphSearchResult)
+    assert result.context_text == client.retrieve_context(
+        query="Alice Acme",
+        source_ids=["chunk-1"],
+        max_facts=3,
+        retrieval_depth=1,
+    )
+    assert result.facts == [
+        GraphFactHit(
+            fact_key="fact:Alice:works_at:Acme",
+            subject="Alice",
+            predicate="works_at",
+            object="Acme",
+            hop=1,
+            graph_score=0.91,
+            confidence=0.9,
+            evidence="Alice works at Acme.",
+            source_ids=["chunk-1"],
+            source_refs=["Architecture/cache.md#12"],
+            provenance_incomplete=False,
+            subject_type="Person",
+            object_type="Company",
+        )
+    ]
+    assert result.diagnostics["graph_returned_facts"] == 1
+
+
+def test_neo4j_graph_client_structured_cache_preserves_facts_and_reports_hit():
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+
+    first = client.search_facts(query="Alice Acme", retrieval_depth=1)
+    retrieve_count = len(_retrieve_calls(driver.session_obj.calls))
+    second = client.search_facts(query="Alice Acme", retrieval_depth=1)
+
+    assert first.facts == second.facts
+    assert second.context_text == first.context_text
+    assert second.diagnostics["graph_cache_hit"] is True
+    assert len(_retrieve_calls(driver.session_obj.calls)) == retrieve_count
+
+
+def test_neo4j_graph_client_refreshes_legacy_text_cache_for_structured_search(monkeypatch):
+    driver = FakeNeo4jDriver()
+    client = Neo4jGraphClient(
+        {
+            "enabled": True,
+            "uri": "bolt://localhost:7687",
+            "username": "neo4j",
+            "password": "secret",
+            "database": "atri",
+        },
+        driver_factory=lambda uri, auth: driver,
+    )
+    real_get = client._retrieval_cache.get
+
+    def legacy_final_context(namespace, key):
+        if namespace == "final_context":
+            return "legacy formatted context without structured facts"
+        return real_get(namespace, key)
+
+    monkeypatch.setattr(client._retrieval_cache, "get", legacy_final_context)
+
+    result = client.search_facts(query="Alice Acme", retrieval_depth=1)
+
+    assert result.facts
+    assert result.context_text != "legacy formatted context without structured facts"
+    assert _retrieve_calls(driver.session_obj.calls)
+
+
+@pytest.mark.asyncio
+async def test_graph_knowledge_manager_exposes_async_structured_search():
+    expected = GraphSearchResult(
+        query="alpha",
+        facts=[],
+        context_text="",
+        diagnostics={"graph_cache_hit": False},
+    )
+
+    class FakeStructuredClient:
+        def search_facts(self, **kwargs):
+            assert kwargs["query"] == "alpha"
+            return expected
+
+    manager = GraphKnowledgeManager(
+        config={
+            "knowledge": {
+                "graph": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                    "retrieval_timeout_seconds": 1,
+                }
+            }
+        },
+        graph_client=FakeStructuredClient(),
+    )
+
+    result = await manager.search_facts(query="alpha")
+
+    assert result is expected
 
 
 def test_neo4j_graph_client_marks_current_single_facts_with_slot_metadata():

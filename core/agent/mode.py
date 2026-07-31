@@ -1,4 +1,4 @@
-"""Shared PLAN/AGENT mode state for ATRI agents."""
+"""Shared PLAN/AGENT/DEEPRESEARCH mode state for ATRI agents."""
 
 from __future__ import annotations
 
@@ -6,15 +6,15 @@ import threading
 from collections.abc import Callable
 from typing import Literal
 
-AgentMode = Literal["plan", "agent"]
+AgentMode = Literal["plan", "agent", "deepresearch"]
 
-VALID_AGENT_MODES: tuple[AgentMode, ...] = ("plan", "agent")
+VALID_AGENT_MODES: tuple[AgentMode, ...] = ("plan", "agent", "deepresearch")
 
 
 def normalize_agent_mode(value: object) -> AgentMode:
     mode = str(value or "agent").strip().lower()
     if mode not in VALID_AGENT_MODES:
-        raise ValueError("mode must be one of: plan, agent")
+        raise ValueError("mode must be one of: plan, agent, deepresearch")
     return mode  # type: ignore[return-value]
 
 

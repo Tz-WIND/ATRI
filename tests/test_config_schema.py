@@ -42,6 +42,16 @@ EXPECTED_GRAPH_KNOWLEDGE_DEFAULT = {
     "extraction_timeout_seconds": 120.0,
     "queue_max_size": 1000,
 }
+EXPECTED_DEEP_RESEARCH_DEFAULT = {
+    "max_gap_rounds": 8,
+    "max_research_tool_calls": 100,
+    "max_web_fetches": 40,
+    "max_parallel_subagents": 3,
+    "timeout_seconds": 900.0,
+    "synthesis_reserve_seconds": 60.0,
+    "allow_report_export": True,
+    "report_directory": "research",
+}
 
 
 def test_normalize_config_adds_defaults_and_coerces_scalar_values():
@@ -76,6 +86,7 @@ def test_normalize_config_adds_defaults_and_coerces_scalar_values():
     assert config["novelai"] == DEFAULT_CONFIG["novelai"]
     assert config["knowledge"]["embedding_cache_max_size"] == 20000
     assert config["knowledge"]["graph"] == EXPECTED_GRAPH_KNOWLEDGE_DEFAULT
+    assert config["deep_research"] == EXPECTED_DEEP_RESEARCH_DEFAULT
     assert config["onebot11"]["enabled"] is False
     assert config["onebot11"]["ws_reverse_port"] == 6200
     assert config["onebot11"]["admin_user_ids"] == []
@@ -278,7 +289,10 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
         ({"active_embedding_models": "embed-test"}, "active_embedding_models must be an array"),
         ({"active_rerank_models": "rerank-test"}, "active_rerank_models must be an array"),
         ({"vst3_plugin_paths": "D:/VST3"}, "vst3_plugin_paths must be an array"),
-        ({"agent_mode": "execute"}, "agent_mode must be one of: plan, agent"),
+        (
+            {"agent_mode": "execute"},
+            "agent_mode must be one of: plan, agent, deepresearch",
+        ),
         ({"agent_timeout_seconds": 0}, "agent_timeout_seconds must be >= 0.001"),
         (
             {"knowledge": {"graph": {"retrieval_depth": 8}}},
@@ -326,6 +340,19 @@ def test_normalize_config_preserves_model_entry_config_over_defaults():
             "knowledge.embedding_cache_max_size must be >= 0",
         ),
         ([], "config root must be an object"),
+        (
+            {"deep_research": {"max_parallel_subagents": 4}},
+            "deep_research.max_parallel_subagents must be <= 3",
+        ),
+        (
+            {
+                "deep_research": {
+                    "timeout_seconds": 60,
+                    "synthesis_reserve_seconds": 60,
+                }
+            },
+            "deep_research.synthesis_reserve_seconds must be less than timeout_seconds",
+        ),
     ],
 )
 def test_normalize_config_rejects_invalid_values(payload, message):

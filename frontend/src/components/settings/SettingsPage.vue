@@ -346,6 +346,95 @@
                 />
               </label>
             </div>
+
+            <div class="settings-card deep-research-card">
+              <div class="section-title-row">
+                <div>
+                  <div class="subsection-title">
+                    Deep Research
+                  </div>
+                  <p class="section-desc compact">
+                    Per-turn evidence, web reading, sub-agent, and synthesis limits.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="switch-line"
+                  :class="{ active: form.deep_research.allow_report_export }"
+                  @click="form.deep_research.allow_report_export = !form.deep_research.allow_report_export"
+                >
+                  <span class="switch-track">
+                    <span class="switch-thumb" />
+                  </span>
+                  <span>Allow Report Export</span>
+                </button>
+              </div>
+
+              <div class="setting-grid deep-research-grid">
+                <label class="setting-field">
+                  <span>Gap Rounds</span>
+                  <input
+                    v-model.number="form.deep_research.max_gap_rounds"
+                    type="number"
+                    min="1"
+                    step="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Tool Calls</span>
+                  <input
+                    v-model.number="form.deep_research.max_research_tool_calls"
+                    type="number"
+                    min="1"
+                    step="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Web Pages</span>
+                  <input
+                    v-model.number="form.deep_research.max_web_fetches"
+                    type="number"
+                    min="1"
+                    step="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Parallel Agents</span>
+                  <input
+                    v-model.number="form.deep_research.max_parallel_subagents"
+                    type="number"
+                    min="1"
+                    max="3"
+                    step="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Research Timeout</span>
+                  <input
+                    v-model.number="form.deep_research.timeout_seconds"
+                    type="number"
+                    min="60"
+                    step="1"
+                  >
+                </label>
+                <label class="setting-field">
+                  <span>Synthesis Reserve</span>
+                  <input
+                    v-model.number="form.deep_research.synthesis_reserve_seconds"
+                    type="number"
+                    min="15"
+                    step="1"
+                  >
+                </label>
+                <label class="setting-field deep-research-directory">
+                  <span>Report Directory</span>
+                  <input
+                    v-model.trim="form.deep_research.report_directory"
+                    placeholder="research"
+                  >
+                </label>
+              </div>
+            </div>
           </section>
 
           <section
@@ -1203,6 +1292,16 @@ const activeTabMeta = computed(() => flatTabs.find(tab => tab.id === activeTab.v
 const form = ref({
   wake_words: '',
   agent_timeout_seconds: 300,
+  deep_research: {
+    max_gap_rounds: 8,
+    max_research_tool_calls: 100,
+    max_web_fetches: 40,
+    max_parallel_subagents: 3,
+    timeout_seconds: 900,
+    synthesis_reserve_seconds: 60,
+    allow_report_export: true,
+    report_directory: 'research',
+  },
   persona: '',
   extra_instructions: '',
   tavily_api_key: '',
@@ -1460,6 +1559,7 @@ async function loadSettings() {
     const d = await api.getSettings()
     form.value.wake_words = (d.wake_words || []).join(', ')
     form.value.agent_timeout_seconds = normalizePositiveNumber(d.agent_timeout_seconds, 300)
+    form.value.deep_research = normalizeDeepResearch(d.deep_research)
     form.value.persona = d.persona || ''
     form.value.extra_instructions = d.extra_instructions || ''
     form.value.tavily_api_key = d.tavily_api_key || ''
@@ -1505,6 +1605,28 @@ function normalizeNovelai(value = {}) {
     api_key: value.api_key || '',
     base_url: value.base_url || 'https://image.novelai.net',
     model: value.model || 'nai-diffusion-4-5-full',
+  }
+}
+
+function normalizeDeepResearch(value = {}) {
+  const timeoutSeconds = Math.max(60, normalizePositiveNumber(value.timeout_seconds, 900))
+  const requestedReserve = Math.max(
+    15,
+    normalizePositiveNumber(value.synthesis_reserve_seconds, 60),
+  )
+  return {
+    max_gap_rounds: normalizePositiveInteger(value.max_gap_rounds, 8),
+    max_research_tool_calls: normalizePositiveInteger(value.max_research_tool_calls, 100),
+    max_web_fetches: normalizePositiveInteger(value.max_web_fetches, 40),
+    max_parallel_subagents: Math.min(
+      3,
+      normalizePositiveInteger(value.max_parallel_subagents, 3),
+    ),
+    timeout_seconds: timeoutSeconds,
+    synthesis_reserve_seconds: Math.min(requestedReserve, timeoutSeconds - 1),
+    allow_report_export: value.allow_report_export !== false
+      && String(value.allow_report_export ?? '').toLowerCase() !== 'false',
+    report_directory: String(value.report_directory || 'research').trim() || 'research',
   }
 }
 
@@ -1924,6 +2046,7 @@ async function saveSettings() {
   saving.value = true
   try {
     const latest = await api.getSettings().catch(() => ({}))
+    const deepResearch = normalizeDeepResearch(form.value.deep_research)
     const knowledge = normalizeKnowledge(form.value.knowledge)
     const graph = normalizeGraphKnowledge(form.value.knowledge.graph)
     form.value.knowledge = {
@@ -1941,6 +2064,7 @@ async function saveSettings() {
     await api.saveSettings({
       wake_words: form.value.wake_words.split(',').map(s => s.trim()).filter(Boolean),
       agent_timeout_seconds: normalizePositiveNumber(form.value.agent_timeout_seconds, 300),
+      deep_research: deepResearch,
       persona: form.value.persona,
       extra_instructions: form.value.extra_instructions,
       tavily_api_key: form.value.tavily_api_key,
@@ -2229,6 +2353,19 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.deep-research-card {
+  border-color: rgba(158, 191, 255, 0.18);
+  background: rgba(158, 191, 255, 0.025);
+}
+
+.deep-research-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.deep-research-directory {
+  grid-column: span 2;
 }
 
 .setting-field {
@@ -2616,6 +2753,10 @@ onBeforeUnmount(() => {
 
   .setting-grid {
     grid-template-columns: 1fr;
+  }
+
+  .deep-research-directory {
+    grid-column: auto;
   }
 }
 

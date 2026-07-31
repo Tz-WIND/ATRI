@@ -15,7 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 from core import logger
-from core.agent.mode import AgentModeController
+from core.agent.mode import AgentModeController, normalize_agent_mode
 from core.utils import clean_optional_str
 
 from .context import ContextManager
@@ -23,7 +23,23 @@ from .llm import LLM
 from .prompt import build_system_prompt
 from .tools_bridge import get_all_tools, get_tool
 
-_PLAN_MODE_TOOL_NAMES = {"set_agent_mode"}
+_PLAN_MODE_TOOL_NAMES = {"set_agent_mode", "todo"}
+_RESEARCH_ONLY_TOOL_NAMES = {
+    "research_checkpoint",
+    "research_evidence",
+    "export_research_report",
+}
+_DEEP_RESEARCH_SPECIAL_TOOL_NAMES = {
+    "agent",
+    "research_checkpoint",
+    "research_evidence",
+    "export_research_report",
+}
+_DEEP_RESEARCH_DENIED_TOOL_NAMES = {
+    "set_agent_mode",
+    "agent_result",
+    "task_result",
+}
 
 
 def _is_high_privilege_tool(tool) -> bool:
@@ -79,6 +95,9 @@ class Agent:
         mode_controller: AgentModeController | None = None,
         llm_factory: Callable[[str | None, str | None], LLM] | None = None,
         model_catalog: Callable[[], list[dict]] | list[dict] | None = None,
+        research_services=None,
+        research_session_provider=None,
+        research_branch_provider=None,
     ):
         self.llm = llm
         self.workspace = workspace
@@ -89,6 +108,15 @@ class Agent:
         self.todo_on_change = todo_on_change
         self.mcp_servers = dict(mcp_servers or {})
         self.mode_controller = mode_controller or AgentModeController()
+        self._turn_mode: str | None = None
+        self._research_session = None
+        self._research_branch_id = "main"
+        self._turn_binding_lock = threading.Lock()
+        self._turn_binding_generation = 0
+        self._turn_binding_token: int | None = None
+        self.research_services = research_services
+        self.research_session_provider = research_session_provider or self.current_research_session
+        self.research_branch_provider = research_branch_provider or self.current_research_branch_id
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.tools = (
@@ -104,6 +132,9 @@ class Agent:
                 todo_on_change=self.todo_on_change,
                 mcp_servers=self.mcp_servers,
                 mode_controller=self.mode_controller,
+                research_services=self.research_services,
+                research_session_provider=self.research_session_provider,
+                research_branch_provider=self.research_branch_provider,
             )
         )
         self.max_rounds = max_rounds
@@ -118,13 +149,65 @@ class Agent:
 
         self._wire_agent_tools()
 
+    @property
+    def effective_mode(self) -> str:
+        frozen = self.current_turn_mode()
+        if frozen:
+            return frozen
+        controller = getattr(self, "mode_controller", None)
+        return getattr(controller, "mode", "agent")
+
+    def bind_turn(self, mode: str, *, session=None, branch_id: str = "main") -> int:
+        with self._turn_binding_lock:
+            self._turn_binding_generation += 1
+            token = self._turn_binding_generation
+            self._turn_binding_token = token
+            self._turn_mode = normalize_agent_mode(mode)
+            self._research_session = session
+            self._research_branch_id = str(branch_id or "main").strip() or "main"
+            return token
+
+    def unbind_turn(self, token: int | None = None) -> bool:
+        with self._turn_binding_lock:
+            if token is not None and token != self._turn_binding_token:
+                return False
+            self._turn_binding_token = None
+            self._turn_mode = None
+            self._research_session = None
+            self._research_branch_id = "main"
+            return True
+
+    def current_turn_mode(self) -> str | None:
+        lock = getattr(self, "_turn_binding_lock", None)
+        if lock is None:
+            return getattr(self, "_turn_mode", None)
+        with lock:
+            return self._turn_mode
+
+    def current_research_session(self):
+        lock = getattr(self, "_turn_binding_lock", None)
+        if lock is None:
+            return getattr(self, "_research_session", None)
+        with lock:
+            return self._research_session
+
+    def current_research_branch_id(self) -> str:
+        lock = getattr(self, "_turn_binding_lock", None)
+        if lock is None:
+            return str(getattr(self, "_research_branch_id", "main") or "main")
+        with lock:
+            return str(self._research_branch_id or "main")
+
     def _wire_agent_tools(self):
         # Wire up sub-agent capability.
         from core.tools.agent_tool import AgentTool
+        from core.tools.mode import AgentModeTool
 
         for t in self.tools:
             if isinstance(t, AgentTool):
                 t._parent_agent = self
+            elif isinstance(t, AgentModeTool):
+                t.current_turn_mode_provider = self.current_turn_mode
 
     def reload_tools(self, mcp_servers: dict | None = None):
         """Recreate tool instances after tool-related configuration changes."""
@@ -140,6 +223,9 @@ class Agent:
             todo_on_change=self.todo_on_change,
             mcp_servers=self.mcp_servers,
             mode_controller=self.mode_controller,
+            research_services=self.research_services,
+            research_session_provider=self.research_session_provider,
+            research_branch_provider=self.research_branch_provider,
         )
         self._wire_agent_tools()
 
@@ -150,11 +236,18 @@ class Agent:
             extra_instructions=self.extra_instructions,
             persona=self.persona,
             skills_prompt=self.skills_prompt,
-            agent_mode=self.mode_controller.mode,
+            agent_mode=self.effective_mode,
         )
         subagent_models = self._subagent_model_prompt()
         if subagent_models:
             prompt += "\n\n" + subagent_models
+        if self.effective_mode == "deepresearch" and self.current_research_branch_id() != "main":
+            prompt += (
+                "\n\n# Research Branch Boundary\n"
+                "The parent agent controls research phases and checkpoints. "
+                "Do not attempt to advance or replace the shared phase; gather and verify "
+                "only the evidence branch assigned to you."
+            )
         return prompt
 
     def create_child_llm(
@@ -218,7 +311,7 @@ class Agent:
         return [t.schema() for t in self._available_tools()]
 
     def _available_tools(self):
-        tools = list(self.tools)
+        tools = [tool for tool in self.tools if self._is_tool_allowed_for_mode(tool)]
         if self._is_plan_mode():
             tools = [tool for tool in tools if _is_plan_safe_tool(tool)]
         if not getattr(self, "high_privilege_tools_allowed", True):
@@ -226,10 +319,59 @@ class Agent:
         return tools
 
     def _is_plan_mode(self) -> bool:
-        mode_controller = getattr(self, "mode_controller", None)
-        return getattr(mode_controller, "mode", "agent") == "plan"
+        return self.effective_mode == "plan"
+
+    def _is_tool_allowed_for_mode(self, tool) -> bool:
+        mode = self.effective_mode
+        if mode != "deepresearch":
+            return tool.name not in _RESEARCH_ONLY_TOOL_NAMES
+        if tool.name in _DEEP_RESEARCH_DENIED_TOOL_NAMES:
+            return False
+        return bool(tool.capabilities.read_only or tool.name in _DEEP_RESEARCH_SPECIAL_TOOL_NAMES)
 
     def chat(
+        self,
+        user_input: str | list[dict],
+        on_token: Callable | None = None,
+        on_tool: Callable | None = None,
+        on_thinking: Callable | None = None,
+        on_thinking_done: Callable | None = None,
+        on_tool_start: Callable | None = None,
+        on_tool_end: Callable | None = None,
+        *,
+        display_user_input: str | list[dict] | None = None,
+        display_user_attachments: list[dict] | None = None,
+        turn_mode: str | None = None,
+        research_session=None,
+        research_branch_id: str = "main",
+    ) -> str:
+        """Run one turn, optionally with a frozen mode and research session."""
+
+        bind_for_call = turn_mode is not None or research_session is not None
+        binding_token = None
+        if bind_for_call:
+            binding_token = self.bind_turn(
+                turn_mode or self.effective_mode,
+                session=research_session,
+                branch_id=research_branch_id,
+            )
+        try:
+            return self._chat_impl(
+                user_input,
+                on_token=on_token,
+                on_tool=on_tool,
+                on_thinking=on_thinking,
+                on_thinking_done=on_thinking_done,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
+                display_user_input=display_user_input,
+                display_user_attachments=display_user_attachments,
+            )
+        finally:
+            if bind_for_call:
+                self.unbind_turn(binding_token)
+
+    def _chat_impl(
         self,
         user_input: str | list[dict],
         on_token: Callable | None = None,
@@ -337,6 +479,9 @@ class Agent:
         Thread-safe; may be called from the main thread while chat() runs in an executor.
         """
         self._cancel_event.set()
+        session = self.current_research_session()
+        if session is not None:
+            session.cancel(reason="agent_cancelled")
         for tool in self.tools:
             try:
                 tool.cancel()
@@ -355,6 +500,9 @@ class Agent:
         *,
         display_user_input: str | list[dict] | None = None,
         display_user_attachments: list[dict] | None = None,
+        turn_mode: str | None = None,
+        research_session=None,
+        research_branch_id: str = "main",
     ) -> str:
         """Async wrapper: runs the synchronous chat in a thread executor."""
         loop = asyncio.get_running_loop()
@@ -370,6 +518,9 @@ class Agent:
                 on_tool_end=on_tool_end,
                 display_user_input=display_user_input,
                 display_user_attachments=display_user_attachments,
+                turn_mode=turn_mode,
+                research_session=research_session,
+                research_branch_id=research_branch_id,
             ),
         )
 
@@ -377,6 +528,10 @@ class Agent:
         tool = get_tool(tc.name, self.tools)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
+        if not self._is_tool_allowed_for_mode(tool):
+            if self.effective_mode == "deepresearch":
+                return f"Error: tool '{tc.name}' is restricted in DEEP RESEARCH mode."
+            return f"Error: tool '{tc.name}' is unavailable in {self.effective_mode.upper()} mode."
         if self._is_plan_mode() and not _is_plan_safe_tool(tool):
             return (
                 f"Error: tool '{tc.name}' is restricted in PLAN mode. Switch to AGENT mode first."

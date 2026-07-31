@@ -23,6 +23,9 @@ def get_all_tools(
     todo_on_change=None,
     mcp_servers: dict | None = None,
     mode_controller=None,
+    research_services=None,
+    research_session_provider=None,
+    research_branch_provider=None,
 ) -> list[Tool]:
     from core.tools import create_tools
 
@@ -36,6 +39,9 @@ def get_all_tools(
         todo_on_change=todo_on_change,
         mcp_servers=mcp_servers,
         mode_controller=mode_controller,
+        research_services=research_services,
+        research_session_provider=research_session_provider,
+        research_branch_provider=research_branch_provider,
     )
 
 

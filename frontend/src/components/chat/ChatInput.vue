@@ -312,7 +312,7 @@
                   type="button"
                   @pointerdown.prevent.stop="selectMode(mode)"
                 >
-                  {{ mode.toUpperCase() }}
+                  {{ agentModeLabel(mode) }}
                 </button>
               </div>
             </transition>
@@ -508,6 +508,12 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useApi } from '@/composables/useApi.js'
+import {
+  AGENT_MODES,
+  agentModeForSlashCommand,
+  agentModeLabel,
+  normalizeAgentMode,
+} from '@/composables/agentMode.js'
 import { useDocumentSupport } from '@/composables/useDocumentSupport.js'
 import ModelSelector from './ModelSelector.vue'
 
@@ -578,6 +584,20 @@ const slashCommands = [
     label: '/agent',
     description: 'Switch to AGENT mode',
     action: 'setAgentMode',
+    section: 'Mode',
+  },
+  {
+    id: 'cmd-research',
+    label: '/research',
+    description: 'Switch to DEEP RESEARCH mode',
+    action: 'setDeepResearchMode',
+    section: 'Mode',
+  },
+  {
+    id: 'cmd-deepresearch',
+    label: '/deepresearch',
+    description: 'Alias for DEEP RESEARCH mode',
+    action: 'setDeepResearchMode',
     section: 'Mode',
   },
   {
@@ -705,9 +725,9 @@ const placeholderText = computed(() => (
   props.sending ? 'Draft the next message while ATRI is responding...' : 'Send a message...'
 ))
 
-const currentMode = computed(() => (props.agentMode === 'plan' ? 'plan' : 'agent'))
-const currentModeLabel = computed(() => currentMode.value.toUpperCase())
-const modeOptions = ['plan', 'agent']
+const currentMode = computed(() => normalizeAgentMode(props.agentMode))
+const currentModeLabel = computed(() => agentModeLabel(currentMode.value))
+const modeOptions = AGENT_MODES
 const normalizedWorkspace = computed(() => (
   props.workspace === 'host_project' ? 'host_project' : 'atri_studio'
 ))
@@ -1555,18 +1575,21 @@ function runPanelAction(action) {
   } else if (action === 'setAgentMode') {
     requestMode('agent')
     closePanel()
+  } else if (action === 'setDeepResearchMode') {
+    requestMode('deepresearch')
+    closePanel()
   } else if (action === 'showMode') {
-    showStatus(`Mode: ${currentMode.value.toUpperCase()}`)
+    showStatus(`Mode: ${agentModeLabel(currentMode.value)}`)
     closePanel()
   }
 }
 
 function requestMode(mode) {
-  const nextMode = mode === 'plan' ? 'plan' : 'agent'
+  const nextMode = normalizeAgentMode(mode)
   modeMenuOpen.value = false
   closePanel({ focus: false })
   emit('set-mode', nextMode)
-  showStatus(`Mode: ${nextMode.toUpperCase()}`)
+  showStatus(`Mode: ${agentModeLabel(nextMode)}`)
 }
 
 function setComposerText(value) {
@@ -1634,13 +1657,9 @@ function submitDraft() {
 
 function runComposerCommand(draft) {
   const command = draft.trim().toLowerCase()
-  if (command === '/plan') {
-    requestMode('plan')
-    setComposerText('')
-    return true
-  }
-  if (command === '/agent') {
-    requestMode('agent')
+  const requestedMode = agentModeForSlashCommand(command)
+  if (requestedMode) {
+    requestMode(requestedMode)
     setComposerText('')
     return true
   }
@@ -2299,6 +2318,17 @@ textarea::placeholder {
     opacity 0.16s ease,
     max-inline-size 0.16s ease,
     transform 0.16s ease;
+}
+
+.tools-left :deep(.model-chip) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.tools-left .mode-picker,
+.tools-left .state-pill {
+  flex-shrink: 0;
 }
 
 .tools-right {

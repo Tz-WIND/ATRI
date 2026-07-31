@@ -12,8 +12,10 @@ from core.config_schema import (
     AGENT_TIMEOUT_SECONDS_DEFAULT,
     AGENT_TIMEOUT_SECONDS_MINIMUM,
     CHAT_MODEL_CONFIG_DEFAULT,
+    DEFAULT_CONFIG,
     EMBEDDING_MODEL_CONFIG_DEFAULT,
     RERANK_MODEL_CONFIG_DEFAULT,
+    normalize_config,
 )
 from core.knowledge.graph_constants import (
     GRAPH_EXPANSION_CANDIDATE_MAX_LIMIT,
@@ -58,6 +60,7 @@ _PROCESS_STAGE_SETTING_KEYS = {
     "persona",
     "agent_mode",
     "agent_timeout_seconds",
+    "deep_research",
     "image_transcription",
     "novelai",
     "knowledge",
@@ -95,6 +98,7 @@ _AUDIO_HOST_RESTART_MESSAGES = {
     "audio device and bit depth changes require restarting the audio host",
     "sample_rate and buffer_size changes require restarting the audio host",
 }
+_DEEP_RESEARCH_SETTING_KEYS = frozenset(DEFAULT_CONFIG["deep_research"])
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -105,6 +109,37 @@ def _positive_int(value: Any, field: str) -> int:
     if parsed <= 0:
         raise ValueError(f"{field} must be a positive integer")
     return parsed
+
+
+def _deep_research_config_for_response(value: Any) -> dict[str, Any]:
+    result = dict(DEFAULT_CONFIG["deep_research"])
+    if isinstance(value, dict):
+        result.update({key: value[key] for key in _DEEP_RESEARCH_SETTING_KEYS if key in value})
+    return result
+
+
+def _merge_deep_research_config(
+    current: Any,
+    incoming: Any,
+    *,
+    workspace: Any,
+) -> dict[str, Any]:
+    if not isinstance(incoming, dict):
+        raise ValueError("deep_research must be an object")
+    unknown = sorted(set(incoming) - _DEEP_RESEARCH_SETTING_KEYS)
+    if unknown:
+        raise ValueError(f"deep_research contains unknown fields: {', '.join(unknown)}")
+
+    merged = _deep_research_config_for_response(current)
+    merged.update(incoming)
+    normalized, _ = normalize_config(
+        {
+            "workspace": str(workspace or "."),
+            "deep_research": merged,
+        },
+        migrate_legacy_onebot11_public_bind=False,
+    )
+    return {key: normalized["deep_research"][key] for key in DEFAULT_CONFIG["deep_research"]}
 
 
 def _positive_float(value: Any, field: str) -> float:
@@ -935,6 +970,7 @@ def register(dashboard: Dashboard) -> None:
                     "agent_timeout_seconds",
                     AGENT_TIMEOUT_SECONDS_DEFAULT,
                 ),
+                "deep_research": _deep_research_config_for_response(c.get("deep_research", {})),
                 "embedding_model": c.get("embedding_model", ""),
                 "embedding_provider": c.get("embedding_provider", ""),
                 "active_embedding_models": c.get("active_embedding_models", []),
@@ -994,6 +1030,16 @@ def register(dashboard: Dashboard) -> None:
                     )
                 lc.config["agent_timeout_seconds"] = agent_timeout
                 data["agent_timeout_seconds"] = lc.config["agent_timeout_seconds"]
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+        if "deep_research" in data:
+            try:
+                lc.config["deep_research"] = _merge_deep_research_config(
+                    lc.config.get("deep_research", {}),
+                    data["deep_research"],
+                    workspace=lc.config.get("workspace", "."),
+                )
+                data["deep_research"] = lc.config["deep_research"]
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
         if "skills_root" in data:

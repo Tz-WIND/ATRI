@@ -164,6 +164,19 @@ def test_daw_agent_page_reuses_chat_components_and_daw_api():
     assert "sendDawAgentMessage" in source
     assert "daw-workspace-picker" in source
     assert '@set-workspace="setWorkspace"' in source
+    assert "ResearchProgress" in source
+    assert ':status="researchStatus"' in source
+    assert "normalizeAgentMode" in source
+
+
+def test_chat_input_exposes_deepresearch_mode_and_slash_aliases():
+    source = CHAT_INPUT.read_text(encoding="utf-8")
+
+    assert "AGENT_MODES" in source
+    assert "agentModeLabel" in source
+    assert "'/research'" in source
+    assert "'/deepresearch'" in source
+    assert "requestMode('deepresearch')" in source
 
 
 def test_daw_agent_page_forwards_document_files_to_chat_api():

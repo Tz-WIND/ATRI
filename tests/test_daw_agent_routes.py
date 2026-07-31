@@ -35,6 +35,7 @@ class _FakeDawAgent:
         file_attachments=None,
         model="",
         model_provider="",
+        agent_mode=None,
     ):
         self.calls.append(
             {
@@ -48,6 +49,7 @@ class _FakeDawAgent:
                 "file_attachments": file_attachments,
                 "model": model,
                 "model_provider": model_provider,
+                "agent_mode": agent_mode,
             }
         )
         event = MessageEvent(
@@ -58,6 +60,8 @@ class _FakeDawAgent:
             self_id="atri",
             platform_name="daw_agent",
         )
+        event._extras["_request_id"] = "daw-request-1"
+        event._extras["_daw_agent_req_id"] = "daw-request-1"
         future = asyncio.get_event_loop().create_future()
         future.set_result({"text": "done", "chain": None})
         return event, future
@@ -81,6 +85,7 @@ class _FailingDawAgent:
         file_attachments=None,
         model="",
         model_provider="",
+        agent_mode=None,
     ):
         event = MessageEvent(
             message_str=message,
@@ -90,6 +95,8 @@ class _FailingDawAgent:
             self_id="atri",
             platform_name="daw_agent",
         )
+        event._extras["_request_id"] = "daw-request-1"
+        event._extras["_daw_agent_req_id"] = "daw-request-1"
 
         async def fail():
             raise self.error
@@ -107,8 +114,8 @@ class _FakeLifecycle:
         self.config = {}
         self.cancelled_sessions = []
 
-    def cancel_operation(self, session_id=None):
-        self.cancelled_sessions.append(session_id)
+    def cancel_operation(self, session_id=None, request_id=None):
+        self.cancelled_sessions.append((session_id, request_id))
         return True
 
 
@@ -158,6 +165,7 @@ async def test_daw_agent_chat_route_creates_project_scoped_event():
             "file_attachments": [],
             "model": "",
             "model_provider": "",
+            "agent_mode": "agent",
         }
     ]
     assert dashboard.broadcasts == [{"type": "thinking", "session_id": "daw_agent:friend:song-a"}]
@@ -502,7 +510,9 @@ async def test_daw_agent_chat_route_cancels_pending_request_on_timeout():
     assert response.status_code == 504
     assert await response.get_json() == {"error": "Agent timed out (300s)"}
     assert len(adapter.cancelled_events) == 1
-    assert dashboard.lifecycle.cancelled_sessions == ["daw_agent:friend:default_project"]
+    assert dashboard.lifecycle.cancelled_sessions == [
+        ("daw_agent:friend:default_project", "daw-request-1")
+    ]
 
 
 @pytest.mark.asyncio
@@ -532,4 +542,6 @@ async def test_daw_agent_chat_route_cancels_pending_request_on_exception():
     assert response.status_code == 500
     assert await response.get_json() == {"error": "pipeline failed"}
     assert len(adapter.cancelled_events) == 1
-    assert dashboard.lifecycle.cancelled_sessions == ["daw_agent:friend:default_project"]
+    assert dashboard.lifecycle.cancelled_sessions == [
+        ("daw_agent:friend:default_project", "daw-request-1")
+    ]

@@ -552,3 +552,67 @@ def test_process_stage_cancel_session_resolves_bare_daw_agent_id():
 
     assert stage.cancel_session("song-a") is True
     agent.cancel.assert_called_once()
+
+
+def test_process_stage_cancel_session_does_not_fall_back_to_other_active_session():
+    import threading
+    from unittest.mock import MagicMock
+
+    stage = ProcessStage()
+    stage._agents = {}
+    stage._agents_lock = threading.Lock()
+    stage._active_lock = threading.Lock()
+    unrelated = MagicMock()
+    stage._agents["webchat:friend:other"] = unrelated
+    stage._active_session_ids = {"webchat:friend:other"}
+
+    assert stage.cancel_session("missing") is False
+    unrelated.cancel.assert_not_called()
+
+
+def test_process_stage_cancel_request_requires_exact_active_request():
+    import threading
+    from unittest.mock import MagicMock
+
+    stage = ProcessStage()
+    stage._agents = {}
+    stage._agents_lock = threading.Lock()
+    stage._active_lock = threading.Lock()
+    agent = MagicMock()
+    session_id = "webchat:friend:topic"
+    stage._agents[session_id] = agent
+    stage._active_session_ids = {session_id}
+    stage._active_request_ids = {session_id: "request-a"}
+
+    assert stage.cancel_request(session_id, "request-b") is False
+    agent.cancel.assert_not_called()
+
+    assert stage.cancel_request(session_id, "request-a") is True
+    agent.cancel.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_process_stage_skips_queued_event_marked_cancelled(monkeypatch):
+    import threading
+
+    stage = ProcessStage()
+    stage._agents_lock = threading.Lock()
+    stage._session_locks = {}
+    event = MessageEvent(
+        message_str="queued request",
+        message_type=MessageType.FRIEND_MESSAGE,
+        sender=Sender(user_id="webui", nickname="WebUI"),
+        session_id="topic",
+        platform_name="webchat",
+    )
+    event._extras["_request_id"] = "request-a"
+    event._extras["_request_cancelled"] = True
+
+    async def should_not_process(*_args, **_kwargs):
+        raise AssertionError("cancelled queued event reached the agent")
+        yield
+
+    monkeypatch.setattr(stage, "_process_locked", should_not_process)
+
+    assert await _consume(stage, event) == []
+    assert event.is_stopped() is True

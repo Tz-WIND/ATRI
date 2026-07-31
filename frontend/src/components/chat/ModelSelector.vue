@@ -132,12 +132,17 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 <style scoped>
 .model-dropdown {
   position: relative;
+  min-width: 0;
+  max-width: 220px;
 }
 
 .model-chip {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   height: 32px;
   padding: 0 12px;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -149,12 +154,12 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
-  max-width: 220px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  box-sizing: border-box;
 }
 
 .model-chip span {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
