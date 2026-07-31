@@ -30,7 +30,7 @@ from .base import Tool, ToolCapabilities
 # ---------------------------------------------------------------------------
 
 _tavily_api_key: str | None = None
-_GLOBAL_DEFAULT_TIMEOUT: Any = getattr(socket, "_GLOBAL_DEFAULT_TIMEOUT")
+_GLOBAL_DEFAULT_TIMEOUT: Any = socket._GLOBAL_DEFAULT_TIMEOUT  # type: ignore[attr-defined]
 
 
 def set_tavily_key(key: str | None) -> None:
@@ -190,7 +190,7 @@ def _request_target(
     if isinstance(target, _PublicTarget):
         return target
     target = _validated_public_target(request.full_url, controller=controller)
-    setattr(request, "_atri_public_target", target)
+    request._atri_public_target = target  # type: ignore[attr-defined]
     return target
 
 
@@ -567,7 +567,7 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         redirected = super().redirect_request(req, fp, code, msg, headers, target.url)
         if redirected is None:
             return None
-        setattr(redirected, "_atri_public_target", target)
+        redirected._atri_public_target = target  # type: ignore[attr-defined]
         if _origin(req.full_url) != _origin(target.url):
             _strip_cross_origin_credentials(redirected)
         return redirected
@@ -673,7 +673,7 @@ def _open_url(
             controller.check()
         # S310 is suppressed after scheme validation; HTTPS uses default TLS checks.
         req = urllib.request.Request(target.url, data=data, headers=headers)  # noqa: S310
-        setattr(req, "_atri_public_target", target)
+        req._atri_public_target = target  # type: ignore[attr-defined]
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
             PinnedHTTPHandler(controller),
