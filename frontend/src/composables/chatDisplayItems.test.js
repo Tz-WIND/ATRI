@@ -26,7 +26,7 @@ assert.deepEqual(buildChatDisplayItems(messages), [
     message: messages[0],
   },
   {
-    id: 'context-t1-t2',
+    id: 'context-t1',
     type: 'tool-group',
     tools: [
       { id: 't1', tool: 'read_file', path: 'a.py' },
@@ -72,7 +72,7 @@ const trackedList = new Proxy(trackedMessages, {
 })
 
 const firstDisplayItems = builder.build(trackedList)
-assert.equal(firstDisplayItems[1].id, 'context-t1-t2')
+assert.equal(firstDisplayItems[1].id, 'context-t1')
 const firstContextItem = firstDisplayItems[1]
 prefixReads.length = 0
 
@@ -88,12 +88,15 @@ const contextBuilder = createChatDisplayItemsBuilder()
 const contextMessages = [
   { id: 't1', role: 'tool', toolData: { tool: 'read_file', path: 'a.py' } },
 ]
-contextBuilder.build(contextMessages)
+const firstContextBuild = contextBuilder.build(contextMessages)
+const firstContextId = firstContextBuild[0].id
+assert.equal(firstContextId, 'context-t1')
 contextMessages.push({ id: 't2', role: 'tool', toolData: { tool: 'grep', query: 'TODO' } })
 
-assert.deepEqual(contextBuilder.build(contextMessages), [
+const secondContextBuild = contextBuilder.build(contextMessages)
+assert.deepEqual(secondContextBuild, [
   {
-    id: 'context-t1-t2',
+    id: 'context-t1',
     type: 'tool-group',
     tools: [
       { id: 't1', tool: 'read_file', path: 'a.py' },
@@ -101,6 +104,7 @@ assert.deepEqual(contextBuilder.build(contextMessages), [
     ],
   },
 ])
+assert.equal(secondContextBuild[0].id, firstContextId)
 
 const reactiveMessages = ref([
   { id: 'a1', role: 'assistant', content: 'Hel', streaming: true },

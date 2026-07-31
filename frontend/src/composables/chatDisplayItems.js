@@ -30,9 +30,10 @@ function pushMessageItem(state, message, index) {
 function pushContextToolGroup(state, contextTools, start, end) {
   if (!contextTools.length) return
   const first = contextTools[0]
-  const last = contextTools[contextTools.length - 1]
+  // Key only on the run start id. Including last.id remounts the card on
+  // every appended context tool and makes the list visually jump.
   const item = {
-    id: `context-${first.id}-${last.id}`,
+    id: `context-${first.id}`,
     type: 'tool-group',
     tools: contextTools.map((message) => ({
       id: message.id,

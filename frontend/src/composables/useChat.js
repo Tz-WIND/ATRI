@@ -577,17 +577,13 @@ export function useChat() {
     const runtimeItems = Array.isArray(transcript?.runtimeItems) ? transcript.runtimeItems : []
     todoSnapshot.value = normalizeTodoSnapshot(transcript?.todoSnapshot)
     const replayItemsByTurn = new Map()
-    const runtimeToolCallIds = new Set()
+    const renderedToolCallIds = new Set()
     const replayItems = runtimeItems
       .map((item, index) => ({ item, index }))
       .filter(({ item }) => isReplayRuntimeItem(item))
       .sort(compareRuntimeItemOrder)
 
     replayItems.forEach(({ item }) => {
-      const metadata = runtimeItemMetadata(item)
-      if (isRuntimeToolItem(item) && metadata.tool_call_id) {
-        runtimeToolCallIds.add(String(metadata.tool_call_id))
-      }
       const list = replayItemsByTurn.get(item.turn_id) || []
       list.push(item)
       replayItemsByTurn.set(item.turn_id, list)
@@ -600,17 +596,63 @@ export function useChat() {
       .map(({ item }) => item)
       .filter((item) => !item.turn_id || !orderedTurnIds.includes(item.turn_id))
     let turnIndex = 0
+    let activeReplayItems = []
+    let activeReplayIndex = 0
 
-    function addRuntimeItemsForNextTurn() {
-      let items = []
+    function runtimeToolCallId(item) {
+      if (!isRuntimeToolItem(item)) return ''
+      return String(runtimeItemMetadata(item).tool_call_id || '')
+    }
+
+    function renderReplayItem(item) {
+      const toolCallId = runtimeToolCallId(item)
+      if (toolCallId && renderedToolCallIds.has(toolCallId)) return
+      addRuntimeTimelineMessage(item)
+      if (toolCallId) renderedToolCallIds.add(toolCallId)
+    }
+
+    function flushActiveReplayItems() {
+      while (activeReplayIndex < activeReplayItems.length) {
+        renderReplayItem(activeReplayItems[activeReplayIndex])
+        activeReplayIndex += 1
+      }
+      activeReplayItems = []
+      activeReplayIndex = 0
+    }
+
+    function openNextRuntimeTurn() {
+      activeReplayItems = []
+      activeReplayIndex = 0
       if (turnIndex < orderedTurnIds.length) {
         const turnId = orderedTurnIds[turnIndex]
         turnIndex += 1
-        items = replayItemsByTurn.get(turnId) || []
+        activeReplayItems = replayItemsByTurn.get(turnId) || []
       } else if (fallbackReplayItems.length) {
-        items = [fallbackReplayItems.shift()]
+        activeReplayItems = [fallbackReplayItems.shift()]
       }
-      items.forEach(addRuntimeTimelineMessage)
+    }
+
+    function takeReplaySegment(toolCalls) {
+      const toolCallIds = new Set(
+        toolCalls
+          .map((call) => String(call?.id || ''))
+          .filter(Boolean),
+      )
+      if (!toolCallIds.size) return null
+
+      let firstMatch = -1
+      let lastMatch = -1
+      for (let index = activeReplayIndex; index < activeReplayItems.length; index += 1) {
+        if (!toolCallIds.has(runtimeToolCallId(activeReplayItems[index]))) continue
+        if (firstMatch < 0) firstMatch = index
+        lastMatch = index
+      }
+      if (firstMatch < 0) return null
+
+      const beforeAssistant = activeReplayItems.slice(activeReplayIndex, firstMatch)
+      const afterAssistant = activeReplayItems.slice(firstMatch, lastMatch + 1)
+      activeReplayIndex = lastMatch + 1
+      return { beforeAssistant, afterAssistant }
     }
 
     rawMessages.forEach((m) => {
@@ -624,6 +666,12 @@ export function useChat() {
       }
 
       if (m.role === 'user' && m.content) {
+        // Tool-result user messages continue the active turn instead of opening
+        // the next Runtime turn.
+        const isToolResult = Array.isArray(m.content)
+          && m.content.some(part => part?.type === 'tool_result')
+        if (!isToolResult) flushActiveReplayItems()
+
         const userContent = stripInternalUserContext(m._atri_display_content || m.content)
         const parsed = parseUserContent(userContent)
         addMessage('user', parsed.text, false, {
@@ -632,27 +680,28 @@ export function useChat() {
             normalizeStoredAttachments(m._atri_attachments),
           ),
         })
-        // Tool-result user messages are continuations of the current turn,
-        // not new user requests -- skip inserting runtime thinking here.
-        const isToolResult = Array.isArray(m.content) && m.content.some(part => part?.type === 'tool_result')
-        if (!isToolResult) {
-          addRuntimeItemsForNextTurn()
-        }
+        if (!isToolResult) openNextRuntimeTurn()
       } else if (m.role === 'assistant') {
+        const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls : []
+        const replaySegment = toolCalls.length ? takeReplaySegment(toolCalls) : null
+        replaySegment?.beforeAssistant.forEach(renderReplayItem)
+        if (!toolCalls.length) flushActiveReplayItems()
+
         const attachments = normalizeStoredAttachments(m._atri_attachments)
         if (hasVisibleText(m.content) || attachments.length) {
           addMessage('assistant', hasVisibleText(m.content) ? String(m.content) : '', true, {
             attachments,
           })
         }
+        replaySegment?.afterAssistant.forEach(renderReplayItem)
       } else if (m.role === 'tool') {
         const call = callsById.get(m.tool_call_id) || {}
         if (call.tool === 'todo') {
           return
         }
-        if (runtimeToolCallIds.has(String(m.tool_call_id || ''))) {
-          return
-        }
+
+        const toolCallId = String(m.tool_call_id || '')
+        if (toolCallId && renderedToolCallIds.has(toolCallId)) return
         const result = m.content || ''
         addToolMessage(m.tool_call_id, {
           tool: call.tool || 'tool',
@@ -662,13 +711,16 @@ export function useChat() {
           resultCompressed: result.startsWith('<persisted-output>'),
           resultId: extractToolResultId(result),
         })
+        if (toolCallId) renderedToolCallIds.add(toolCallId)
       }
     })
 
+    flushActiveReplayItems()
     while (turnIndex < orderedTurnIds.length) {
-      addRuntimeItemsForNextTurn()
+      openNextRuntimeTurn()
+      flushActiveReplayItems()
     }
-    fallbackReplayItems.forEach(addRuntimeTimelineMessage)
+    fallbackReplayItems.forEach(renderReplayItem)
     addTodoMessage(todoSnapshot.value)
   }
 

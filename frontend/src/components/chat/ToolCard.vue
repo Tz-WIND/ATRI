@@ -28,18 +28,26 @@
         class="tool-status-mark"
         aria-hidden="true"
       >
-        <span
-          v-if="isRunning"
-          class="tool-spinner"
-        />
-        <span
-          v-else-if="isFailed"
-          class="tool-failed-mark"
-        >!</span>
-        <span
-          v-else
-          class="tool-neutral-mark"
-        />
+        <Transition
+          name="tool-mark"
+          mode="out-in"
+        >
+          <span
+            v-if="isRunning"
+            key="running"
+            class="tool-spinner"
+          />
+          <span
+            v-else-if="isFailed"
+            key="failed"
+            class="tool-failed-mark"
+          >!</span>
+          <span
+            v-else
+            key="done"
+            class="tool-neutral-mark"
+          />
+        </Transition>
       </span>
 
       <span class="tool-info">
@@ -469,10 +477,10 @@ function normalizeToolName(value) {
 .tool-spinner {
   width: 13px;
   height: 13px;
-  border: 1px solid rgba(125, 168, 232, 0.22);
+  border: 1.5px solid rgba(125, 168, 232, 0.28);
   border-top-color: var(--acc2);
   border-radius: 50%;
-  animation: tool-spin 0.9s linear infinite;
+  animation: tool-spin 0.8s linear infinite;
 }
 
 .tool-failed-mark {
@@ -489,8 +497,18 @@ function normalizeToolName(value) {
 }
 
 .tool-neutral-mark {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--t4);
+}
+
+.executing .tool-neutral-mark {
+  background: var(--acc2);
+}
+
+.failed .tool-neutral-mark {
+  background: var(--red);
 }
 
 .tool-info {

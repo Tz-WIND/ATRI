@@ -36,7 +36,12 @@ export function createChatEventProcessor({
         if (event?.type === 'mode_changed') {
           handleModeChanged(event.mode)
         }
-        await handleEvent(event)
+        // Only await real promises. Awaiting a sync handler inserts a microtask
+        // between events, letting Vue flush intermediate list and scroll states.
+        const result = handleEvent(event)
+        if (result != null && typeof result.then === 'function') {
+          await result
+        }
         handledAny = true
       }
       if (handledAny && !cancelled) scrollToBottom()

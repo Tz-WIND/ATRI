@@ -273,7 +273,7 @@ try {
       { role: 'user', content: 'Investigate' },
       {
         role: 'assistant',
-        content: '',
+        content: 'Searching...',
         tool_calls: [
           {
             id: 'call-1',
@@ -287,7 +287,7 @@ try {
       { role: 'tool', tool_call_id: 'call-1', content: 'first result' },
       {
         role: 'assistant',
-        content: '',
+        content: 'Reading...',
         tool_calls: [
           {
             id: 'call-2',
@@ -369,10 +369,94 @@ try {
     [
       'user:Investigate',
       'thinking:think 1',
+      'assistant:Searching...',
       'tool:search:first result',
       'thinking:think 2',
+      'assistant:Reading...',
       'tool:read_file:second result',
       'assistant:Done.',
+    ],
+  )
+
+  clearChatInstance()
+
+  const parallelTranscript = useChat()
+  parallelTranscript.loadTranscript({
+    messages: [
+      { role: 'user', content: 'Run both' },
+      {
+        role: 'assistant',
+        content: 'Running both...',
+        tool_calls: [
+          {
+            id: 'call-a',
+            function: { name: 'search', arguments: '{"query":"a"}' },
+          },
+          {
+            id: 'call-b',
+            function: { name: 'read_file', arguments: '{"file_path":"b.md"}' },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-a', content: 'result a' },
+      { role: 'tool', tool_call_id: 'call-b', content: 'result b' },
+      { role: 'assistant', content: 'Both done.' },
+    ],
+    runtimeTurns: [{ id: 'turn-parallel' }],
+    runtimeItems: [
+      {
+        id: 'reason-parallel',
+        turn_id: 'turn-parallel',
+        kind: 'agent_reasoning',
+        detail: 'prepare both',
+        created_at: '2026-07-07T03:00:00.000Z',
+      },
+      {
+        id: 'tool-b',
+        turn_id: 'turn-parallel',
+        kind: 'tool_call',
+        status: 'completed',
+        detail: 'result b',
+        created_at: '2026-07-07T03:00:01.000Z',
+        metadata: {
+          tool_call_id: 'call-b',
+          tool: 'read_file',
+          args: { file_path: 'b.md' },
+          success: true,
+        },
+      },
+      {
+        id: 'tool-a',
+        turn_id: 'turn-parallel',
+        kind: 'tool_call',
+        status: 'completed',
+        detail: 'result a',
+        created_at: '2026-07-07T03:00:02.000Z',
+        metadata: {
+          tool_call_id: 'call-a',
+          tool: 'search',
+          args: { query: 'a' },
+          success: true,
+        },
+      },
+    ],
+  })
+
+  assert.deepEqual(
+    parallelTranscript.messages.value.map((message) => (
+      message.role === 'thinking'
+        ? `thinking:${message.content}`
+        : message.role === 'tool'
+          ? `tool:${message.toolCallId}`
+          : `${message.role}:${message.content}`
+    )),
+    [
+      'user:Run both',
+      'thinking:prepare both',
+      'assistant:Running both...',
+      'tool:call-b',
+      'tool:call-a',
+      'assistant:Both done.',
     ],
   )
 

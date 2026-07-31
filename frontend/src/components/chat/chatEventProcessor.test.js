@@ -88,6 +88,95 @@ test('createChatEventProcessor_waitsForAsyncHandlersBeforeScrolling', async () =
   assert.equal(scrollCount, 1)
 })
 
+test('createChatEventProcessor_keepsSyncHandlersInOneTurn', async () => {
+  const frames = []
+  const events = ref([
+    { type: 'tool_start', id: 't1' },
+    { type: 'tool_start', id: 't2' },
+    { type: 'tool_start', id: 't3' },
+  ])
+  const handled = []
+  let sawMicrotaskGap = false
+  const processor = createChatEventProcessor({
+    events,
+    handleEvent: (event) => {
+      handled.push(event.id)
+      queueMicrotask(() => {
+        if (handled.length < events.value.length) sawMicrotaskGap = true
+      })
+    },
+    requestFrame(callback) {
+      frames.push(callback)
+      return frames.length
+    },
+  })
+
+  processor.schedule()
+  await frames[0]()
+  await Promise.resolve()
+
+  assert.deepEqual(handled, ['t1', 't2', 't3'])
+  assert.equal(sawMicrotaskGap, false)
+})
+
+test('createChatEventProcessor_preservesMixedSyncAsyncOrder', async () => {
+  const frames = []
+  const events = ref([
+    { type: 'tool_start', id: 'before' },
+    { type: 'tool_start', id: 'async' },
+    { type: 'tool_start', id: 'after' },
+  ])
+  const order = []
+  const processor = createChatEventProcessor({
+    events,
+    handleEvent: (event) => {
+      order.push(`${event.id}:start`)
+      if (event.id === 'async') {
+        return Promise.resolve().then(() => order.push(`${event.id}:end`))
+      }
+      order.push(`${event.id}:end`)
+      return undefined
+    },
+    requestFrame(callback) {
+      frames.push(callback)
+      return frames.length
+    },
+  })
+
+  processor.schedule()
+  await frames[0]()
+
+  assert.deepEqual(order, [
+    'before:start',
+    'before:end',
+    'async:start',
+    'async:end',
+    'after:start',
+    'after:end',
+  ])
+})
+
+test('createChatEventProcessor_propagatesAsyncHandlerRejections', async () => {
+  const frames = []
+  const events = ref([{ type: 'tool_start', id: 'failed' }])
+  const expected = new Error('handler failed')
+  let scrollCount = 0
+  const processor = createChatEventProcessor({
+    events,
+    handleEvent: () => Promise.reject(expected),
+    scrollToBottom: () => { scrollCount += 1 },
+    requestFrame(callback) {
+      frames.push(callback)
+      return frames.length
+    },
+  })
+
+  processor.schedule()
+
+  await assert.rejects(frames[0](), expected)
+  assert.equal(scrollCount, 0)
+})
+
 test('createChatEventProcessor forwards research lifecycle events in order', async () => {
   const frames = []
   const events = ref([

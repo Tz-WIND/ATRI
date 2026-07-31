@@ -200,6 +200,7 @@ import { useWebSocket } from '@/composables/useWebSocket.js'
 import { useSession } from '@/composables/useSession.js'
 import { useProviders } from '@/composables/useProviders.js'
 import { createChatEventProcessor } from './chatEventProcessor.js'
+import { resolveAutoScroll, stickChatToBottom } from './chatScroll.js'
 
 const {
   messages, sending, thinkingBlock, toolCards, researchStatus,
@@ -282,9 +283,9 @@ function setEditorExpanded(expanded) {
 }
 
 function onScroll() {
-  if (!chatArea.value || programmaticScroll) return
+  if (!chatArea.value) return
   const el = chatArea.value
-  autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+  autoScroll.value = resolveAutoScroll(el, autoScroll.value, programmaticScroll)
 }
 
 function scrollToBottom() {
@@ -297,14 +298,10 @@ function scrollToBottom() {
     // Instant stick-to-bottom. Smooth CSS scrolling overshoots while tool
     // cards grow/shrink rapidly and briefly shows empty "black" space.
     programmaticScroll = true
-    el.scrollTop = el.scrollHeight
+    stickChatToBottom(el)
     requestAnimationFrame(() => {
-      if (chatArea.value && autoScroll.value) {
-        chatArea.value.scrollTop = chatArea.value.scrollHeight
-      }
-      requestAnimationFrame(() => {
-        programmaticScroll = false
-      })
+      stickChatToBottom(chatArea.value, autoScroll.value)
+      programmaticScroll = false
     })
   })
 }
