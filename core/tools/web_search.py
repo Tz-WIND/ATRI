@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from core.research.evidence import canonicalize_url
 
@@ -30,6 +30,7 @@ from .base import Tool, ToolCapabilities
 # ---------------------------------------------------------------------------
 
 _tavily_api_key: str | None = None
+_GLOBAL_DEFAULT_TIMEOUT: Any = getattr(socket, "_GLOBAL_DEFAULT_TIMEOUT")
 
 
 def set_tavily_key(key: str | None) -> None:
@@ -189,7 +190,7 @@ def _request_target(
     if isinstance(target, _PublicTarget):
         return target
     target = _validated_public_target(request.full_url, controller=controller)
-    request._atri_public_target = target
+    setattr(request, "_atri_public_target", target)
     return target
 
 
@@ -246,13 +247,13 @@ class _RequestController:
                 self._timer.daemon = True
                 self._timer.start()
 
-    def clamp_timeout(self, timeout: object) -> object:
+    def clamp_timeout(self, timeout: object) -> Any:
         if self._deadline is None:
             return timeout
         remaining = max(0.001, self._deadline - time.monotonic())
-        if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+        if timeout is _GLOBAL_DEFAULT_TIMEOUT:
             return remaining
-        return min(max(0.001, float(timeout)), remaining)
+        return min(max(0.001, float(cast(Any, timeout))), remaining)
 
     def register_socket(self, sock: socket.socket) -> None:
         self.check()
@@ -433,11 +434,11 @@ def _connect_pinned_socket(
         try:
             if controller is not None:
                 controller.register_socket(sock)
-            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+            if timeout is not _GLOBAL_DEFAULT_TIMEOUT:
                 effective_timeout = (
                     controller.clamp_timeout(timeout) if controller is not None else timeout
                 )
-                sock.settimeout(effective_timeout)
+                sock.settimeout(cast(float | None, effective_timeout))
             if source_address:
                 sock.bind(source_address)
             destination = (address, port, 0, 0) if family == socket.AF_INET6 else (address, port)
@@ -464,15 +465,16 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         super().__init__(host, port=port, **kwargs)
 
     def connect(self):
+        base = cast(Any, self)
         self.sock = _connect_pinned_socket(
             self._pinned_addresses,
             self.port,
             self.timeout,
-            self.source_address,
+            base.source_address,
             controller=self._controller,
         )
-        if self._tunnel_host:
-            self._tunnel()
+        if base._tunnel_host:
+            base._tunnel()
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -482,19 +484,20 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         super().__init__(host, port=port, **kwargs)
 
     def connect(self):
+        base = cast(Any, self)
         self.sock = _connect_pinned_socket(
             self._pinned_addresses,
             self.port,
             self.timeout,
-            self.source_address,
+            base.source_address,
             controller=self._controller,
         )
         raw_socket = self.sock
         server_hostname = self.host
-        if self._tunnel_host:
-            self._tunnel()
-            server_hostname = self._tunnel_host
-        self.sock = self._context.wrap_socket(
+        if base._tunnel_host:
+            base._tunnel()
+            server_hostname = base._tunnel_host
+        self.sock = base._context.wrap_socket(
             self.sock,
             server_hostname=server_hostname,
         )
@@ -512,7 +515,7 @@ class PinnedHTTPHandler(urllib.request.HTTPHandler):
     def http_open(self, req):
         target = _request_target(req, self._controller)
 
-        def factory(_host, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, **kwargs):
+        def factory(_host, timeout=_GLOBAL_DEFAULT_TIMEOUT, **kwargs):
             return _PinnedHTTPConnection(
                 target.host,
                 target.port,
@@ -535,7 +538,7 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req):
         target = _request_target(req, self._controller)
 
-        def factory(_host, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, **kwargs):
+        def factory(_host, timeout=_GLOBAL_DEFAULT_TIMEOUT, **kwargs):
             return _PinnedHTTPSConnection(
                 target.host,
                 target.port,
@@ -545,7 +548,7 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
                 **kwargs,
             )
 
-        return self.do_open(factory, req, context=self._context)
+        return self.do_open(factory, req, context=cast(Any, self)._context)
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -564,7 +567,7 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         redirected = super().redirect_request(req, fp, code, msg, headers, target.url)
         if redirected is None:
             return None
-        redirected._atri_public_target = target
+        setattr(redirected, "_atri_public_target", target)
         if _origin(req.full_url) != _origin(target.url):
             _strip_cross_origin_credentials(redirected)
         return redirected
@@ -670,7 +673,7 @@ def _open_url(
             controller.check()
         # S310 is suppressed after scheme validation; HTTPS uses default TLS checks.
         req = urllib.request.Request(target.url, data=data, headers=headers)  # noqa: S310
-        req._atri_public_target = target
+        setattr(req, "_atri_public_target", target)
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
             PinnedHTTPHandler(controller),
@@ -678,7 +681,7 @@ def _open_url(
             SafeRedirectHandler(controller),
         )
         effective_timeout = controller.clamp_timeout(timeout) if controller is not None else timeout
-        response = opener.open(req, timeout=effective_timeout)
+        response = opener.open(req, timeout=cast(float | None, effective_timeout))
         if controller is not None:
             controller.check()
             response._atri_request_controller = controller
@@ -757,10 +760,13 @@ def _read_limited_response(
 ) -> bytes:
     chunks: list[bytes] = []
     total = 0
-    controller = getattr(response, "_atri_request_controller", None)
-    owns_controller = not isinstance(controller, _RequestController)
-    if owns_controller:
+    existing = getattr(response, "_atri_request_controller", None)
+    if isinstance(existing, _RequestController):
+        controller = existing
+        owns_controller = False
+    else:
         controller = _RequestController(seconds_remaining)
+        owns_controller = True
         controller.register_closer(lambda: _close_response(response))
 
     def check_interruption() -> None:
@@ -795,7 +801,10 @@ def _read_limited_response(
 def _request_timeout(session: Any, default: float = _TIMEOUT) -> float:
     if session is None:
         return float(default)
-    return min(float(default), max(0.0, session.budget.seconds_until_synthesis()))
+    return cast(
+        float,
+        min(float(default), max(0.0, session.budget.seconds_until_synthesis())),
+    )
 
 
 # ---------------------------------------------------------------------------

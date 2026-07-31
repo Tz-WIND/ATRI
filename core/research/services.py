@@ -7,7 +7,7 @@ import concurrent.futures
 import threading
 from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import replace
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from core.knowledge import GraphSearchResult
 
@@ -135,7 +135,7 @@ class ResearchServices:
         )
 
     async def _graph_search_with_source_refs(self, **kwargs: Any) -> GraphSearchResult:
-        result = await self.graph_manager.search_facts(**kwargs)
+        result = cast(GraphSearchResult, await self.graph_manager.search_facts(**kwargs))
         if not result.facts or self.knowledge_manager is None:
             return result
         store = getattr(self.knowledge_manager, "store", None)

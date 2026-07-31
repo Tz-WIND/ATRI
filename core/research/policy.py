@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 DEFAULT_DEEP_RESEARCH_CONFIG: dict[str, Any] = {
     "max_gap_rounds": 8,
@@ -58,7 +58,7 @@ def _positive_int(value: object, field: str, *, maximum: int | None = None) -> i
     if isinstance(value, bool):
         raise ValueError(f"{field} must be an integer")
     try:
-        parsed = int(value)
+        parsed = int(cast(Any, value))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field} must be an integer") from exc
     if parsed < 1:
@@ -72,7 +72,7 @@ def _seconds(value: object, field: str, *, minimum: float) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{field} must be a number")
     try:
-        parsed = float(value)
+        parsed = float(cast(Any, value))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field} must be a number") from exc
     if parsed < minimum:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from core.knowledge import GraphSearchResult
@@ -66,7 +66,10 @@ class _ResearchAwareTool(Tool):
     def _timeout(session, default: float) -> float:
         if session is None:
             return default
-        return min(default, max(0.001, session.budget.seconds_until_synthesis()))
+        return cast(
+            float,
+            min(default, max(0.001, session.budget.seconds_until_synthesis())),
+        )
 
     def cancel(self):
         session = self._session()

@@ -6,7 +6,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.utils import atomic_write_text
 
@@ -138,11 +138,14 @@ class ResearchEvidenceTool(_SessionTool):
         except (TypeError, ValueError):
             limit = 12_000
         try:
-            return session.ledger.compact(
-                operation,
-                query=str(query or ""),
-                citation_ids=[str(value) for value in citation_ids or []],
-                max_chars=limit,
+            return cast(
+                str,
+                session.ledger.compact(
+                    operation,
+                    query=str(query or ""),
+                    citation_ids=[str(value) for value in citation_ids or []],
+                    max_chars=limit,
+                ),
             )
         except ValueError as exc:
             return f"Error: {exc}"
@@ -237,7 +240,7 @@ class ExportResearchReportTool(_SessionTool):
     @staticmethod
     def _finalized_content(session, content: str, suffix: str, citation_ids: list[str]) -> str:
         if suffix != ".json":
-            return session.report_validator.finalize_chat_report(content).content
+            return cast(str, session.report_validator.finalize_chat_report(content).content)
         payload = json.loads(content)
         if not isinstance(payload, dict):
             raise ValueError("JSON report content must be an object")
