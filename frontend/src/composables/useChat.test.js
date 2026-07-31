@@ -411,6 +411,77 @@ try {
 
   clearChatInstance()
 
+  // HTTP fallback can win the race before queued WS thinking/response events
+  // are applied. The HTTP copy has no thinking; the later WS stream must replace
+  // it instead of leaving a duplicate answer.
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ response: 'same answer' }),
+  })
+
+  const httpFirst = useChat()
+  const httpFirstSend = httpFirst.sendMessage('duplicate race')
+  await Promise.resolve()
+  await httpFirstSend
+
+  assert.equal(
+    httpFirst.messages.value.filter((message) => message.role === 'assistant').length,
+    1,
+  )
+  assert.equal(httpFirst.messages.value.at(-1).content, 'same answer')
+
+  httpFirst.handleWsEvent({ type: 'thinking_delta', content: 'reason' })
+  httpFirst.handleWsEvent({ type: 'response_start' })
+  httpFirst.handleWsEvent({ type: 'response_delta', content: 'same answer' })
+  httpFirst.handleWsEvent({ type: 'response_done', content: 'same answer' })
+
+  assert.deepEqual(
+    httpFirst.messages.value.map((message) => (
+      message.role === 'thinking'
+        ? `thinking:${message.content}`
+        : `${message.role}:${message.content}`
+    )),
+    [
+      'user:duplicate race',
+      'thinking:reason',
+      'assistant:same answer',
+    ],
+  )
+
+  clearChatInstance()
+
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ response: 'same answer' }),
+  })
+
+  const thinkingBlocksHttp = useChat()
+  const thinkingBlocksSend = thinkingBlocksHttp.sendMessage('block http')
+  thinkingBlocksHttp.handleWsEvent({ type: 'thinking_delta', content: 'reason first' })
+  await thinkingBlocksSend
+
+  assert.equal(
+    thinkingBlocksHttp.messages.value.filter((message) => message.role === 'assistant').length,
+    0,
+  )
+
+  thinkingBlocksHttp.handleWsEvent({ type: 'response_start' })
+  thinkingBlocksHttp.handleWsEvent({ type: 'response_done', content: 'same answer' })
+  assert.deepEqual(
+    thinkingBlocksHttp.messages.value.map((message) => (
+      message.role === 'thinking'
+        ? `thinking:${message.content}`
+        : `${message.role}:${message.content}`
+    )),
+    [
+      'user:block http',
+      'thinking:reason first',
+      'assistant:same answer',
+    ],
+  )
+
+  clearChatInstance()
+
   const frames = []
   const cancelledFrames = new Set()
   globalThis.requestAnimationFrame = (callback) => {

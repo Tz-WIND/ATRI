@@ -1805,7 +1805,7 @@ class Neo4jGraphClient:
             fact_node.predicate = fact.predicate
         MERGE (fact_node)-[:FACT_SUBJECT]->(s)
         MERGE (fact_node)-[:FACT_OBJECT]->(o)
-        WITH s, o, r, fact_node, source_ids, retrieval_source_ids, source_scope
+        WITH s, o, r, fact, fact_node, source_ids, retrieval_source_ids, source_scope
         CALL (fact_node, source_ids, retrieval_source_ids, source_scope) {
           UNWIND retrieval_source_ids AS source_id
           WITH DISTINCT fact_node, source_ids, source_scope, trim(toString(source_id)) AS source_id

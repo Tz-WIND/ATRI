@@ -2246,6 +2246,9 @@ def test_neo4j_graph_client_builds_source_index_nodes_for_fact_source_ids():
     assert re.search(r"(?m)^\s*CALL\s+\{", queries) is None
     assert "CALL (fact_node, source_ids, retrieval_source_ids, source_scope) {" in queries
     assert (
+        "WITH s, o, r, fact, fact_node, source_ids, retrieval_source_ids, source_scope" in queries
+    )
+    assert (
         "CREATE CONSTRAINT graph_source_id IF NOT EXISTS "
         "FOR (source:GraphSource) REQUIRE source.source_id IS UNIQUE"
     ) in queries

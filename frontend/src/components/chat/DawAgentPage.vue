@@ -157,6 +157,7 @@ const {
   thinkingBlock,
   toolCards,
   handleWsEvent,
+  beginTranscriptTurn,
   addMessage,
   addErrorMessage,
   dismissErrorMessages,
@@ -300,6 +301,7 @@ function buildDawSendPayload(text, imagePayload, filePayload) {
 async function performDawSend(dawPayload, { isRetry = false } = {}) {
   clearThinking()
   clearToolCards()
+  beginTranscriptTurn()
   sending.value = true
   const hostAutoImport = dawPayload.syncHostProject
   if (hostAutoImport) {

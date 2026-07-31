@@ -47,13 +47,56 @@ export function useChat() {
   const toolCards = ref({}) // id -> { tool, args, status: 'executing'|'success'|'failed', result }
   let streamingAssistantId = null
   let streamingMessage = null
+  // HTTP /api/chat can resolve before queued WS thinking/response events are
+  // applied. Track live WS transcript activity so the HTTP fallback does not
+  // leave a duplicate answer (first without thinking, then with thinking).
+  let liveTranscriptSeen = false
+  const httpFallbackMessageIds = new Set()
   const assistantDeltaBuffer = createStreamingDeltaBuffer({
     apply: applyAssistantDelta,
   })
 
+  function beginTranscriptTurn() {
+    liveTranscriptSeen = false
+    httpFallbackMessageIds.clear()
+  }
+
+  function discardHttpFallbackMessages() {
+    if (!httpFallbackMessageIds.size) return
+    for (const id of [...httpFallbackMessageIds]) {
+      removeMessage(id)
+    }
+    httpFallbackMessageIds.clear()
+  }
+
+  function noteLiveTranscript(msgType) {
+    if (
+      msgType === 'thinking'
+      || msgType === 'thinking_delta'
+      || msgType === 'thinking_done'
+      || msgType === 'response_start'
+      || msgType === 'response_delta'
+      || msgType === 'response_done'
+    ) {
+      liveTranscriptSeen = true
+    }
+    if (
+      msgType === 'response_start'
+      || msgType === 'response_delta'
+      || msgType === 'response_done'
+    ) {
+      discardHttpFallbackMessages()
+    }
+  }
+
+  function trackHttpFallbackMessage(message) {
+    if (message?.id) httpFallbackMessageIds.add(message.id)
+  }
+
   // WebSocket event handler — called from ChatPage
   function handleWsEvent(msg) {
     if (disposed) return
+    noteLiveTranscript(msg.type)
     if (msg.type === 'thinking') {
       startThinkingBlock()
     }
@@ -212,7 +255,7 @@ export function useChat() {
   })
 
   function addOrPatchAssistantMessage(content, attachments = []) {
-    if (disposed) return
+    if (disposed) return null
     const text = String(content || '')
     const lastIndexFromEnd = [...messages.value].reverse().findIndex((m) =>
       m.role === 'assistant' && !m.streaming && String(m.content || '') === text
@@ -220,30 +263,32 @@ export function useChat() {
     if (lastIndexFromEnd >= 0) {
       const index = messages.value.length - 1 - lastIndexFromEnd
       const current = messages.value[index]
-      messages.value.splice(index, 1, {
+      const next = {
         ...current,
         attachments: mergeAttachments(current.attachments, attachments),
-      })
-      return
+      }
+      messages.value.splice(index, 1, next)
+      return next
     }
-    addMessage('assistant', text, true, { attachments })
+    return addMessage('assistant', text, true, { attachments })
   }
 
   async function addAssistantHttpResponse(result) {
-    if (disposed) return false
+    if (disposed || liveTranscriptSeen) return false
     const response = String(result?.response || '')
     if (Array.isArray(result?.chain)) {
       const parsed = normalizeAssistantChain(result.chain, response, makeId)
       const hasAttachments = parsed.attachments.length > 0
       if (!parsed.text && hasAttachments) {
-        if (!hasActiveAssistantStream(messages)) {
-          addMessage('assistant', '', true, { attachments: parsed.attachments })
-          return true
-        }
-        return false
+        if (liveTranscriptSeen || hasActiveAssistantStream(messages)) return false
+        trackHttpFallbackMessage(
+          addMessage('assistant', '', true, { attachments: parsed.attachments }),
+        )
+        return true
       }
       if (await shouldAppendHttpAssistantResponse(messages, parsed.text)) {
-        addOrPatchAssistantMessage(parsed.text, parsed.attachments)
+        if (disposed || liveTranscriptSeen) return false
+        trackHttpFallbackMessage(addOrPatchAssistantMessage(parsed.text, parsed.attachments))
         return true
       }
       if (hasAttachments && hasAssistantResponse(messages, parsed.text)) {
@@ -254,7 +299,8 @@ export function useChat() {
     }
 
     if (await shouldAppendHttpAssistantResponse(messages, response)) {
-      addMessage('assistant', response, true)
+      if (disposed || liveTranscriptSeen) return false
+      trackHttpFallbackMessage(addMessage('assistant', response, true))
       return true
     }
     return false
@@ -824,6 +870,7 @@ export function useChat() {
     assistantDeltaBuffer.clear()
     streamingAssistantId = null
     streamingMessage = null
+    beginTranscriptTurn()
 
     try {
       const result = await api.sendMessage(messageText, sessionId.value, imagePayload, filePayload)
@@ -905,6 +952,7 @@ export function useChat() {
     retryState.reset()
     streamingAssistantId = null
     streamingMessage = null
+    beginTranscriptTurn()
     if (instance === chatInstance) instance = null
   }
 
@@ -916,6 +964,7 @@ export function useChat() {
     thinkingBlock,
     toolCards,
     handleWsEvent,
+    beginTranscriptTurn,
     clearThinking,
     clearToolCards,
     addMessage,
