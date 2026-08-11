@@ -1547,6 +1547,58 @@ def test_dashboard_cookie_value_parses_valid_cookie_headers():
 
 
 @pytest.mark.asyncio
+async def test_dashboard_setup_rejects_non_loopback_client(monkeypatch, tmp_path):
+    _set_test_dashboard_password_cost(monkeypatch)
+    monkeypatch.setattr(
+        "core.host.configure_host_manager",
+        lambda **kwargs: _FakeDashboardHost(),
+    )
+    monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
+    lifecycle = _FakeDashboardLifecycle(tmp_path, "")
+    # Public bind is intentional: this reproduces the vulnerable deployment.
+    dashboard = Dashboard(cast("Lifecycle", lifecycle), host="0.0.0.0")  # noqa: S104
+
+    response = await dashboard.app.test_client().post(
+        "/api/auth/setup",
+        json={"username": "attacker", "password": "claimed"},
+        scope_base={"client": ("192.0.2.42", 54000)},
+    )
+
+    assert response.status_code == 403
+    assert await response.get_json() == {"error": "setup is only allowed from localhost"}
+    assert lifecycle.config["dashboard"]["username"] == "admin"
+    assert lifecycle.config["dashboard"]["password"] == ""
+    assert lifecycle.saved == 0
+    assert dashboard.auth_setup_required is True
+
+
+@pytest.mark.parametrize("client_address", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
+@pytest.mark.asyncio
+async def test_dashboard_setup_allows_loopback_client(monkeypatch, tmp_path, client_address):
+    _set_test_dashboard_password_cost(monkeypatch)
+    monkeypatch.setattr(
+        "core.host.configure_host_manager",
+        lambda **kwargs: _FakeDashboardHost(),
+    )
+    monkeypatch.setattr(music_routes, "init_music", lambda lifecycle: None)
+    lifecycle = _FakeDashboardLifecycle(tmp_path, "")
+    # Public bind verifies that local setup remains available after hardening.
+    dashboard = Dashboard(cast("Lifecycle", lifecycle), host="0.0.0.0")  # noqa: S104
+
+    response = await dashboard.app.test_client().post(
+        "/api/auth/setup",
+        json={"username": "owner", "password": "secret"},
+        scope_base={"client": (client_address, 54000)},
+    )
+
+    assert response.status_code == 200
+    assert lifecycle.config["dashboard"]["username"] == "owner"
+    assert lifecycle.config["dashboard"]["password"].startswith(_helpers.PBKDF2_PREFIX)
+    assert lifecycle.saved == 1
+    assert dashboard.auth_setup_required is False
+
+
+@pytest.mark.asyncio
 async def test_dashboard_login_creates_distinct_server_sessions(monkeypatch, tmp_path):
     dashboard = _dashboard_for_auth_tests(monkeypatch, tmp_path)
     client = dashboard.app.test_client()

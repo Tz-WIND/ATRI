@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING, Any
 
 from quart import jsonify, request
 
-from dashboard.routes._helpers import AUTH_COOKIE, check_rate_limit, hash_password, record_failure
+from dashboard.routes._helpers import (
+    AUTH_COOKIE,
+    check_rate_limit,
+    hash_password,
+    record_failure,
+    request_from_loopback,
+)
 
 if TYPE_CHECKING:
     from dashboard.server import Dashboard
@@ -63,6 +69,8 @@ def register(dashboard: Dashboard) -> None:
     async def auth_setup():
         if not dashboard.auth_setup_required:
             return jsonify({"error": "setup is not required"}), 409
+        if not request_from_loopback(request):
+            return jsonify({"error": "setup is only allowed from localhost"}), 403
         client_ip = request.remote_addr or "unknown"
         if check_rate_limit(client_ip):
             return jsonify({"error": "too many attempts, try again later"}), 429
