@@ -44,8 +44,8 @@ class ResearchServices:
         if self.loop.is_closed() or not self.loop.is_running():
             coroutine.close()
             raise RuntimeError("research service event loop is unavailable")
-        future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
         with self._lock:
+            future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
             self._pending[future] = str(owner_id) if owner_id is not None else None
         try:
             return future.result(timeout=max(0.001, float(timeout)))
