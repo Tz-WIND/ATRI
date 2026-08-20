@@ -364,7 +364,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDawHost } from '@/composables/useDawHost.js'
 import ArrangementEditorPanel from './studio/ArrangementEditorPanel.vue'
 import AutomationParameterPickerDialog from './studio/AutomationParameterPickerDialog.vue'
@@ -377,7 +377,11 @@ import TrackCreateDialog from './studio/TrackCreateDialog.vue'
 import { createArrangementRenderer } from './arrangementRenderer.js'
 import { createAutomationEditing } from './automationEditing.js'
 import { createPianoRollRenderer } from './pianoRollRenderer.js'
-import { createRafRedrawScheduler } from './redrawScheduler.js'
+import {
+  createPlaybackRedrawLoop,
+  createPlaybackResumeController,
+  createRafRedrawScheduler,
+} from './redrawScheduler.js'
 import { useStudioKeyboardShortcuts } from './useStudioKeyboardShortcuts.js'
 import './studio/StudioDialogs.css'
 import {
@@ -406,6 +410,7 @@ import {
   snapBeatToGrid,
 } from './pianoQuantize.js'
 import { pianoScrollTopForNotes } from './pianoViewport.js'
+import { shouldRunPlaybackRedraw } from './studioViewport.js'
 import {
   buildClipDiffOperations,
   buildMidiEventDiffOperations,
@@ -642,8 +647,9 @@ const controllerPanelHeight = computed(() => controllerLaneStackHeight(
 const pianoQuantizeOptions = PIANO_QUANTIZE_OPTIONS
 
 let resizeObserver = null
-let raf = 0
-let lastFrame = 0
+let playbackLoop = null
+let playbackResumeController = null
+let studioSuspended = false
 let drawScheduler = null
 let pianoDrag = null
 let lowerEditorResizeDrag = null
@@ -2159,6 +2165,7 @@ async function onArrangementPointerUp() {
 function syncArrangementScroll(event) {
   arrangementScrollLeft.value = Math.max(0, Number(event.currentTarget?.scrollLeft || 0))
   closeTrackContextMenu()
+  drawAll()
 }
 
 function onArrangementWheel(event) {
@@ -3246,15 +3253,17 @@ function syncPianoScroll(source) {
   if (syncingPianoScroll) return
   const from = source === 'piano' ? pianoWrap.value : controllerWrap.value
   const to = source === 'piano' ? controllerWrap.value : pianoWrap.value
-  if (!from || !to) return
-  controllerScrollLeft.value = source === 'controller' ? from.scrollLeft : to.scrollLeft
-  if (to.scrollLeft === from.scrollLeft) return
-  syncingPianoScroll = true
-  to.scrollLeft = from.scrollLeft
-  controllerScrollLeft.value = source === 'controller' ? from.scrollLeft : to.scrollLeft
-  requestAnimationFrame(() => {
-    syncingPianoScroll = false
-  })
+  if (!from) return
+  controllerScrollLeft.value = from.scrollLeft || 0
+  if (to && to.scrollLeft !== from.scrollLeft) {
+    syncingPianoScroll = true
+    to.scrollLeft = from.scrollLeft
+    controllerScrollLeft.value = from.scrollLeft
+    requestAnimationFrame(() => {
+      syncingPianoScroll = false
+    })
+  }
+  drawAll()
 }
 
 function controllerDefinitionForLane(lane) {
@@ -4198,20 +4207,68 @@ async function onMasterBusPluginSelect(slotId, value) {
   }, slotId)
 }
 
-function animationLoop(now) {
-  if (!lastFrame) lastFrame = now
-  const delta = (now - lastFrame) / 1000
-  lastFrame = now
-  if (playing.value) {
-    visualPositionBeats.value += delta * (effectiveTempoAtBeat(project.value, visualPositionBeats.value) / 60)
-    syncTransportDisplayFields(project.value)
-    drawAll()
-  } else if (visualPositionBeats.value !== positionBeats.value) {
-    visualPositionBeats.value = positionBeats.value
-    syncTransportDisplayFields(project.value)
-    drawAll()
+function studioIsHidden() {
+  return studioSuspended || (typeof document !== 'undefined' && document.hidden)
+}
+
+function ensurePlaybackLoop() {
+  if (playbackResumeController?.pending || studioIsHidden()) return
+  if (!playbackLoop) {
+    playbackLoop = createPlaybackRedrawLoop({
+      shouldTick: () => shouldRunPlaybackRedraw({
+        playing: playing.value,
+        hidden: studioIsHidden(),
+        visualBeats: visualPositionBeats.value,
+        transportBeats: positionBeats.value,
+      }),
+      onTick(delta) {
+        if (playing.value) {
+          visualPositionBeats.value += delta * (
+            effectiveTempoAtBeat(project.value, visualPositionBeats.value) / 60
+          )
+          syncTransportDisplayFields(project.value)
+        } else if (visualPositionBeats.value !== positionBeats.value) {
+          visualPositionBeats.value = positionBeats.value
+          syncTransportDisplayFields(project.value)
+        }
+        drawAll()
+      },
+    })
   }
-  raf = requestAnimationFrame(animationLoop)
+  playbackLoop.start()
+}
+
+function ensurePlaybackResumeController() {
+  if (!playbackResumeController) {
+    playbackResumeController = createPlaybackResumeController({
+      refreshStatus: refreshHostStatus,
+      shouldResume: () => !studioIsHidden(),
+      align() {
+        visualPositionBeats.value = positionBeats.value
+        syncTransportDisplayFields(project.value)
+      },
+      redraw: drawAll,
+      start: ensurePlaybackLoop,
+    })
+  }
+  return playbackResumeController
+}
+
+function stopPlaybackLoop() {
+  playbackResumeController?.suspend()
+  playbackLoop?.stop()
+}
+
+async function resumePlaybackLoop() {
+  await ensurePlaybackResumeController().resume()
+}
+
+function onVisibilityChange() {
+  if (studioIsHidden()) {
+    stopPlaybackLoop()
+    return
+  }
+  void resumePlaybackLoop()
 }
 
 function drawAll() {
@@ -4247,14 +4304,31 @@ onMounted(async () => {
   if (arrangementWrap.value) resizeObserver.observe(arrangementWrap.value)
   if (pianoWrap.value) resizeObserver.observe(pianoWrap.value)
   if (controllerWrap.value) resizeObserver.observe(controllerWrap.value)
-  raf = requestAnimationFrame(animationLoop)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   document.addEventListener('pointerdown', onDocumentPointerDown)
+  ensurePlaybackLoop()
   learnedParameterPollTimer = setInterval(() => {
     if (host.value?.running) pollCapturedPluginParameters().catch(() => null)
   }, 1500)
 })
 
+onActivated(() => {
+  studioSuspended = false
+  void resumePlaybackLoop()
+})
+
+onDeactivated(() => {
+  studioSuspended = true
+  stopPlaybackLoop()
+})
+
+watch([playing, positionBeats], () => {
+  if (!studioIsHidden()) ensurePlaybackLoop()
+})
+
 onUnmounted(() => {
+  studioSuspended = true
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   document.removeEventListener('pointerdown', onDocumentPointerDown)
   clearTimeout(tempoUpdateTimer)
   clearPianoLongPressTimer()
@@ -4269,7 +4343,7 @@ onUnmounted(() => {
   if (audioDecodeContext?.close) audioDecodeContext.close()
   disconnectAudioStream()
   if (drawScheduler) drawScheduler.cancel()
-  cancelAnimationFrame(raf)
+  stopPlaybackLoop()
 })
 
 watch(project, (nextProject) => {

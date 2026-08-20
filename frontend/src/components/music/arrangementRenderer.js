@@ -11,6 +11,7 @@ import {
   setupCanvas,
 } from './canvasUtils.js'
 import { createBeatRulerRenderer } from './rulerRenderer.js'
+import { rectIntersectsViewport, scrollViewport, visibleBeatRange } from './studioViewport.js'
 
 export function createArrangementRenderer(context) {
   const {
@@ -86,23 +87,29 @@ export function createArrangementRenderer(context) {
     )
     const headerCtx = setupCanvas(headerCanvas, width, headerHeight)
     const bodyCtx = setupCanvas(canvas, width, bodyHeight)
-    drawArrangementHeader(headerCtx, width)
-    drawArrangementBody(bodyCtx, width, bodyHeight)
+    const viewport = scrollViewport({
+      scrollLeft: wrap.scrollLeft || 0,
+      scrollTop: wrap.scrollTop || 0,
+      clientWidth: timelineViewportWidth,
+      clientHeight: wrap.clientHeight || 0,
+    })
+    drawArrangementHeader(headerCtx, width, viewport)
+    drawArrangementBody(bodyCtx, width, bodyHeight, viewport)
   }
 
-  function drawArrangementHeader(ctx, width) {
+  function drawArrangementHeader(ctx, width, viewport) {
     const height = arrangementTrackTop(0)
     ctx.fillStyle = '#17191c'
     ctx.fillRect(0, 0, width, height)
     ctx.fillStyle = '#202326'
     ctx.fillRect(0, 0, width, arrangementRulerH)
-    drawRuler(ctx, width)
+    drawRuler(ctx, width, viewport)
     drawArrangementMeterLane(ctx, width, arrangementSubtrackTop('meter'))
     drawArrangementHarmonyLane(ctx, width, arrangementSubtrackTop('harmony'))
     drawPlayhead(ctx, height)
   }
 
-  function drawArrangementBody(ctx, width, height) {
+  function drawArrangementBody(ctx, width, height, viewport) {
     const logicalHeight = arrangementTrackTop(0) + height
     ctx.save()
     ctx.translate(0, -arrangementTrackTop(0))
@@ -115,7 +122,7 @@ export function createArrangementRenderer(context) {
       ctx.fillRect(0, y, width, arrangementTrackH)
     })
 
-    paintGrid(ctx, width, logicalHeight, 0, arrangementRulerH)
+    paintGrid(ctx, width, logicalHeight, 0, arrangementRulerH, viewport)
 
     tracks.value.forEach((track, index) => {
       const y = arrangementTrackTop(index)
@@ -132,7 +139,9 @@ export function createArrangementRenderer(context) {
         return
       }
       for (const clip of track.clips || []) {
-        drawArrangementClip(ctx, track, clip, index)
+        const rect = clipRect(clip, index)
+        if (!rectIntersectsViewport(rect, viewport)) continue
+        drawArrangementClip(ctx, track, clip, index, rect)
       }
     })
     drawPlayhead(ctx, logicalHeight)
@@ -164,8 +173,7 @@ export function createArrangementRenderer(context) {
     )
   }
 
-  function drawArrangementClip(ctx, track, clip, trackIndex) {
-    const rect = clipRect(clip, trackIndex)
+  function drawArrangementClip(ctx, track, clip, trackIndex, rect = clipRect(clip, trackIndex)) {
     const selected = selectedClipIds.value.has(clip.id)
     const active = activeClipId.value === clip.id
     if (clip.type === 'audio') {
@@ -494,12 +502,22 @@ export function createArrangementRenderer(context) {
     return clamp(bounds.mid + value * bounds.maxAmp, bounds.top + 1, bounds.bottom - 1)
   }
 
-  function drawRuler(ctx, width) {
+  function drawRuler(ctx, width, viewport) {
     const scale = arrangementPxPerBeat.value
-    const endBeat = Math.ceil(width / scale)
+    const fallbackEnd = Math.ceil(width / scale)
+    const beatWindow = viewport
+      ? visibleBeatRange({
+        viewport,
+        originX: 0,
+        pxPerBeat: scale,
+        clipStart: 0,
+        maxBeats: fallbackEnd,
+      })
+      : { startBeat: 0, endBeat: fallbackEnd }
     drawBeatRulerLabels(ctx, {
       startBeat: 0,
-      endBeat,
+      visibleStartBeat: beatWindow.startBeat,
+      endBeat: beatWindow.endBeat,
       originX: 0,
       scale,
       height: arrangementRulerH,
@@ -581,11 +599,20 @@ export function createArrangementRenderer(context) {
     }
   }
 
-  function paintGrid(ctx, width, height, offsetX, offsetY) {
+  function paintGrid(ctx, width, height, offsetX, offsetY, viewport) {
     const scale = arrangementPxPerBeat.value
     const beats = Math.ceil((width - offsetX) / scale)
+    const beatWindow = viewport
+      ? visibleBeatRange({
+        viewport,
+        originX: offsetX,
+        pxPerBeat: scale,
+        clipStart: 0,
+        maxBeats: beats,
+      })
+      : { firstIndex: 0, lastIndex: beats, startBeat: 0, endBeat: beats }
 
-    for (let beat = 0; beat <= beats; beat += 1) {
+    for (let beat = beatWindow.firstIndex; beat <= beatWindow.lastIndex; beat += 1) {
       const x = offsetX + beat * scale
       ctx.strokeStyle = 'rgba(229,236,245,0.07)'
       ctx.lineWidth = 0.5
@@ -605,7 +632,7 @@ export function createArrangementRenderer(context) {
     }
 
     // Bar lines follow the project meter map so piano-roll meter changes affect the arrangement grid.
-    for (const line of meterBarLinesBetween(project.value, 0, beats)) {
+    for (const line of meterBarLinesBetween(project.value, beatWindow.startBeat, beatWindow.endBeat)) {
       const barX = offsetX + line.beat * scale
       ctx.strokeStyle = 'rgba(229,236,245,0.18)'
       ctx.lineWidth = 1

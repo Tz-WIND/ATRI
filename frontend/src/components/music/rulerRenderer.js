@@ -76,6 +76,7 @@ export function createBeatRulerRenderer(context) {
 
   function drawBeatRulerLabels(ctx, {
     startBeat,
+    visibleStartBeat = startBeat,
     endBeat,
     originX,
     scale,
@@ -97,7 +98,7 @@ export function createBeatRulerRenderer(context) {
     ctx.stroke()
 
     for (
-      let absoluteBeat = firstMultipleAtOrAfter(startBeat, tickStep);
+      let absoluteBeat = firstMultipleAtOrAfter(visibleStartBeat, tickStep);
       absoluteBeat <= endBeat + 0.001;
       absoluteBeat += tickStep
     ) {

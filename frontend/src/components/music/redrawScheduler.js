@@ -41,3 +41,86 @@ export function createRafRedrawScheduler(draw, {
     },
   }
 }
+
+export function createPlaybackResumeController({
+  refreshStatus,
+  shouldResume,
+  align,
+  redraw,
+  start,
+} = {}) {
+  let pending = false
+  let pendingPromise = null
+  let resumeRequested = false
+
+  function runResume() {
+    pending = true
+    pendingPromise = (async () => {
+      try {
+        await refreshStatus()
+        if (!resumeRequested || !shouldResume()) return
+        align()
+        redraw()
+      } finally {
+        pending = false
+        pendingPromise = null
+      }
+      if (resumeRequested && shouldResume()) start()
+    })()
+    return pendingPromise
+  }
+
+  return {
+    get pending() {
+      return pending
+    },
+    resume() {
+      resumeRequested = true
+      return pendingPromise || runResume()
+    },
+    suspend() {
+      resumeRequested = false
+    },
+  }
+}
+
+export function createPlaybackRedrawLoop({
+  shouldTick,
+  onTick,
+  requestFrame = defaultRequestFrame,
+  cancelFrame = defaultCancelFrame,
+} = {}) {
+  let frameId = null
+  let lastTime = 0
+  let stopped = true
+
+  function loop(now) {
+    frameId = null
+    if (stopped) return
+    if (!shouldTick()) {
+      lastTime = 0
+      return
+    }
+    const delta = lastTime ? (now - lastTime) / 1000 : 0
+    lastTime = now
+    onTick(delta, now)
+    if (!stopped) frameId = requestFrame(loop)
+  }
+
+  return {
+    start() {
+      if (stopped) {
+        stopped = false
+      }
+      if (frameId == null) frameId = requestFrame(loop)
+    },
+    stop() {
+      stopped = true
+      lastTime = 0
+      if (frameId != null) {
+        cancelFrame(frameId)
+        frameId = null
+      }
+    },
+  }
+}

@@ -15,6 +15,7 @@ import zipfile
 from copy import deepcopy
 from difflib import SequenceMatcher
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
@@ -41,12 +42,12 @@ from core.music_project import (
     default_project,
     find_track,
     import_audio_clip,
-    list_project_archives,
     load_project,
     midi_diff,
     midi_write,
     normalize_audio_waveform,
     normalize_project,
+    project_archives_snapshot,
     project_summary,
     save_project,
     save_project_as_archive,
@@ -59,6 +60,9 @@ from core.music_project import (
 )
 from core.music_project import (
     delete_track as delete_project_track,
+)
+from core.music_project import (
+    list_project_archives as list_project_archives,
 )
 from core.music_project import (
     update_track as update_project_track,
@@ -136,6 +140,7 @@ _lifecycle: Lifecycle | None = None
 _project_broadcast_snapshot: dict[str, Any] | None = None
 _project_broadcast_revision: str | None = None
 _HOST_SYNC_SESSION_KEY = "__session__"
+_library_scan_lock = Lock()
 _host_sync_fingerprints: WeakKeyDictionary[object, dict[str, str]] = WeakKeyDictionary()
 _host_sync_fingerprints_by_id: dict[int, dict[str, str]] = {}
 
@@ -165,6 +170,112 @@ def _cache_path() -> Path:
     p = Path("data/music_cache.json")
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _read_library_cache() -> list[Any] | None:
+    path = _cache_path()
+    if not path.exists():
+        return None
+    try:
+        songs = json.loads(path.read_text(encoding="utf-8"))
+        return songs if isinstance(songs, list) else []
+    except Exception:
+        logger.debug("Failed to read music cache", exc_info=True)
+        return []
+
+
+def _scan_and_cache_library() -> list[Any]:
+    with _library_scan_lock:
+        songs = music_library.scan_music_directories(_music_dirs())
+        try:
+            atomic_write_text(
+                _cache_path(),
+                json.dumps(songs, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("Failed to write music cache", exc_info=True)
+        return songs
+
+
+def _cached_song_lookup(song_id: str) -> tuple[str, dict[str, Any] | None]:
+    songs = _read_library_cache()
+    if songs is None:
+        return "missing_cache", None
+    song = next((item for item in songs if item.get("id") == song_id), None)
+    return "ok", song
+
+
+def _streamable_library_song(song_id: str) -> tuple[str, dict[str, Any] | None]:
+    status, song = _cached_song_lookup(song_id)
+    if status != "ok":
+        return status, None
+    if not song:
+        return "not_found", None
+    filepath = str(song.get("path") or "")
+    if not _is_in_music_dirs(filepath):
+        return "outside", song
+    if not Path(filepath).exists():
+        return "missing_file", song
+    return "ok", song
+
+
+def _cover_for_song(song_id: str) -> tuple[str, tuple[bytes, str] | None]:
+    status, song = _streamable_library_song(song_id)
+    if status != "ok" or not song:
+        return status, None
+    return "ok", _get_cover_bytes(song["path"])
+
+
+def _lyrics_for_song(song_id: str) -> tuple[str, str | None]:
+    status, song = _streamable_library_song(song_id)
+    if status != "ok" or not song:
+        return status, None
+    return "ok", _find_lyrics(song["path"])
+
+
+def _studio_project_snapshot() -> dict[str, Any]:
+    project = load_project()
+    projects, active_project_id = project_archives_snapshot()
+    return {
+        "project": project,
+        "revision": _project_revision(project),
+        "active_project_id": active_project_id,
+        "projects": projects,
+        "summary": project_summary(project),
+    }
+
+
+def _studio_projects_listing() -> dict[str, Any]:
+    projects, active_project_id = project_archives_snapshot()
+    return {
+        "projects": projects,
+        "active_project_id": active_project_id,
+    }
+
+
+def _persist_or_reload_unsaved_project(
+    project: dict[str, Any],
+    *,
+    persist_unsaved: bool,
+) -> dict[str, Any]:
+    if persist_unsaved and _project_differs_from_saved_project(project):
+        return save_project(project)
+    return load_project()
+
+
+def _commit_host_sync_project(
+    project: dict[str, Any],
+    *,
+    persist_unsaved: bool,
+    project_changed: bool,
+    reload_for_broadcast: bool,
+) -> dict[str, Any]:
+    if project_changed:
+        return save_project(project) if persist_unsaved else _save_host_sync_metadata(project)
+    if reload_for_broadcast:
+        return load_project()
+    return project
 
 
 def _audio_import_dir() -> Path:
@@ -435,61 +546,39 @@ async def save_dirs():
 
 @bp.route("/scan", methods=["POST"])
 async def scan_library():
-    songs = music_library.scan_music_directories(_music_dirs())
-
-    try:
-        _cache_path().write_text(json.dumps(songs, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        logger.debug("Failed to write music cache", exc_info=True)
-
+    songs = await asyncio.to_thread(_scan_and_cache_library)
     return jsonify({"songs": songs, "count": len(songs)})
 
 
 @bp.route("/library", methods=["GET"])
 async def get_library():
-    cp = _cache_path()
-    if cp.exists():
-        try:
-            songs = json.loads(cp.read_text(encoding="utf-8"))
-            return jsonify({"songs": songs, "count": len(songs)})
-        except Exception:
-            logger.debug("Failed to read music cache", exc_info=True)
-    return jsonify({"songs": [], "count": 0})
+    songs = await asyncio.to_thread(_read_library_cache)
+    songs = songs or []
+    return jsonify({"songs": songs, "count": len(songs)})
 
 
 @bp.route("/stream/<song_id>")
 async def stream_audio(song_id: str):
-    cp = _cache_path()
-    if not cp.exists():
+    status, song = await asyncio.to_thread(_streamable_library_song, song_id)
+    if status == "missing_cache":
         return jsonify({"error": "library not scanned"}), 404
-
-    songs = json.loads(cp.read_text(encoding="utf-8"))
-    song = next((s for s in songs if s["id"] == song_id), None)
-    if not song:
+    if status == "not_found" or not song:
         return jsonify({"error": "song not found"}), 404
-
-    filepath = song["path"]
-    # Validate path is within configured music directories
-    if not _is_in_music_dirs(filepath):
+    if status == "outside":
         return jsonify({"error": "file outside music directories"}), 403
-    if not Path(filepath).exists():  # noqa: ASYNC240
+    if status == "missing_file":
         return jsonify({"error": "file not found"}), 404
 
-    return _stream_audio_response(filepath, request.headers.get("Range"))
+    return _stream_audio_response(song["path"], request.headers.get("Range"))
 
 
 @bp.route("/cover/<song_id>")
 async def get_cover(song_id: str):
-    cp = _cache_path()
-    if not cp.exists():
+    status, result = await asyncio.to_thread(_cover_for_song, song_id)
+    if status == "missing_cache":
         return jsonify({"error": "library not scanned"}), 404
-
-    songs = json.loads(cp.read_text(encoding="utf-8"))
-    song = next((s for s in songs if s["id"] == song_id), None)
-    if not song:
+    if status == "not_found":
         return jsonify({"error": "song not found"}), 404
-
-    result = _get_cover_bytes(song["path"])
     if not result:
         return Response(status=204)
 
@@ -499,16 +588,9 @@ async def get_cover(song_id: str):
 
 @bp.route("/lyrics/<song_id>")
 async def get_lyrics(song_id: str):
-    cp = _cache_path()
-    if not cp.exists():
+    status, lyrics = await asyncio.to_thread(_lyrics_for_song, song_id)
+    if status != "ok":
         return jsonify({"lyrics": None})
-
-    songs = json.loads(cp.read_text(encoding="utf-8"))
-    song = next((s for s in songs if s["id"] == song_id), None)
-    if not song:
-        return jsonify({"lyrics": None})
-
-    lyrics = _find_lyrics(song["path"])
     return jsonify({"lyrics": lyrics})
 
 
@@ -742,12 +824,43 @@ def _project_revision(project: dict[str, Any]) -> str:
     return hashlib.sha256(_project_save_fingerprint(project).encode("utf-8")).hexdigest()
 
 
-def _project_payload(project: dict[str, Any]) -> dict[str, Any]:
+def _project_payload(
+    project: dict[str, Any],
+    *,
+    active_project_id: str,
+) -> dict[str, Any]:
     return {
         "project": project,
         "revision": _project_revision(project),
-        "active_project_id": active_project_archive_id(),
+        "active_project_id": active_project_id,
     }
+
+
+def _project_payload_from_storage(
+    project: dict[str, Any],
+    *,
+    include_projects: bool = False,
+) -> dict[str, Any]:
+    listing = _studio_projects_listing() if include_projects else None
+    active_project_id = (
+        str(listing["active_project_id"]) if listing is not None else active_project_archive_id()
+    )
+    return {
+        **_project_payload(project, active_project_id=active_project_id),
+        **(listing or {}),
+    }
+
+
+async def _threaded_project_payload(
+    project: dict[str, Any],
+    *,
+    include_projects: bool = False,
+) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        _project_payload_from_storage,
+        project,
+        include_projects=include_projects,
+    )
 
 
 def _project_differs_from_saved_project(project: dict[str, Any]) -> bool:
@@ -906,10 +1019,10 @@ async def _sync_project_to_host(
     host = _host_manager()
     if not host.is_running:
         _clear_host_sync_caches()
-        project = (
-            save_project(project)
-            if persist_unsaved and _project_differs_from_saved_project(project)
-            else load_project()
+        project = await asyncio.to_thread(
+            _persist_or_reload_unsaved_project,
+            project,
+            persist_unsaved=persist_unsaved,
         )
         if broadcast:
             await _broadcast_project(project)
@@ -927,7 +1040,7 @@ async def _sync_project_to_host(
     if sync_cache.get(_HOST_SYNC_SESSION_KEY) != session_fingerprint:
         sync_cache.clear()
         sync_cache[_HOST_SYNC_SESSION_KEY] = session_fingerprint
-    project_changed = _project_differs_from_saved_project(project)
+    project_changed = await asyncio.to_thread(_project_differs_from_saved_project, project)
     status = await host.send_command("get_status")
     host_track_ids = {
         int(track.get("id", -1)) for track in status.get("tracks", []) if isinstance(track, dict)
@@ -1188,10 +1301,14 @@ async def _sync_project_to_host(
         {"lanes": automation_lanes},
     )
 
-    if project_changed:
-        project = save_project(project) if persist_unsaved else _save_host_sync_metadata(project)
-    elif broadcast:
-        project = load_project()
+    if project_changed or broadcast:
+        project = await asyncio.to_thread(
+            _commit_host_sync_project,
+            project,
+            persist_unsaved=persist_unsaved,
+            project_changed=project_changed,
+            reload_for_broadcast=broadcast and not project_changed,
+        )
     if broadcast:
         await _broadcast_project(project)
 
@@ -1228,53 +1345,40 @@ async def _sync_saved_project_to_host(
 
 
 async def sync_current_project_to_host(*, broadcast: bool = False) -> dict[str, Any]:
-    return await _sync_saved_project_to_host(load_project(), broadcast=broadcast)
+    project = await asyncio.to_thread(load_project)
+    return await _sync_saved_project_to_host(project, broadcast=broadcast)
 
 
 @bp.route("/studio/project", methods=["GET"])
 async def studio_project():
-    project = load_project()
-    revision = _project_revision(project)
-    _remember_project_broadcast_snapshot(project, revision)
-    return jsonify(
-        {
-            "project": project,
-            "revision": revision,
-            "active_project_id": active_project_archive_id(),
-            "projects": list_project_archives(),
-            "summary": project_summary(project),
-            "host": _host_snapshot(),
-        }
-    )
+    payload = await asyncio.to_thread(_studio_project_snapshot)
+    _remember_project_broadcast_snapshot(payload["project"], payload["revision"])
+    payload["host"] = _host_snapshot()
+    return jsonify(payload)
 
 
 @bp.route("/studio/projects", methods=["GET"])
 async def studio_projects():
-    return jsonify(
-        {
-            "projects": list_project_archives(),
-            "active_project_id": active_project_archive_id(),
-        }
-    )
+    return jsonify(await asyncio.to_thread(_studio_projects_listing))
 
 
 @bp.route("/studio/projects/save-copy", methods=["POST"])
 async def studio_save_project_copy():
     data = await _json_payload()
-    project = load_project()
+    project = await asyncio.to_thread(load_project)
     title = str(data.get("title") or "").strip()
-    copied = save_project_as_archive(project, title=title, activate=True)
+    copied = await asyncio.to_thread(save_project_as_archive, project, title=title, activate=True)
     sync = None
     if data.get("sync", True) is not False:
         sync = await _sync_saved_project_to_host(copied, broadcast=True)
         copied = sync.get("project", copied)
     else:
         await _broadcast_project(copied)
+    project_payload = await _threaded_project_payload(copied, include_projects=True)
     return jsonify(
         {
             "ok": True,
-            **_project_payload(copied),
-            "projects": list_project_archives(),
+            **project_payload,
             "sync": sync,
             "host": _host_snapshot(),
         }
@@ -1285,7 +1389,7 @@ async def studio_save_project_copy():
 async def studio_open_project(project_id: str):
     data = await _json_payload()
     try:
-        project = set_active_project_archive(project_id)
+        project = await asyncio.to_thread(set_active_project_archive, project_id)
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     sync = None
@@ -1294,11 +1398,11 @@ async def studio_open_project(project_id: str):
         project = sync.get("project", project)
     else:
         await _broadcast_project(project)
+    project_payload = await _threaded_project_payload(project, include_projects=True)
     return jsonify(
         {
             "ok": True,
-            **_project_payload(project),
-            "projects": list_project_archives(),
+            **project_payload,
             "sync": sync,
             "host": _host_snapshot(),
         }
@@ -1311,16 +1415,19 @@ async def save_studio_project():
     project, state_capture = await _capture_plugin_states(data.get("project") or {})
     base_revision = str(data.get("base_revision") or data.get("revision") or "").strip()
     try:
-        project = _save_project_with_base_revision(project, base_revision)
+        project = await asyncio.to_thread(_save_project_with_base_revision, project, base_revision)
     except _ProjectRevisionConflictError as exc:
         current_project = exc.current_project
+        project_payload = await _threaded_project_payload(
+            current_project,
+            include_projects=True,
+        )
         return (
             jsonify(
                 {
                     "ok": False,
                     "error": str(exc),
-                    **_project_payload(current_project),
-                    "projects": list_project_archives(),
+                    **project_payload,
                     "summary": project_summary(current_project),
                     "host": _host_snapshot(),
                     "state": state_capture,
@@ -1333,11 +1440,11 @@ async def save_studio_project():
         broadcast=True,
     )
     project = cast(dict[str, Any], sync.get("project") or project)
+    project_payload = await _threaded_project_payload(project, include_projects=True)
     return jsonify(
         {
             "ok": True,
-            **_project_payload(project),
-            "projects": list_project_archives(),
+            **project_payload,
             "sync": sync,
             "state": state_capture,
         }
@@ -1347,16 +1454,16 @@ async def save_studio_project():
 @bp.route("/studio/demo", methods=["POST"])
 async def reset_studio_demo():
     await _json_payload()
-    project = save_project(default_project())
+    project = await asyncio.to_thread(save_project, default_project())
     sync = await _sync_saved_project_to_host(
         project,
         broadcast=True,
     )
+    project_payload = await _threaded_project_payload(project, include_projects=True)
     return jsonify(
         {
             "ok": True,
-            **_project_payload(project),
-            "projects": list_project_archives(),
+            **project_payload,
             "sync": sync,
         }
     )
@@ -1375,7 +1482,9 @@ async def start_audio_host():
 
     sync = None
     if data.get("sync", True):
-        sync = await _sync_saved_project_to_host(load_project(), broadcast=True)
+        sync = await _sync_saved_project_to_host(
+            await asyncio.to_thread(load_project), broadcast=True
+        )
     await reconcile_dashboard_audio_streaming()
     return jsonify({"ok": True, "host": _host_snapshot(), "sync": sync})
 
@@ -1522,13 +1631,16 @@ async def studio_set_plugin_parameter():
     if ok:
         project, state_capture = await _capture_and_save_plugin_states(project)
         await _broadcast_project(project)
+    project_payload = (
+        await _threaded_project_payload(project) if ok else {"project": None, "revision": None}
+    )
     return (
         jsonify(
             {
                 "ok": ok,
                 "error": response.get("message") if not ok else None,
                 "response": response,
-                **(_project_payload(project) if ok else {"project": None, "revision": None}),
+                **project_payload,
                 "state": state_capture,
                 "host": _host_snapshot(),
             }
@@ -1545,6 +1657,7 @@ async def studio_captured_plugin_parameters():
     if host.is_running:
         response = await host.send_command("poll_captured_plugin_parameters")
         if response.get("type") == "error":
+            project_payload = await _threaded_project_payload(project)
             return (
                 jsonify(
                     {
@@ -1552,7 +1665,7 @@ async def studio_captured_plugin_parameters():
                         "error": response.get("message"),
                         "captured": [],
                         "learned_parameters": project.get("automation_learned_parameters", []),
-                        **_project_payload(project),
+                        **project_payload,
                         "host": _host_snapshot(),
                     }
                 ),
@@ -1567,12 +1680,13 @@ async def studio_captured_plugin_parameters():
                 continue
             project, learned = automation_learned_parameter_upsert(learned_payload)
             captured_for_project.append(learned)
+    project_payload = await _threaded_project_payload(project)
     return jsonify(
         {
             "ok": True,
             "captured": captured_for_project,
             "learned_parameters": project.get("automation_learned_parameters", []),
-            **_project_payload(project),
+            **project_payload,
             "host": _host_snapshot(),
         }
     )
@@ -1589,7 +1703,8 @@ async def studio_rename_learned_plugin_parameter(parameter_id: str):
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     await _broadcast_project(project)
-    return jsonify({"ok": True, **_project_payload(project), "learned_parameter": learned})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "learned_parameter": learned})
 
 
 @bp.route("/studio/plugins", methods=["GET", "POST"])
@@ -1673,7 +1788,8 @@ async def studio_midi_write():
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/midi/diff", methods=["POST"])
@@ -1684,7 +1800,8 @@ async def studio_midi_diff():
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/clips/diff", methods=["POST"])
@@ -1695,7 +1812,8 @@ async def studio_clip_diff():
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation", methods=["GET"])
@@ -1734,7 +1852,8 @@ async def studio_automation_write():
         message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
         return jsonify({"error": message}), 400
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation/global", methods=["POST"])
@@ -1757,7 +1876,8 @@ async def studio_global_automation_write():
         message = "invalid track_id" if raw_track_id not in (None, "") else str(e)
         return jsonify({"error": message}), 400
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation/<int:track_id>", methods=["PATCH"])
@@ -1768,7 +1888,8 @@ async def studio_automation_diff(track_id: int):
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/automation/<int:track_id>/retarget", methods=["POST"])
@@ -1781,7 +1902,8 @@ async def studio_automation_retarget(track_id: int):
     except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "summary": summary, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "summary": summary, "sync": sync})
 
 
 @bp.route("/studio/export", methods=["POST"])
@@ -2653,10 +2775,11 @@ async def studio_import_dawproject_file():
     else:
         await _broadcast_project(project)
 
+    project_payload = await _threaded_project_payload(project)
     return jsonify(
         {
             "ok": True,
-            **_project_payload(project),
+            **project_payload,
             "summary": import_summary,
             "sync": sync,
             "host": _host_snapshot(),
@@ -2731,9 +2854,8 @@ async def _finish_audio_import(
     except (StopIteration, TypeError, ValueError):
         pass
     await _broadcast_project(project)
-    return jsonify(
-        {"ok": True, **_project_payload(project), "track": track, "clip": clip, "sync": sync}
-    )
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "track": track, "clip": clip, "sync": sync})
 
 
 @bp.route("/studio/tracks", methods=["POST"])
@@ -2751,7 +2873,8 @@ async def studio_create_track():
     if routing_updates:
         project, track = update_project_track(int(track["id"]), routing_updates)
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "track": track, "sync": sync})
 
 
 @bp.route("/studio/tracks/<int:track_id>", methods=["PATCH"])
@@ -2762,7 +2885,8 @@ async def studio_update_track(track_id: int):
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "track": track, "sync": sync})
 
 
 # ── Agent control endpoint (receives commands from MusicTool) ──
@@ -2777,7 +2901,8 @@ async def studio_delete_track(track_id: int):
         status = 400 if message == "cannot delete the last track" else 404
         return jsonify({"error": message}), status
     sync = await _sync_saved_project_to_host(project, broadcast=True)
-    return jsonify({"ok": True, **_project_payload(project), "track": track, "sync": sync})
+    project_payload = await _threaded_project_payload(project)
+    return jsonify({"ok": True, **project_payload, "track": track, "sync": sync})
 
 
 @bp.route("/studio/tracks/<int:track_id>/plugin", methods=["POST"])
@@ -2805,10 +2930,11 @@ async def studio_set_track_plugin(track_id: int):
         load_response = await _load_track_slot(host, int(host_track_id), slot)
 
     await _broadcast_project(project)
+    project_payload = await _threaded_project_payload(project)
     return jsonify(
         {
             "ok": True,
-            **_project_payload(project),
+            **project_payload,
             "track": track,
             "plugin": _track_slot(track, slot_id),
             "load": load_response,

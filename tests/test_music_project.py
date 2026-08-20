@@ -100,6 +100,31 @@ def test_project_archives_keep_multiple_host_projects(tmp_path, monkeypatch):
     assert load_project()["title"] == "First Idea"
 
 
+def test_project_archives_snapshot_resolves_active_project_once(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    save_project({"title": "Atomic Listing", "tracks": [{"id": 1, "name": "Lead"}]})
+    expected_active_id = active_project_archive_id()
+    original_resolve_active = project_repository._ensure_active_project_archive_id
+    resolve_calls = 0
+
+    def resolve_active_once():
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return original_resolve_active()
+
+    monkeypatch.setattr(
+        project_repository,
+        "_ensure_active_project_archive_id",
+        resolve_active_once,
+    )
+
+    archives, active_id = project_repository.project_archives_snapshot()
+
+    assert resolve_calls == 1
+    assert active_id == expected_active_id
+    assert next(item for item in archives if item["active"])["id"] == active_id
+
+
 def test_project_update_serializes_concurrent_load_modify_save(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     save_project({"title": "Base", "tracks": [{"id": 1, "name": "Lead", "notes": []}]})

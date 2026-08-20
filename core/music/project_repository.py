@@ -169,35 +169,45 @@ def active_project_archive_id() -> str:
 
 
 def list_project_archives(limit: int = 50) -> list[dict[str, Any]]:
+    archives, _ = project_archives_snapshot(limit)
+    return archives
+
+
+def project_archives_snapshot(limit: int = 50) -> tuple[list[dict[str, Any]], str]:
     with _project_storage_lock(PROJECT_PATH):
-        music_project = _project_model()
         active_id = _ensure_active_project_archive_id()
-        archives: list[dict[str, Any]] = []
-        for path in PROJECTS_DIR.glob("*.json"):
-            try:
-                record = _read_project_archive_record(path)
-            except (OSError, json.JSONDecodeError, ValueError, KeyError, UnicodeDecodeError):
-                continue
-            project = music_project.normalize_project(
-                cast(dict[str, Any], record.get("project") or {})
-            )
-            summary = music_project.project_summary(project)
-            project_id = str(record.get("id") or path.stem)
-            archives.append(
-                {
-                    "id": project_id,
-                    "title": str(record.get("title") or project.get("title") or "ATRI Session"),
-                    "saved_at": str(record.get("saved_at") or project.get("updated_at") or ""),
-                    "updated_at": str(project.get("updated_at") or ""),
-                    "track_count": int(summary.get("track_count", 0)),
-                    "note_count": int(summary.get("note_count", 0)),
-                    "tempo": float(project.get("tempo", 120.0)),
-                    "time_signature": project.get("time_signature", [4, 4]),
-                    "active": project_id == active_id,
-                }
-            )
-        archives.sort(key=lambda item: str(item.get("saved_at") or ""), reverse=True)
-        return archives[: max(1, int(limit or 50))]
+        return _list_project_archives_unlocked(active_id, limit), active_id
+
+
+def _list_project_archives_unlocked(
+    active_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    music_project = _project_model()
+    archives: list[dict[str, Any]] = []
+    for path in PROJECTS_DIR.glob("*.json"):
+        try:
+            record = _read_project_archive_record(path)
+        except (OSError, json.JSONDecodeError, ValueError, KeyError, UnicodeDecodeError):
+            continue
+        project = music_project.normalize_project(cast(dict[str, Any], record.get("project") or {}))
+        summary = music_project.project_summary(project)
+        project_id = str(record.get("id") or path.stem)
+        archives.append(
+            {
+                "id": project_id,
+                "title": str(record.get("title") or project.get("title") or "ATRI Session"),
+                "saved_at": str(record.get("saved_at") or project.get("updated_at") or ""),
+                "updated_at": str(project.get("updated_at") or ""),
+                "track_count": int(summary.get("track_count", 0)),
+                "note_count": int(summary.get("note_count", 0)),
+                "tempo": float(project.get("tempo", 120.0)),
+                "time_signature": project.get("time_signature", [4, 4]),
+                "active": project_id == active_id,
+            }
+        )
+    archives.sort(key=lambda item: str(item.get("saved_at") or ""), reverse=True)
+    return archives[: max(1, int(limit or 50))]
 
 
 def _load_project_file(project_path: Path) -> dict[str, Any]:

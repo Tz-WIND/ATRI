@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createRafRedrawScheduler } from './redrawScheduler.js'
+import { createPlaybackRedrawLoop, createRafRedrawScheduler } from './redrawScheduler.js'
 
 test('createRafRedrawScheduler_coalescesRequestsUntilFrameFlush', () => {
   const frames = []
@@ -72,4 +72,53 @@ test('createRafRedrawScheduler_cancelDropsPendingDraw', () => {
 
   assert.deepEqual(cancelled, [42])
   assert.equal(drawCount, 0)
+})
+
+test('createPlaybackRedrawLoop_stopsSchedulingWhenShouldTickIsFalse', () => {
+  const frames = []
+  const ticks = []
+  let shouldTick = true
+  const loop = createPlaybackRedrawLoop({
+    shouldTick: () => shouldTick,
+    onTick(delta) {
+      ticks.push(delta)
+    },
+    requestFrame(callback) {
+      frames.push(callback)
+      return frames.length
+    },
+    cancelFrame() {},
+  })
+
+  loop.start()
+  assert.equal(frames.length, 1)
+  frames[0](16)
+  assert.equal(ticks.length, 1)
+  shouldTick = false
+  frames[1](32)
+  const scheduledAfterStop = frames.length
+  assert.equal(ticks.length, 1)
+  assert.equal(scheduledAfterStop, 2)
+})
+
+test('createPlaybackRedrawLoop_stopCancelsPendingFrame', () => {
+  const cancelled = []
+  const frames = []
+  const loop = createPlaybackRedrawLoop({
+    shouldTick: () => true,
+    onTick() {},
+    requestFrame(callback) {
+      frames.push(callback)
+      return 7
+    },
+    cancelFrame(id) {
+      cancelled.push(id)
+    },
+  })
+
+  loop.start()
+  loop.stop()
+  frames[0](16)
+
+  assert.deepEqual(cancelled, [7])
 })

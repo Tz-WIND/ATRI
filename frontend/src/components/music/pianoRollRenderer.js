@@ -17,6 +17,13 @@ import {
   normalizeMeterEvents,
 } from './meterEvents.js'
 import { createBeatRulerRenderer, firstMultipleAtOrAfter } from './rulerRenderer.js'
+import {
+  rectIntersectsViewport,
+  scrollViewport,
+  visibleBeatRange,
+  visiblePitchRange,
+  xIntersectsViewport,
+} from './studioViewport.js'
 
 export function createPianoRollRenderer(context) {
   const {
@@ -83,6 +90,38 @@ export function createPianoRollRenderer(context) {
     snapStep,
   })
 
+  function wrapViewport(wrap, overrides = {}) {
+    if (!wrap) return null
+    return scrollViewport({
+      scrollLeft: wrap.scrollLeft || 0,
+      scrollTop: wrap.scrollTop || 0,
+      clientWidth: wrap.clientWidth || 0,
+      clientHeight: wrap.clientHeight || 0,
+      ...overrides,
+    })
+  }
+
+  function pianoBeatWindow(width, clip, viewport) {
+    const scale = pianoPxPerBeat.value
+    const clipStart = Number(clip.start || 0)
+    const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
+    if (!viewport) {
+      return {
+        firstIndex: 0,
+        lastIndex: visibleBeats,
+        startBeat: clipStart,
+        endBeat: clipStart + visibleBeats,
+      }
+    }
+    return visibleBeatRange({
+      viewport,
+      originX: pianoKeyW,
+      pxPerBeat: scale,
+      clipStart,
+      maxBeats: visibleBeats,
+    })
+  }
+
   function pianoLengthBeats(clip) {
     const emptyTailBeats = pianoEmptyBars * Math.max(1, meterBeats.value)
     const clipStart = Number(clip.start || 0)
@@ -118,19 +157,20 @@ export function createPianoRollRenderer(context) {
       pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
     )
     pianoTimelineWidth.value = width
+    const viewport = wrapViewport(wrap)
     const headerHeight = pianoNoteTop.value
     const bodyHeight = (maxPitch - minPitch + 1) * pianoRowH
     const headerCtx = setupCanvas(headerCanvas, width, headerHeight)
     const bodyCtx = setupCanvas(canvas, width, bodyHeight)
-    drawPianoHeader(headerCtx, width, clip)
-    drawPianoBody(bodyCtx, width, bodyHeight, clip)
+    drawPianoHeader(headerCtx, width, clip, viewport)
+    drawPianoBody(bodyCtx, width, bodyHeight, clip, viewport)
   }
 
-  function drawPianoHeader(ctx, width, clip) {
+  function drawPianoHeader(ctx, width, clip, viewport) {
     const height = pianoNoteTop.value
     ctx.fillStyle = '#17191c'
     ctx.fillRect(0, 0, width, height)
-    drawPianoRuler(ctx, width, clip)
+    drawPianoRuler(ctx, width, clip, viewport)
     for (const subtrackId of pianoVisibleSubtracks.value) {
       if (subtrackId === 'meter') {
         drawPianoMeterLane(ctx, width, clip)
@@ -141,13 +181,22 @@ export function createPianoRollRenderer(context) {
     drawPianoPlayhead(ctx, height, clip)
   }
 
-  function drawPianoBody(ctx, width, height, clip) {
+  function drawPianoBody(ctx, width, height, clip, viewport) {
     const logicalHeight = pianoNoteTop.value + height
     ctx.save()
     ctx.translate(0, -pianoNoteTop.value)
     ctx.fillStyle = '#17191c'
     ctx.fillRect(0, pianoNoteTop.value, width, height)
-    for (let pitch = maxPitch; pitch >= minPitch; pitch -= 1) {
+    const pitchRange = viewport
+      ? visiblePitchRange({
+        viewport,
+        minPitch,
+        maxPitch,
+        rowHeight: pianoRowH,
+        headerHeight: pianoNoteTop.value,
+      })
+      : { minPitch, maxPitch }
+    for (let pitch = pitchRange.maxPitch; pitch >= pitchRange.minPitch; pitch -= 1) {
       const row = maxPitch - pitch
       const y = pianoNoteTop.value + row * pianoRowH
       const black = [1, 3, 6, 8, 10].includes(pitch % 12)
@@ -166,13 +215,14 @@ export function createPianoRollRenderer(context) {
         ctx.fillText(pitchName(pitch), 10, y + 9)
       }
     }
-    paintPianoGrid(ctx, width, logicalHeight, clip)
+    paintPianoGrid(ctx, width, logicalHeight, clip, viewport)
 
     const track = activeMidiClip.value.track
     if (track) {
       for (const note of clip.notes || []) {
         if (note.pitch < minPitch || note.pitch > maxPitch) continue
         const rect = noteRect(note)
+        if (!rectIntersectsViewport(rect, viewport)) continue
         const selected = selectedNoteIds.value.has(note.id)
         ctx.fillStyle = selected ? '#f0d17a' : hexToRgba(track.color, 0.82)
         roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 3)
@@ -221,15 +271,16 @@ export function createPianoRollRenderer(context) {
       pianoKeyW + pianoLengthBeats(clip) * pianoPxPerBeat.value
     )
     pianoTimelineWidth.value = width
+    const viewport = wrapViewport(controllerWrap.value, { clientHeight: controllerLaneH })
     for (const lane of controllerLanes.value) {
       const canvas = controllerLaneCanvases.get(lane.id)
       if (!canvas) continue
       const ctx = setupCanvas(canvas, width, controllerLaneH)
-      drawControllerLane(ctx, lane, width, clip)
+      drawControllerLane(ctx, lane, width, clip, viewport)
     }
   }
 
-  function drawControllerLane(ctx, lane, width, clip) {
+  function drawControllerLane(ctx, lane, width, clip, viewport) {
     const definition = controllerDefinitionForLane(lane)
     const colorStyles = controllerLaneColorStyles(activeMidiClip.value?.track?.color)
     ctx.fillStyle = '#17191c'
@@ -240,17 +291,17 @@ export function createPianoRollRenderer(context) {
     ctx.fillRect(pianoKeyW, 0, width - pianoKeyW, controllerLaneTabH)
     ctx.fillStyle = '#181b1f'
     ctx.fillRect(pianoKeyW, controllerLaneTabH, width - pianoKeyW, controllerLaneBodyH)
-    paintControllerGrid(ctx, width, clip)
+    paintControllerGrid(ctx, width, clip, viewport)
 
     if (definition.type === 'velocity') {
-      drawVelocityLane(ctx, clip, definition, colorStyles)
+      drawVelocityLane(ctx, clip, definition, colorStyles, viewport)
     } else {
-      drawEventLane(ctx, clip, definition, colorStyles)
+      drawEventLane(ctx, clip, definition, colorStyles, viewport)
     }
     drawControllerPlayhead(ctx, controllerLaneH, clip)
   }
 
-  function paintControllerGrid(ctx, width, clip) {
+  function paintControllerGrid(ctx, width, clip, viewport) {
     const bodyTop = controllerLaneTabH
     const bodyBottom = controllerLaneTabH + controllerLaneBodyH
     const scale = pianoPxPerBeat.value
@@ -272,8 +323,9 @@ export function createPianoRollRenderer(context) {
       ctx.stroke()
     }
 
-    const visibleBeats = Math.ceil((width - pianoKeyW) / pianoPxPerBeat.value)
-    for (let beat = 0; beat <= visibleBeats; beat += 1) {
+    const beatWindow = pianoBeatWindow(width, clip, viewport)
+    const clipStart = Number(clip.start || 0)
+    for (let beat = beatWindow.firstIndex; beat <= beatWindow.lastIndex; beat += 1) {
       const x = pianoKeyW + beat * pianoPxPerBeat.value
       ctx.strokeStyle = 'rgba(229,236,245,0.06)'
       ctx.beginPath()
@@ -293,9 +345,7 @@ export function createPianoRollRenderer(context) {
       }
     }
 
-    const clipStart = Number(clip.start || 0)
-    const endBeat = clipStart + visibleBeats
-    for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
+    for (const line of meterBarLinesBetween(project.value, beatWindow.startBeat, beatWindow.endBeat)) {
       const barX = pianoKeyW + (line.beat - clipStart) * pianoPxPerBeat.value
       ctx.strokeStyle = 'rgba(229,236,245,0.14)'
       ctx.beginPath()
@@ -305,10 +355,11 @@ export function createPianoRollRenderer(context) {
     }
   }
 
-  function drawVelocityLane(ctx, clip, definition, colorStyles) {
+  function drawVelocityLane(ctx, clip, definition, colorStyles, viewport) {
     const notes = clip.notes || []
     for (const note of notes) {
       const x = pianoKeyW + Number(note.start || 0) * pianoPxPerBeat.value
+      if (!xIntersectsViewport(x, viewport, 4)) continue
       const value = clamp(Math.round(Number(note.velocity || definition.defaultValue)), 1, 127)
       const y = controllerValueToY(value, definition)
       const selected = selectedNoteIds.value.has(note.id)
@@ -324,7 +375,7 @@ export function createPianoRollRenderer(context) {
     ctx.lineWidth = 1
   }
 
-  function drawEventLane(ctx, clip, definition, colorStyles) {
+  function drawEventLane(ctx, clip, definition, colorStyles, viewport) {
     const tailBeat = Math.max(0, (pianoTimelineWidth.value - pianoKeyW) / pianoPxPerBeat.value)
     const points = controllerRenderPoints(clip.events || [], definition, tailBeat)
     if (!points.length) return
@@ -340,6 +391,7 @@ export function createPianoRollRenderer(context) {
     for (const point of points) {
       if (point.synthetic) continue
       const x = pianoKeyW + Number(point.start || 0) * pianoPxPerBeat.value
+      if (!xIntersectsViewport(x, viewport, 8)) continue
       const y = controllerValueToY(point.value, definition)
       const selected = point.event?.id && point.event.id === selectedControllerEventId.value
       ctx.beginPath()
@@ -432,11 +484,11 @@ export function createPianoRollRenderer(context) {
     ctx.stroke()
   }
 
-  function drawPianoRuler(ctx, width, clip) {
+  function drawPianoRuler(ctx, width, clip, viewport) {
     const scale = pianoPxPerBeat.value
     const clipStart = Number(clip.start || 0)
-    const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
-    const endBeat = clipStart + visibleBeats
+    const beatWindow = pianoBeatWindow(width, clip, viewport)
+    const endBeat = beatWindow.endBeat
     ctx.fillStyle = '#202326'
     ctx.fillRect(0, 0, width, pianoRulerH)
     ctx.fillStyle = '#181b1f'
@@ -450,7 +502,7 @@ export function createPianoRollRenderer(context) {
     ctx.font = '10px Cascadia Mono, Consolas, monospace'
 
     // Quarter-note grid lines
-    const firstBeat = Math.ceil(clipStart - 0.000001)
+    const firstBeat = Math.ceil(beatWindow.startBeat - 0.000001)
     for (let absoluteBeat = firstBeat; absoluteBeat <= endBeat + 0.001; absoluteBeat += 1) {
       const x = pianoKeyW + (absoluteBeat - clipStart) * scale
       ctx.strokeStyle = 'rgba(229,236,245,0.1)'
@@ -491,6 +543,7 @@ export function createPianoRollRenderer(context) {
 
     drawBeatRulerLabels(ctx, {
       startBeat: clipStart,
+      visibleStartBeat: beatWindow.startBeat,
       endBeat,
       originX: pianoKeyW,
       scale,
@@ -590,13 +643,13 @@ export function createPianoRollRenderer(context) {
     }
   }
 
-  function paintPianoGrid(ctx, width, height, clip) {
+  function paintPianoGrid(ctx, width, height, clip, viewport) {
     const scale = pianoPxPerBeat.value
     const clipStart = Number(clip.start || 0)
-    const visibleBeats = Math.ceil((width - pianoKeyW) / scale)
+    const beatWindow = pianoBeatWindow(width, clip, viewport)
     const snapStepWidth = activePianoSnapStep.value ? activePianoSnapStep.value * scale : 0
 
-    for (let beat = 0; beat <= visibleBeats; beat += 1) {
+    for (let beat = beatWindow.firstIndex; beat <= beatWindow.lastIndex; beat += 1) {
       const x = pianoKeyW + beat * scale
       ctx.strokeStyle = 'rgba(229,236,245,0.075)'
       ctx.lineWidth = 0.5
@@ -617,8 +670,7 @@ export function createPianoRollRenderer(context) {
       }
     }
 
-    const endBeat = clipStart + visibleBeats
-    for (const line of meterBarLinesBetween(project.value, clipStart, endBeat)) {
+    for (const line of meterBarLinesBetween(project.value, beatWindow.startBeat, beatWindow.endBeat)) {
       const barBeat = line.beat
       const x = pianoKeyW + (barBeat - clipStart) * scale
       ctx.strokeStyle = 'rgba(240, 209, 122, 0.24)'

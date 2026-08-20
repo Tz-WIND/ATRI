@@ -62,6 +62,7 @@ PROJECT_PATH = project_repository.PROJECT_PATH
 PROJECTS_DIR = project_repository.PROJECTS_DIR
 active_project_archive_id = project_repository.active_project_archive_id
 list_project_archives = project_repository.list_project_archives
+project_archives_snapshot = project_repository.project_archives_snapshot
 load_project = project_repository.load_project
 save_project = project_repository.save_project
 save_project_as_archive = project_repository.save_project_as_archive

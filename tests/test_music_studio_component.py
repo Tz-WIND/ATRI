@@ -406,14 +406,18 @@ def test_music_studio_arrangement_grid_follows_meter_events():
     piano meter lane, so bar lines move after a 3/4 or 5/8 marker."""
     studio_text = _read_studio_runtime_sources()
 
-    assert "function paintGrid(ctx, width, height, offsetX, offsetY)" in studio_text
-    assert "for (const line of meterBarLinesBetween(project.value, 0, beats))" in studio_text
+    assert "function paintGrid(ctx, width, height, offsetX, offsetY, viewport)" in studio_text
+    assert (
+        "for (const line of meterBarLinesBetween("
+        "project.value, beatWindow.startBeat, beatWindow.endBeat))"
+    ) in studio_text
     assert "const barX = offsetX + line.beat * scale" in studio_text
     assert "for (let bar = 0; bar * barLen <= beats; bar++)" not in studio_text
-    assert "function paintControllerGrid(ctx, width, clip)" in studio_text
+    assert "function paintControllerGrid(ctx, width, clip, viewport)" in studio_text
     assert "barLen * pianoPxPerBeat.value" not in studio_text
     assert (
-        "for (const line of meterBarLinesBetween(project.value, clipStart, endBeat))"
+        "for (const line of meterBarLinesBetween("
+        "project.value, beatWindow.startBeat, beatWindow.endBeat))"
     ) in studio_text
     assert "const barX = pianoKeyW + (line.beat - clipStart) * pianoPxPerBeat.value" in studio_text
 
@@ -430,6 +434,7 @@ def test_music_studio_piano_and_arrangement_rulers_share_decimal_beat_labels():
     assert "originX: 0," in studio_text
     assert "drawBeatRulerLabels(ctx, {\n      startBeat: clipStart," in studio_text
     assert "originX: pianoKeyW," in studio_text
+    assert studio_text.count("visibleStartBeat: beatWindow.startBeat,") == 2
     assert (
         "const shouldDrawBeatLabel = metrics.shouldLabel && "
         "(metrics.isBar || scale >= rulerBeatLabelMinScale)"
@@ -454,7 +459,8 @@ def test_music_studio_rulers_draw_scaled_tick_marks_from_quantize_step():
     assert "ctx.lineWidth = metrics.lineWidth" in studio_text
     assert "ctx.moveTo(x, tickBottom - tickHeight)" in studio_text
     assert "const labelX = Math.max(originX + rulerLabelGap, x + rulerLabelGap)" in studio_text
-    assert "let absoluteBeat = firstMultipleAtOrAfter(startBeat, tickStep);" in studio_text
+    assert "visibleStartBeat = startBeat" in studio_text
+    assert "let absoluteBeat = firstMultipleAtOrAfter(visibleStartBeat, tickStep);" in studio_text
 
 
 def test_music_studio_audio_drop_matches_host_supported_import_formats():
@@ -486,10 +492,10 @@ def test_music_studio_arrangement_ruler_and_subtracks_stay_sticky_while_tracks_s
     assert 'class="arrangement-timeline-stack"' in studio_text
     assert 'class="track-list-sticky-header"' in studio_text
     assert "const arrangementHeaderCanvas = ref(null)" in studio_text
-    assert "function drawArrangementHeader(ctx, width)" in studio_text
-    assert "function drawArrangementBody(ctx, width, height)" in studio_text
-    assert "drawArrangementHeader(headerCtx, width)" in studio_text
-    assert "drawArrangementBody(bodyCtx, width, bodyHeight)" in studio_text
+    assert "function drawArrangementHeader(ctx, width, viewport)" in studio_text
+    assert "function drawArrangementBody(ctx, width, height, viewport)" in studio_text
+    assert "drawArrangementHeader(headerCtx, width, viewport)" in studio_text
+    assert "drawArrangementBody(bodyCtx, width, bodyHeight, viewport)" in studio_text
     assert "function arrangementCanvasForEvent(event)" in studio_text
     assert "if (canvas === arrangementCanvas.value) y += arrangementTrackTop(0)" in studio_text
     assert ".arrangement-header-canvas {" in studio_text
@@ -694,10 +700,10 @@ def test_music_studio_piano_ruler_and_subtracks_stay_sticky_while_notes_scroll()
     assert 'class="editor-canvas piano-header-canvas"' in studio_text
     assert 'class="piano-scroll-content"' in studio_text
     assert "const pianoHeaderCanvas = ref(null)" in studio_text
-    assert "function drawPianoHeader(ctx, width, clip)" in studio_text
-    assert "function drawPianoBody(ctx, width, height, clip)" in studio_text
-    assert "drawPianoHeader(headerCtx, width, clip)" in studio_text
-    assert "drawPianoBody(bodyCtx, width, bodyHeight, clip)" in studio_text
+    assert "function drawPianoHeader(ctx, width, clip, viewport)" in studio_text
+    assert "function drawPianoBody(ctx, width, height, clip, viewport)" in studio_text
+    assert "drawPianoHeader(headerCtx, width, clip, viewport)" in studio_text
+    assert "drawPianoBody(bodyCtx, width, bodyHeight, clip, viewport)" in studio_text
     assert "function pianoCanvasForEvent(event)" in studio_text
     assert "if (canvas === pianoCanvas.value) y += pianoNoteTop.value" in studio_text
     assert ".piano-header-canvas {" in studio_text
